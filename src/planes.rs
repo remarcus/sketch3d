@@ -6,22 +6,43 @@ impl SketchApp {
         self.finish();
         self.guide = DrawingPlane::from_view(&self.camera);
         self.use_cylinder = false;
+        self.use_revolved = false;
         self.status =
             "Drawing plane placed through the camera focus, facing the current view.".into();
     }
     pub(super) fn plane_controls(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.selectable_label(!self.use_cylinder, "Plane").clicked() {
+            if ui
+                .selectable_label(!self.use_cylinder && !self.use_revolved, "Plane")
+                .clicked()
+            {
                 self.finish();
                 self.use_cylinder = false;
+                self.use_revolved = false;
             }
-            if ui.selectable_label(self.use_cylinder, "Cylinder").clicked() {
+            if ui
+                .selectable_label(self.use_cylinder && !self.use_revolved, "Cylinder")
+                .clicked()
+            {
                 self.finish();
                 self.use_cylinder = true;
+                self.use_revolved = false;
             }
         });
+        if ui
+            .selectable_label(self.use_revolved, "Revolved profile")
+            .clicked()
+        {
+            self.finish();
+            self.use_revolved = true;
+            self.use_cylinder = false;
+        }
         if ui.checkbox(&mut self.guide_visible, "Show guide").changed() {
             self.finish();
+        }
+        if self.use_revolved {
+            self.revolved_controls(ui);
+            return;
         }
         if self.use_cylinder {
             self.cylinder_controls(ui);
@@ -106,7 +127,11 @@ impl SketchApp {
         }
     }
     pub(super) fn plane_overlay(&self, ui: &egui::Ui, rect: Rect) {
-        if self.use_cylinder || !self.guide_visible || self.guide.preset().is_some() {
+        if self.use_revolved
+            || self.use_cylinder
+            || !self.guide_visible
+            || self.guide.preset().is_some()
+        {
             return;
         }
         let origin = self.guide.origin();

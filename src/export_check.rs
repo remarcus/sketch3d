@@ -318,6 +318,98 @@ pub fn layered_fixture() -> Document {
     doc.strokes[2].layer_id = 3;
     doc
 }
+/// Original painted pottery study made only from editable strokes on a vase guide.
+pub fn vase_fixture() -> Document {
+    let guide = crate::revolved::Revolved::default();
+    let mut doc = Document::default();
+    let mut add = |coordinates: Vec<(f32, f32)>, color: [f32; 3], radius: f32, kind: BrushKind| {
+        let first = guide.point(coordinates[0].0, coordinates[0].1);
+        let brush = Brush {
+            kind,
+            thickness: 0.18,
+            normal: guide.normal(first),
+            tangent: guide.tangent(first),
+            ..Default::default()
+        };
+        let points = coordinates
+            .into_iter()
+            .enumerate()
+            .map(|(i, (theta, height))| Point {
+                position: guide.point(theta, height),
+                pressure: 0.9 + 0.08 * (i as f32 * 0.3).sin().abs(),
+                tilt: None,
+            })
+            .collect();
+        doc.strokes.push(Stroke {
+            id: 6001 + doc.strokes.len() as u64,
+            layer_id: 1,
+            color,
+            radius,
+            brush,
+            points,
+        });
+    };
+    for i in 0..56 {
+        let theta = i as f32 / 56.0 * std::f32::consts::TAU;
+        let shade = 0.035 * (i as f32 * 1.7).sin();
+        add(
+            (0..=80)
+                .map(|j| {
+                    (
+                        theta,
+                        guide.min_height()
+                            + (guide.max_height() - guide.min_height()) * j as f32 / 80.0,
+                    )
+                })
+                .collect(),
+            [0.43 + shade, 0.20 + shade * 0.5, 0.095],
+            0.095,
+            BrushKind::Ribbon,
+        );
+    }
+    for height in [-0.05, 0.1, 0.25] {
+        add(
+            (0..=128)
+                .map(|i| (i as f32 / 128.0 * std::f32::consts::TAU, height))
+                .collect(),
+            [0.055, 0.19, 0.29],
+            0.11,
+            BrushKind::Chisel,
+        );
+    }
+    for i in 0..12 {
+        let theta = i as f32 / 12.0 * std::f32::consts::TAU;
+        let corners = [
+            (theta - 0.13, 0.1),
+            (theta, 0.22),
+            (theta + 0.13, 0.1),
+            (theta, -0.02),
+            (theta - 0.13, 0.1),
+        ];
+        let mut coordinates = Vec::new();
+        for pair in corners.windows(2) {
+            for j in 0..=8 {
+                let t = j as f32 / 8.0;
+                coordinates.push((
+                    pair[0].0 + (pair[1].0 - pair[0].0) * t,
+                    pair[0].1 + (pair[1].1 - pair[0].1) * t,
+                ));
+            }
+        }
+        add(coordinates, [0.94, 0.80, 0.52], 0.035, BrushKind::Round);
+    }
+    for height in [guide.min_height() + 0.03, guide.max_height() - 0.03] {
+        add(
+            (0..=128)
+                .map(|i| (i as f32 / 128.0 * std::f32::consts::TAU, height))
+                .collect(),
+            [0.84, 0.56, 0.25],
+            0.025,
+            BrushKind::Round,
+        );
+    }
+    doc
+}
 pub fn run() -> Result<(), String> {
     let directory = std::env::current_dir()
         .map_err(|e| e.to_string())?
@@ -332,6 +424,7 @@ pub fn run() -> Result<(), String> {
         ("dynamics", dynamics_fixture(), None),
         ("textures", textured_fixture(), None),
         ("layers", layered_fixture(), None),
+        ("vase", vase_fixture(), None),
         ("selection", pressure, Some(HashSet::from([1002]))),
     ];
     let mut cases = Vec::new();

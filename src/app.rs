@@ -27,6 +27,8 @@ mod planes;
 mod preset_checks;
 #[path = "recovery_ui.rs"]
 mod recovery_ui;
+#[path = "revolved_ui.rs"]
+mod revolved_ui;
 #[path = "selection.rs"]
 mod selection;
 #[path = "starter.rs"]
@@ -45,6 +47,7 @@ enum Pending {
     Dynamics,
     Textures,
     Recover,
+    Vase,
     Open,
     Close,
 }
@@ -77,6 +80,9 @@ pub struct SketchApp {
     guide: DrawingPlane,
     cylinder: Cylinder,
     use_cylinder: bool,
+    use_revolved: bool,
+    revolved: crate::revolved::Revolved,
+    vase_verification_frame: Option<u32>,
     guide_visible: bool,
     resume_ink: bool,
     color: [f32; 3],
@@ -191,6 +197,9 @@ impl SketchApp {
             guide: DrawingPlane::default(),
             cylinder: Cylinder::default(),
             use_cylinder: false,
+            use_revolved: false,
+            revolved: Default::default(),
+            vase_verification_frame: None,
             guide_visible: true,
             resume_ink: false,
             color: [0.17, 0.82, 0.74],
@@ -236,7 +245,11 @@ impl SketchApp {
             last_export_result: None,
             export_snapshot: None,
         };
-        if std::env::args().any(|a| a == "--verify-layers") {
+        if std::env::args().any(|a| a == "--verify-vase") {
+            app.verification_frame = None;
+            app.vase_verification_frame = Some(0);
+            app.load_vase();
+        } else if std::env::args().any(|a| a == "--verify-layers") {
             app.verification_frame = None;
             app.layer_verification_frame = Some(0);
             app.load_textures();
@@ -276,7 +289,9 @@ impl SketchApp {
             app.house_verification_frame = Some(0);
             app.load_house();
         } else if app.verification_frame.is_none() {
-            if std::env::args().any(|a| a == "--textures") {
+            if std::env::args().any(|a| a == "--vase") {
+                app.load_vase();
+            } else if std::env::args().any(|a| a == "--textures") {
                 app.load_textures();
             } else if std::env::args().any(|a| a == "--dynamics") {
                 app.load_dynamics();
@@ -352,7 +367,9 @@ impl SketchApp {
             1.0 - (position.y - rect.top()) / rect.height() * 2.0,
         );
         let (origin, direction) = self.camera.ray(ndc, rect.aspect_ratio());
-        let hit = if self.use_cylinder {
+        let hit = if self.use_revolved {
+            self.revolved.hit(origin, direction)
+        } else if self.use_cylinder {
             self.cylinder.hit(origin, direction)
         } else {
             intersect_plane(origin, direction, self.guide)
@@ -361,7 +378,7 @@ impl SketchApp {
             let resume = begin || self.active.is_some() || self.resume_ink;
             self.finish();
             self.resume_ink = resume;
-            self.status=if self.use_cylinder{"No cylinder side hit. Draw on its wireframe or orbit; missed regions split the stroke."}else{"Plane is edge-on. Use Align view or rotate the camera."}.into();
+            self.status=if self.use_cylinder || self.use_revolved{"No curved guide side hit. Draw on its wireframe or orbit; missed regions split the stroke."}else{"Plane is edge-on. Use Align view or rotate the camera."}.into();
             return;
         };
         if world.abs().max_element() > 10000.0 {
@@ -380,7 +397,9 @@ impl SketchApp {
             let id = self.next_id;
             self.next_id += 1;
             self.active = Some(id);
-            self.stabilizer.start(if self.use_cylinder {
+            self.stabilizer.start(if self.use_revolved {
+                Surface::Revolved(self.revolved)
+            } else if self.use_cylinder {
                 Surface::Cylinder(self.cylinder)
             } else {
                 Surface::Plane
@@ -391,14 +410,18 @@ impl SketchApp {
                 color: self.color,
                 radius: self.radius,
                 brush: Brush {
-                    normal: if self.use_cylinder {
+                    normal: if self.use_revolved {
+                        self.revolved.normal(world)
+                    } else if self.use_cylinder {
                         let local = self.cylinder.to_local(world);
                         self.cylinder.rotation()
                             * Vec3::new(local.x, 0.0, local.z).normalize_or_zero()
                     } else {
                         self.guide.basis().2
                     },
-                    tangent: if self.use_cylinder {
+                    tangent: if self.use_revolved {
+                        self.revolved.tangent(world)
+                    } else if self.use_cylinder {
                         let local = self.cylinder.to_local(world);
                         self.cylinder.rotation()
                             * Vec3::new(local.z, 0.0, -local.x).normalize_or_zero()
@@ -540,6 +563,7 @@ impl SketchApp {
                 self.starter_scene = false;
                 self.cylinder_example = false;
                 self.use_cylinder = false;
+                self.use_revolved = false;
                 self.guide_visible = true;
                 self.next_id = 1;
                 self.camera = Camera::default();
@@ -588,6 +612,7 @@ impl SketchApp {
                 }
             }
             Some(Pending::Recover) => self.install_recovery(),
+            Some(Pending::Vase) => self.load_vase(),
             Some(Pending::Close) => self.approve_recovery_close(),
             None => {}
         }
@@ -872,6 +897,7 @@ impl SketchApp {
             && self.preset_verification_frame.is_none()
             && self.recovery_verification_frame.is_none()
             && self.layer_verification_frame.is_none()
+            && self.vase_verification_frame.is_none()
         {
             self.cancel();
             return;
@@ -1156,6 +1182,13 @@ impl eframe::App for SketchApp {
                 {
                     self.request(Pending::Textures);
                 }
+                if ui
+                    .add_enabled(enabled, egui::Button::new("Vase"))
+                    .on_hover_text("Editable revolved-surface painting study")
+                    .clicked()
+                {
+                    self.request(Pending::Vase);
+                }
                 if ui.add_enabled(enabled, egui::Button::new("Open")).clicked() {
                     self.request(Pending::Open);
                 }
@@ -1249,6 +1282,7 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.verify_vase(ctx, rect);
                 self.verify_layers(ctx, rect);
                 self.verify_recovery(ctx, rect);
                 self.verify_presets(ctx, rect);
@@ -1385,6 +1419,7 @@ impl eframe::App for SketchApp {
             || self.preset_verification_frame.is_some()
             || self.recovery_verification_frame.is_some()
             || self.layer_verification_frame.is_some()
+            || self.vase_verification_frame.is_some()
             || self.close_after_recovery
             || self.recovery.busy()
         {
@@ -1487,6 +1522,7 @@ impl SketchApp {
             && self.preset_verification_frame.is_none()
             && self.recovery_verification_frame.is_none()
             && self.layer_verification_frame.is_none()
+            && self.vase_verification_frame.is_none()
         {
             return;
         }
@@ -1515,7 +1551,9 @@ impl SketchApp {
                 return;
             }
             image::save_buffer(
-                path.join(if self.layer_verification_frame.is_some() {
+                path.join(if self.vase_verification_frame.is_some() {
+                    "vase-preview.png"
+                } else if self.layer_verification_frame.is_some() {
                     "layer-preview.png"
                 } else if self.recovery_verification_frame.is_some() {
                     "recovery-preview.png"
@@ -1541,7 +1579,9 @@ impl SketchApp {
             )
             .unwrap();
             let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload","background GLB export preserves document state"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
-            let report = if self.layer_verification_frame.is_some() {
+            let report = if self.vase_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["revolved profile drawing","captured guide and surface release tail","pressure tilt brush frames","guide editing preserves ink","selection duplicate undo","native persistence","GPU painted vase"],"gpu":self.renderer.adapter})
+            } else if self.layer_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["layer drawing and locking","visibility picking and erasing","layer reassignment undo redo","nonempty deletion protection","version 5 persistence","GPU layers"],"gpu":self.renderer.adapter})
             } else if self.recovery_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["forced process termination","startup recovery offer","exact pressure tilt dynamics texture restoration","recovered copy is untitled and dirty","native source unchanged","new session snapshot durable before old retirement","Save New and close cleanup ordering","corrupt and unsupported issue visibility","GPU recovery workflow"],"gpu":self.renderer.adapter,"physical_tablet_tested":false})
@@ -1561,7 +1601,9 @@ impl SketchApp {
                 report
             };
             std::fs::write(
-                path.join(if self.layer_verification_frame.is_some() {
+                path.join(if self.vase_verification_frame.is_some() {
+                    "vase-report.json"
+                } else if self.layer_verification_frame.is_some() {
                     "layer-report.json"
                 } else if self.recovery_verification_frame.is_some() {
                     "recovery-report.json"

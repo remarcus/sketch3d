@@ -739,4 +739,27 @@ mod tests {
         invalid.strokes[0].layer_id = 999;
         assert!(encode(&invalid, None).is_err());
     }
+    #[test]
+    fn revolved_vase_exports_as_independent_editable_ink() {
+        let source = crate::export_check::vase_fixture();
+        assert_eq!(source.strokes.len(), 73);
+        let guide = crate::revolved::Revolved::default();
+        for stroke in &source.strokes {
+            assert!(stroke.brush.is_valid());
+            for point in &stroke.points {
+                assert!(point.is_valid());
+                let local = guide.to_local(point.position);
+                assert!((local.x.hypot(local.z) - guide.radius_at(local.y)).abs() < 1e-4);
+            }
+        }
+        let native = serde_json::to_string(&source).unwrap();
+        let loaded = Document::from_json(&native).unwrap();
+        assert_eq!(loaded.strokes, source.strokes);
+        let encoded = encode(&loaded, None).unwrap();
+        let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
+        assert_eq!(parsed.meshes().count(), 73);
+        assert!(encoded.summary.triangles > 10000);
+        assert_eq!(encode(&source, None).unwrap().bytes, encoded.bytes);
+        assert_eq!(serde_json::to_string(&source).unwrap(), native);
+    }
 }

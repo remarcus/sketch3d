@@ -22,6 +22,7 @@ impl SketchApp {
         self.starter_scene = true;
         self.cylinder_example = false;
         self.use_cylinder = false;
+        self.use_revolved = false;
         self.guide_visible = true;
         self.resume_ink = false;
         self.status="Japanese garden house / editable strokes. Space + drag to orbit; V to select; New for a blank drawing.".into();

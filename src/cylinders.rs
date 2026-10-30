@@ -5,6 +5,8 @@ impl SketchApp {
     pub(super) fn guide_preview(&self) -> GuidePreview {
         if !self.guide_visible {
             GuidePreview::Hidden
+        } else if self.use_revolved {
+            GuidePreview::Revolved(self.revolved)
         } else if self.use_cylinder {
             GuidePreview::Cylinder(self.cylinder)
         } else {
@@ -12,14 +14,18 @@ impl SketchApp {
         }
     }
     pub(super) fn active_guide_label(&self) -> &'static str {
-        if self.use_cylinder {
+        if self.use_revolved {
+            "Revolved profile guide"
+        } else if self.use_cylinder {
             "Cylinder guide"
         } else {
             self.guide.label()
         }
     }
     pub(super) fn active_guide_u(&self) -> Vec3 {
-        if self.use_cylinder {
+        if self.use_revolved {
+            self.revolved.rotation() * Vec3::X
+        } else if self.use_cylinder {
             self.cylinder.rotation() * Vec3::X
         } else {
             self.guide.basis().0
@@ -28,6 +34,8 @@ impl SketchApp {
     pub(super) fn guide_badge(&self) -> String {
         if !self.guide_visible {
             format!("{} / hidden", self.active_guide_label())
+        } else if self.use_revolved {
+            format!("Revolved / {} profile points", self.revolved.count)
         } else if self.use_cylinder {
             format!(
                 "Cylinder / R {:.2} / H {:.2}",
@@ -39,6 +47,19 @@ impl SketchApp {
     }
     pub(super) fn align_active_guide(&mut self) {
         self.finish();
+        if self.use_revolved {
+            self.camera.distance = self
+                .camera
+                .distance
+                .max(self.revolved.max_radius() * 3.0)
+                .max((self.revolved.max_height() - self.revolved.min_height()) * 1.6);
+            self.camera.align_guide(DrawingPlane {
+                anchor: self.revolved.center,
+                rotation_degrees: self.revolved.rotation_degrees,
+                depth: 0.0,
+            });
+            return;
+        }
         if self.use_cylinder {
             self.camera.distance = self
                 .camera
@@ -132,6 +153,7 @@ impl SketchApp {
         self.cylinder = scenes::lantern_cylinder();
         self.camera = scenes::lantern_camera();
         self.use_cylinder = true;
+        self.use_revolved = false;
         self.guide_visible = true;
         self.resume_ink = false;
         self.file = None;
@@ -278,6 +300,7 @@ impl SketchApp {
         self.use_cylinder = false;
         assert_eq!(self.doc.strokes, ink);
         self.use_cylinder = true;
+        self.use_revolved = false;
         let id = self.doc.strokes.last().unwrap().id;
         self.selected = HashSet::from([id]);
         self.duplicate_selected();

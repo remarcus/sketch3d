@@ -128,3 +128,9 @@ Document layers have stable IDs, names, visibility, and locking; each stroke sto
 Layer edits store before/after metadata and ID assignments rather than duplicate point arrays. The app finishes active strokes/transforms before applying layer changes and records them in normal edit/recovery history. Shared visible/editable helpers govern drawing, picking, selection snapshots, bounds, and export. Rendering skips hidden strokes; export retains locked visible ink and node layer metadata. Background export snapshots clone layer metadata alongside selected strokes. Empty-only deletion keeps membership valid and prevents implicit artwork loss.
 
 Layer order does not override depth testing. Groups and nested hierarchy are separate future work. Software verification supplements migration, protection, undo, and exporter parser tests with a graphical layer workflow.
+
+## Revolved-profile guides
+
+`revolved.rs` models a fixed-capacity ordered radius/height profile and its world transform. Each segment is a conical frustum (including cylindrical/linear degeneracies); double-precision quadratic roots are clipped by segment height and the nearest positive side hit is selected. Captured normal/circumferential tangent frames support existing brush orientation. Guides are workspace values and do not change the native document schema.
+
+Surface stabilization unwraps angle scaled by a fixed reference radius and maps height to meridian arc distance. It decodes filtered samples back onto the captured profile. Emission adds exact profile-knot crossings as well as angular subdivisions, so strokes and release tails cannot shortcut a bulge through a long chord. Existing plane/cylinder behavior is retained. `revolved_ui.rs` provides draggable/numeric editing, guide switching, the editable vase sample, and graphical checks; export reuses ordinary document strokes and the shared mesh dispatcher.

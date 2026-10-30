@@ -14,6 +14,7 @@ mod presets_ui;
 mod recovery;
 mod recovery_store;
 mod renderer;
+mod revolved;
 mod scenes;
 mod stabilizer;
 mod surface;

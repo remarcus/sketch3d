@@ -126,6 +126,7 @@ impl SketchApp {
         self.camera = Camera::default();
         self.guide = DrawingPlane::default();
         self.use_cylinder = false;
+        self.use_revolved = false;
         self.guide_visible = true;
         self.starter_scene = false;
         self.cylinder_example = false;

@@ -44,6 +44,7 @@ impl SketchApp {
         self.camera.distance = 8.5;
         self.guide = DrawingPlane::default();
         self.use_cylinder = false;
+        self.use_revolved = false;
         self.guide_visible = false;
         self.starter_scene = false;
         self.cylinder_example = false;

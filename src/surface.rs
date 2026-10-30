@@ -1,4 +1,5 @@
 //! Side-surface guides and pressure-preserving stabilization in surface coordinates.
+use crate::revolved::Revolved;
 use crate::{
     document::Point,
     geometry::{self, DrawingPlane, Vertex},
@@ -143,6 +144,7 @@ impl Cylinder {
 pub enum GuidePreview {
     Plane(DrawingPlane),
     Cylinder(Cylinder),
+    Revolved(Revolved),
     Hidden,
 }
 impl GuidePreview {
@@ -150,6 +152,7 @@ impl GuidePreview {
         match self {
             Self::Plane(plane) => geometry::grid(plane),
             Self::Cylinder(cylinder) => cylinder.wireframe(),
+            Self::Revolved(r) => r.wireframe(),
             Self::Hidden => Vec::new(),
         }
     }
@@ -159,12 +162,14 @@ pub enum Surface {
     #[default]
     Plane,
     Cylinder(Cylinder),
+    Revolved(Revolved),
 }
 impl Surface {
     fn encode(self, world: Vec3, previous: Option<Vec3>) -> Vec3 {
         match self {
             Self::Plane => world,
             Self::Cylinder(c) => c.parameter(world, previous),
+            Self::Revolved(r) => r.parameter(world, previous),
         }
     }
     fn decode(self, point: Point) -> Point {
@@ -173,6 +178,7 @@ impl Surface {
             position: match self {
                 Self::Plane => point.position,
                 Self::Cylinder(c) => c.decode(point.position),
+                Self::Revolved(r) => r.decode(point.position),
             },
             pressure: point.pressure,
         }
@@ -180,6 +186,9 @@ impl Surface {
     fn steps(self, start: Vec3, end: Vec3) -> usize {
         match self {
             Self::Plane => 1,
+            Self::Revolved(r) => (((end.x - start.x).abs() / r.reference_radius() / 0.035).ceil()
+                as usize)
+                .clamp(1, 128),
             Self::Cylinder(c) => {
                 (((end.x - start.x).abs() / c.radius / 0.035).ceil() as usize).clamp(1, 128)
             }
@@ -204,6 +213,10 @@ impl SurfaceStabilizer {
     /// A large discontinuous side change should become a new stroke, not a bridge.
     pub fn discontinuity(&self, world: Vec3) -> bool {
         match (self.surface, self.last_raw) {
+            (Surface::Revolved(r), Some(previous)) => {
+                (r.parameter(world, Some(previous)).x - previous.x).abs() / r.reference_radius()
+                    > std::f32::consts::FRAC_PI_2
+            }
             (Surface::Cylinder(c), Some(previous)) => {
                 (c.parameter(world, Some(previous)).x - previous.x).abs() / c.radius
                     > std::f32::consts::FRAC_PI_2
@@ -215,9 +228,22 @@ impl SurfaceStabilizer {
         let mut points = Vec::new();
         if let Some(previous) = self.last_filtered {
             let steps = self.surface.steps(previous.position, filtered.position);
-            for i in 1..=steps {
-                let t = i as f32 / steps as f32;
-                let p = if i == steps {
+            let mut fractions: Vec<f32> = (1..=steps).map(|i| i as f32 / steps as f32).collect();
+            if let Surface::Revolved(r) = self.surface {
+                let delta = filtered.position.y - previous.position.y;
+                if delta.abs() > 1e-8 {
+                    for knot in r.meridian_knots() {
+                        let t = (knot - previous.position.y) / delta;
+                        if t > 1e-6 && t < 1.0 - 1e-6 {
+                            fractions.push(t);
+                        }
+                    }
+                }
+            }
+            fractions.sort_by(f32::total_cmp);
+            fractions.dedup_by(|a, b| *a == *b);
+            for t in fractions {
+                let p = if t == 1.0 {
                     filtered
                 } else {
                     Point {
@@ -423,5 +449,47 @@ mod tilt_tests {
             let local = cylinder.to_local(point.position);
             assert!((local.x.hypot(local.z) - cylinder.radius).abs() < 1e-5);
         }
+    }
+}
+
+#[cfg(test)]
+mod revolved_tests {
+    use super::*;
+    #[test]
+    fn seam_release_and_profile_knots_remain_on_captured_surface() {
+        let r = Revolved::default();
+        let mut filter = SurfaceStabilizer::default();
+        filter.start(Surface::Revolved(r));
+        let mut out = filter.push(
+            Point {
+                position: r.point(PI - 0.1, -1.4),
+                pressure: 0.3,
+                tilt: Some(Vec3::Y),
+            },
+            0.1,
+        );
+        let target = r.point(-PI + 0.1, 1.4);
+        assert!(!filter.discontinuity(target));
+        out.extend(filter.push(
+            Point {
+                position: target,
+                pressure: 0.8,
+                tilt: Some(Vec3::Y),
+            },
+            0.1,
+        ));
+        out.extend(filter.finish());
+        assert!(out.last().unwrap().position.distance(target) < 1e-5);
+        for p in &out {
+            let q = r.to_local(p.position);
+            assert!((q.x.hypot(q.z) - r.radius_at(q.y)).abs() < 1e-5);
+            assert!(p.tilt.unwrap().is_finite());
+        }
+        for knot in &r.profile[1..r.count - 1] {
+            assert!(out
+                .iter()
+                .any(|p| (r.to_local(p.position).y - knot.height).abs() < 1e-5));
+        }
+        assert_eq!(out.last().unwrap().pressure, 0.8);
     }
 }
