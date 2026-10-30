@@ -1,3 +1,4 @@
+use crate::stabilizer::Stabilizer;
 use crate::{
     document::{Document, Point, Stroke},
     geometry::{intersect_plane, Camera, Plane},
@@ -33,6 +34,8 @@ pub struct SketchApp {
     color: [f32; 3],
     radius: f32,
     pressure_curve: f32,
+    stabilization: f32,
+    stabilizer: Stabilizer,
     eraser: bool,
     select_mode: bool,
     selected: HashSet<u64>,
@@ -91,6 +94,8 @@ impl SketchApp {
             color: [0.17, 0.82, 0.74],
             radius: 0.025,
             pressure_curve: 1.0,
+            stabilization: 0.35,
+            stabilizer: Stabilizer::default(),
             eraser: false,
             select_mode: false,
             selected: HashSet::new(),
@@ -125,6 +130,18 @@ impl SketchApp {
     }
     fn finish(&mut self) {
         self.commit_transform();
+        let tail = self.stabilizer.finish();
+        if let Some(id) = self.active {
+            if let Some(stroke) = self.doc.strokes.last_mut().filter(|s| s.id == id) {
+                for point in tail {
+                    if stroke.points.last().is_none_or(|p| {
+                        p.position != point.position || p.pressure != point.pressure
+                    }) {
+                        stroke.points.push(point);
+                    }
+                }
+            }
+        }
         if let Some(id) = self.active.take() {
             if let Some(s) = self.doc.strokes.last().filter(|s| s.id == id) {
                 self.undo.push(Edit::Add(s.clone()));
@@ -135,6 +152,7 @@ impl SketchApp {
     }
     fn cancel(&mut self) {
         self.cancel_transform();
+        self.stabilizer.reset();
         self.mouse_down = false;
         if let Some(id) = self.active.take() {
             self.doc.strokes.retain(|s| s.id != id);
@@ -168,15 +186,22 @@ impl SketchApp {
         let Some(id) = self.active else {
             return;
         };
+        let pressure = pressure.clamp(0.0, 1.0).powf(self.pressure_curve);
+        let clip = self.camera.matrix(rect.aspect_ratio()) * world.extend(1.0);
+        let world_per_pixel = 2.0 * 22.5_f32.to_radians().tan() * clip.w / rect.height();
+        let point = self.stabilizer.push(
+            Point {
+                position: world,
+                pressure,
+            },
+            self.stabilization * 24.0 * world_per_pixel,
+        );
         if let Some(stroke) = self.doc.strokes.last_mut().filter(|s| s.id == id) {
-            let pressure = pressure.clamp(0.0, 1.0).powf(self.pressure_curve);
             if stroke.points.last().is_none_or(|p| {
-                p.position.distance(world) > 0.001 || (p.pressure - pressure).abs() > 0.025
+                p.position.distance(point.position) > 0.001
+                    || (p.pressure - point.pressure).abs() > 0.025
             }) {
-                stroke.points.push(Point {
-                    position: world,
-                    pressure,
-                });
+                stroke.points.push(point);
             }
         }
     }
@@ -428,6 +453,7 @@ impl SketchApp {
                     .logarithmic(true),
             );
             ui.add(egui::Slider::new(&mut self.pressure_curve, 0.3..=2.5).text("Pressure"));
+            ui.add(egui::Slider::new(&mut self.stabilization, 0.0..=1.0).text("Stabilize").custom_formatter(|v, _| format!("{:.0}%", v*100.0))).on_hover_text("0% gives raw input. Higher values reduce jitter and let the line trail the pen. It catches up on release; pressure is preserved.");
         }
         ui.add_space(12.0);
         ui.separator();
@@ -989,6 +1015,7 @@ impl SketchApp {
         };
         match frame {
             1 => {
+                self.stabilization = 0.0;
                 self.camera.align(Plane::Front);
                 let start = rect.center() - egui::vec2(120.0, 0.0);
                 let mut events = vec![egui::Event::PointerButton {
@@ -1051,6 +1078,7 @@ impl SketchApp {
                 ctx.input_mut(|i| i.events.clear());
             }
             3 => self.verify_selection(ctx, rect),
+            4 => self.verify_stabilization(rect),
             5 => ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())),
             120 => panic!("Verification screenshot timed out"),
             _ => {}
@@ -1081,7 +1109,7 @@ impl SketchApp {
                 image::ColorType::Rgba8,
             )
             .unwrap();
-            let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
+            let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
             std::fs::write(
                 path.join("report.json"),
                 serde_json::to_string_pretty(&report).unwrap(),
@@ -1090,5 +1118,44 @@ impl SketchApp {
             self.dirty = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+    }
+}
+
+impl SketchApp {
+    fn verify_stabilization(&mut self, rect: Rect) {
+        let original = self.doc.strokes.clone();
+        let selection = self.selected.clone();
+        let steps = self.undo.len();
+        self.select_mode = false;
+        self.stabilization = 0.8;
+        let start = rect.center() - egui::vec2(100.0, 60.0);
+        let mut endpoint = start;
+        for i in 0..100 {
+            endpoint = start + egui::vec2(i as f32 * 2.0, if i % 2 == 0 { 3.0 } else { -3.0 });
+            self.add_point(endpoint, 0.6, rect, i == 0);
+        }
+        let ndc = glam::vec2(
+            (endpoint.x - rect.left()) / rect.width() * 2.0 - 1.0,
+            1.0 - (endpoint.y - rect.top()) / rect.height() * 2.0,
+        );
+        let (o, d) = self.camera.ray(ndc, rect.aspect_ratio());
+        let expected = intersect_plane(o, d, self.plane, self.offset).unwrap();
+        self.finish();
+        let stroke = self.doc.strokes.last().unwrap();
+        assert!(stroke.points.last().unwrap().position.distance(expected) < 0.00001);
+        assert_eq!(stroke.points.last().unwrap().pressure, 0.6);
+        assert_eq!(self.undo.len(), steps + 1);
+        self.undo();
+        assert_eq!(self.doc.strokes, original);
+        self.redo();
+        assert_eq!(self.doc.strokes.len(), original.len() + 1);
+        self.undo();
+        assert_eq!(self.doc.strokes, original);
+        self.selected = selection;
+        self.select_mode = true;
+        self.stabilization = 0.35;
+        assert!(self.save(false));
+        self.status =
+            "Selection, transforms, stabilization, endpoint, and undo checks passed.".into();
     }
 }

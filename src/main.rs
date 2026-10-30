@@ -7,6 +7,7 @@ mod geometry;
 mod gizmo;
 mod input;
 mod renderer;
+mod stabilizer;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

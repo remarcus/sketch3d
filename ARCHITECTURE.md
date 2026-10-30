@@ -42,3 +42,7 @@ The application uses independent code and its own UI and document format. It doe
 A gesture captures only selected strokes before the first drag. Every preview is recomputed from that original snapshot, preventing cumulative drift. Releasing the handle records one before/after edit; Escape or input focus loss restores the original snapshot without altering redo history. Group changes merge strokes in document order rather than repeatedly shifting the document vector. Undo and redo operate on the same edit representation as grouped delete and duplicate.
 
 Selection highlighting is render-only. The renderer invalidates changed strokes when positions/radii change even if their point count is unchanged, and when selection membership changes. Cached buffer capacity is retained for these updates. The current picking method uses projected centerline segments plus brush width and depth; it is not exact triangle-level picking. Gizmos and bounds are interface overlays and remain visible through scene geometry.
+
+## Stroke stabilization
+
+`stabilizer.rs` filters positions with a spatial trailing radius, while preserving pressure. The app converts the configured screen-space radius to world units at each contact sample. The filter stores its final raw target so finishing a stroke can append a short catch-up tail before the stroke enters history. Reset/cancel discards that target. Tests cover jitter reduction, exact endpoints, zero-strength passthrough, pressure, and cross-stroke isolation.

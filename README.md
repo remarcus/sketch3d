@@ -5,6 +5,7 @@ An open-source, native 3D sketching prototype inspired by the idea of drawing in
 ## Current prototype
 
 - Pressure-sensitive tube strokes stored as editable 3D control points.
+- Adjustable stroke stabilization with pressure preservation and endpoint catch-up.
 - Front, side, and ground drawing planes, with adjustable depth.
 - Orbit, pan, zoom, plane alignment, and camera reset.
 - Windows Ink pressure, tilt, barrel-button and eraser diagnostics, including coalesced pen history.
@@ -82,7 +83,7 @@ cargo build --release
 
 ## Boundaries and next steps
 
-This is an early prototype, not a production art application. Native tablet backends for macOS/Linux, Wintab, editable curved guides, partial erasing, surface snapping, glTF export, brush stabilization, and autosave remain future work. Active-stroke tessellation rebuilds that stroke on change; long strokes should move to incremental ring updates. GPU meshes currently use one draw call per stroke; batching and spatial indexing will matter for large documents. File dialogs and save/open currently run on the UI thread.
+This is an early prototype, not a production art application. Native tablet backends for macOS/Linux, Wintab, editable curved guides, partial erasing, surface snapping, glTF export and autosave remain future work. Active-stroke tessellation rebuilds that stroke on change; long strokes should move to incremental ring updates. GPU meshes currently use one draw call per stroke; batching and spatial indexing will matter for large documents. File dialogs and save/open currently run on the UI thread.
 
 The immediate hardware test is pressure and tilt on the Wacom, followed by the Kamvas with mixed-DPI monitors. Low-latency behavior must be measured on those devices; no latency or frame-rate guarantee is claimed.
 
@@ -113,3 +114,9 @@ Press **V**, then click a stroke. Shift-click adds or removes strokes. Picking c
 Each handle gesture uses the selection's bounding-box center as its pivot and becomes one undo step on release. Escape or focus loss cancels the active gesture and restores its original geometry. Controls continue to work with pen displays and screenless tablets; touch is not required. Scale is limited by the document's supported brush radius range (0.001–1 world units), and transforms cannot move points outside the document bounds.
 
 Selection is temporary interface state, so it is not saved in the drawing or restored by undo. Undo/redo restores geometry, widths, stroke order, and IDs. Transforming geometry does not change point counts; the renderer explicitly refreshes affected cached buffers.
+
+## Stroke stabilization
+
+The brush panel's **Stabilize** slider controls a spatial trailing filter. At 0%, positions are recorded directly. Higher values reduce hand jitter but let the line trail the pen; 35% is the initial setting. The radius is derived from screen pixels, so zooming does not radically change the feel. Pressure is passed through immediately rather than smoothed.
+
+On release, the stroke catches up to the final contact position with a short interpolated tail. Pen-up pressure is not treated as a new ink sample. The tail belongs to the same undo step as the stroke. Cancellation discards filter state, and a new stroke starts exactly at its first contact point. This is a position stabilizer, not curve fitting or a post-process on existing strokes.
