@@ -82,6 +82,8 @@ for case in manifest["cases"]:
         assert_close(shader.inputs["Base Color"].default_value, expected["color"]+[1], expected["name"]+" color")
         assert_close((shader.inputs["Metallic"].default_value,), (0,), "metalness")
         assert_close((shader.inputs["Roughness"].default_value,), (0.8,), "roughness")
+        if mat.use_backface_culling == expected.get("doubleSided", False):
+            raise AssertionError(f"Wrong sidedness for {expected['name']}")
         obj.data.calc_loop_triangles()
         triangles += len(obj.data.loop_triangles)
         vertices += len(obj.data.vertices)
@@ -93,5 +95,5 @@ for case in manifest["cases"]:
     if case["name"] == "house":
         render_house()
 
-(root / "blender-report.json").write_text(json.dumps({"passed":True,"blender":bpy.app.version_string,"checks":["mesh names and stroke IDs","Y-up to Z-up orientation","per-stroke dimensions and pressure-shaped bounds","original PBR color factors","triangle counts","finite geometry"],"cases":reports},indent=2),encoding="utf-8")
+(root / "blender-report.json").write_text(json.dumps({"passed":True,"blender":bpy.app.version_string,"checks":["mesh names and stroke IDs","Y-up to Z-up orientation","per-stroke dimensions and pressure-shaped bounds","original PBR color factors","ribbon double-sided material","triangle counts","finite geometry"],"cases":reports},indent=2),encoding="utf-8")
 print("Spatial Sketch GLB import verification passed", flush=True)

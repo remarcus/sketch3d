@@ -68,9 +68,10 @@ pub fn bounds(doc: &Document, selected: &HashSet<u64>) -> Option<(Vec3, Vec3)> {
     let mut min = Vec3::splat(f32::INFINITY);
     let mut max = Vec3::splat(f32::NEG_INFINITY);
     for stroke in doc.strokes.iter().filter(|s| selected.contains(&s.id)) {
+        let extent = Vec3::splat(crate::geometry::stroke_extent(stroke));
         for point in &stroke.points {
-            min = min.min(point.position);
-            max = max.max(point.position);
+            min = min.min(point.position - extent);
+            max = max.max(point.position + extent);
         }
     }
     min.is_finite().then_some((min, max))
@@ -93,6 +94,11 @@ pub fn transformed(
     let mut after = before.clone();
     for (_, stroke) in &mut after {
         stroke.radius *= scale;
+        stroke.brush.normal = rotation * stroke.brush.normal;
+        stroke.brush.tangent = rotation * stroke.brush.tangent;
+        if !stroke.brush.is_valid() {
+            return Err("Transform would invalidate brush orientation");
+        }
         if !(0.001..=1.0).contains(&stroke.radius) {
             return Err("Scale would exceed brush radius limits");
         }
@@ -109,12 +115,13 @@ pub fn transformed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::Point;
+    use crate::document::{Brush, BrushKind, Point};
     fn stroke(id: u64, x: f32) -> Stroke {
         Stroke {
             id,
             color: [0.4, 0.5, 0.6],
             radius: 0.02,
+            brush: Brush::default(),
             points: vec![Point {
                 position: Vec3::new(x, 0.0, 0.0),
                 pressure: 0.3,
@@ -199,5 +206,82 @@ mod tests {
         )
         .is_err());
         assert_eq!(before, original);
+    }
+    #[test]
+    fn brush_shape_orientation_and_undo_survive_transforms() {
+        for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
+            let mut s = stroke(1, 1.0);
+            s.brush = Brush {
+                kind,
+                thickness: 0.3,
+                angle_degrees: 35.0,
+                normal: Vec3::Z,
+                tangent: Vec3::Y,
+            };
+            let mut doc = Document {
+                version: 2,
+                strokes: vec![s],
+            };
+            let original = doc.strokes.clone();
+            let before = snapshot(&doc, &HashSet::from([1]));
+            let rotation = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+            let after = transformed(&before, Vec3::ZERO, Vec3::Y, rotation, 2.0).unwrap();
+            assert_eq!(after[0].1.brush.kind, kind);
+            assert_eq!(after[0].1.brush.thickness, 0.3);
+            assert_eq!(after[0].1.brush.angle_degrees, 35.0);
+            assert!(after[0].1.brush.normal.distance(-Vec3::Y) < 0.0001);
+            assert!(after[0].1.brush.tangent.distance(Vec3::Z) < 0.0001);
+            assert_eq!(after[0].1.radius, 0.04);
+            let edit = Edit::Change { before, after };
+            edit.apply(&mut doc, true);
+            let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+            assert_eq!(loaded.strokes, doc.strokes);
+            edit.apply(&mut doc, false);
+            assert_eq!(doc.strokes, original);
+            edit.apply(&mut doc, true);
+            assert_eq!(doc.strokes, loaded.strokes);
+        }
+    }
+    #[test]
+    fn bounds_include_brush_cross_sections() {
+        let mut s = stroke(1, 1.0);
+        s.brush.kind = BrushKind::Chisel;
+        s.brush.thickness = 1.0;
+        let doc = Document {
+            version: 2,
+            strokes: vec![s],
+        };
+        let (min, max) = bounds(&doc, &HashSet::from([1])).unwrap();
+        // A chisel dot has a square footprint and thickness. Bounds cover its
+        // three-dimensional corners even at low pressure and any orientation.
+        let corner_radius = 0.02 * 3.0f32.sqrt();
+        assert!((min.x - (1.0 - corner_radius)).abs() < 0.00001);
+        assert!((max.z - corner_radius).abs() < 0.00001);
+        assert_eq!((min + max) * 0.5, Vec3::X);
+        assert!(bounds(&doc, &HashSet::from([999])).is_none());
+        for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
+            for angle in [0.0, 0.7, 1.5] {
+                let rotation = Quat::from_euler(glam::EulerRot::XYZ, angle, 0.6, -0.4);
+                let mut dot = stroke(1, 1.0);
+                dot.points[0].pressure = 1.0;
+                dot.brush = Brush {
+                    kind,
+                    thickness: 1.0,
+                    angle_degrees: 37.0,
+                    normal: rotation * Vec3::Z,
+                    tangent: rotation * Vec3::X,
+                };
+                let sample = Document {
+                    version: 2,
+                    strokes: vec![dot],
+                };
+                let (low, high) = bounds(&sample, &HashSet::from([1])).unwrap();
+                for vertex in crate::geometry::stroke_mesh(&sample.strokes[0]) {
+                    let position = Vec3::from(vertex.position);
+                    assert!(position.cmpge(low - Vec3::splat(0.000001)).all());
+                    assert!(position.cmple(high + Vec3::splat(0.000001)).all());
+                }
+            }
+        }
     }
 }

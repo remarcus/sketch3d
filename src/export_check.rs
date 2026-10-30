@@ -1,6 +1,6 @@
 //! Reproducible export fixtures for independent glTF and Blender verification.
 use crate::{
-    document::{Document, Point, Stroke},
+    document::{Brush, BrushKind, Document, Point, Stroke},
     export, geometry, scenes,
 };
 use glam::Vec3;
@@ -9,12 +9,13 @@ use std::collections::HashSet;
 
 pub fn pressure_fixture() -> Document {
     Document {
-        version: 1,
+        version: 2,
         strokes: vec![
             Stroke {
                 id: 1001,
                 color: [0.17, 0.82, 0.74],
                 radius: 0.12,
+                brush: Default::default(),
                 points: vec![
                     Point {
                         position: Vec3::ZERO,
@@ -34,6 +35,7 @@ pub fn pressure_fixture() -> Document {
                 id: 1002,
                 color: [0.94, 0.35, 0.14],
                 radius: 0.08,
+                brush: Default::default(),
                 points: vec![Point {
                     position: Vec3::new(1.5, 0.25, 0.75),
                     pressure: 0.7,
@@ -43,6 +45,7 @@ pub fn pressure_fixture() -> Document {
                 id: 1003,
                 color: [0.35, 0.45, 0.9],
                 radius: 0.045,
+                brush: Default::default(),
                 points: vec![
                     Point {
                         position: Vec3::new(0.0, 2.0, -1.0),
@@ -57,6 +60,60 @@ pub fn pressure_fixture() -> Document {
         ],
     }
 }
+/// A small pressure-shaped sampler that also exercises double-sided materials and dots.
+pub fn brush_fixture() -> Document {
+    let mut doc = Document::default();
+    for (row, kind) in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel]
+        .into_iter()
+        .enumerate()
+    {
+        let brush = Brush {
+            kind,
+            thickness: 0.25,
+            angle_degrees: if kind == BrushKind::Chisel { 35.0 } else { 0.0 },
+            normal: Vec3::Z,
+            tangent: Vec3::X,
+        };
+        let color = [[0.17, 0.82, 0.74], [0.94, 0.35, 0.14], [0.35, 0.45, 0.9]][row];
+        let y = 1.2 - row as f32 * 1.2;
+        doc.strokes.push(Stroke {
+            id: 2001 + row as u64 * 2,
+            color,
+            radius: 0.16,
+            brush,
+            points: (0..=40)
+                .map(|step| {
+                    let t = step as f32 / 40.0;
+                    Point {
+                        position: Vec3::new(
+                            -2.0 + 4.0 * t,
+                            y + (t * std::f32::consts::TAU).sin() * 0.24,
+                            0.0,
+                        ),
+                        pressure: 0.1 + 0.9 * t,
+                    }
+                })
+                .collect(),
+        });
+        let dot_rotation =
+            glam::Quat::from_rotation_arc(Vec3::Z, Vec3::new(0.3, 0.2, 1.0).normalize());
+        doc.strokes.push(Stroke {
+            id: 2002 + row as u64 * 2,
+            color,
+            radius: 0.16,
+            brush: Brush {
+                normal: dot_rotation * Vec3::Z,
+                tangent: dot_rotation * Vec3::X,
+                ..brush
+            },
+            points: vec![Point {
+                position: Vec3::new(2.6, y, 0.0),
+                pressure: 1.0,
+            }],
+        });
+    }
+    doc
+}
 pub fn run() -> Result<(), String> {
     let directory = std::env::current_dir()
         .map_err(|e| e.to_string())?
@@ -67,6 +124,7 @@ pub fn run() -> Result<(), String> {
         ("house", scenes::japanese_house(), None),
         ("lantern", scenes::cylindrical_lantern(), None),
         ("pressure", pressure.clone(), None),
+        ("brushes", brush_fixture(), None),
         ("selection", pressure, Some(HashSet::from([1002]))),
     ];
     let mut cases = Vec::new();
@@ -81,7 +139,7 @@ pub fn run() -> Result<(), String> {
         for stroke in doc.strokes.iter().filter(|s| {
             !s.points.is_empty() && selected.as_ref().is_none_or(|ids| ids.contains(&s.id))
         }) {
-            let geometry = geometry::tube(stroke);
+            let geometry = geometry::stroke_mesh(stroke);
             let min = geometry.iter().fold(Vec3::splat(f32::INFINITY), |min, v| {
                 min.min(Vec3::from(v.position))
             });
@@ -90,7 +148,7 @@ pub fn run() -> Result<(), String> {
                 .fold(Vec3::splat(f32::NEG_INFINITY), |max, v| {
                     max.max(Vec3::from(v.position))
                 });
-            strokes.push(json!({"name":format!("Stroke_{}",stroke.id),"id":stroke.id.to_string(),"color":stroke.color,"min":min.to_array(),"max":max.to_array()}));
+            strokes.push(json!({"name":format!("Stroke_{}",stroke.id),"id":stroke.id.to_string(),"color":stroke.color,"doubleSided":stroke.brush.kind == BrushKind::Ribbon,"min":min.to_array(),"max":max.to_array()}));
         }
         cases.push(json!({"name":name,"file":file,"summary":summary,"strokes":strokes}));
     }

@@ -194,7 +194,7 @@ impl SceneRenderer {
             {
                 continue;
             }
-            let mut vertices = geometry::tube(stroke);
+            let mut vertices = geometry::stroke_mesh(stroke);
             if self.selected.contains(&stroke.id) {
                 for vertex in &mut vertices {
                     vertex.color = [1.0, 0.67, 0.18];

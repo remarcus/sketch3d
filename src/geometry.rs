@@ -1,4 +1,4 @@
-use crate::document::Stroke;
+use crate::document::{BrushKind, Stroke};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
 #[repr(C)]
@@ -246,6 +246,260 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
     }
     out
 }
+/// Conservative brush radius, shared by selection and geometry bounds.
+pub fn stroke_extent(stroke: &Stroke) -> f32 {
+    let dot = !stroke.points.is_empty()
+        && stroke
+            .points
+            .windows(2)
+            .all(|pair| pair[0].position.distance_squared(pair[1].position) <= 1e-12);
+    match stroke.brush.kind {
+        BrushKind::Chisel => {
+            stroke.radius * (if dot { 2.0 } else { 1.0 } + stroke.brush.thickness.powi(2)).sqrt()
+        }
+        BrushKind::Ribbon if dot => stroke.radius * std::f32::consts::SQRT_2,
+        BrushKind::Round | BrushKind::Ribbon => stroke.radius,
+    }
+}
+
+/// All ink is built in document space. Camera changes cannot rotate a brush mark.
+pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
+    if stroke.brush.kind != BrushKind::Round {
+        return flat_brush(stroke);
+    }
+    // Retain the original round brush's positions and pressure profile. Give caps
+    // their true axial normals and fix the legacy inward side winding here.
+    let mut mesh = tube(stroke);
+    if stroke.points.len() > 1 {
+        let sides = (stroke.points.len() - 1) * 48;
+        let first = (stroke.points[1].position - stroke.points[0].position)
+            .try_normalize()
+            .unwrap_or(Vec3::Y);
+        let end = stroke.points.len() - 1;
+        let last = (stroke.points[end].position - stroke.points[end - 1].position)
+            .try_normalize()
+            .unwrap_or(Vec3::Y);
+        for (i, vertex) in mesh[sides..].iter_mut().enumerate() {
+            vertex.normal = if i < 24 { -first } else { last }.to_array();
+        }
+    }
+    for triangle in mesh.as_chunks_mut::<3>().0 {
+        let a = Vec3::from(triangle[0].position);
+        let b = Vec3::from(triangle[1].position);
+        let c = Vec3::from(triangle[2].position);
+        let normal: Vec3 = triangle.iter().map(|v| Vec3::from(v.normal)).sum();
+        if (b - a).cross(c - a).dot(normal) < 0.0 {
+            triangle.swap(1, 2);
+        }
+    }
+    mesh
+}
+
+#[derive(Clone, Copy)]
+struct BrushFrame {
+    center: Vec3,
+    width: Vec3,
+    normal: Vec3,
+    tangent: Vec3,
+    radius: f32,
+}
+
+fn perpendicular(normal: Vec3) -> Vec3 {
+    let helper = if normal.x.abs() < 0.8 {
+        Vec3::X
+    } else {
+        Vec3::Y
+    };
+    (helper - normal * helper.dot(normal)).normalize()
+}
+
+fn frame_direction(vector: Vec3) -> Option<Vec3> {
+    // Round-off after a rigid transform must not turn an almost-zero
+    // projection into a new, arbitrary frame direction.
+    (vector.length_squared() > 1e-8).then(|| vector.normalize())
+}
+
+fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
+    let mut points: Vec<crate::document::Point> = Vec::with_capacity(stroke.points.len());
+    for point in &stroke.points {
+        if let Some(last) = points.last_mut() {
+            if last.position.distance_squared(point.position) <= 1e-12 {
+                // Repeated pressure samples do not create zero-length mesh strips.
+                *last = *point;
+                continue;
+            }
+        }
+        points.push(*point);
+    }
+    let reference = stroke.brush.normal.try_normalize().unwrap_or(Vec3::Z);
+    let mut frames: Vec<BrushFrame> = Vec::with_capacity(points.len());
+    for (i, point) in points.iter().enumerate() {
+        let before = points[i.saturating_sub(1)].position;
+        let after = points[(i + 1).min(points.len() - 1)].position;
+        let tangent = (after - before)
+            .try_normalize()
+            .or_else(|| (point.position - before).try_normalize())
+            .or_else(|| (after - point.position).try_normalize())
+            .unwrap_or(stroke.brush.tangent);
+        let width = if let Some(previous) = frames.last() {
+            // Projection preserves the width sign even at an exact reversal.
+            frame_direction(previous.width - tangent * previous.width.dot(tangent)).unwrap_or_else(
+                || {
+                    let candidate = previous.normal.cross(tangent).normalize_or_zero();
+                    if candidate.length_squared() > 0.5 {
+                        if candidate.dot(previous.width) < 0.0 {
+                            -candidate
+                        } else {
+                            candidate
+                        }
+                    } else {
+                        perpendicular(tangent)
+                    }
+                },
+            )
+        } else {
+            let normal = frame_direction(reference - tangent * reference.dot(tangent))
+                .unwrap_or_else(|| {
+                    frame_direction(
+                        stroke.brush.tangent - tangent * stroke.brush.tangent.dot(tangent),
+                    )
+                    .unwrap_or_else(|| perpendicular(tangent))
+                });
+            let width = normal.cross(tangent).normalize();
+            Quat::from_axis_angle(tangent, stroke.brush.angle_degrees.to_radians()) * width
+        };
+        frames.push(BrushFrame {
+            center: point.position,
+            width,
+            normal: tangent.cross(width).normalize(),
+            tangent,
+            radius: stroke.radius * (0.12 + 0.88 * point.pressure),
+        });
+    }
+    frames
+}
+
+fn flat_triangle(out: &mut Vec<Vertex>, mut positions: [Vec3; 3], outward: Vec3, color: [f32; 3]) {
+    let cross = (positions[1] - positions[0]).cross(positions[2] - positions[0]);
+    let Some(mut normal) = cross.try_normalize() else {
+        return;
+    };
+    if normal.dot(outward) < 0.0 {
+        positions.swap(1, 2);
+        normal = -normal;
+    }
+    out.extend(positions.map(|position| Vertex {
+        position: position.to_array(),
+        normal: normal.to_array(),
+        color,
+    }));
+}
+
+fn flat_quad(out: &mut Vec<Vertex>, positions: [Vec3; 4], outward: Vec3, color: [f32; 3]) {
+    flat_triangle(
+        out,
+        [positions[0], positions[1], positions[2]],
+        outward,
+        color,
+    );
+    flat_triangle(
+        out,
+        [positions[0], positions[2], positions[3]],
+        outward,
+        color,
+    );
+}
+
+fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
+    let frames = brush_frames(stroke);
+    let mut out = Vec::new();
+    let Some(first) = frames.first() else {
+        return out;
+    };
+    if frames.len() == 1 {
+        // A tap has a finite footprint in the guide plane, even for a thin ribbon.
+        let f = first;
+        let a = f.width * f.radius;
+        let b = f.tangent * f.radius;
+        let h = if stroke.brush.kind == BrushKind::Chisel {
+            f.normal * f.radius * stroke.brush.thickness
+        } else {
+            Vec3::ZERO
+        };
+        let corners = [
+            f.center + a + b,
+            f.center - a + b,
+            f.center - a - b,
+            f.center + a - b,
+        ];
+        flat_quad(&mut out, corners.map(|p| p + h), f.normal, stroke.color);
+        if stroke.brush.kind == BrushKind::Chisel {
+            flat_quad(&mut out, corners.map(|p| p - h), -f.normal, stroke.color);
+            for j in 0..4 {
+                let k = (j + 1) % 4;
+                let outward = (corners[j] + corners[k]) * 0.5 - f.center;
+                flat_quad(
+                    &mut out,
+                    [
+                        corners[j] + h,
+                        corners[k] + h,
+                        corners[k] - h,
+                        corners[j] - h,
+                    ],
+                    outward,
+                    stroke.color,
+                );
+            }
+        }
+        return out;
+    }
+    if stroke.brush.kind == BrushKind::Ribbon {
+        for pair in frames.windows(2) {
+            let [a, b] = [pair[0], pair[1]];
+            flat_quad(
+                &mut out,
+                [
+                    a.center - a.width * a.radius,
+                    a.center + a.width * a.radius,
+                    b.center + b.width * b.radius,
+                    b.center - b.width * b.radius,
+                ],
+                a.normal + b.normal,
+                stroke.color,
+            );
+        }
+    } else {
+        let ring = |f: BrushFrame| {
+            let a = f.width * f.radius;
+            let b = f.normal * f.radius * stroke.brush.thickness;
+            [
+                f.center + a + b,
+                f.center - a + b,
+                f.center - a - b,
+                f.center + a - b,
+            ]
+        };
+        for pair in frames.windows(2) {
+            let [a, b] = [pair[0], pair[1]];
+            let [ar, br] = [ring(a), ring(b)];
+            for j in 0..4 {
+                let k = (j + 1) % 4;
+                let outward = (ar[j] + ar[k] - a.center * 2.0) + (br[j] + br[k] - b.center * 2.0);
+                flat_quad(
+                    &mut out,
+                    [ar[j], br[j], br[k], ar[k]],
+                    outward,
+                    stroke.color,
+                );
+            }
+        }
+        flat_quad(&mut out, ring(*first), -first.tangent, stroke.color);
+        let last = frames.last().unwrap();
+        flat_quad(&mut out, ring(*last), last.tangent, stroke.color);
+    }
+    out
+}
+
 pub fn grid(plane: DrawingPlane) -> Vec<Vertex> {
     let (u, v, _) = plane.basis();
     let origin = plane.origin();
@@ -293,6 +547,7 @@ mod tests {
             id: 1,
             color: [0.5; 3],
             radius: 0.1,
+            brush: Default::default(),
             points: vec![
                 Point {
                     position: Vec3::ZERO,
@@ -331,6 +586,7 @@ mod curve_regression {
             id: 1,
             color: [0.5; 3],
             radius: 0.03,
+            brush: Default::default(),
             points,
         };
         let mesh = tube(&stroke);
@@ -403,5 +659,152 @@ mod work_plane_tests {
         let (u, v, n) = plane.basis();
         let (right, up, normal) = camera.basis();
         assert!(u.dot(right) > 0.9999 && v.dot(up) > 0.9999 && n.dot(normal) > 0.9999);
+    }
+}
+
+#[cfg(test)]
+mod brush_tests {
+    use super::*;
+    use crate::document::{Brush, Point};
+
+    fn mark(kind: BrushKind, positions: &[Vec3]) -> Stroke {
+        Stroke {
+            id: 7,
+            color: [0.3, 0.6, 0.9],
+            radius: 0.1,
+            brush: Brush {
+                kind,
+                ..Default::default()
+            },
+            points: positions
+                .iter()
+                .map(|&position| Point {
+                    position,
+                    pressure: 1.0,
+                })
+                .collect(),
+        }
+    }
+
+    fn valid(mesh: &[Vertex]) {
+        assert!(!mesh.is_empty());
+        for triangle in mesh.as_chunks::<3>().0 {
+            let [a, b, c] = [triangle[0], triangle[1], triangle[2]].map(|v| Vec3::from(v.position));
+            let face = (b - a).cross(c - a);
+            for v in triangle {
+                assert!(Vec3::from(v.position).is_finite());
+                let n = Vec3::from(v.normal);
+                assert!(n.is_finite() && (n.length() - 1.0).abs() < 1e-5);
+            }
+            let mean_normal: Vec3 = triangle.iter().map(|v| Vec3::from(v.normal)).sum();
+            assert!(
+                face.dot(mean_normal) > -1e-7,
+                "triangle winding must face along its mean shading normal"
+            );
+        }
+    }
+
+    #[test]
+    fn all_brushes_have_finite_dots_duplicates_and_reversal_meshes() {
+        for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
+            for positions in [
+                vec![Vec3::ZERO],
+                vec![Vec3::ZERO; 3],
+                vec![Vec3::ZERO, Vec3::X, Vec3::ZERO, -Vec3::X],
+            ] {
+                valid(&stroke_mesh(&mark(kind, &positions)));
+            }
+        }
+    }
+
+    #[test]
+    fn flat_cross_sections_keep_pressure_thickness_and_manual_angle() {
+        let mut stroke = mark(BrushKind::Chisel, &[Vec3::ZERO, Vec3::X]);
+        stroke.brush.thickness = 0.25;
+        let mesh = stroke_mesh(&stroke);
+        valid(&mesh);
+        let max_y = mesh.iter().map(|v| v.position[1].abs()).fold(0.0, f32::max);
+        let max_z = mesh.iter().map(|v| v.position[2].abs()).fold(0.0, f32::max);
+        assert!((max_y - 0.1).abs() < 1e-6 && (max_z - 0.025).abs() < 1e-6);
+        stroke.brush.angle_degrees = 90.0;
+        let mesh = stroke_mesh(&stroke);
+        let rotated_y = mesh.iter().map(|v| v.position[1].abs()).fold(0.0, f32::max);
+        let rotated_z = mesh.iter().map(|v| v.position[2].abs()).fold(0.0, f32::max);
+        assert!((rotated_y - max_z).abs() < 1e-6 && (rotated_z - max_y).abs() < 1e-6);
+        for p in &mut stroke.points {
+            p.pressure = 0.0;
+        }
+        let frames = brush_frames(&stroke);
+        assert!((frames[0].radius - 0.012).abs() < 1e-6);
+        assert!(stroke_extent(&stroke) > stroke.radius);
+    }
+
+    #[test]
+    fn transported_flat_widths_stay_continuous_on_tight_3d_curves() {
+        let positions: Vec<Vec3> = (0..200)
+            .map(|i| {
+                let t = i as f32 * 0.04;
+                Vec3::new(t.cos(), t.sin(), t * 0.1)
+            })
+            .collect();
+        let stroke = mark(BrushKind::Ribbon, &positions);
+        let frames = brush_frames(&stroke);
+        for pair in frames.windows(2) {
+            assert!(pair[0].width.dot(pair[1].width) > 0.99);
+            assert!(pair[0].normal.dot(pair[1].normal) > 0.99);
+        }
+        valid(&stroke_mesh(&stroke));
+    }
+
+    #[test]
+    fn frozen_frames_transform_with_both_dots_and_paths() {
+        let rotation = Quat::from_euler(glam::EulerRot::XYZ, 0.6, -0.8, 1.2);
+        let translation = Vec3::new(2.0, -0.5, 1.0);
+        for kind in [BrushKind::Ribbon, BrushKind::Chisel] {
+            for positions in [
+                vec![Vec3::ZERO],
+                vec![Vec3::ZERO, Vec3::X, Vec3::new(1.2, 0.8, 0.3)],
+                vec![Vec3::ZERO, Vec3::Z],
+            ] {
+                let mut stroke = mark(kind, &positions);
+                stroke.brush.angle_degrees = 32.0;
+                let before = stroke_mesh(&stroke);
+                for p in &mut stroke.points {
+                    p.position = rotation * p.position + translation;
+                }
+                stroke.brush.normal = rotation * stroke.brush.normal;
+                stroke.brush.tangent = rotation * stroke.brush.tangent;
+                let after = stroke_mesh(&stroke);
+                assert_eq!(before.len(), after.len());
+                for (a, b) in before.iter().zip(&after) {
+                    assert!(
+                        (rotation * Vec3::from(a.position) + translation)
+                            .distance(Vec3::from(b.position))
+                            < 1e-5
+                    );
+                    assert!(
+                        (rotation * Vec3::from(a.normal)).distance(Vec3::from(b.normal)) < 1e-5
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn round_dispatch_preserves_legacy_positions_and_repairs_caps() {
+        let stroke = mark(BrushKind::Round, &[Vec3::ZERO, Vec3::X]);
+        let old = tube(&stroke);
+        let new = stroke_mesh(&stroke);
+        for (a, b) in old.as_chunks::<3>().0.iter().zip(new.as_chunks::<3>().0) {
+            for vertex in a {
+                assert!(b.iter().any(|v| v.position == vertex.position));
+            }
+        }
+        for v in &new[48..72] {
+            assert_eq!(v.normal, (-Vec3::X).to_array());
+        }
+        for v in &new[72..] {
+            assert_eq!(v.normal, Vec3::X.to_array());
+        }
+        valid(&new);
     }
 }

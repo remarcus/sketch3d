@@ -96,10 +96,11 @@ pub fn pick(doc: &Document, camera: &Camera, rect: Rect, pos: Pos2) -> Option<u6
     let matrix = camera.matrix(rect.aspect_ratio());
     let mut best: Option<(f32, f32, u64)> = None;
     for stroke in &doc.strokes {
+        let extent = crate::geometry::stroke_extent(stroke);
         let consider = |point: Vec3| -> Option<(Pos2, f32, f32)> {
             let (p, z) = project(camera, rect, point)?;
             let w = (matrix * point.extend(1.0)).w;
-            let width = stroke.radius * rect.height() / (2.0 * 22.5f32.to_radians().tan() * w);
+            let width = extent * rect.height() / (2.0 * 22.5f32.to_radians().tan() * w);
             Some((p, z, width))
         };
         let mut hit = |a: (Pos2, f32, f32), b: (Pos2, f32, f32)| {
@@ -302,6 +303,7 @@ mod tests {
             id,
             color: [0.5; 3],
             radius: 0.02,
+            brush: Default::default(),
             points: vec![
                 Point {
                     position: Vec3::new(-1.0, 0.0, z),

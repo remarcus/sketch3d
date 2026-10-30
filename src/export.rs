@@ -1,6 +1,6 @@
 //! Self-contained glTF 2.0 binary export from semantic stroke data only.
 use crate::{
-    document::{Document, Stroke},
+    document::{BrushKind, Document, Stroke},
     geometry,
 };
 use glam::Vec3;
@@ -33,7 +33,8 @@ struct Mesh {
 }
 
 fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
-    if !stroke.radius.is_finite()
+    if !stroke.brush.is_valid()
+        || !stroke.radius.is_finite()
         || !(0.001..=1.0).contains(&stroke.radius)
         || stroke
             .color
@@ -63,7 +64,7 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
             stroke.id
         ));
     }
-    let source = geometry::tube(stroke);
+    let source = geometry::stroke_mesh(stroke);
     let mut mesh = Mesh {
         vertices: Vec::new(),
         indices: Vec::new(),
@@ -71,9 +72,17 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
         max: Vec3::splat(f32::NEG_INFINITY),
     };
     let mut unique = HashMap::<[u32; 6], u32>::new();
-    let sides = stroke.points.len().saturating_sub(1) * 48;
-    for (triangle_index, triangle) in source.as_chunks::<3>().0.iter().enumerate() {
+    for triangle in source.as_chunks::<3>().0 {
         let mut triangle = *triangle;
+        if triangle
+            .iter()
+            .any(|v| !Vec3::from(v.position).is_finite() || !Vec3::from(v.normal).is_finite())
+        {
+            return Err(format!(
+                "Stroke {} generated non-finite geometry",
+                stroke.id
+            ));
+        }
         let a = Vec3::from(triangle[0].position);
         let b = Vec3::from(triangle[1].position);
         let c = Vec3::from(triangle[2].position);
@@ -81,25 +90,7 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
         if face.length_squared() < 1e-18 {
             continue;
         }
-        let cap = stroke.points.len() > 1 && triangle_index * 3 >= sides;
-        let expected = if cap {
-            let direction = if triangle_index * 3 < sides + 24 {
-                -(stroke.points[1].position - stroke.points[0].position)
-                    .try_normalize()
-                    .unwrap_or(Vec3::Y)
-            } else {
-                let n = stroke.points.len();
-                (stroke.points[n - 1].position - stroke.points[n - 2].position)
-                    .try_normalize()
-                    .unwrap_or(Vec3::Y)
-            };
-            for v in &mut triangle {
-                v.normal = direction.to_array();
-            }
-            direction
-        } else {
-            triangle.iter().map(|v| Vec3::from(v.normal)).sum::<Vec3>()
-        };
+        let expected = triangle.iter().map(|v| Vec3::from(v.normal)).sum::<Vec3>();
         // The viewport is two-sided. Export consistent outward winding for PBR tools.
         if face.dot(expected) < 0.0 {
             triangle.swap(1, 2);
@@ -128,7 +119,7 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
     Ok(mesh)
 }
 pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<EncodedGlb, String> {
-    if doc.version != 1 {
+    if !matches!(doc.version, 1 | 2) {
         return Err("Unsupported source document version".into());
     }
     let mut binary = Vec::new();
@@ -189,12 +180,13 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         views.push(json!({"buffer":0,"byteOffset":index_offset,"byteLength":mesh.indices.len()*4,"target":34963}));
         let indices = accessors.len();
         accessors.push(json!({"bufferView":index_view,"componentType":5125,"count":mesh.indices.len(),"type":"SCALAR"}));
-        let key = stroke.color.map(f32::to_bits);
+        let double_sided = stroke.brush.kind == BrushKind::Ribbon;
+        let key = (stroke.color.map(f32::to_bits), double_sided);
         let material = if let Some(index) = colors.get(&key) {
             *index
         } else {
             let index = materials.len();
-            materials.push(json!({"name":format!("Ink {}",index+1),"pbrMetallicRoughness":{"baseColorFactor":[stroke.color[0],stroke.color[1],stroke.color[2],1.0],"metallicFactor":0.0,"roughnessFactor":0.8},"alphaMode":"OPAQUE","doubleSided":false}));
+            materials.push(json!({"name":format!("Ink {}",index+1),"pbrMetallicRoughness":{"baseColorFactor":[stroke.color[0],stroke.color[1],stroke.color[2],1.0],"metallicFactor":0.0,"roughnessFactor":0.8},"alphaMode":"OPAQUE","doubleSided":double_sided}));
             colors.insert(key, index);
             index
         };
@@ -210,7 +202,7 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         return Err("No drawable strokes to export".into());
     }
     let scene_nodes: Vec<usize> = (0..nodes.len()).collect();
-    let root = json!({"asset":{"version":"2.0","generator":concat!("Spatial Sketch ",env!("CARGO_PKG_VERSION"))},"scene":0,"scenes":[{"name":"Spatial Sketch drawing","nodes":scene_nodes}],"nodes":nodes,"meshes":meshes,"materials":materials,"accessors":accessors,"bufferViews":views,"buffers":[{"byteLength":binary.len()}],"extras":{"sourceFormat":"Spatial Sketch version 1","unitInMeters":1.0,"axes":"+X right, +Y up, +Z front","scope":if selected.is_some(){"selection"}else{"all strokes"}}});
+    let root = json!({"asset":{"version":"2.0","generator":concat!("Spatial Sketch ",env!("CARGO_PKG_VERSION"))},"scene":0,"scenes":[{"name":"Spatial Sketch drawing","nodes":scene_nodes}],"nodes":nodes,"meshes":meshes,"materials":materials,"accessors":accessors,"bufferViews":views,"buffers":[{"byteLength":binary.len()}],"extras":{"sourceFormat":format!("Spatial Sketch version {}",doc.version),"unitInMeters":1.0,"axes":"+X right, +Y up, +Z front","scope":if selected.is_some(){"selection"}else{"all strokes"}}});
     let mut json =
         serde_json::to_vec(&root).map_err(|e| format!("Could not encode export metadata: {e}"))?;
     while !json.len().is_multiple_of(4) {
@@ -284,6 +276,7 @@ mod tests {
             id,
             color,
             radius: 0.1,
+            brush: Default::default(),
             points: vec![
                 Point {
                     position: Vec3::ZERO,
@@ -340,6 +333,44 @@ mod tests {
                 face.dot(normals[*a as usize] + normals[*b as usize] + normals[*c as usize]) > 0.0
             );
         }
+    }
+    #[test]
+    fn all_brush_types_export_with_shape_normals_and_distinct_sidedness() {
+        let mut doc = crate::export_check::brush_fixture();
+        // Equal colors must still have different materials when their sidedness differs.
+        for stroke in &mut doc.strokes {
+            stroke.color = [0.4; 3];
+        }
+        let source = doc.strokes.clone();
+        let exported = encode(&doc, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
+        assert_eq!(exported.summary.strokes, 6);
+        assert_eq!(gltf.materials().count(), 2);
+        for (mesh, stroke) in gltf.meshes().zip(&doc.strokes) {
+            let primitive = mesh.primitives().next().unwrap();
+            assert_eq!(
+                primitive.material().double_sided(),
+                stroke.brush.kind == BrushKind::Ribbon
+            );
+            let reader = primitive.reader(|_| gltf.blob.as_deref());
+            let positions: Vec<Vec3> = reader.read_positions().unwrap().map(Vec3::from).collect();
+            let normals: Vec<Vec3> = reader.read_normals().unwrap().map(Vec3::from).collect();
+            let indices: Vec<u32> = reader.read_indices().unwrap().into_u32().collect();
+            assert!(normals
+                .iter()
+                .all(|n| n.is_finite() && (n.length() - 1.0).abs() < 0.00001));
+            for triangle in indices.as_chunks::<3>().0 {
+                let [a, b, c] = triangle.map(|i| i as usize);
+                let face = (positions[b] - positions[a]).cross(positions[c] - positions[a]);
+                assert!(face.dot(normals[a] + normals[b] + normals[c]) > 0.0);
+            }
+        }
+        assert_eq!(doc.strokes, source);
+        doc.strokes[0].brush.tangent = doc.strokes[0].brush.normal;
+        assert!(encode(&doc, None).is_err());
+        doc.strokes[0].brush.tangent = Vec3::X;
+        doc.strokes[0].brush.thickness = 0.0;
+        assert!(encode(&doc, None).is_err());
     }
     #[test]
     fn selected_scope_uses_original_colors_and_excludes_other_strokes() {

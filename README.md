@@ -16,6 +16,7 @@ An open-source, native 3D sketching prototype inspired by the idea of drawing in
 - Move, rotate, and uniform-scale handles, numeric transforms, grouped duplication and deletion.
 - Whole-stroke eraser, undo/redo, versioned JSON documents, atomic saves, and unsaved-change prompts.
 - Background GLB export for the whole drawing or selected strokes, preserving original colors and pressure-shaped geometry.
+- Round, ribbon, and flat/chisel brushes with pressure-shaped width, frozen orientation, and an editable brush sampler.
 - GPU depth testing and cached completed-stroke meshes. Only changed strokes are tessellated again.
 
 **Windows is the first supported tablet target.** The application structure is portable; native macOS and Linux pen input is not implemented yet. Those platforms currently have mouse input only and have not been verified on physical hardware.
@@ -76,7 +77,7 @@ Brush radius is in world units, so its visible size changes with camera distance
 
 ## Documents
 
-Documents use a versioned `.sketch.json` format with positions in world space. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. There is no autosave or crash recovery yet; save regularly.
+Documents use a versioned `.sketch.json` format with positions in world space. Version 2 stores brush shapes and frozen orientation; version-1 drawings load as round strokes and upgrade on save. Older application versions cannot open version-2 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. There is no autosave or crash recovery yet; save regularly.
 
 ## Development
 
@@ -97,7 +98,7 @@ The immediate hardware test is pressure and tilt on the Wacom, followed by the K
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
-Next planned work is the brush pass: new geometry types, pressure/tilt dynamics and taper, built-in textures, and local presets (SKETCH-009–012). Soft/transparent brushes follow separately; brush-library importing remains deferred. These are planned features, not current brush capabilities.
+Next planned work is pressure/tilt dynamics and taper, built-in textures, and local presets (SKETCH-010–012). Soft/transparent brushes follow separately; brush-library importing remains deferred.
 
 ## License
 
@@ -199,7 +200,7 @@ One drawing world unit exports as **one meter**, with right-handed +X right, +Y 
 cargo run --release -- --verify-export
 ```
 
-This creates `verification/exports/house.glb`, `lantern.glb`, `pressure.glb`, `selection.glb`, and a source-geometry manifest. The normal `--verify` workflow also exercises the asynchronous UI path and verifies that source geometry, file identity, dirty state, selection, and undo/redo depths remain unchanged.
+This creates `verification/exports/house.glb`, `lantern.glb`, `pressure.glb`, `brushes.glb`, `selection.glb`, and a source-geometry manifest. The normal `--verify` workflow also exercises the asynchronous UI path and verifies that source geometry, file identity, dirty state, selection, and undo/redo depths remain unchanged.
 
 To validate fixtures using the official Khronos validator, from the project root:
 
@@ -214,6 +215,16 @@ To check imports in an installed Blender (put `blender` on PATH or use its execu
 blender --background --factory-startup --python-exit-code 1 --python scripts/verify_glb_blender.py -- verification/exports
 ```
 
-The Blender check verifies stroke IDs, mesh counts, converted axes, per-stroke bounds, original color factors, and triangle counts. It also renders the imported house to `verification/exports/house-blender.png` and saves a review scene. Verification cameras, lighting, and floor are added by that script after geometry checks; they are not part of the GLB export. Node and Blender are development verification tools, not application runtime requirements. The verification directory is ignored by Git.
+The Blender check verifies stroke IDs, mesh counts, converted axes, per-stroke bounds, original color factors, double-sided ribbon materials, and triangle counts. It also renders the imported house to `verification/exports/house-blender.png` and saves a review scene. Verification cameras, lighting, and floor are added by that script after geometry checks; they are not part of the GLB export. Node and Blender are development verification tools, not application runtime requirements. The verification directory is ignored by Git.
 
 Format reference: [Khronos glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html).
+
+## Brush shapes — SKETCH-009
+
+Choose **Round**, **Ribbon**, or **Flat / chisel** in the brush panel. Round preserves the original tube profile. Ribbon makes a thin strip visible from either side. Flat/chisel makes a solid rectangular strip; its **Thickness** setting is a percentage of the full width. **Radius / Half width** controls world-space size. All three retain the existing pressure curve: pressure scales width, and chisel thickness scales proportionally. Independent dynamics and textures are the next tasks.
+
+**Angle** rotates ribbon/chisel cross-sections around the stroke direction. The starting frame comes from the drawing plane or the cylinder surface at first contact. It is transported smoothly along the path; it does not face the camera, and changing the guide or active brush leaves existing strokes fixed. Transport along a complex 3D curve can twist relative to the guide surface. Taps produce a finite patch or solid stamp. Ribbons have no physical thickness; they appear edge-on when viewed along their surface.
+
+**Brushes** opens an editable sampler: round at the top, ribbon in the middle, and chisel at the bottom, with pressure ramps and dots. Unsaved-change handling matches House and Lantern. Start with `cargo run --release -- --brushes`, or run `cargo run --release -- --verify-brushes` for drawing, selection, erasing, duplication, transforms, cylinder stabilization, save/reload, and GPU checks. Outputs are `verification/brush-report.json` and `verification/brush-preview.png`.
+
+Native files preserve brush type, thickness ratio, angle, and orientation. Duplication and undo retain these values; rotation and uniform scale transform the whole brush mark. GLB uses the same meshes as the viewport, with double-sided ribbon materials. Physical pen pressure still requires tablet validation; tilt remains diagnostic-only in this feature.
