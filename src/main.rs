@@ -2,7 +2,9 @@
 
 mod app;
 mod document;
+mod editing;
 mod geometry;
+mod gizmo;
 mod input;
 mod renderer;
 

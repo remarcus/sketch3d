@@ -22,6 +22,7 @@ pub struct SceneRenderer {
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
     meshes: HashMap<u64, Mesh>,
+    selected: HashSet<u64>,
     grid: Option<(Plane, f32, Mesh)>,
     target: Option<(
         wgpu::TextureView,
@@ -90,6 +91,7 @@ impl SceneRenderer {
             uniform,
             bind,
             meshes: HashMap::new(),
+            selected: HashSet::new(),
             grid: None,
             target: None,
             adapter,
@@ -97,6 +99,22 @@ impl SceneRenderer {
     }
     pub fn invalidate(&mut self) {
         self.meshes.clear();
+    }
+    pub fn invalidate_ids(&mut self, ids: &HashSet<u64>) {
+        for id in ids {
+            if let Some(mesh) = self.meshes.get_mut(id) {
+                mesh.points = usize::MAX;
+            }
+        }
+    }
+    pub fn set_selection(&mut self, selected: &HashSet<u64>) {
+        let changed: HashSet<_> = self
+            .selected
+            .symmetric_difference(selected)
+            .copied()
+            .collect();
+        self.invalidate_ids(&changed);
+        self.selected.clone_from(selected);
     }
     fn mesh(&self, vertices: &[Vertex], points: usize) -> Mesh {
         let data = bytemuck::cast_slice(vertices);
@@ -176,7 +194,12 @@ impl SceneRenderer {
             {
                 continue;
             }
-            let vertices = geometry::tube(stroke);
+            let mut vertices = geometry::tube(stroke);
+            if self.selected.contains(&stroke.id) {
+                for vertex in &mut vertices {
+                    vertex.color = [1.0, 0.67, 0.18];
+                }
+            }
             let data = bytemuck::cast_slice(&vertices);
             if let Some(mesh) = self
                 .meshes

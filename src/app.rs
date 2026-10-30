@@ -4,18 +4,17 @@ use crate::{
     input::{PenInput, PenSample, Phase},
     renderer::SceneRenderer,
 };
+use crate::{editing::Edit, gizmo::Mode};
 use eframe::egui::{self, Color32, Key, PointerButton, Pos2, Rect, RichText, Vec2};
 use glam::Vec3;
+use std::collections::HashSet;
+#[path = "selection.rs"]
+mod selection;
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
 
-#[derive(Clone)]
-enum Edit {
-    Add(Stroke),
-    Remove(usize, Stroke),
-}
 #[derive(Clone, Copy)]
 enum Pending {
     New,
@@ -35,6 +34,12 @@ pub struct SketchApp {
     radius: f32,
     pressure_curve: f32,
     eraser: bool,
+    select_mode: bool,
+    selected: HashSet<u64>,
+    transform_mode: Mode,
+    transform_values: [f32; 3],
+    scale_value: f32,
+    drag: Option<selection::Drag>,
     active: Option<u64>,
     mouse_down: bool,
     next_id: u64,
@@ -87,6 +92,12 @@ impl SketchApp {
             radius: 0.025,
             pressure_curve: 1.0,
             eraser: false,
+            select_mode: false,
+            selected: HashSet::new(),
+            transform_mode: Mode::Move,
+            transform_values: [0.0; 3],
+            scale_value: 1.0,
+            drag: None,
             active: None,
             mouse_down: false,
             next_id: 1,
@@ -113,6 +124,7 @@ impl SketchApp {
         app
     }
     fn finish(&mut self) {
+        self.commit_transform();
         if let Some(id) = self.active.take() {
             if let Some(s) = self.doc.strokes.last().filter(|s| s.id == id) {
                 self.undo.push(Edit::Add(s.clone()));
@@ -122,6 +134,7 @@ impl SketchApp {
         }
     }
     fn cancel(&mut self) {
+        self.cancel_transform();
         self.mouse_down = false;
         if let Some(id) = self.active.take() {
             self.doc.strokes.retain(|s| s.id != id);
@@ -213,26 +226,21 @@ impl SketchApp {
     fn undo(&mut self) {
         self.finish();
         if let Some(edit) = self.undo.pop() {
-            match &edit {
-                Edit::Add(s) => self.doc.strokes.retain(|x| x.id != s.id),
-                Edit::Remove(i, s) => self
-                    .doc
-                    .strokes
-                    .insert((*i).min(self.doc.strokes.len()), s.clone()),
-            }
+            edit.apply(&mut self.doc, false);
             self.redo.push(edit);
             self.dirty = true;
+            self.renderer.invalidate();
+            self.sync_selection();
         }
     }
     fn redo(&mut self) {
         self.finish();
         if let Some(edit) = self.redo.pop() {
-            match &edit {
-                Edit::Add(s) => self.doc.strokes.push(s.clone()),
-                Edit::Remove(_, s) => self.doc.strokes.retain(|x| x.id != s.id),
-            }
+            edit.apply(&mut self.doc, true);
             self.undo.push(edit);
             self.dirty = true;
+            self.renderer.invalidate();
+            self.sync_selection();
         }
     }
     fn save(&mut self, save_as: bool) -> bool {
@@ -289,6 +297,7 @@ impl SketchApp {
                 self.dirty = false;
                 self.undo.clear();
                 self.redo.clear();
+                self.selected.clear();
                 self.renderer.invalidate();
                 self.status = "New drawing".into();
             }
@@ -315,6 +324,7 @@ impl SketchApp {
                             self.dirty = false;
                             self.undo.clear();
                             self.redo.clear();
+                            self.selected.clear();
                             self.renderer.invalidate();
                             self.status = "Drawing opened".into();
                         }
@@ -359,48 +369,66 @@ impl SketchApp {
                 .color(Color32::from_gray(140)),
         );
         ui.heading("Draw in space");
-        ui.label("Choose a plane. Make a mark.\nTurn the view and keep drawing.");
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            if ui.selectable_label(!self.eraser, "Brush  [B]").clicked() {
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .selectable_label(!self.eraser && !self.select_mode, "Brush [B]")
+                .clicked()
+            {
                 self.finish();
                 self.eraser = false;
+                self.select_mode = false;
             }
-            if ui.selectable_label(self.eraser, "Eraser  [E]").clicked() {
+            if ui
+                .selectable_label(self.eraser && !self.select_mode, "Erase [E]")
+                .clicked()
+            {
                 self.finish();
                 self.eraser = true;
+                self.select_mode = false;
+            }
+            if ui
+                .selectable_label(self.select_mode, "Select [V]")
+                .clicked()
+            {
+                self.finish();
+                self.eraser = false;
+                self.select_mode = true;
             }
         });
-        if self.eraser {
-            ui.label("Eraser removes whole strokes.");
-        }
         ui.add_space(6.0);
-        ui.label("INK COLOR");
-        ui.color_edit_button_rgb(&mut self.color);
-        ui.horizontal_wrapped(|ui| {
-            for color in [
-                [0.17, 0.82, 0.74],
-                [0.96, 0.55, 0.30],
-                [0.47, 0.58, 0.95],
-                [0.94, 0.80, 0.39],
-                [0.92, 0.94, 0.97],
-            ] {
-                let fill = Color32::from_rgb(
-                    (color[0] * 255.0) as u8,
-                    (color[1] * 255.0) as u8,
-                    (color[2] * 255.0) as u8,
-                );
-                if ui.add(egui::Button::new("  ").fill(fill)).clicked() {
-                    self.color = color;
-                }
+        if self.select_mode {
+            self.selection_panel(ui);
+        } else {
+            if self.eraser {
+                ui.label("Eraser removes whole strokes.");
             }
-        });
-        ui.add(
-            egui::Slider::new(&mut self.radius, 0.005..=0.12)
-                .text("Radius")
-                .logarithmic(true),
-        );
-        ui.add(egui::Slider::new(&mut self.pressure_curve, 0.3..=2.5).text("Pressure"));
+            ui.label("INK COLOR");
+            ui.color_edit_button_rgb(&mut self.color);
+            ui.horizontal_wrapped(|ui| {
+                for color in [
+                    [0.17, 0.82, 0.74],
+                    [0.96, 0.55, 0.30],
+                    [0.47, 0.58, 0.95],
+                    [0.94, 0.80, 0.39],
+                    [0.92, 0.94, 0.97],
+                ] {
+                    let fill = Color32::from_rgb(
+                        (color[0] * 255.0) as u8,
+                        (color[1] * 255.0) as u8,
+                        (color[2] * 255.0) as u8,
+                    );
+                    if ui.add(egui::Button::new("  ").fill(fill)).clicked() {
+                        self.color = color;
+                    }
+                }
+            });
+            ui.add(
+                egui::Slider::new(&mut self.radius, 0.005..=0.12)
+                    .text("Radius")
+                    .logarithmic(true),
+            );
+            ui.add(egui::Slider::new(&mut self.pressure_curve, 0.3..=2.5).text("Pressure"));
+        }
         ui.add_space(12.0);
         ui.separator();
         ui.label(
@@ -422,7 +450,7 @@ impl SketchApp {
         if old != self.offset {
             self.finish();
         }
-        if ui.button("Align view to plane  [F]").clicked() {
+        if ui.button("Align view to plane [F]").clicked() {
             self.finish();
             self.camera.align(self.plane);
         }
@@ -438,8 +466,8 @@ impl SketchApp {
                 .color(Color32::from_gray(140)),
         );
         ui.label("Space + drag    Orbit\nSpace + Shift    Pan\nSpace + Alt       Zoom\nRight drag        Orbit\nMiddle drag      Pan\nScroll                Zoom");
-        ui.add_space(12.0);
         if ui.button("All shortcuts / help").clicked() {
+            self.finish();
             self.show_help = true;
         }
     }
@@ -554,6 +582,15 @@ impl SketchApp {
             self.camera.pitch = (self.camera.pitch + delta.y * 0.008).clamp(-1.55, 1.55);
         }
     }
+    fn pointer_action(&mut self, pos: Pos2, pressure: f32, rect: Rect, begin: bool, shift: bool) {
+        if self.select_mode {
+            self.select_pointer(pos, rect, begin, shift);
+        } else if self.eraser {
+            self.erase(pos, rect);
+        } else {
+            self.add_point(pos, pressure, rect, begin);
+        }
+    }
     fn canvas_input(&mut self, ctx: &egui::Context, rect: Rect, mut pen: Vec<PenSample>) {
         let (space, shift, alt, events, pointer, scroll) = ctx.input(|i| {
             (
@@ -598,10 +635,13 @@ impl SketchApp {
                 continue;
             }
             if sample.phase == Phase::Up {
+                if self.drag.is_some() {
+                    self.select_pointer(sample.position, rect, false, shift);
+                }
                 self.finish();
                 continue;
             }
-            if !inside {
+            if !inside && self.drag.is_none() {
                 self.finish();
                 continue;
             }
@@ -614,14 +654,15 @@ impl SketchApp {
                 continue;
             }
             if sample.contact {
-                if self.eraser || sample.eraser {
+                if sample.eraser {
                     self.erase(sample.position, rect);
                 } else {
-                    self.add_point(
+                    self.pointer_action(
                         sample.position,
                         sample.pressure.unwrap_or(1.0),
                         rect,
                         sample.phase == Phase::Down,
+                        shift,
                     );
                 }
             }
@@ -655,32 +696,32 @@ impl SketchApp {
                             pos,
                             button: PointerButton::Primary,
                             pressed: true,
-                            ..
+                            modifiers,
                         } if rect.contains(pos) => {
                             self.mouse_down = true;
-                            if self.eraser {
-                                self.erase(pos, rect);
-                            } else {
-                                self.add_point(pos, 1.0, rect, true);
-                            }
+                            self.pointer_action(pos, 1.0, rect, true, modifiers.shift);
                         }
                         egui::Event::PointerMoved(pos) if self.mouse_down => {
-                            if rect.contains(pos) {
-                                if self.eraser {
-                                    self.erase(pos, rect);
-                                } else {
-                                    self.add_point(pos, 1.0, rect, false);
-                                }
+                            if rect.contains(pos) || self.drag.is_some() {
+                                self.pointer_action(pos, 1.0, rect, false, shift);
                             } else {
+                                self.mouse_down = false;
                                 self.finish();
                             }
                         }
                         egui::Event::PointerButton {
+                            pos,
                             button: PointerButton::Primary,
                             pressed: false,
                             ..
+                        } => {
+                            if self.drag.is_some() {
+                                self.select_pointer(pos, rect, false, shift);
+                            }
+                            self.mouse_down = false;
+                            self.finish();
                         }
-                        | egui::Event::PointerGone => {
+                        egui::Event::PointerGone => {
                             self.mouse_down = false;
                             self.finish();
                         }
@@ -694,17 +735,22 @@ impl SketchApp {
             self.camera.distance =
                 (self.camera.distance * (-scroll * 0.002).exp()).clamp(0.3, 150.0);
         }
+        self.sync_selection();
     }
 }
 impl eframe::App for SketchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let start = Instant::now();
         self.capture_verification(ctx);
-        if ctx.input(|i| i.viewport().close_requested()) && (self.dirty || self.active.is_some()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.request(Pending::Close);
+        if ctx.input(|i| i.viewport().close_requested()) {
+            self.finish();
+            if self.dirty {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.request(Pending::Close);
+            }
         }
         if !self.confirm && !self.show_help && !ctx.wants_keyboard_input() {
+            self.selection_shortcuts(ctx);
             let (mods, b, e, f, z, y, s, o, n) = ctx.input(|i| {
                 (
                     i.modifiers,
@@ -742,10 +788,12 @@ impl eframe::App for SketchApp {
                 if b {
                     self.finish();
                     self.eraser = false;
+                    self.select_mode = false;
                 }
                 if e {
                     self.finish();
                     self.eraser = true;
+                    self.select_mode = false;
                 }
                 if f {
                     self.finish();
@@ -787,7 +835,10 @@ impl eframe::App for SketchApp {
                 ui.separator();
                 if ui
                     .add_enabled(
-                        enabled && (!self.undo.is_empty() || self.active.is_some()),
+                        enabled
+                            && (!self.undo.is_empty()
+                                || self.active.is_some()
+                                || self.drag.is_some()),
                         egui::Button::new("Undo"),
                     )
                     .clicked()
@@ -837,6 +888,11 @@ impl eframe::App for SketchApp {
                 self.verify_canvas(ctx, rect);
                 self.canvas_input(ctx, rect, pen);
                 let scale = ctx.pixels_per_point();
+                if self.select_mode {
+                    self.renderer.set_selection(&self.selected);
+                } else {
+                    self.renderer.set_selection(&HashSet::new());
+                }
                 let id = self.renderer.render(
                     &self.doc,
                     &self.camera,
@@ -853,6 +909,7 @@ impl eframe::App for SketchApp {
                     Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
+                self.selection_overlay(ui, rect);
                 let badge =
                     Rect::from_min_size(rect.min + egui::vec2(20.0, 20.0), egui::vec2(200.0, 32.0));
                 ui.painter()
@@ -915,10 +972,10 @@ impl eframe::App for SketchApp {
                 });
         }
         if self.show_help {
-            egui::Window::new("Drawing with a tablet").open(&mut self.show_help).resizable(false).show(ctx,|ui|{ui.label("B: brush   E: whole-stroke eraser   F: align camera to plane\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nChoose Front, Side, or Ground, then move Depth to place the plane.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nPrototype limits: no Wintab, curved guides, model export, or autosave.\nSave your work using the Save button.");});
+            egui::Window::new("Drawing with a tablet").open(&mut self.show_help).resizable(false).show(ctx,|ui|{ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-stroke eraser   F: align camera to plane\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nChoose Front, Side, or Ground, then move Depth to place the plane.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nPrototype limits: no Wintab, curved guides, model export, or autosave.\nSave your work using the Save button.");});
         }
         self.frame_ms = start.elapsed().as_secs_f32() * 1000.0;
-        if self.active.is_some() || self.verification_frame.is_some() {
+        if self.active.is_some() || self.drag.is_some() || self.verification_frame.is_some() {
             ctx.request_repaint_after(Duration::from_millis(8));
         }
     }
@@ -970,6 +1027,7 @@ impl SketchApp {
                 self.doc = Document::default();
                 self.undo.clear();
                 self.redo.clear();
+                self.selected.clear();
                 self.renderer.invalidate();
                 self.demo();
                 let path = std::env::current_dir().unwrap().join("verification");
@@ -992,6 +1050,7 @@ impl SketchApp {
                 // Clear synthetic events before the regular input handler sees them again.
                 ctx.input_mut(|i| i.events.clear());
             }
+            3 => self.verify_selection(ctx, rect),
             5 => ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())),
             120 => panic!("Verification screenshot timed out"),
             _ => {}
@@ -1022,7 +1081,7 @@ impl SketchApp {
                 image::ColorType::Rgba8,
             )
             .unwrap();
-            let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
+            let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
             std::fs::write(
                 path.join("report.json"),
                 serde_json::to_string_pretty(&report).unwrap(),

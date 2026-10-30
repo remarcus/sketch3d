@@ -9,6 +9,8 @@ An open-source, native 3D sketching prototype inspired by the idea of drawing in
 - Orbit, pan, zoom, plane alignment, and camera reset.
 - Windows Ink pressure, tilt, barrel-button and eraser diagnostics, including coalesced pen history.
 - Mouse drawing with constant pressure, clearly distinguished from tablet input.
+- Click/Shift-click selection, depth-aware picking, gold highlighting, and selection bounds.
+- Move, rotate, and uniform-scale handles, numeric transforms, grouped duplication and deletion.
 - Whole-stroke eraser, undo/redo, versioned JSON documents, atomic saves, and unsaved-change prompts.
 - GPU depth testing and cached completed-stroke meshes. Only changed strokes are tessellated again.
 
@@ -44,7 +46,13 @@ The first hardware targets are a screenless Wacom tablet and a a pen display. **
 
 | Action | Input |
 | --- | --- |
-| Brush / whole-stroke eraser | B / E |
+| Brush / whole-stroke eraser / select | B / E / V |
+| Add/remove stroke from selection | Shift-click in Select tool |
+| Select all / clear selection | Ctrl/Cmd+A / Escape |
+| Move / rotate / uniform scale | G / R / S in Select tool |
+| Duplicate selection | Ctrl/Cmd+D |
+| Delete selection | Delete / Backspace |
+| Cancel transform gesture | Escape |
 | Orbit | Space + pen/mouse drag, or right mouse drag |
 | Pan | Space + Shift + drag, or middle mouse drag |
 | Zoom | Space + Alt + drag, or wheel |
@@ -74,7 +82,7 @@ cargo build --release
 
 ## Boundaries and next steps
 
-This is an early prototype, not a production art application. Native tablet backends for macOS/Linux, Wintab, editable curved guides, partial erasing, selection/transforms, surface snapping, glTF export, brush stabilization, and autosave remain future work. Active-stroke tessellation rebuilds that stroke on change; long strokes should move to incremental ring updates. GPU meshes currently use one draw call per stroke; batching and spatial indexing will matter for large documents. File dialogs and save/open currently run on the UI thread.
+This is an early prototype, not a production art application. Native tablet backends for macOS/Linux, Wintab, editable curved guides, partial erasing, surface snapping, glTF export, brush stabilization, and autosave remain future work. Active-stroke tessellation rebuilds that stroke on change; long strokes should move to incremental ring updates. GPU meshes currently use one draw call per stroke; batching and spatial indexing will matter for large documents. File dialogs and save/open currently run on the UI thread.
 
 The immediate hardware test is pressure and tilt on the Wacom, followed by the Kamvas with mixed-DPI monitors. Low-latency behavior must be measured on those devices; no latency or frame-rate guarantee is claimed.
 
@@ -90,4 +98,18 @@ GPL-3.0-or-later. See LICENSE. Dependencies retain their own licenses.
 cargo run --release -- --verify
 ```
 
-This opens the app, replays synthetic mouse events through the canvas handler, checks undo/redo and erasing, saves and reloads a document (including replacing an existing save), renders a 3D example, and captures the app's own screenshot. It then exits. Outputs are `verification/report.json` and `verification/preview.png`. This verifies software paths and GPU initialization; it does not simulate or validate physical tablet hardware.
+This opens the app, replays synthetic mouse events through the canvas handler, checks undo/redo, erasing, Shift multi-selection, move/rotate/scale handle gestures, cancellation, grouped duplication/deletion, and numeric transforms, saves and reloads a document (including replacing an existing save), renders a 3D example, and captures the app's own screenshot. It then exits. Outputs are `verification/report.json` and `verification/preview.png`. This verifies software paths and GPU initialization; it does not simulate or validate physical tablet hardware.
+
+## Selection and transforms
+
+Press **V**, then click a stroke. Shift-click adds or removes strokes. Picking considers screen distance, brush width, and depth; overlapping strokes prefer the nearer stroke rather than the last one drawn. Click empty canvas to clear selection. Selection is highlighted in gold without changing the saved ink color.
+
+- **Move (G):** drag a red X, green Y, or blue Z arrow for an axis-constrained move. Drag the center square to move in the camera's view plane.
+- **Rotate (R):** drag a colored ring around its world axis. Rings seen edge-on are hidden; orbit the camera to expose them.
+- **Scale (S):** drag the gold square to scale uniformly around the group's center. Brush radii scale too; pressure samples remain unchanged.
+- **Numeric values:** enter world offsets, rotation degrees, or a scale factor in the selection panel, then choose Apply values. Rotation applies X, then Y, then Z around the shared pivot.
+- **Duplicate:** makes offset copies and selects those copies. Delete removes the whole selected group. Each command is one undo step.
+
+Each handle gesture uses the selection's bounding-box center as its pivot and becomes one undo step on release. Escape or focus loss cancels the active gesture and restores its original geometry. Controls continue to work with pen displays and screenless tablets; touch is not required. Scale is limited by the document's supported brush radius range (0.001–1 world units), and transforms cannot move points outside the document bounds.
+
+Selection is temporary interface state, so it is not saved in the drawing or restored by undo. Undo/redo restores geometry, widths, stroke order, and IDs. Transforming geometry does not change point counts; the renderer explicitly refreshes affected cached buffers.
