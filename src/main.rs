@@ -11,6 +11,8 @@ mod gizmo;
 mod input;
 mod presets;
 mod presets_ui;
+mod recovery;
+mod recovery_store;
 mod renderer;
 mod scenes;
 mod stabilizer;

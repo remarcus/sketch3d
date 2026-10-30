@@ -77,7 +77,7 @@ Brush radius is in world units, so its visible size changes with camera distance
 
 ## Documents
 
-Documents use a versioned `.sketch.json` format with positions in world space. Version 4 adds procedural texture settings to brush shapes, dynamics, raw pressure, optional world-space pen lean, and frozen orientation. Version-1/2/3 drawings upgrade on load with solid ink and their existing appearance preserved. Older application versions cannot open version-4 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. There is no autosave or crash recovery yet; save regularly.
+Documents use a versioned `.sketch.json` format with positions in world space. Version 4 adds procedural texture settings to brush shapes, dynamics, raw pressure, optional world-space pen lean, and frozen orientation. Version-1/2/3 drawings upgrade on load with solid ink and their existing appearance preserved. Older application versions cannot open version-4 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. Recovery snapshots protect completed edits automatically; use Save for your deliberate native drawing file.
 
 ## Development
 
@@ -92,13 +92,13 @@ cargo build --release
 
 ## Boundaries and next steps
 
-This is an early prototype, not a production art application. Native tablet backends for macOS/Linux, Wintab, additional curved guides, partial erasing, surface snapping, and autosave remain future work. Active-stroke tessellation rebuilds that stroke on change; long strokes should move to incremental ring updates. GPU meshes currently use one draw call per stroke; batching and spatial indexing will matter for large documents. File dialogs and save/open currently run on the UI thread.
+This is an early prototype, not a production art application. Native tablet backends for macOS/Linux, Wintab, additional curved guides, partial erasing and surface snapping remain future work. Active-stroke tessellation rebuilds that stroke on change; long strokes should move to incremental ring updates. GPU meshes currently use one draw call per stroke; batching and spatial indexing will matter for large documents. File dialogs and save/open currently run on the UI thread.
 
 The immediate hardware test is pressure and tilt on the Wacom, followed by the Kamvas with mixed-DPI monitors. Low-latency behavior must be measured on those devices; no latency or frame-rate guarantee is claimed.
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
-Next planned work is autosave and crash recovery (SKETCH-003), followed by layers and groups. Soft/transparent brushes follow separately; brush-library importing remains deferred.
+Next planned work is drawing layers (SKETCH-004), followed by stroke groups. Soft/transparent brushes follow separately; brush-library importing remains deferred.
 
 ## License
 
@@ -264,3 +264,23 @@ Changes save atomically to `%LOCALAPPDATA%/SpatialSketch/brushes.json` on Window
 Corrupt or unsupported library data falls back to temporary built-ins without overwriting the original file. **Repair library (keep backup)** explicitly preserves the original bytes in a timestamped sibling backup before saving valid defaults. Drawing files are unaffected. Editing, renaming, or deleting presets never changes previously drawn strokes or their exports, because strokes store resolved settings. Importing/sharing libraries remains deferred under SKETCH-014.
 
 Run `cargo run --release -- --verify-presets` for library operations, restart persistence, explicit repair/backup, resolved stroke settings, export preservation, and GPU previews. It uses an isolated library under `verification/preset-library`, writes `verification/preset-report.json` and `verification/preset-preview.png`, and leaves the normal personal library untouched.
+
+## Autosave and interrupted-session recovery — SKETCH-003
+
+Completed drawing/edit commands queue recovery snapshots after two seconds without another edit, or at the next idle point after fifteen seconds of pending edits. Active strokes and transform gestures finish before a snapshot is taken. Serialization and disk writes run on an ordered background worker; the UI clones a consistent document only when a snapshot is due. Large drawings can still make that clone noticeable. An unfinished stroke, or edits newer than the last confirmed snapshot, can be lost if the process stops.
+
+The right panel reports pending, saving, saved, unavailable, and failed recovery states. A failed write never reports newer edits as protected and retries after fifteen seconds. Untouched starters and blank sessions produce no drawing snapshots. Recovery is separate from native Save / Save as and never silently updates the original file.
+
+On startup, **Recover interrupted drawings** shows the original file identity (or Untitled), snapshot age, and stroke count. **Recover copy** creates a dirty, untitled document; choose Save as to give it a native destination. The old snapshot is retained until a new-session recovery copy is durable. **Discard snapshot** deletes that recovery entry. **Continue without recovery** keeps entries on disk, available from the bottom **Recovery** button. Recovering while another drawing is edited uses the normal unsaved-change prompt.
+
+Successful native saves and approved New/Open/sample replacements clear this session's old recovery copy; canceling or failing Open leaves it intact. Normal close waits for ordered cleanup. If deletion fails, the retained-copy error stays visible and a second close explicitly exits with the copy retained. Other running instances are excluded by session locks. Snapshots older than thirty days, future-dated records, and originals saved more recently are flagged and remain available as copies. Incomplete, corrupt, unsupported, or oversized files are listed with an explanation and left untouched unless dismissed.
+
+Storage is `%LOCALAPPDATA%/SpatialSketch/recovery` on Windows, beside the local preset library. Each process has its own file; OS locks release after unexpected termination. Native saves cannot target this reserved folder. Discovery bounds file count and aggregate bytes to limit background work. Recovery preserves native geometry, pressure, tilt, dynamics, and texture settings; it does not restore undo history, camera state, guide controls, or the local preset library.
+
+Run the forced-crash regression on Windows from the project root:
+
+```powershell
+./scripts/verify_recovery.ps1
+```
+
+It starts an isolated edited session, waits for a confirmed snapshot, force-stops only that test process, and restarts the app. The restarted check restores exact data into an unsaved copy, validates cleanup/dismissal, and confirms the original native file's SHA256 is unchanged. Outputs include `verification/recovery-report.json`, `recovery-offer.png`, and `recovery-preview.png`. The test uses `verification/recovery`, leaving normal application recovery data untouched. Build the release executable first; the script has bounded waits and stops only processes it created.

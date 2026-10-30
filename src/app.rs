@@ -23,6 +23,8 @@ mod export_ui;
 mod planes;
 #[path = "preset_checks.rs"]
 mod preset_checks;
+#[path = "recovery_ui.rs"]
+mod recovery_ui;
 #[path = "selection.rs"]
 mod selection;
 #[path = "starter.rs"]
@@ -40,6 +42,7 @@ enum Pending {
     Brushes,
     Dynamics,
     Textures,
+    Recover,
     Open,
     Close,
 }
@@ -47,6 +50,21 @@ enum Pending {
 pub struct SketchApp {
     renderer: SceneRenderer,
     preset_ui: crate::presets_ui::PresetUi,
+    recovery: crate::recovery::Recovery,
+    recovery_prompt: bool,
+    recovery_scan_seen: bool,
+    recovery_to_restore: Option<crate::recovery_store::Candidate>,
+    recovery_retire: Option<PathBuf>,
+    recovered_source: Option<PathBuf>,
+    close_after_recovery: bool,
+    close_cleanup_failed: bool,
+    allow_close: bool,
+    recovery_verification_frame: Option<u32>,
+    recovery_verify_stage: u8,
+    recovery_verify_since: u32,
+    recovery_verify_crash: bool,
+    recovery_offer_capture: bool,
+    recovery_offer_requested: bool,
     pen: Option<PenInput>,
     input_status: String,
     doc: Document,
@@ -132,9 +150,32 @@ impl SketchApp {
                 .expect("wgpu renderer required"),
             library_path,
         );
+        let recovery_path = if std::env::args().any(|arg| arg.starts_with("--verify")) {
+            std::env::current_dir()
+                .map(|p| p.join("verification/recovery"))
+                .map_err(|e| e.to_string())
+        } else {
+            crate::recovery_store::path()
+        };
+        let recovery = crate::recovery::Recovery::new(recovery_path, cc.egui_ctx.clone());
         let mut app = Self {
             renderer,
             preset_ui,
+            recovery,
+            recovery_prompt: false,
+            recovery_scan_seen: false,
+            recovery_to_restore: None,
+            recovery_retire: None,
+            recovered_source: None,
+            close_after_recovery: false,
+            close_cleanup_failed: false,
+            allow_close: false,
+            recovery_verification_frame: None,
+            recovery_verify_stage: 0,
+            recovery_verify_since: 0,
+            recovery_verify_crash: false,
+            recovery_offer_capture: false,
+            recovery_offer_requested: false,
             pen,
             input_status,
             doc: Document::default(),
@@ -187,7 +228,16 @@ impl SketchApp {
             last_export_result: None,
             export_snapshot: None,
         };
-        if std::env::args().any(|a| a == "--verify-presets") {
+        if std::env::args().any(|a| a == "--verify-recovery-crash" || a == "--verify-recovery") {
+            app.verification_frame = None;
+            app.recovery_verification_frame = Some(0);
+            app.recovery_verify_crash = std::env::args().any(|a| a == "--verify-recovery-crash");
+            if app.recovery_verify_crash {
+                app.load_textures();
+            } else {
+                app.load_house();
+            }
+        } else if std::env::args().any(|a| a == "--verify-presets") {
             app.verification_frame = None;
             app.preset_verification_frame = Some(0);
             app.load_textures();
@@ -226,6 +276,7 @@ impl SketchApp {
                 app.load_house();
             }
         }
+        app.recovery.request_scan();
         app
     }
     fn finish(&mut self) {
@@ -250,6 +301,7 @@ impl SketchApp {
                 self.undo.push(Edit::Add(s.clone()));
                 self.redo.clear();
                 self.dirty = true;
+                self.record_recovery_edit();
             }
         }
     }
@@ -377,6 +429,7 @@ impl SketchApp {
             self.undo.push(Edit::Remove(i, stroke));
             self.redo.clear();
             self.dirty = true;
+            self.record_recovery_edit();
         }
     }
     fn undo(&mut self) {
@@ -385,6 +438,7 @@ impl SketchApp {
             edit.apply(&mut self.doc, false);
             self.redo.push(edit);
             self.dirty = true;
+            self.record_recovery_edit();
             self.renderer.invalidate();
             self.sync_selection();
         }
@@ -395,6 +449,7 @@ impl SketchApp {
             edit.apply(&mut self.doc, true);
             self.undo.push(edit);
             self.dirty = true;
+            self.record_recovery_edit();
             self.renderer.invalidate();
             self.sync_selection();
         }
@@ -412,6 +467,10 @@ impl SketchApp {
         let Some(path) = path else {
             return false;
         };
+        if self.reserved_recovery_destination(&path) {
+            self.status = "Choose a native save location outside the recovery folder.".into();
+            return false;
+        }
         let result = (|| -> Result<(), String> {
             let bytes = serde_json::to_vec_pretty(&self.doc).map_err(|e| e.to_string())?;
             let parent = path.parent().ok_or("Invalid save location")?;
@@ -424,6 +483,10 @@ impl SketchApp {
         })();
         match result {
             Ok(()) => {
+                self.close_cleanup_failed = false;
+                self.recovery.mark_saved();
+                self.retire_recovered_source();
+                self.recovered_source = None;
                 self.status = format!("Saved {}", path.display());
                 self.file = Some(path);
                 self.dirty = false;
@@ -453,6 +516,7 @@ impl SketchApp {
             Some(Pending::Dynamics) => self.load_dynamics(),
             Some(Pending::Textures) => self.load_textures(),
             Some(Pending::New) => {
+                self.reset_recovery_document();
                 self.starter_scene = false;
                 self.cylinder_example = false;
                 self.use_cylinder = false;
@@ -486,6 +550,7 @@ impl SketchApp {
                     })();
                     match result {
                         Ok(doc) => {
+                            self.reset_recovery_document();
                             self.next_id = doc.strokes.iter().map(|s| s.id).max().unwrap_or(0) + 1;
                             self.doc = doc;
                             self.starter_scene = false;
@@ -502,7 +567,8 @@ impl SketchApp {
                     }
                 }
             }
-            Some(Pending::Close) => {}
+            Some(Pending::Recover) => self.install_recovery(),
+            Some(Pending::Close) => self.approve_recovery_close(),
             None => {}
         }
     }
@@ -730,6 +796,9 @@ impl SketchApp {
             "Enable Windows Ink in your tablet driver. Map the tablet to the intended monitor.",
         );
         ui.label("Wintab and native macOS / Linux pen backends are future work.");
+        ui.separator();
+        ui.label("RECOVERY");
+        ui.label(&self.recovery.notice);
     }
     fn navigate(&mut self, delta: Vec2, pan: bool, zoom: bool, rect: Rect) {
         self.finish();
@@ -779,11 +848,13 @@ impl SketchApp {
             && self.dynamics_verification_frame.is_none()
             && self.texture_verification_frame.is_none()
             && self.preset_verification_frame.is_none()
+            && self.recovery_verification_frame.is_none()
         {
             self.cancel();
             return;
         }
-        let blocked = self.confirm || self.show_help;
+        let blocked =
+            self.confirm || self.show_help || self.recovery_prompt || self.close_after_recovery;
         let scale = ctx.pixels_per_point();
         for sample in &mut pen {
             sample.position.x /= scale;
@@ -923,19 +994,36 @@ impl SketchApp {
 impl eframe::App for SketchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let start = Instant::now();
+        self.poll_recovery(ctx);
         self.poll_export(ctx);
         self.capture_verification(ctx);
-        if ctx.input(|i| i.viewport().close_requested()) && self.export_job.is_some() {
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.allow_close
+            && self.export_job.is_some()
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.status = "Export is finishing. Close again when it completes.".into();
-        } else if ctx.input(|i| i.viewport().close_requested()) {
+        } else if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.close_cleanup_failed {
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
             self.finish();
             if self.dirty {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.request(Pending::Close);
+            } else {
+                self.approve_recovery_close();
             }
         }
-        if !self.confirm && !self.show_help && !ctx.wants_keyboard_input() {
+        if !self.confirm
+            && !self.show_help
+            && !self.recovery_prompt
+            && !self.close_after_recovery
+            && !ctx.wants_keyboard_input()
+        {
             self.selection_shortcuts(ctx);
             let (mods, b, e, f, z, y, s, o, n) = ctx.input(|i| {
                 (
@@ -1006,7 +1094,7 @@ impl eframe::App for SketchApp {
                         .color(Color32::from_gray(140)),
                 );
                 ui.separator();
-                let enabled = !self.confirm;
+                let enabled = !self.confirm && !self.recovery_prompt && !self.close_after_recovery;
                 if ui.add_enabled(enabled, egui::Button::new("New")).clicked() {
                     self.request(Pending::New);
                 }
@@ -1107,6 +1195,10 @@ impl eframe::App for SketchApp {
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
+                if ui.button("Recovery").clicked() {
+                    self.recovery_prompt = true;
+                    self.recovery.request_scan();
+                }
                 ui.label(&self.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(self.active_guide_label());
@@ -1117,7 +1209,10 @@ impl eframe::App for SketchApp {
             .exact_width(240.0)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.add_enabled_ui(!self.confirm, |ui| self.tools(ui));
+                    ui.add_enabled_ui(
+                        !self.confirm && !self.recovery_prompt && !self.close_after_recovery,
+                        |ui| self.tools(ui),
+                    );
                 });
             });
         egui::SidePanel::right("diagnostics")
@@ -1131,6 +1226,7 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.verify_recovery(ctx, rect);
                 self.verify_presets(ctx, rect);
                 self.verify_textures(ctx, rect);
                 self.verify_dynamics(ctx, rect);
@@ -1229,7 +1325,7 @@ impl eframe::App for SketchApp {
                             let close = matches!(self.pending, Some(Pending::Close));
                             self.execute_pending();
                             if close {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                self.close_after_recovery = true;
                             }
                         }
                         if ui.button("Discard").clicked() {
@@ -1237,19 +1333,22 @@ impl eframe::App for SketchApp {
                             self.execute_pending();
                             if close {
                                 self.dirty = false;
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                self.close_after_recovery = true;
                             }
                         }
                         if ui.button("Cancel").clicked() {
                             self.pending = None;
+                            self.recovery_to_restore = None;
                             self.confirm = false;
                         }
                     });
                 });
         }
         if self.show_help {
-            egui::Window::new("Drawing with a tablet").open(&mut self.show_help).resizable(false).show(ctx,|ui|{ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-stroke eraser   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides, or autosave.\nSave your work using the Save button.");});
+            egui::Window::new("Drawing with a tablet").open(&mut self.show_help).resizable(false).show(ctx,|ui|{ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-stroke eraser   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
         }
+        self.show_recovery(ctx);
+        self.tick_recovery(ctx);
         self.frame_ms = start.elapsed().as_secs_f32() * 1000.0;
         if self.active.is_some()
             || self.drag.is_some()
@@ -1260,6 +1359,9 @@ impl eframe::App for SketchApp {
             || self.dynamics_verification_frame.is_some()
             || self.texture_verification_frame.is_some()
             || self.preset_verification_frame.is_some()
+            || self.recovery_verification_frame.is_some()
+            || self.close_after_recovery
+            || self.recovery.busy()
         {
             ctx.request_repaint_after(Duration::from_millis(8));
         }
@@ -1358,6 +1460,7 @@ impl SketchApp {
             && self.dynamics_verification_frame.is_none()
             && self.texture_verification_frame.is_none()
             && self.preset_verification_frame.is_none()
+            && self.recovery_verification_frame.is_none()
         {
             return;
         }
@@ -1373,8 +1476,22 @@ impl SketchApp {
         if let Some(image) = screenshot {
             let path = std::env::current_dir().unwrap().join("verification");
             let pixels: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+            if self.recovery_offer_capture {
+                image::save_buffer(
+                    path.join("recovery-offer.png"),
+                    &pixels,
+                    image.size[0] as u32,
+                    image.size[1] as u32,
+                    image::ColorType::Rgba8,
+                )
+                .unwrap();
+                self.recovery_offer_capture = false;
+                return;
+            }
             image::save_buffer(
-                path.join(if self.preset_verification_frame.is_some() {
+                path.join(if self.recovery_verification_frame.is_some() {
+                    "recovery-preview.png"
+                } else if self.preset_verification_frame.is_some() {
                     "preset-preview.png"
                 } else if self.texture_verification_frame.is_some() {
                     "texture-preview.png"
@@ -1396,7 +1513,9 @@ impl SketchApp {
             )
             .unwrap();
             let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload","background GLB export preserves document state"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
-            let report = if self.preset_verification_frame.is_some() {
+            let report = if self.recovery_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["forced process termination","startup recovery offer","exact pressure tilt dynamics texture restoration","recovered copy is untitled and dirty","native source unchanged","new session snapshot durable before old retirement","Save New and close cleanup ordering","corrupt and unsupported issue visibility","GPU recovery workflow"],"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+            } else if self.preset_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["preset application captures resolved settings","create duplicate rename update delete and defaults","restart persistence","live GPU previews","library edits preserve existing ink and export","corrupt library fallback and explicit repair backup"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.texture_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 4 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
@@ -1412,7 +1531,9 @@ impl SketchApp {
                 report
             };
             std::fs::write(
-                path.join(if self.preset_verification_frame.is_some() {
+                path.join(if self.recovery_verification_frame.is_some() {
+                    "recovery-report.json"
+                } else if self.preset_verification_frame.is_some() {
                     "preset-report.json"
                 } else if self.texture_verification_frame.is_some() {
                     "texture-report.json"

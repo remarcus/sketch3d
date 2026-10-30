@@ -36,6 +36,7 @@ impl SketchApp {
     }
 
     pub(super) fn load_brushes(&mut self) {
+        self.reset_recovery_document();
         self.cancel();
         self.doc = export_check::brush_fixture();
         self.next_id = self.doc.strokes.iter().map(|s| s.id).max().unwrap_or(0) + 1;

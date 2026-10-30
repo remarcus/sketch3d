@@ -126,6 +126,7 @@ impl SketchApp {
         ui.label(RichText::new("Draw on the side. Orbit to reach the back. Missing the guide splits the stroke; caps are not drawing surfaces.").small());
     }
     pub(super) fn load_lantern(&mut self) {
+        self.reset_recovery_document();
         self.doc = scenes::cylindrical_lantern();
         self.next_id = self.doc.strokes.iter().map(|s| s.id).max().unwrap_or(0) + 1;
         self.cylinder = scenes::lantern_cylinder();

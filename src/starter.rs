@@ -3,6 +3,7 @@ use crate::scenes;
 
 impl SketchApp {
     pub(super) fn load_house(&mut self) {
+        self.reset_recovery_document();
         self.doc = scenes::japanese_house();
         self.next_id = self.doc.strokes.iter().map(|s| s.id).max().unwrap_or(0) + 1;
         self.camera = scenes::house_camera();

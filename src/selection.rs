@@ -34,6 +34,7 @@ impl SketchApp {
             });
             self.redo.clear();
             self.dirty = true;
+            self.record_recovery_edit();
             self.status = "Transform applied. Undo restores the entire gesture.".into();
         }
     }
@@ -208,6 +209,7 @@ impl SketchApp {
         self.undo.push(edit);
         self.redo.clear();
         self.dirty = true;
+        self.record_recovery_edit();
         self.status =
             "Duplicated selection with a small offset. Move the copies with the handles.".into();
     }
@@ -226,6 +228,7 @@ impl SketchApp {
         self.redo.clear();
         self.selected.clear();
         self.dirty = true;
+        self.record_recovery_edit();
         self.status = "Deleted selection".into();
     }
     fn numeric_transform(&mut self) {
@@ -256,6 +259,7 @@ impl SketchApp {
                 self.redo.clear();
                 self.renderer.invalidate_ids(&self.selected);
                 self.dirty = true;
+                self.record_recovery_edit();
                 self.transform_values = [0.0; 3];
                 self.scale_value = 1.0;
                 self.status = "Transform applied".into();
