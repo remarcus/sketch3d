@@ -107,6 +107,7 @@ impl Cylinder {
                 vertices.push(Vertex {
                     position: p.to_array(),
                     normal: [0.0; 3],
+                    uv: [0.0; 2],
                     color,
                 });
             }

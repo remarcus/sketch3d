@@ -2,6 +2,7 @@
 use crate::{
     document::{Brush, BrushKind, Document, Point, Stroke},
     export, geometry, scenes,
+    texture::{self, TextureKind, TextureSettings},
 };
 use glam::Vec3;
 use serde_json::json;
@@ -9,7 +10,7 @@ use std::collections::HashSet;
 
 pub fn pressure_fixture() -> Document {
     Document {
-        version: 3,
+        version: 4,
         strokes: vec![
             Stroke {
                 id: 1001,
@@ -80,6 +81,7 @@ pub fn brush_fixture() -> Document {
             normal: Vec3::Z,
             tangent: Vec3::X,
             dynamics: Default::default(),
+            texture: Default::default(),
         };
         let color = [[0.17, 0.82, 0.74], [0.94, 0.35, 0.14], [0.35, 0.45, 0.9]][row];
         let y = 1.2 - row as f32 * 1.2;
@@ -200,6 +202,91 @@ pub fn dynamics_fixture() -> Document {
     }
     doc
 }
+/// Original procedural masks sampled on ribbon, chisel, round, and dot geometry.
+pub fn textured_fixture() -> Document {
+    let mut doc = Document::default();
+    for (row, texture_kind) in [
+        TextureKind::Solid,
+        TextureKind::Grain,
+        TextureKind::DryBrush,
+        TextureKind::Pattern,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let brush = Brush {
+            kind: if row == 2 {
+                BrushKind::Chisel
+            } else {
+                BrushKind::Ribbon
+            },
+            thickness: 0.3,
+            texture: TextureSettings {
+                kind: texture_kind,
+                scale: 0.3,
+                strength: 0.8,
+                seed: 42 + row as u32,
+            },
+            ..Brush::default()
+        };
+        let color = [
+            [0.17, 0.82, 0.74],
+            [0.96, 0.55, 0.3],
+            [0.47, 0.58, 0.95],
+            [0.94, 0.80, 0.39],
+        ][row];
+        let y = 1.8 - row as f32 * 1.2;
+        doc.strokes.push(Stroke {
+            id: 4001 + row as u64 * 3,
+            color,
+            radius: 0.18,
+            brush,
+            points: (0..=60)
+                .map(|i| {
+                    let t = i as f32 / 60.0;
+                    Point {
+                        position: Vec3::new(
+                            -2.0 + 4.0 * t,
+                            y + (t * std::f32::consts::TAU).sin() * 0.2,
+                            0.0,
+                        ),
+                        pressure: 0.8 + 0.2 * t,
+                        tilt: None,
+                    }
+                })
+                .collect(),
+        });
+        doc.strokes.push(Stroke {
+            id: 4002 + row as u64 * 3,
+            color,
+            radius: 0.18,
+            brush,
+            points: vec![Point {
+                position: Vec3::new(2.6, y, 0.0),
+                pressure: 1.0,
+                tilt: None,
+            }],
+        });
+        // A short depth-oriented round companion exercises circumference UV seams.
+        doc.strokes.push(Stroke {
+            id: 4003 + row as u64 * 3,
+            color,
+            radius: 0.11,
+            brush: Brush {
+                kind: BrushKind::Round,
+                ..brush
+            },
+            points: (0..=12)
+                .map(|i| Point {
+                    position: Vec3::new(-2.0 + i as f32 / 12.0 * 4.0, y - 0.37, -0.15),
+                    pressure: 1.0,
+                    tilt: None,
+                })
+                .collect(),
+        });
+    }
+    doc
+}
 pub fn run() -> Result<(), String> {
     let directory = std::env::current_dir()
         .map_err(|e| e.to_string())?
@@ -212,6 +299,7 @@ pub fn run() -> Result<(), String> {
         ("pressure", pressure.clone(), None),
         ("brushes", brush_fixture(), None),
         ("dynamics", dynamics_fixture(), None),
+        ("textures", textured_fixture(), None),
         ("selection", pressure, Some(HashSet::from([1002]))),
     ];
     let mut cases = Vec::new();
@@ -235,7 +323,24 @@ pub fn run() -> Result<(), String> {
                 .fold(Vec3::splat(f32::NEG_INFINITY), |max, v| {
                     max.max(Vec3::from(v.position))
                 });
-            strokes.push(json!({"name":format!("Stroke_{}",stroke.id),"id":stroke.id.to_string(),"color":stroke.color,"doubleSided":stroke.brush.kind == BrushKind::Ribbon,"min":min.to_array(),"max":max.to_array()}));
+            let uv_min = geometry.iter().fold([f32::INFINITY; 2], |a, v| {
+                [a[0].min(v.uv[0]), a[1].min(v.uv[1])]
+            });
+            let uv_max = geometry.iter().fold([f32::NEG_INFINITY; 2], |a, v| {
+                [a[0].max(v.uv[0]), a[1].max(v.uv[1])]
+            });
+            let masked = stroke.brush.texture.kind != TextureKind::Solid;
+            let opaque_pixels = if masked {
+                texture::rgba(stroke.brush.texture)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|p| p[3] == 255)
+                    .count()
+            } else {
+                0
+            };
+            strokes.push(json!({"name":format!("Stroke_{}",stroke.id),"id":stroke.id.to_string(),"color":stroke.color,"doubleSided":stroke.brush.kind == BrushKind::Ribbon,"masked":masked,"opaquePixels":opaque_pixels,"uvMin":uv_min,"uvMax":uv_max,"min":min.to_array(),"max":max.to_array()}));
         }
         cases.push(json!({"name":name,"file":file,"summary":summary,"strokes":strokes}));
     }

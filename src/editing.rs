@@ -94,6 +94,7 @@ pub fn transformed(
     let mut after = before.clone();
     for (_, stroke) in &mut after {
         stroke.radius *= scale;
+        stroke.brush.texture.scale *= scale;
         stroke.brush.dynamics.taper_start *= scale;
         stroke.brush.dynamics.taper_end *= scale;
         stroke.brush.normal = rotation * stroke.brush.normal;
@@ -222,9 +223,10 @@ mod tests {
                 normal: Vec3::Z,
                 tangent: Vec3::Y,
                 dynamics: Default::default(),
+                texture: Default::default(),
             };
             let mut doc = Document {
-                version: 3,
+                version: 4,
                 strokes: vec![s],
             };
             let original = doc.strokes.clone();
@@ -253,7 +255,7 @@ mod tests {
         s.brush.kind = BrushKind::Chisel;
         s.brush.thickness = 1.0;
         let doc = Document {
-            version: 3,
+            version: 4,
             strokes: vec![s],
         };
         let (min, max) = bounds(&doc, &HashSet::from([1])).unwrap();
@@ -276,9 +278,10 @@ mod tests {
                     normal: rotation * Vec3::Z,
                     tangent: rotation * Vec3::X,
                     dynamics: Default::default(),
+                    texture: Default::default(),
                 };
                 let sample = Document {
-                    version: 3,
+                    version: 4,
                     strokes: vec![dot],
                 };
                 let (low, high) = bounds(&sample, &HashSet::from([1])).unwrap();
@@ -298,7 +301,7 @@ mod tests {
         s.brush.dynamics.taper_start = 0.4;
         s.brush.dynamics.taper_end = 0.7;
         let mut doc = Document {
-            version: 3,
+            version: 4,
             strokes: vec![s],
         };
         let original = doc.strokes.clone();

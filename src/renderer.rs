@@ -1,4 +1,5 @@
 use crate::surface::GuidePreview;
+use crate::texture::{self, TextureKind, TextureSettings};
 use crate::{
     document::Document,
     geometry::{self, Camera, Vertex},
@@ -22,6 +23,8 @@ pub struct SceneRenderer {
     lines: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
+    texture_layout: wgpu::BindGroupLayout,
+    textures: HashMap<(TextureKind, u32, u32), wgpu::BindGroup>,
     meshes: HashMap<u64, Mesh>,
     selected: HashSet<u64>,
     grid: Option<(GuidePreview, Mesh)>,
@@ -66,15 +69,36 @@ impl SceneRenderer {
                 resource: uniform.as_entire_binding(),
             }],
         });
+        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Brush mask layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&layout],
+            bind_group_layouts: &[&layout, &texture_layout],
             push_constant_ranges: &[],
         });
         let create = |topology| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:Some("3D strokes"),layout:Some(&pipeline_layout),
-            vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3]}]},
+            vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2]}]},
             fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some("fs_main"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),
             primitive:wgpu::PrimitiveState {topology,cull_mode:None,..Default::default()},
             depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:topology != wgpu::PrimitiveTopology::LineList,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
@@ -91,12 +115,73 @@ impl SceneRenderer {
             lines,
             uniform,
             bind,
+            texture_layout,
+            textures: HashMap::new(),
             meshes: HashMap::new(),
             selected: HashSet::new(),
             grid: None,
             target: None,
             adapter,
         }
+    }
+    fn create_mask(&self, settings: TextureSettings) -> wgpu::BindGroup {
+        let device = &self.state.device;
+        let mask = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Procedural brush mask"),
+            size: wgpu::Extent3d {
+                width: texture::SIZE,
+                height: texture::SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.state.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &mask,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &texture::rgba(settings),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(texture::SIZE * 4),
+                rows_per_image: Some(texture::SIZE),
+            },
+            wgpu::Extent3d {
+                width: texture::SIZE,
+                height: texture::SIZE,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = mask.create_view(&Default::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Repeat brush mask"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Brush mask"),
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        })
     }
     pub fn invalidate(&mut self) {
         self.meshes.clear();
@@ -184,6 +269,21 @@ impl SceneRenderer {
             );
             self.target = Some((view, depth_view, id, size));
         }
+        let solid = TextureSettings::default();
+        let needed: HashSet<_> = doc
+            .strokes
+            .iter()
+            .map(|s| texture::key(s.brush.texture))
+            .chain(std::iter::once(texture::key(solid)))
+            .collect();
+        self.textures.retain(|key, _| needed.contains(key));
+        for settings in std::iter::once(solid).chain(doc.strokes.iter().map(|s| s.brush.texture)) {
+            let key = texture::key(settings);
+            if !self.textures.contains_key(&key) {
+                let bind = self.create_mask(settings);
+                self.textures.insert(key, bind);
+            }
+        }
         let ids: HashSet<u64> = doc.strokes.iter().map(|s| s.id).collect();
         self.meshes.retain(|id, _| ids.contains(id));
         for stroke in &doc.strokes {
@@ -264,6 +364,7 @@ impl SceneRenderer {
                 occlusion_query_set: None,
             });
             pass.set_bind_group(0, &self.bind, &[]);
+            pass.set_bind_group(1, &self.textures[&texture::key(solid)], &[]);
             pass.set_pipeline(&self.lines);
             if let Some((_, mesh)) = &self.grid {
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
@@ -272,6 +373,11 @@ impl SceneRenderer {
             pass.set_pipeline(&self.triangles);
             for stroke in &doc.strokes {
                 if let Some(mesh) = self.meshes.get(&stroke.id) {
+                    pass.set_bind_group(
+                        1,
+                        &self.textures[&texture::key(stroke.brush.texture)],
+                        &[],
+                    );
                     pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                     pass.draw(0..mesh.count, 0..1);
                 }

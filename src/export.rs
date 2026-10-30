@@ -2,6 +2,7 @@
 use crate::{
     document::{BrushKind, Document, Stroke},
     geometry,
+    texture::{self, TextureKind},
 };
 use glam::Vec3;
 use serde::Serialize;
@@ -26,7 +27,7 @@ pub struct EncodedGlb {
     pub summary: ExportSummary,
 }
 struct Mesh {
-    vertices: Vec<[f32; 6]>,
+    vertices: Vec<[f32; 8]>,
     indices: Vec<u32>,
     min: Vec3,
     max: Vec3,
@@ -81,13 +82,14 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
         min: Vec3::splat(f32::INFINITY),
         max: Vec3::splat(f32::NEG_INFINITY),
     };
-    let mut unique = HashMap::<[u32; 6], u32>::new();
+    let mut unique = HashMap::<[u32; 8], u32>::new();
     for triangle in source.as_chunks::<3>().0 {
         let mut triangle = *triangle;
-        if triangle
-            .iter()
-            .any(|v| !Vec3::from(v.position).is_finite() || !Vec3::from(v.normal).is_finite())
-        {
+        if triangle.iter().any(|v| {
+            !Vec3::from(v.position).is_finite()
+                || !Vec3::from(v.normal).is_finite()
+                || v.uv.iter().any(|u| !u.is_finite())
+        }) {
             return Err(format!(
                 "Stroke {} generated non-finite geometry",
                 stroke.id
@@ -110,7 +112,7 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
             let n = Vec3::from(vertex.normal)
                 .try_normalize()
                 .unwrap_or_else(|| face.normalize());
-            let data = [p.x, p.y, p.z, n.x, n.y, n.z];
+            let data = [p.x, p.y, p.z, n.x, n.y, n.z, vertex.uv[0], vertex.uv[1]];
             let key = data.map(f32::to_bits);
             let index = if let Some(index) = unique.get(&key) {
                 *index
@@ -129,7 +131,7 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
     Ok(mesh)
 }
 pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=3) {
+    if !matches!(doc.version, 1..=4) {
         return Err("Unsupported source document version".into());
     }
     let mut binary = Vec::new();
@@ -139,6 +141,9 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
     let mut nodes = Vec::new();
     let mut materials = Vec::new();
     let mut colors = HashMap::new();
+    let mut image_keys = HashMap::new();
+    let mut images = Vec::new();
+    let mut textures = Vec::new();
     let mut ids = HashSet::new();
     let mut summary = ExportSummary {
         strokes: 0,
@@ -162,7 +167,7 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         let extra = mesh
             .vertices
             .len()
-            .checked_mul(24)
+            .checked_mul(32)
             .and_then(|n| n.checked_add(mesh.indices.len() * 4))
             .ok_or("Export size overflow")?;
         if binary.len().saturating_add(extra) > MAX_BINARY_BYTES {
@@ -177,11 +182,13 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
             }
         }
         let vertex_view = views.len();
-        views.push(json!({"buffer":0,"byteOffset":vertex_offset,"byteLength":mesh.vertices.len()*24,"byteStride":24,"target":34962}));
+        views.push(json!({"buffer":0,"byteOffset":vertex_offset,"byteLength":mesh.vertices.len()*32,"byteStride":32,"target":34962}));
         let position = accessors.len();
         accessors.push(json!({"bufferView":vertex_view,"byteOffset":0,"componentType":5126,"count":mesh.vertices.len(),"type":"VEC3","min":mesh.min.to_array(),"max":mesh.max.to_array()}));
         let normal = accessors.len();
         accessors.push(json!({"bufferView":vertex_view,"byteOffset":12,"componentType":5126,"count":mesh.vertices.len(),"type":"VEC3"}));
+        let uv = accessors.len();
+        accessors.push(json!({"bufferView":vertex_view,"byteOffset":24,"componentType":5126,"count":mesh.vertices.len(),"type":"VEC2"}));
         let index_offset = binary.len();
         for index in &mesh.indices {
             binary.extend_from_slice(&index.to_le_bytes());
@@ -191,18 +198,52 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         let indices = accessors.len();
         accessors.push(json!({"bufferView":index_view,"componentType":5125,"count":mesh.indices.len(),"type":"SCALAR"}));
         let double_sided = stroke.brush.kind == BrushKind::Ribbon;
-        let key = (stroke.color.map(f32::to_bits), double_sided);
+        let settings = stroke.brush.texture;
+        let texture_key = (settings.kind != TextureKind::Solid).then(|| texture::key(settings));
+        let key = (stroke.color.map(f32::to_bits), double_sided, texture_key);
         let material = if let Some(index) = colors.get(&key) {
             *index
         } else {
             let index = materials.len();
-            materials.push(json!({"name":format!("Ink {}",index+1),"pbrMetallicRoughness":{"baseColorFactor":[stroke.color[0],stroke.color[1],stroke.color[2],1.0],"metallicFactor":0.0,"roughnessFactor":0.8},"alphaMode":"OPAQUE","doubleSided":double_sided}));
+            let mut material = json!({"name":format!("Ink {}",index+1),"pbrMetallicRoughness":{"baseColorFactor":[stroke.color[0],stroke.color[1],stroke.color[2],1.0],"metallicFactor":0.0,"roughnessFactor":0.8},"alphaMode":"OPAQUE","doubleSided":double_sided});
+            if let Some(texture_key) = texture_key {
+                let image_index = if let Some(index) = image_keys.get(&texture_key) {
+                    *index
+                } else {
+                    let png = texture::png(settings)?;
+                    while !binary.len().is_multiple_of(4) {
+                        binary.push(0);
+                    }
+                    if binary.len().saturating_add(png.len()).saturating_add(3) > MAX_BINARY_BYTES {
+                        return Err(
+                            "Export exceeds the 128 MiB binary limit including textures".into()
+                        );
+                    }
+                    let offset = binary.len();
+                    binary.extend_from_slice(&png);
+                    let view = views.len();
+                    views.push(json!({"buffer":0,"byteOffset":offset,"byteLength":png.len()}));
+                    while !binary.len().is_multiple_of(4) {
+                        binary.push(0);
+                    }
+                    let index = images.len();
+                    images.push(json!({"name":format!("{} mask",settings.kind.label()),"bufferView":view,"mimeType":"image/png"}));
+                    textures.push(json!({"sampler":0,"source":index}));
+                    image_keys.insert(texture_key, index);
+                    index
+                };
+                material["alphaMode"] = json!("MASK");
+                material["alphaCutoff"] = json!(0.5);
+                material["pbrMetallicRoughness"]["baseColorTexture"] =
+                    json!({"index":image_index,"texCoord":0});
+            }
+            materials.push(material);
             colors.insert(key, index);
             index
         };
         let mesh_index = meshes.len();
         let name = format!("Stroke_{}", stroke.id);
-        meshes.push(json!({"name":name,"primitives":[{"attributes":{"POSITION":position,"NORMAL":normal},"indices":indices,"material":material,"mode":4}]}));
+        meshes.push(json!({"name":name,"primitives":[{"attributes":{"POSITION":position,"NORMAL":normal,"TEXCOORD_0":uv},"indices":indices,"material":material,"mode":4}]}));
         nodes.push(json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string()}}));
         summary.strokes += 1;
         summary.vertices += mesh.vertices.len();
@@ -212,7 +253,12 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         return Err("No drawable strokes to export".into());
     }
     let scene_nodes: Vec<usize> = (0..nodes.len()).collect();
-    let root = json!({"asset":{"version":"2.0","generator":concat!("Spatial Sketch ",env!("CARGO_PKG_VERSION"))},"scene":0,"scenes":[{"name":"Spatial Sketch drawing","nodes":scene_nodes}],"nodes":nodes,"meshes":meshes,"materials":materials,"accessors":accessors,"bufferViews":views,"buffers":[{"byteLength":binary.len()}],"extras":{"sourceFormat":format!("Spatial Sketch version {}",doc.version),"unitInMeters":1.0,"axes":"+X right, +Y up, +Z front","scope":if selected.is_some(){"selection"}else{"all strokes"}}});
+    let mut root = json!({"asset":{"version":"2.0","generator":concat!("Spatial Sketch ",env!("CARGO_PKG_VERSION"))},"scene":0,"scenes":[{"name":"Spatial Sketch drawing","nodes":scene_nodes}],"nodes":nodes,"meshes":meshes,"materials":materials,"accessors":accessors,"bufferViews":views,"buffers":[{"byteLength":binary.len()}],"extras":{"sourceFormat":format!("Spatial Sketch version {}",doc.version),"unitInMeters":1.0,"axes":"+X right, +Y up, +Z front","scope":if selected.is_some(){"selection"}else{"all strokes"}}});
+    if !images.is_empty() {
+        root["images"] = json!(images);
+        root["textures"] = json!(textures);
+        root["samplers"] = json!([{"magFilter":9728,"minFilter":9728,"wrapS":10497,"wrapT":10497}]);
+    }
     let mut json =
         serde_json::to_vec(&root).map_err(|e| format!("Could not encode export metadata: {e}"))?;
     while !json.len().is_multiple_of(4) {
@@ -428,7 +474,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 3);
+        assert_eq!(loaded.version, 4);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -493,6 +539,113 @@ mod tests {
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 2);
         assert_eq!(gltf.materials().count(), 1);
+    }
+    #[test]
+    fn textured_glb_embeds_masks_and_preserves_uvs_and_coverage() {
+        let doc = crate::export_check::textured_fixture();
+        let original = doc.strokes.clone();
+        let exported = encode(&doc, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
+        assert_eq!(gltf.images().count(), 3);
+        assert_eq!(gltf.textures().count(), 3);
+        for image in gltf.images() {
+            let gltf::image::Source::View { view, mime_type } = image.source() else {
+                panic!("texture must be embedded")
+            };
+            assert_eq!(mime_type, "image/png");
+            let bytes = &gltf.blob.as_ref().unwrap()[view.offset()..view.offset() + view.length()];
+            let pixels = image::load_from_memory(bytes).unwrap().to_rgba8();
+            assert_eq!(pixels.dimensions(), (texture::SIZE, texture::SIZE));
+            let mut coverage = [0usize; 2];
+            for pixel in pixels.pixels() {
+                assert_eq!(&pixel.0[..3], &[255; 3]);
+                assert!(matches!(pixel.0[3], 0 | 255));
+                coverage[usize::from(pixel.0[3] == 255)] += 1;
+            }
+            assert!(coverage.iter().all(|n| *n > 0));
+        }
+        for (mesh, stroke) in gltf.meshes().zip(&doc.strokes) {
+            let primitive = mesh.primitives().next().unwrap();
+            let reader = primitive.reader(|_| gltf.blob.as_deref());
+            let uvs: Vec<_> = reader.read_tex_coords(0).unwrap().into_f32().collect();
+            assert!(!uvs.is_empty() && uvs.iter().flatten().all(|u| u.is_finite()));
+            let material = primitive.material();
+            assert_eq!(
+                material.pbr_metallic_roughness().base_color_factor(),
+                [stroke.color[0], stroke.color[1], stroke.color[2], 1.0]
+            );
+            if stroke.brush.texture.kind == TextureKind::Solid {
+                assert_eq!(material.alpha_mode(), gltf::material::AlphaMode::Opaque);
+                assert!(material
+                    .pbr_metallic_roughness()
+                    .base_color_texture()
+                    .is_none());
+            } else {
+                assert_eq!(material.alpha_mode(), gltf::material::AlphaMode::Mask);
+                assert_eq!(material.alpha_cutoff(), Some(0.5));
+                let tex = material
+                    .pbr_metallic_roughness()
+                    .base_color_texture()
+                    .unwrap();
+                assert_eq!(tex.tex_coord(), 0);
+                let sampler = tex.texture().sampler();
+                assert_eq!(sampler.wrap_s(), gltf::texture::WrappingMode::Repeat);
+                assert_eq!(sampler.wrap_t(), gltf::texture::WrappingMode::Repeat);
+                assert_eq!(
+                    sampler.mag_filter(),
+                    Some(gltf::texture::MagFilter::Nearest)
+                );
+                assert_eq!(
+                    sampler.min_filter(),
+                    Some(gltf::texture::MinFilter::Nearest)
+                );
+            }
+            let expected = geometry::stroke_mesh(stroke);
+            for uv in &uvs {
+                assert!(expected.iter().any(|v| v.uv == *uv));
+            }
+        }
+        assert_eq!(doc.strokes, original);
+    }
+    #[test]
+    fn masks_share_images_across_uv_scale_but_not_seeds_and_selection_is_self_contained() {
+        let mut a = stroke(1, [0.5; 3]);
+        a.brush.texture.kind = TextureKind::Grain;
+        let mut b = a.clone();
+        b.id = 2;
+        b.brush.texture.scale *= 2.0;
+        let mut c = a.clone();
+        c.id = 3;
+        c.brush.texture.seed += 1;
+        let doc = Document {
+            strokes: vec![a, b, c],
+            ..Document::default()
+        };
+        let exported = encode(&doc, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
+        assert_eq!(gltf.images().count(), 2);
+        assert_eq!(gltf.materials().count(), 2);
+        let selected = encode(&doc, Some(&HashSet::from([2]))).unwrap();
+        let gltf = gltf::Gltf::from_slice(&selected.bytes).unwrap();
+        assert_eq!(gltf.meshes().count(), 1);
+        assert_eq!(gltf.images().count(), 1);
+        let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(loaded.strokes, doc.strokes);
+        assert_eq!(encode(&loaded, None).unwrap().bytes, exported.bytes);
+        let mut legacy = doc.clone();
+        legacy.version = 3;
+        let migrated = Document::from_json(&serde_json::to_string(&legacy).unwrap()).unwrap();
+        assert!(migrated
+            .strokes
+            .iter()
+            .all(|s| s.brush.texture.kind == TextureKind::Solid));
+        assert_eq!(
+            gltf::Gltf::from_slice(&encode(&migrated, None).unwrap().bytes)
+                .unwrap()
+                .images()
+                .count(),
+            0
+        );
     }
     #[test]
     fn failures_leave_existing_destination_untouched() {

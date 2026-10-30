@@ -7,6 +7,7 @@ pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub color: [f32; 3],
+    pub uv: [f32; 2],
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Plane {
@@ -194,7 +195,21 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
         // Transport the last ring axis along the curve instead of switching bases.
         let a = previous_axis
             .and_then(|axis| (axis - tangent * axis.dot(tangent)).try_normalize())
-            .unwrap_or_else(|| tangent.cross(helper).normalize());
+            .unwrap_or_else(|| {
+                if stroke.brush.texture.kind == crate::texture::TextureKind::Solid {
+                    tangent.cross(helper).normalize()
+                } else {
+                    frame_direction(
+                        stroke.brush.normal - tangent * stroke.brush.normal.dot(tangent),
+                    )
+                    .or_else(|| {
+                        frame_direction(
+                            stroke.brush.tangent - tangent * stroke.brush.tangent.dot(tangent),
+                        )
+                    })
+                    .unwrap_or_else(|| tangent.cross(helper).normalize())
+                }
+            });
         previous_axis = Some(a);
         let b = tangent.cross(a).normalize();
         let radius = stroke.radius
@@ -213,6 +228,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
                     position: (p.position + normal * radius).to_array(),
                     normal: normal.to_array(),
                     color: stroke.color,
+                    uv: [distances[i] / stroke.brush.texture.scale, j as f32 / 8.0],
                 }
             })
             .collect();
@@ -222,14 +238,29 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
         let p = stroke.points[0];
         let r = stroke.radius
             * crate::dynamics::pressure_scale(stroke.brush.dynamics.width, p.pressure);
+        let textured = stroke.brush.texture.kind != crate::texture::TextureKind::Solid;
+        let frame = if textured {
+            Mat3::from_cols(
+                stroke.brush.tangent,
+                stroke.brush.normal.cross(stroke.brush.tangent),
+                stroke.brush.normal,
+            )
+        } else {
+            Mat3::IDENTITY
+        };
         let axes = [Vec3::X, Vec3::Z, -Vec3::X, -Vec3::Z];
         for up in [Vec3::Y, -Vec3::Y] {
             for i in 0..4 {
-                for normal in [up, axes[i], axes[(i + 1) % 4]] {
+                for local in [up, axes[i], axes[(i + 1) % 4]] {
+                    let normal = frame * local;
                     out.push(Vertex {
                         position: (p.position + normal * r).to_array(),
                         normal: normal.to_array(),
                         color: stroke.color,
+                        uv: [
+                            0.5 + local.x * r / stroke.brush.texture.scale,
+                            0.5 + local.y * r / stroke.brush.texture.scale,
+                        ],
                     });
                 }
             }
@@ -239,9 +270,15 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
     for pair in rings.windows(2) {
         for j in 0..8 {
             let k = (j + 1) % 8;
-            out.extend_from_slice(&[
-                pair[0][j], pair[1][j], pair[1][k], pair[0][j], pair[1][k], pair[0][k],
-            ]);
+            let mut next0 = pair[0][k];
+            let mut next1 = pair[1][k];
+            // The same spatial seam vertex needs both V=0 and V=1. Do not
+            // interpolate across the complete tile on the final ring segment.
+            if k == 0 {
+                next0.uv[1] = 1.0;
+                next1.uv[1] = 1.0;
+            }
+            out.extend_from_slice(&[pair[0][j], pair[1][j], next1, pair[0][j], next1, next0]);
         }
     }
     for (index, ring) in [(0, &rings[0]), (rings.len() - 1, rings.last().unwrap())] {
@@ -249,9 +286,20 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
             position: stroke.points[index].position.to_array(),
             normal: [0.0, 0.0, 1.0],
             color: stroke.color,
+            uv: [0.5, 0.5],
+        };
+        let radius = Vec3::from(ring[0].position).distance(stroke.points[index].position);
+        let cap_vertex = |j: usize| {
+            let mut vertex = ring[j % 8];
+            let angle = j as f32 * std::f32::consts::TAU / 8.0;
+            vertex.uv = [
+                0.5 + angle.cos() * radius / stroke.brush.texture.scale,
+                0.5 + angle.sin() * radius / stroke.brush.texture.scale,
+            ];
+            vertex
         };
         for j in 0..8 {
-            out.extend_from_slice(&[center, ring[j], ring[(j + 1) % 8]]);
+            out.extend_from_slice(&[center, cap_vertex(j), cap_vertex(j + 1)]);
         }
     }
     out
@@ -361,6 +409,7 @@ struct BrushFrame {
     tangent: Vec3,
     radius: f32,
     half_thickness: f32,
+    u: f32,
 }
 
 fn perpendicular(normal: Vec3) -> Vec3 {
@@ -458,6 +507,7 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
         );
         frames.push(BrushFrame {
             center: point.position,
+            u: distances[i] / stroke.brush.texture.scale,
             width,
             normal: tangent.cross(width).normalize(),
             tangent,
@@ -473,32 +523,48 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
     frames
 }
 
-fn flat_triangle(out: &mut Vec<Vertex>, mut positions: [Vec3; 3], outward: Vec3, color: [f32; 3]) {
+fn flat_triangle(
+    out: &mut Vec<Vertex>,
+    mut positions: [Vec3; 3],
+    mut uv: [[f32; 2]; 3],
+    outward: Vec3,
+    color: [f32; 3],
+) {
     let cross = (positions[1] - positions[0]).cross(positions[2] - positions[0]);
     let Some(mut normal) = cross.try_normalize() else {
         return;
     };
     if normal.dot(outward) < 0.0 {
         positions.swap(1, 2);
+        uv.swap(1, 2);
         normal = -normal;
     }
-    out.extend(positions.map(|position| Vertex {
+    out.extend(positions.into_iter().zip(uv).map(|(position, uv)| Vertex {
         position: position.to_array(),
         normal: normal.to_array(),
         color,
+        uv,
     }));
 }
 
-fn flat_quad(out: &mut Vec<Vertex>, positions: [Vec3; 4], outward: Vec3, color: [f32; 3]) {
+fn flat_quad(
+    out: &mut Vec<Vertex>,
+    positions: [Vec3; 4],
+    uv: [[f32; 2]; 4],
+    outward: Vec3,
+    color: [f32; 3],
+) {
     flat_triangle(
         out,
         [positions[0], positions[1], positions[2]],
+        [uv[0], uv[1], uv[2]],
         outward,
         color,
     );
     flat_triangle(
         out,
         [positions[0], positions[2], positions[3]],
+        [uv[0], uv[2], uv[3]],
         outward,
         color,
     );
@@ -511,7 +577,8 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
         return out;
     };
     if frames.len() == 1 {
-        // A tap has a finite footprint in the guide plane, even for a thin ribbon.
+        // A tap has a finite footprint in its frozen frame. Its longitudinal
+        // texture scale follows the same world period as a full stroke.
         let f = first;
         let a = f.width * f.radius;
         let b = f.tangent * f.radius;
@@ -526,9 +593,22 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
             f.center - a - b,
             f.center + a - b,
         ];
-        flat_quad(&mut out, corners.map(|p| p + h), f.normal, stroke.color);
+        let r = f.radius / stroke.brush.texture.scale;
+        let uv = [
+            [0.5 + r, 1.0],
+            [0.5 + r, 0.0],
+            [0.5 - r, 0.0],
+            [0.5 - r, 1.0],
+        ];
+        flat_quad(&mut out, corners.map(|p| p + h), uv, f.normal, stroke.color);
         if stroke.brush.kind == BrushKind::Chisel {
-            flat_quad(&mut out, corners.map(|p| p - h), -f.normal, stroke.color);
+            flat_quad(
+                &mut out,
+                corners.map(|p| p - h),
+                uv,
+                -f.normal,
+                stroke.color,
+            );
             for j in 0..4 {
                 let k = (j + 1) % 4;
                 let outward = (corners[j] + corners[k]) * 0.5 - f.center;
@@ -540,6 +620,7 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                         corners[k] - h,
                         corners[j] - h,
                     ],
+                    [uv[j], uv[k], uv[k], uv[j]],
                     outward,
                     stroke.color,
                 );
@@ -558,6 +639,7 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                     b.center + b.width * b.radius,
                     b.center - b.width * b.radius,
                 ],
+                [[a.u, 0.0], [a.u, 1.0], [b.u, 1.0], [b.u, 0.0]],
                 a.normal + b.normal,
                 stroke.color,
             );
@@ -579,21 +661,47 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
             for j in 0..4 {
                 let k = (j + 1) % 4;
                 let outward = (ar[j] + ar[k] - a.center * 2.0) + (br[j] + br[k] - b.center * 2.0);
+                // Unwrap the complete rectangular perimeter, with a duplicated
+                // seam at V=1. Adjacent faces agree at every shared edge.
+                let v = j as f32 / 4.0;
+                let next = (j + 1) as f32 / 4.0;
                 flat_quad(
                     &mut out,
                     [ar[j], br[j], br[k], ar[k]],
+                    [[a.u, v], [b.u, v], [b.u, next], [a.u, next]],
                     outward,
                     stroke.color,
                 );
             }
         }
-        flat_quad(&mut out, ring(*first), -first.tangent, stroke.color);
+        let cap_uv = |f: &BrushFrame| {
+            let width = f.radius / stroke.brush.texture.scale;
+            let height = f.half_thickness / stroke.brush.texture.scale;
+            [
+                [0.5 + width, 0.5 + height],
+                [0.5 - width, 0.5 + height],
+                [0.5 - width, 0.5 - height],
+                [0.5 + width, 0.5 - height],
+            ]
+        };
+        flat_quad(
+            &mut out,
+            ring(*first),
+            cap_uv(first),
+            -first.tangent,
+            stroke.color,
+        );
         let last = frames.last().unwrap();
-        flat_quad(&mut out, ring(*last), last.tangent, stroke.color);
+        flat_quad(
+            &mut out,
+            ring(*last),
+            cap_uv(last),
+            last.tangent,
+            stroke.color,
+        );
     }
     out
 }
-
 pub fn grid(plane: DrawingPlane) -> Vec<Vertex> {
     let (u, v, _) = plane.basis();
     let origin = plane.origin();
@@ -610,6 +718,7 @@ pub fn grid(plane: DrawingPlane) -> Vec<Vertex> {
                 vertices.push(Vertex {
                     position: (origin + a * i as f32 * 0.5 + b * 6.0 * sign).to_array(),
                     normal: [0.0; 3],
+                    uv: [0.0; 2],
                     color,
                 });
             }
@@ -1149,6 +1258,148 @@ mod seam_dynamics_tests {
             assert!(mesh
                 .iter()
                 .all(|v| Vec3::from(v.position).is_finite() && Vec3::from(v.normal).is_finite()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod texture_uv_tests {
+    use super::*;
+    use crate::{
+        document::{Brush, Point},
+        texture::TextureKind,
+    };
+
+    fn mark(kind: BrushKind, positions: Vec<Vec3>) -> Stroke {
+        let mut brush = Brush {
+            kind,
+            ..Brush::default()
+        };
+        brush.texture.kind = TextureKind::Grain;
+        brush.texture.scale = 0.2;
+        Stroke {
+            id: 1,
+            color: [0.5; 3],
+            radius: 0.1,
+            brush,
+            points: positions
+                .into_iter()
+                .map(|position| Point {
+                    position,
+                    pressure: 1.0,
+                    tilt: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn side_uvs_use_path_distance_and_duplicate_perimeter_seams() {
+        for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
+            for xs in [vec![0.0, 0.5, 1.0], vec![0.0, 0.25, 0.5, 0.75, 1.0]] {
+                let stroke = mark(kind, xs.into_iter().map(|x| Vec3::X * x).collect());
+                let mesh = stroke_mesh(&stroke);
+                let per_segment = match kind {
+                    BrushKind::Round => 48,
+                    BrushKind::Ribbon => 6,
+                    BrushKind::Chisel => 24,
+                };
+                let sides = &mesh[..(stroke.points.len() - 1) * per_segment];
+                for v in sides {
+                    assert!((v.uv[0] - v.position[0] / stroke.brush.texture.scale).abs() < 1e-6);
+                    assert!((0.0..=1.0).contains(&v.uv[1]));
+                }
+                assert!(sides.iter().any(|v| v.uv[1] == 0.0));
+                assert!(sides.iter().any(|v| v.uv[1] == 1.0));
+                if kind == BrushKind::Round {
+                    for triangle in sides.as_chunks::<3>().0 {
+                        let min = triangle
+                            .iter()
+                            .map(|v| v.uv[1])
+                            .fold(f32::INFINITY, f32::min);
+                        let max = triangle
+                            .iter()
+                            .map(|v| v.uv[1])
+                            .fold(f32::NEG_INFINITY, f32::max);
+                        assert!(
+                            max - min <= 0.125 + 1e-6,
+                            "ring seam must not span the tile"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn frozen_uvs_and_textured_geometry_survive_rigid_transform_and_uniform_scale() {
+        let rotation = Quat::from_euler(glam::EulerRot::XYZ, 0.4, -0.6, 1.1);
+        let translation = Vec3::new(1.0, -0.4, 0.2);
+        for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
+            for positions in [
+                vec![Vec3::ZERO],
+                vec![Vec3::ZERO, Vec3::X, Vec3::new(1.4, 0.6, 0.2)],
+            ] {
+                let stroke = mark(kind, positions);
+                let before = stroke_mesh(&stroke);
+                let transformed = crate::editing::transformed(
+                    &vec![(0, stroke)],
+                    Vec3::ZERO,
+                    translation,
+                    rotation,
+                    1.6,
+                )
+                .unwrap();
+                let after = stroke_mesh(&transformed[0].1);
+                assert_eq!(before.len(), after.len());
+                for (a, b) in before.iter().zip(&after) {
+                    assert!(Vec2::from(a.uv).distance(Vec2::from(b.uv)) < 1e-5);
+                    assert!(
+                        (rotation * (Vec3::from(a.position) * 1.6) + translation)
+                            .distance(Vec3::from(b.position))
+                            < 1e-5
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cylinder_seam_uvs_have_continuous_distance_without_angular_reset() {
+        use crate::surface::{Cylinder, Surface, SurfaceStabilizer};
+        let cylinder = Cylinder::default();
+        let mut filter = SurfaceStabilizer::default();
+        filter.start(Surface::Cylinder(cylinder));
+        let mut points = Vec::new();
+        for angle in [std::f32::consts::PI - 0.2, -std::f32::consts::PI + 0.2] {
+            points.extend(filter.push(
+                Point {
+                    position: cylinder.point(angle, 0.2),
+                    pressure: 1.0,
+                    tilt: None,
+                },
+                0.0,
+            ));
+        }
+        points.extend(filter.finish());
+        let mut stroke = mark(BrushKind::Ribbon, Vec::new());
+        stroke.points = points;
+        let frames = brush_frames(&stroke);
+        assert!(frames
+            .windows(2)
+            .all(|f| f[1].u >= f[0].u && f[1].u - f[0].u < 0.18));
+        assert!((frames.last().unwrap().u - 2.0).abs() < 0.001);
+        for triangle in stroke_mesh(&stroke).as_chunks::<3>().0 {
+            let min = triangle
+                .iter()
+                .map(|v| v.uv[0])
+                .fold(f32::INFINITY, f32::min);
+            let max = triangle
+                .iter()
+                .map(|v| v.uv[0])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!(max - min < 0.18);
+            assert!(triangle.iter().all(|v| Vec2::from(v.uv).is_finite()));
         }
     }
 }

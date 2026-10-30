@@ -28,6 +28,7 @@ impl SketchApp {
             }
             ui.small("Orientation starts from the guide, then follows the stroke. Orbit to view it from either side.");
         }
+        self.texture_controls(ui);
         self.dynamics_controls(ui);
         if self.brush != before {
             self.finish();
@@ -175,7 +176,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 3);
+                assert_eq!(loaded.version, 4);
                 assert_eq!(loaded.strokes, original);
                 self.load_brushes();
                 self.brush = Brush {

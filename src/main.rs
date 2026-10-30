@@ -13,8 +13,17 @@ mod renderer;
 mod scenes;
 mod stabilizer;
 mod surface;
+mod texture;
+mod texture_check;
 
 fn main() -> eframe::Result {
+    if std::env::args().any(|a| a == "--benchmark-textures") {
+        if let Err(error) = texture_check::run() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--verify-export") {
         if let Err(error) = export_check::run() {
             eprintln!("{error}");

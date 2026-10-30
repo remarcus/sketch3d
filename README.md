@@ -77,7 +77,7 @@ Brush radius is in world units, so its visible size changes with camera distance
 
 ## Documents
 
-Documents use a versioned `.sketch.json` format with positions in world space. Version 3 stores brush shapes, dynamics, raw pressure, optional world-space pen lean, and frozen orientation. Version-1/2 drawings upgrade on load while preserving their existing appearance and baked pressure response. Older application versions cannot open version-3 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. There is no autosave or crash recovery yet; save regularly.
+Documents use a versioned `.sketch.json` format with positions in world space. Version 4 adds procedural texture settings to brush shapes, dynamics, raw pressure, optional world-space pen lean, and frozen orientation. Version-1/2/3 drawings upgrade on load with solid ink and their existing appearance preserved. Older application versions cannot open version-4 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. There is no autosave or crash recovery yet; save regularly.
 
 ## Development
 
@@ -98,7 +98,7 @@ The immediate hardware test is pressure and tilt on the Wacom, followed by the K
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
-Next planned work is built-in textures and local presets (SKETCH-011–012). Soft/transparent brushes follow separately; brush-library importing remains deferred.
+Next planned work is the local brush preset library (SKETCH-012). Soft/transparent brushes follow separately; brush-library importing remains deferred.
 
 ## License
 
@@ -200,7 +200,7 @@ One drawing world unit exports as **one meter**, with right-handed +X right, +Y 
 cargo run --release -- --verify-export
 ```
 
-This creates `verification/exports/house.glb`, `lantern.glb`, `pressure.glb`, `brushes.glb`, `dynamics.glb`, `selection.glb`, and a source-geometry manifest. The normal `--verify` workflow also exercises the asynchronous UI path and verifies that source geometry, file identity, dirty state, selection, and undo/redo depths remain unchanged.
+This creates `verification/exports/house.glb`, `lantern.glb`, `pressure.glb`, `brushes.glb`, `dynamics.glb`, `textures.glb`, `selection.glb`, and a source-geometry manifest. The normal `--verify` workflow also exercises the asynchronous UI path and verifies that source geometry, file identity, dirty state, selection, and undo/redo depths remain unchanged.
 
 To validate fixtures using the official Khronos validator, from the project root:
 
@@ -221,7 +221,7 @@ Format reference: [Khronos glTF 2.0 specification](https://registry.khronos.org/
 
 ## Brush shapes — SKETCH-009
 
-Choose **Round**, **Ribbon**, or **Flat / chisel** in the brush panel. Round preserves the original tube profile. Ribbon makes a thin strip visible from either side. Flat/chisel makes a solid rectangular strip; its **Thickness** setting is a percentage of the full width. **Radius / Half width** controls world-space size. All three support configurable pressure width; chisel thickness has an independent pressure response. Textures remain a future task.
+Choose **Round**, **Ribbon**, or **Flat / chisel** in the brush panel. Round preserves the original tube profile. Ribbon makes a thin strip visible from either side. Flat/chisel makes a solid rectangular strip; its **Thickness** setting is a percentage of the full width. **Radius / Half width** controls world-space size. All three support configurable pressure width; chisel thickness has an independent pressure response. Built-in masked textures are described below.
 
 **Angle** rotates ribbon/chisel cross-sections around the stroke direction. The starting frame comes from the drawing plane or the cylinder surface at first contact. It is transported smoothly along the path; it does not face the camera, and changing the guide or active brush leaves existing strokes fixed. Transport along a complex 3D curve can twist relative to the guide surface. Taps produce a finite patch or solid stamp. Ribbons have no physical thickness; they appear edge-on when viewed along their surface.
 
@@ -240,3 +240,15 @@ Expand **Pressure, tilt & taper** in the brush panel. Enable **Pressure: width**
 New strokes retain raw pressure, optional normalized pen lean, and a copy of all dynamics settings. Changing controls affects future strokes. Pen-up pressure/tilt is excluded, cancellation discards the unfinished stroke, and each completed stroke remains one undo step. Existing v1/v2 files retain their baked response through migration. GLB bakes the same dimensions, orientation, and taper as the viewport.
 
 **Dynamics** opens an editable four-row study: pressure width, independent pressure thickness, tilt ribbon, and distance taper. Start with `cargo run --release -- --dynamics`. Run `cargo run --release -- --verify-dynamics` for synthetic pen contact/release/cancellation, missing-tilt fallback, persistence, and GPU verification; outputs are `verification/dynamics-report.json` and `verification/dynamics-preview.png`. These software tests do not replace physical tablet testing.
+
+## Built-in textures — SKETCH-011
+
+Expand **Surface texture** to choose **Solid**, **Grain / chalk**, **Dry brush**, or **Diamond pattern**. **Spacing** is the repeat distance along the stroke in world units; across the width/circumference the tile follows the brush section. **Strength** removes more coverage, and **Vary pattern** changes the captured seed. Strength zero is solid. These are opaque masks with holes; soft transparency belongs to SKETCH-013.
+
+Patterns follow distance along ribbon/chisel marks and around round strokes, including dots. They stay attached when orbiting or switching guides. Uniform scale scales the repeat distance with the ink. Rotation, duplication, undo, and save/reload preserve the resolved settings. Picking and erasing use the whole stroke footprint, including visible holes. Selection turns covered ink gold while preserving holes and depth behavior.
+
+**Textures** opens an editable comparison with flat marks, dots, and round companions. Start with `cargo run --release -- --textures`. Run `cargo run --release -- --verify-textures` to verify rendering, selection, transforms, drawing/erasing, and native persistence. Outputs are `verification/texture-report.json` and `verification/texture-preview.png`.
+
+GLB embeds the same original 128×128 PNG masks, UVs, repeat/nearest samplers, original colors, and glTF MASK materials. No image sidecars are needed. The masks are generated by this project under its GPL-3.0-or-later license; no third-party artwork is used. `--verify-export` includes `textures.glb`, and the Blender verifier checks packed image pixels, UV bounds, color factors, and masking.
+
+For reproducible long-stroke measurements, run `cargo run --release -- --benchmark-textures`. It writes `verification/texture-benchmark.json`: five CPU tessellations per 10,000-point ribbon/round mark and PNG-generation time for each style. One local run measured roughly 1.5–1.7 ms per ribbon mesh and 11–12 ms per textured round mesh. These measurements describe this machine and CPU path, not tablet latency or a frame-rate guarantee. Completed meshes and mask bindings are cached; many unique masks consume additional GPU memory.

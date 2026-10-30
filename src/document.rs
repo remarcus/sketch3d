@@ -1,4 +1,5 @@
 pub use crate::dynamics::{Dynamics, PressureMapping};
+use crate::texture::TextureSettings;
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +23,8 @@ pub struct Brush {
     pub tangent: Vec3,
     #[serde(default)]
     pub dynamics: Dynamics,
+    #[serde(default)]
+    pub texture: TextureSettings,
 }
 impl Default for Brush {
     fn default() -> Self {
@@ -32,12 +35,14 @@ impl Default for Brush {
             normal: Vec3::Z,
             tangent: Vec3::X,
             dynamics: Dynamics::default(),
+            texture: TextureSettings::default(),
         }
     }
 }
 impl Brush {
     pub fn is_valid(&self) -> bool {
         self.dynamics.is_valid()
+            && self.texture.is_valid()
             && self.thickness.is_finite()
             && (0.02..=1.0).contains(&self.thickness)
             && self.angle_degrees.is_finite()
@@ -85,7 +90,7 @@ pub struct Document {
 impl Default for Document {
     fn default() -> Self {
         Self {
-            version: 3,
+            version: 4,
             strokes: Vec::new(),
         }
     }
@@ -94,8 +99,19 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=3)) {
+        if !matches!(version, Some(1..=4)) {
             return Err("Unsupported document version".into());
+        }
+        // Versions before 4 rendered every brush as solid. Ignore unknown
+        // texture extensions while preserving all earlier shape/dynamics data.
+        if matches!(version, Some(1..=3)) {
+            if let Some(strokes) = value.get_mut("strokes").and_then(|v| v.as_array_mut()) {
+                for stroke in strokes {
+                    if let Some(brush) = stroke.get_mut("brush").and_then(|b| b.as_object_mut()) {
+                        brush.remove("texture");
+                    }
+                }
+            }
         }
         // Legacy pressure values already include the old response curve.
         // Default dynamics reproduce that profile; ignore unknown newer fields.
@@ -124,7 +140,7 @@ impl Document {
             }
         }
         let mut doc: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
-        doc.version = 3;
+        doc.version = 4;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
         }
@@ -178,6 +194,7 @@ mod tests {
                 normal: Vec3::new(1.0, 2.0, 3.0).normalize(),
                 tangent: Vec3::new(2.0, -1.0, 0.0).normalize(),
                 dynamics: Dynamics::default(),
+                texture: TextureSettings::default(),
             };
             s.brush.dynamics.width.minimum = 0.05;
             s.brush.dynamics.width.curve = 2.0;
@@ -187,11 +204,11 @@ mod tests {
             s.brush.dynamics.tilt_orientation = true;
             s.points[0].tilt = Some(Vec3::X);
             let doc = Document {
-                version: 3,
+                version: 4,
                 strokes: vec![s],
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-            assert_eq!(loaded.version, 3);
+            assert_eq!(loaded.version, 4);
             assert_eq!(loaded.strokes, doc.strokes);
         }
     }
@@ -207,7 +224,7 @@ mod tests {
         // a new shape, or prevent an otherwise valid legacy file from opening.
         old["strokes"][0]["brush"] = serde_json::json!({"kind": "future_brush"});
         let loaded = Document::from_json(&old.to_string()).unwrap();
-        assert_eq!(loaded.version, 3);
+        assert_eq!(loaded.version, 4);
         assert_eq!(loaded.strokes, vec![original]);
         old["strokes"][0].as_object_mut().unwrap().remove("brush");
         let without_extension = Document::from_json(&old.to_string()).unwrap();
@@ -248,7 +265,7 @@ mod tests {
             let mut s = stroke();
             s.brush = brush;
             let doc = Document {
-                version: 3,
+                version: 4,
                 strokes: vec![s],
             };
             assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
@@ -273,7 +290,7 @@ mod tests {
     fn rejects_invalid_documents() {
         assert!(Document::from_json("{\"version\":99,\"strokes\":[]}").is_err());
         let mut doc = Document {
-            version: 3,
+            version: 4,
             strokes: vec![stroke(), stroke()],
         };
         assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
@@ -295,13 +312,13 @@ mod tests {
         value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
         value["strokes"][0]["points"][0]["tilt"] = serde_json::json!("unknown extension");
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 3);
+        assert_eq!(loaded.version, 4);
         assert_eq!(loaded.strokes, vec![original]);
     }
     #[test]
     fn rejects_invalid_dynamics_and_tilt_metadata() {
         let original = Document {
-            version: 3,
+            version: 4,
             strokes: vec![stroke()],
         };
         for dynamics in [
@@ -345,5 +362,47 @@ mod tests {
             ..Dynamics::default()
         }
         .is_valid());
+    }
+    #[test]
+    fn texture_settings_roundtrip_and_legacy_three_remains_solid() {
+        let mut mark = stroke();
+        mark.brush.kind = BrushKind::Ribbon;
+        mark.brush.dynamics.taper_end = 0.7;
+        mark.brush.texture = TextureSettings {
+            kind: crate::texture::TextureKind::DryBrush,
+            scale: 0.37,
+            strength: 0.82,
+            seed: 1234,
+        };
+        let doc = Document {
+            version: 4,
+            strokes: vec![mark.clone()],
+        };
+        let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(loaded.strokes, doc.strokes);
+        let mut legacy = serde_json::to_value(doc).unwrap();
+        legacy["version"] = serde_json::json!(3);
+        legacy["strokes"][0]["brush"]["texture"] = serde_json::json!({"kind":"future_pattern"});
+        let loaded = Document::from_json(&legacy.to_string()).unwrap();
+        mark.brush.texture = TextureSettings::default();
+        assert_eq!(loaded.version, 4);
+        assert_eq!(loaded.strokes, vec![mark]);
+    }
+    #[test]
+    fn document_rejects_invalid_texture_metadata() {
+        for (field, value) in [
+            ("scale", -0.1),
+            ("scale", 11.0),
+            ("strength", 1.1),
+            ("strength", -0.1),
+        ] {
+            let mut doc = serde_json::to_value(Document {
+                version: 4,
+                strokes: vec![stroke()],
+            })
+            .unwrap();
+            doc["strokes"][0]["brush"]["texture"][field] = serde_json::json!(value);
+            assert!(Document::from_json(&doc.to_string()).is_err());
+        }
     }
 }

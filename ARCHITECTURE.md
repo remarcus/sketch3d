@@ -81,7 +81,7 @@ The `gltf` crate is a dev-only independent parser used by unit tests. `export_ch
 
 `geometry::stroke_mesh` is shared by the renderer and exporter. Round uses the legacy tube positions and pressure profile with corrected cap normals and triangle winding. Ribbon/chisel deduplicate coincident samples, derive path tangents, and transport the width axis by projection. A captured tangent resolves dot and normal-parallel cases. Chisel faces use flat normals; ribbons remain geometrically thin and use two-sided rendering/materials. `stroke_extent` conservatively covers cross-sections and dot footprints for selection bounds, picking, and erasing. Existing point-count mesh caching remains valid because shape settings are captured once; transform paths explicitly invalidate changed stroke IDs.
 
-`brushes.rs` owns shape controls, sampler loading, and the software brush workflow. The sampler also serves as an independent GLB export fixture. Textured rendering, brush preset libraries, opacity, and import remain separately tracked tasks.
+`brushes.rs` owns shape controls, sampler loading, and the software brush workflow. The sampler also serves as an independent GLB export fixture. Brush preset libraries, opacity, and import remain separately tracked tasks.
 
 ## Dynamics and version 3
 
@@ -92,3 +92,13 @@ The pen contact path converts screen tilt using the current camera right/up basi
 Geometry maps physical width and chisel thickness independently and applies the minimum of distance-from-start/end taper ramps. It inserts up to three private distance landmarks before tessellation, so a sparse two-point stroke reaches the same taper extrema as a denser straight path. Native samples remain unchanged. A 1% taper floor retains nonzero tips; zero pressure minima may intentionally collapse a dimension. Radius, taper distances, and tilt/frame vectors transform together. Renderer and GLB export share the mesh dispatcher, with export budgets allowing for landmark vertices.
 
 `brush_dynamics.rs` owns controls, the editable dynamics study, and a synthetic pen lifecycle smoke test. Hardware orientation/calibration and latency still need real-device validation.
+
+## Masked textures and version 4
+
+`texture.rs` generates original deterministic white/binary-alpha tiles from kind, strength, and seed. Solid and zero-strength settings share one canonical opaque cache key. Scale is a world-space U period used by geometry, not a separate image. Version-4 documents store settings per stroke; older documents upgrade with solid ink. Transform validation scales the period with the mark.
+
+`Vertex` adds UVs (44-byte viewport stride). Tube UVs use arc length and circumference with duplicated wrap seams; ribbons/chisels use arc length and cross-section coordinates, with planar cap/dot mapping. Textured round marks use captured frames so ring roll remains attached under transforms; solid round positions retain the legacy basis. `stroke_mesh` remains the common viewport/export geometry path.
+
+The renderer caches mask bind groups alongside cached stroke meshes and prunes unused images. Its fragment shader samples the mask at explicit LOD 0 and discards holes before depth writes; display-only selection color retains coverage. GLB adds interleaved UVs, embedded PNG buffer views, deduplicated images/materials, repeat/nearest sampling, and MASK alpha cutoff 0.5. The Blender check follows the imported color multiplication nodes, verifies packed image alpha pixels and UV bounds, and rejects sidecars.
+
+`brush_textures.rs` owns controls and graphical smoke checks. `texture_check.rs` provides reproducible release CPU measurements for long strokes; it is not a GPU or hardware latency benchmark. Active strokes still rebuild on input, while completed strokes reuse buffers. Partial erasing and alpha-aware picking are outside this feature.

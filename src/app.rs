@@ -11,6 +11,8 @@ use glam::Vec3;
 use std::collections::HashSet;
 #[path = "brush_dynamics.rs"]
 mod brush_dynamics;
+#[path = "brush_textures.rs"]
+mod brush_textures;
 #[path = "brushes.rs"]
 mod brushes;
 #[path = "cylinders.rs"]
@@ -35,6 +37,7 @@ enum Pending {
     Lantern,
     Brushes,
     Dynamics,
+    Textures,
     Open,
     Close,
 }
@@ -83,6 +86,7 @@ pub struct SketchApp {
     verification_frame: Option<u32>,
     brush_verification_frame: Option<u32>,
     dynamics_verification_frame: Option<u32>,
+    texture_verification_frame: Option<u32>,
     house_verification_frame: Option<u32>,
     starter_scene: bool,
     cylinder_example: bool,
@@ -155,6 +159,7 @@ impl SketchApp {
             verification_frame: std::env::args().any(|a| a == "--verify").then_some(0),
             brush_verification_frame: None,
             dynamics_verification_frame: None,
+            texture_verification_frame: None,
             house_verification_frame: None,
             starter_scene: false,
             cylinder_example: false,
@@ -163,7 +168,11 @@ impl SketchApp {
             last_export_result: None,
             export_snapshot: None,
         };
-        if std::env::args().any(|a| a == "--verify-dynamics") {
+        if std::env::args().any(|a| a == "--verify-textures") {
+            app.verification_frame = None;
+            app.texture_verification_frame = Some(0);
+            app.load_textures();
+        } else if std::env::args().any(|a| a == "--verify-dynamics") {
             app.verification_frame = None;
             app.dynamics_verification_frame = Some(0);
             app.load_dynamics();
@@ -180,7 +189,9 @@ impl SketchApp {
             app.house_verification_frame = Some(0);
             app.load_house();
         } else if app.verification_frame.is_none() {
-            if std::env::args().any(|a| a == "--dynamics") {
+            if std::env::args().any(|a| a == "--textures") {
+                app.load_textures();
+            } else if std::env::args().any(|a| a == "--dynamics") {
                 app.load_dynamics();
             } else if std::env::args().any(|a| a == "--brushes") {
                 app.load_brushes();
@@ -417,6 +428,7 @@ impl SketchApp {
             Some(Pending::Lantern) => self.load_lantern(),
             Some(Pending::Brushes) => self.load_brushes(),
             Some(Pending::Dynamics) => self.load_dynamics(),
+            Some(Pending::Textures) => self.load_textures(),
             Some(Pending::New) => {
                 self.starter_scene = false;
                 self.cylinder_example = false;
@@ -741,6 +753,7 @@ impl SketchApp {
         if !ctx.input(|i| i.focused)
             && self.verification_frame.is_none()
             && self.dynamics_verification_frame.is_none()
+            && self.texture_verification_frame.is_none()
         {
             self.cancel();
             return;
@@ -1000,6 +1013,13 @@ impl eframe::App for SketchApp {
                 {
                     self.request(Pending::Dynamics);
                 }
+                if ui
+                    .add_enabled(enabled, egui::Button::new("Textures"))
+                    .on_hover_text("Open the editable texture study")
+                    .clicked()
+                {
+                    self.request(Pending::Textures);
+                }
                 if ui.add_enabled(enabled, egui::Button::new("Open")).clicked() {
                     self.request(Pending::Open);
                 }
@@ -1086,6 +1106,7 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.verify_textures(ctx, rect);
                 self.verify_dynamics(ctx, rect);
                 self.verify_brushes(ctx, rect);
                 self.verify_cylinder(ctx, rect);
@@ -1209,6 +1230,9 @@ impl eframe::App for SketchApp {
             || self.verification_frame.is_some()
             || self.house_verification_frame.is_some()
             || self.cylinder_verification_frame.is_some()
+            || self.brush_verification_frame.is_some()
+            || self.dynamics_verification_frame.is_some()
+            || self.texture_verification_frame.is_some()
         {
             ctx.request_repaint_after(Duration::from_millis(8));
         }
@@ -1305,6 +1329,7 @@ impl SketchApp {
             && self.cylinder_verification_frame.is_none()
             && self.brush_verification_frame.is_none()
             && self.dynamics_verification_frame.is_none()
+            && self.texture_verification_frame.is_none()
         {
             return;
         }
@@ -1321,7 +1346,9 @@ impl SketchApp {
             let path = std::env::current_dir().unwrap().join("verification");
             let pixels: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
             image::save_buffer(
-                path.join(if self.dynamics_verification_frame.is_some() {
+                path.join(if self.texture_verification_frame.is_some() {
+                    "texture-preview.png"
+                } else if self.dynamics_verification_frame.is_some() {
                     "dynamics-preview.png"
                 } else if self.brush_verification_frame.is_some() {
                     "brush-preview.png"
@@ -1339,10 +1366,12 @@ impl SketchApp {
             )
             .unwrap();
             let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload","background GLB export preserves document state"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
-            let report = if self.dynamics_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pen-up preserves last contact pressure and tilt","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 3 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+            let report = if self.texture_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 4 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+            } else if self.dynamics_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pen-up preserves last contact pressure and tilt","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 4 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 3 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 4 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {
@@ -1351,7 +1380,9 @@ impl SketchApp {
                 report
             };
             std::fs::write(
-                path.join(if self.dynamics_verification_frame.is_some() {
+                path.join(if self.texture_verification_frame.is_some() {
+                    "texture-report.json"
+                } else if self.dynamics_verification_frame.is_some() {
                     "dynamics-report.json"
                 } else if self.brush_verification_frame.is_some() {
                     "brush-report.json"

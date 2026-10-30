@@ -15,7 +15,7 @@ fn mapping_controls(ui: &mut egui::Ui, label: &str, mapping: &mut PressureMappin
 
 impl SketchApp {
     pub(super) fn dynamics_controls(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Pressure, tilt & taper").default_open(true).show(ui, |ui| {
+        egui::CollapsingHeader::new("Pressure, tilt & taper").default_open(false).show(ui, |ui| {
             mapping_controls(ui, "Pressure: width", &mut self.brush.dynamics.width);
             if self.brush.kind == BrushKind::Chisel {
                 mapping_controls(ui, "Pressure: thickness", &mut self.brush.dynamics.thickness);
@@ -136,7 +136,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 3);
+                assert_eq!(loaded.version, 4);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.load_dynamics();
                 self.brush.dynamics = Default::default();
