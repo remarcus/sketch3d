@@ -1,6 +1,7 @@
+use crate::surface::GuidePreview;
 use crate::{
     document::Document,
-    geometry::{self, Camera, DrawingPlane, Vertex},
+    geometry::{self, Camera, Vertex},
 };
 use eframe::{
     egui,
@@ -23,7 +24,7 @@ pub struct SceneRenderer {
     bind: wgpu::BindGroup,
     meshes: HashMap<u64, Mesh>,
     selected: HashSet<u64>,
-    grid: Option<(DrawingPlane, Mesh)>,
+    grid: Option<(GuidePreview, Mesh)>,
     target: Option<(
         wgpu::TextureView,
         wgpu::TextureView,
@@ -139,7 +140,7 @@ impl SceneRenderer {
         &mut self,
         doc: &Document,
         camera: &Camera,
-        plane: DrawingPlane,
+        plane: GuidePreview,
         size: [u32; 2],
     ) -> egui::TextureId {
         let limit = self.state.device.limits().max_texture_dimension_2d;
@@ -216,7 +217,7 @@ impl SceneRenderer {
             }
         }
         if self.grid.as_ref().is_none_or(|g| g.0 != plane) {
-            let mesh = self.mesh(&geometry::grid(plane), 0);
+            let mesh = self.mesh(&plane.vertices(), 0);
             self.grid = Some((plane, mesh));
         }
         self.state.queue.write_buffer(

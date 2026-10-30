@@ -461,6 +461,84 @@ pub fn japanese_house() -> Document {
     a.doc
 }
 
+pub fn lantern_cylinder() -> crate::surface::Cylinder {
+    crate::surface::Cylinder {
+        center: Vec3::new(0.0, 1.75, 0.0),
+        rotation_degrees: Vec3::ZERO,
+        radius: 1.07,
+        height: 2.6,
+    }
+}
+pub fn lantern_camera() -> Camera {
+    Camera {
+        yaw: 0.45,
+        pitch: 0.18,
+        roll: 0.0,
+        distance: 7.5,
+        target: Vec3::new(0.0, 1.8, 0.0),
+    }
+}
+pub fn cylindrical_lantern() -> Document {
+    let mut a = Artist::new();
+    let guide = lantern_cylinder();
+    for i in 0..21 {
+        let y = 0.58 + i as f32 * 0.116;
+        let color = if i % 2 == 0 {
+            [0.89, 0.22, 0.11]
+        } else {
+            [0.97, 0.32, 0.15]
+        };
+        a.loop_xz(Vec3::new(0.0, y, 0.0), 1.0, 1.0, color, 0.07);
+    }
+    for y in [0.48, 3.02] {
+        for i in 0..9 {
+            let r = 0.06 + i as f32 * 0.13;
+            a.loop_xz(Vec3::new(0.0, y, 0.0), r, r, [0.29, 0.19, 0.12], 0.075);
+        }
+    }
+    for i in 0..16 {
+        let t = i as f32 / 16.0 * TAU;
+        a.line(
+            Vec3::new(1.08 * t.sin(), 0.55, 1.08 * t.cos()),
+            Vec3::new(1.08 * t.sin(), 2.95, 1.08 * t.cos()),
+            [0.78, 0.47, 0.22],
+            0.013,
+        );
+    }
+    for y in [-0.62, 0.0, 0.62] {
+        a.path(
+            (0..=80)
+                .map(|i| {
+                    let theta = -0.75 + i as f32 / 80.0 * 2.0;
+                    guide.point(theta, y + 0.13 * (theta * 4.0).sin())
+                })
+                .collect(),
+            [1.0, 0.76, 0.29],
+            0.035,
+        );
+    }
+    a.path(
+        (0..=72)
+            .map(|i| {
+                let t = i as f32 / 72.0 * TAU;
+                Vec3::new(0.42 * t.cos(), 3.38 + 0.42 * t.sin(), 0.0)
+            })
+            .collect(),
+        [0.67, 0.43, 0.20],
+        0.045,
+    );
+    for r in [0.1, 0.23, 0.36, 0.49, 0.62] {
+        a.loop_xz(Vec3::new(0.0, 0.12, 0.0), r, r, [0.27, 0.36, 0.34], 0.08);
+    }
+    a.line(
+        Vec3::new(0.0, 0.14, 0.0),
+        Vec3::new(0.0, 0.48, 0.0),
+        [0.42, 0.26, 0.14],
+        0.11,
+    );
+    a.doc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,5 +557,13 @@ mod tests {
     #[test]
     fn starter_geometry_is_deterministic() {
         assert_eq!(japanese_house().strokes, japanese_house().strokes);
+    }
+    #[test]
+    fn lantern_is_a_valid_editable_document() {
+        let lantern = cylindrical_lantern();
+        assert!(lantern.strokes.len() > 50);
+        let loaded = Document::from_json(&serde_json::to_string(&lantern).unwrap()).unwrap();
+        assert_eq!(loaded.strokes, lantern.strokes);
+        assert!(lantern_cylinder().valid());
     }
 }

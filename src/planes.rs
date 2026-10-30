@@ -5,10 +5,28 @@ impl SketchApp {
     pub(super) fn plane_from_view(&mut self) {
         self.finish();
         self.guide = DrawingPlane::from_view(&self.camera);
+        self.use_cylinder = false;
         self.status =
             "Drawing plane placed through the camera focus, facing the current view.".into();
     }
     pub(super) fn plane_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui.selectable_label(!self.use_cylinder, "Plane").clicked() {
+                self.finish();
+                self.use_cylinder = false;
+            }
+            if ui.selectable_label(self.use_cylinder, "Cylinder").clicked() {
+                self.finish();
+                self.use_cylinder = true;
+            }
+        });
+        if ui.checkbox(&mut self.guide_visible, "Show guide").changed() {
+            self.finish();
+        }
+        if self.use_cylinder {
+            self.cylinder_controls(ui);
+            return;
+        }
         let before = self.guide;
         ui.horizontal(|ui| {
             for (plane, label) in [
@@ -88,7 +106,7 @@ impl SketchApp {
         }
     }
     pub(super) fn plane_overlay(&self, ui: &egui::Ui, rect: Rect) {
-        if self.guide.preset().is_some() {
+        if self.use_cylinder || !self.guide_visible || self.guide.preset().is_some() {
             return;
         }
         let origin = self.guide.origin();

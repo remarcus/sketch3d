@@ -19,6 +19,10 @@ impl SketchApp {
         self.selected.clear();
         self.renderer.invalidate();
         self.starter_scene = true;
+        self.cylinder_example = false;
+        self.use_cylinder = false;
+        self.guide_visible = true;
+        self.resume_ink = false;
         self.status="Japanese garden house / editable strokes. Space + drag to orbit; V to select; New for a blank drawing.".into();
     }
     pub(super) fn verify_house(&mut self, ctx: &egui::Context) {

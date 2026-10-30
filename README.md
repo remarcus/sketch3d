@@ -8,6 +8,7 @@ An open-source, native 3D sketching prototype inspired by the idea of drawing in
 - Pressure-sensitive tube strokes stored as editable 3D control points.
 - Adjustable stroke stabilization with pressure preservation and endpoint catch-up.
 - Freely oriented drawing planes with X/Y/Z rotation, anchor positioning, normal offset, and world-plane presets.
+- Cylindrical side guides with adjustable placement, rotation, radius, height, and visibility, plus an editable lantern study.
 - Orbit, pan, zoom, plane alignment, and camera reset.
 - Windows Ink pressure, tilt, barrel-button and eraser diagnostics, including coalesced pen history.
 - Mouse drawing with constant pressure, clearly distinguished from tablet input.
@@ -60,12 +61,12 @@ The first hardware targets are a screenless Wacom tablet and a a pen display. **
 | Orbit | Space + pen/mouse drag, or right mouse drag |
 | Pan | Space + Shift + drag, or middle mouse drag |
 | Zoom | Space + Alt + drag, or wheel |
-| Align camera to current plane | F |
+| Align camera to current guide | F |
 | Create drawing plane from view | Shift+F |
 | Undo / redo | Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y |
 | Save / save as | Ctrl/Cmd+S / Ctrl/Cmd+Shift+S |
 | Open / new | Ctrl/Cmd+O / Ctrl/Cmd+N |
-| Reload house starter | House button |
+| Reload house starter / lantern study | House / Lantern buttons |
 
 When Windows Ink reports a barrel button directly, barrel + contact drag also orbits. Driver button mappings may instead generate a mouse button or shortcut. Essential controls do not require touch. A stroke ends when it leaves the canvas. An edge-on drawing plane cannot accept strokes: press F to align the view or orbit away from the edge.
 
@@ -88,7 +89,7 @@ cargo build --release
 
 ## Boundaries and next steps
 
-This is an early prototype, not a production art application. Native tablet backends for macOS/Linux, Wintab, editable curved guides, partial erasing, surface snapping, glTF export and autosave remain future work. Active-stroke tessellation rebuilds that stroke on change; long strokes should move to incremental ring updates. GPU meshes currently use one draw call per stroke; batching and spatial indexing will matter for large documents. File dialogs and save/open currently run on the UI thread.
+This is an early prototype, not a production art application. Native tablet backends for macOS/Linux, Wintab, additional curved guides, partial erasing, surface snapping, glTF export and autosave remain future work. Active-stroke tessellation rebuilds that stroke on change; long strokes should move to incremental ring updates. GPU meshes currently use one draw call per stroke; batching and spatial indexing will matter for large documents. File dialogs and save/open currently run on the UI thread.
 
 The immediate hardware test is pressure and tilt on the Wacom, followed by the Kamvas with mixed-DPI monitors. Low-latency behavior must be measured on those devices; no latency or frame-rate guarantee is claimed.
 
@@ -150,4 +151,28 @@ The Drawing plane panel supports more than the Front, Side, and Ground presets:
 
 World-plane preset buttons reset both orientation and placement to that world plane. Changing any guide setting finishes an active stroke first; existing artwork stays fixed in world space. The cyan **N** arrow marks the normal on custom planes. The grid is a background guide and does not cut through ink. Duplication offsets follow the current plane's local horizontal axis.
 
-For a sloped detail, orbit to a useful angle, press Shift+F, position the plane with Anchor/Offset (or Center on selection), then press F and draw. Plane controls are temporary workspace state and are not saved with the drawing; the resulting 3D strokes retain their positions when saved and reopened. Curved guides and automatic surface snapping remain future work.
+For a sloped detail, orbit to a useful angle, press Shift+F, position the plane with Anchor/Offset (or Center on selection), then press F and draw. Plane controls are temporary workspace state and are not saved with the drawing; the resulting 3D strokes retain their positions when saved and reopened. Additional curved guide types and automatic surface snapping remain future work.
+
+## Cylindrical drawing guide — SKETCH-001
+
+Choose **Cylinder** in the Drawing guide panel. Set its center, rotation, radius, and height. **F** aligns the camera to its local front and keeps the camera outside the guide; **Cylinder from view** places it at the camera focus with its axis vertical in that view. Center on selection uses the selected strokes' bounds. **Shift+F** still switches to a plane created from the view.
+
+Draw on the cylinder's **side surface**. Orbit to reach its back. The guide is an open cylinder: caps are not drawing surfaces. Pen/mouse rays choose the nearest forward side hit within the cylinder's height. Missing the side ends that stroke segment; re-entering during the same contact starts a new segment. Angular jumps larger than 90 degrees between contact samples also split ink instead of bridging unrelated sides. Each segment has its own undo step.
+
+Stabilization works in unwrapped angular arc-length and height coordinates. This keeps seam crossings continuous and maps smoothed samples and release tails back onto the curved surface. Sparse samples are subdivided along the arc rather than connected by a large straight chord. Stored ink remains ordinary editable world-space stroke points; the guide is only used while drawing.
+
+**Show guide** controls preview visibility only; drawing still follows the selected surface while the wireframe is hidden. Changing or resizing a guide finishes active ink on its captured original surface. Existing strokes do not move when a guide is hidden, resized, rotated, or replaced. Plane and cylinder settings remain temporary workspace state, not part of the saved document.
+
+The **Lantern** button opens an original editable cylindrical study, with the same unsaved-change protection as New and House. The house remains the default startup scene. To open the study directly:
+
+```sh
+cargo run --release -- --lantern
+```
+
+Cylinder verification runs separately from the existing drawing and house checks:
+
+```sh
+cargo run --release -- --verify-cylinder
+```
+
+It exercises surface-bound drawing and release tails, misses and large side jumps, the angular seam, rotated guides, captured-surface completion, guide visibility/switching, duplication/deletion with undo, native document save/reload, and GPU rendering. Outputs are `verification/cylinder-report.json` and `verification/cylinder-preview.png`. Physical tablet testing remains a separate hardware task.

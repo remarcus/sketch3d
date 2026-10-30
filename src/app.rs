@@ -1,4 +1,4 @@
-use crate::stabilizer::Stabilizer;
+use crate::surface::{Cylinder, GuidePreview, Surface, SurfaceStabilizer};
 use crate::{
     document::{Document, Point, Stroke},
     geometry::{intersect_plane, Camera, DrawingPlane, Plane},
@@ -9,6 +9,8 @@ use crate::{editing::Edit, gizmo::Mode};
 use eframe::egui::{self, Color32, Key, PointerButton, Pos2, Rect, RichText, Vec2};
 use glam::Vec3;
 use std::collections::HashSet;
+#[path = "cylinders.rs"]
+mod cylinders;
 #[path = "planes.rs"]
 mod planes;
 #[path = "selection.rs"]
@@ -24,6 +26,7 @@ use std::{
 enum Pending {
     New,
     House,
+    Lantern,
     Open,
     Close,
 }
@@ -35,11 +38,15 @@ pub struct SketchApp {
     doc: Document,
     camera: Camera,
     guide: DrawingPlane,
+    cylinder: Cylinder,
+    use_cylinder: bool,
+    guide_visible: bool,
+    resume_ink: bool,
     color: [f32; 3],
     radius: f32,
     pressure_curve: f32,
     stabilization: f32,
-    stabilizer: Stabilizer,
+    stabilizer: SurfaceStabilizer,
     eraser: bool,
     select_mode: bool,
     selected: HashSet<u64>,
@@ -68,6 +75,8 @@ pub struct SketchApp {
     verification_frame: Option<u32>,
     house_verification_frame: Option<u32>,
     starter_scene: bool,
+    cylinder_example: bool,
+    cylinder_verification_frame: Option<u32>,
 }
 impl SketchApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -96,11 +105,15 @@ impl SketchApp {
             doc: Document::default(),
             camera: Camera::default(),
             guide: DrawingPlane::default(),
+            cylinder: Cylinder::default(),
+            use_cylinder: false,
+            guide_visible: true,
+            resume_ink: false,
             color: [0.17, 0.82, 0.74],
             radius: 0.025,
             pressure_curve: 1.0,
             stabilization: 0.35,
-            stabilizer: Stabilizer::default(),
+            stabilizer: SurfaceStabilizer::default(),
             eraser: false,
             select_mode: false,
             selected: HashSet::new(),
@@ -129,14 +142,22 @@ impl SketchApp {
             verification_frame: std::env::args().any(|a| a == "--verify").then_some(0),
             house_verification_frame: None,
             starter_scene: false,
+            cylinder_example: false,
+            cylinder_verification_frame: None,
         };
-        if std::env::args().any(|a| a == "--verify-house") {
+        if std::env::args().any(|a| a == "--verify-cylinder") {
+            app.verification_frame = None;
+            app.cylinder_verification_frame = Some(0);
+            app.load_lantern();
+        } else if std::env::args().any(|a| a == "--verify-house") {
             app.verification_frame = None;
             app.house_verification_frame = Some(0);
             app.load_house();
         } else if app.verification_frame.is_none() {
             if std::env::args().any(|a| a == "--demo") {
                 app.demo();
+            } else if std::env::args().any(|a| a == "--lantern") {
+                app.load_lantern();
             } else if !std::env::args().any(|a| a == "--blank") {
                 app.load_house();
             }
@@ -144,6 +165,7 @@ impl SketchApp {
         app
     }
     fn finish(&mut self) {
+        self.resume_ink = false;
         self.commit_transform();
         let tail = self.stabilizer.finish();
         if let Some(id) = self.active {
@@ -166,6 +188,7 @@ impl SketchApp {
         }
     }
     fn cancel(&mut self) {
+        self.resume_ink = false;
         self.cancel_transform();
         self.stabilizer.reset();
         self.mouse_down = false;
@@ -174,23 +197,47 @@ impl SketchApp {
         }
     }
     fn add_point(&mut self, position: Pos2, pressure: f32, rect: Rect, begin: bool) {
+        if begin {
+            self.finish();
+        }
         let ndc = glam::vec2(
             (position.x - rect.left()) / rect.width() * 2.0 - 1.0,
             1.0 - (position.y - rect.top()) / rect.height() * 2.0,
         );
         let (origin, direction) = self.camera.ray(ndc, rect.aspect_ratio());
-        let Some(world) = intersect_plane(origin, direction, self.guide) else {
-            self.status = "Plane is edge-on. Use Align view or rotate the camera.".into();
+        let hit = if self.use_cylinder {
+            self.cylinder.hit(origin, direction)
+        } else {
+            intersect_plane(origin, direction, self.guide)
+        };
+        let Some(world) = hit else {
+            let resume = begin || self.active.is_some() || self.resume_ink;
+            self.finish();
+            self.resume_ink = resume;
+            self.status=if self.use_cylinder{"No cylinder side hit. Draw on its wireframe or orbit; missed regions split the stroke."}else{"Plane is edge-on. Use Align view or rotate the camera."}.into();
             return;
         };
         if world.abs().max_element() > 10000.0 {
             return;
         }
-        if begin {
+        if self.active.is_some() && self.stabilizer.discontinuity(world) {
             self.finish();
+            self.resume_ink = true;
+        }
+        if begin || (self.resume_ink && self.active.is_none()) {
+            self.finish();
+            if self.next_id == u64::MAX {
+                self.status = "No more stroke IDs available".into();
+                return;
+            }
             let id = self.next_id;
             self.next_id += 1;
             self.active = Some(id);
+            self.stabilizer.start(if self.use_cylinder {
+                Surface::Cylinder(self.cylinder)
+            } else {
+                Surface::Plane
+            });
             self.doc.strokes.push(Stroke {
                 id,
                 color: self.color,
@@ -204,7 +251,7 @@ impl SketchApp {
         let pressure = pressure.clamp(0.0, 1.0).powf(self.pressure_curve);
         let clip = self.camera.matrix(rect.aspect_ratio()) * world.extend(1.0);
         let world_per_pixel = 2.0 * 22.5_f32.to_radians().tan() * clip.w / rect.height();
-        let point = self.stabilizer.push(
+        let points = self.stabilizer.push(
             Point {
                 position: world,
                 pressure,
@@ -212,11 +259,13 @@ impl SketchApp {
             self.stabilization * 24.0 * world_per_pixel,
         );
         if let Some(stroke) = self.doc.strokes.last_mut().filter(|s| s.id == id) {
-            if stroke.points.last().is_none_or(|p| {
-                p.position.distance(point.position) > 0.001
-                    || (p.pressure - point.pressure).abs() > 0.025
-            }) {
-                stroke.points.push(point);
+            for point in points {
+                if stroke.points.last().is_none_or(|p| {
+                    p.position.distance(point.position) > 0.001
+                        || (p.pressure - point.pressure).abs() > 0.025
+                }) {
+                    stroke.points.push(point);
+                }
             }
         }
     }
@@ -332,8 +381,12 @@ impl SketchApp {
         self.confirm = false;
         match self.pending.take() {
             Some(Pending::House) => self.load_house(),
+            Some(Pending::Lantern) => self.load_lantern(),
             Some(Pending::New) => {
                 self.starter_scene = false;
+                self.cylinder_example = false;
+                self.use_cylinder = false;
+                self.guide_visible = true;
                 self.next_id = 1;
                 self.camera = Camera::default();
                 self.guide = DrawingPlane::default();
@@ -366,6 +419,7 @@ impl SketchApp {
                             self.next_id = doc.strokes.iter().map(|s| s.id).max().unwrap_or(0) + 1;
                             self.doc = doc;
                             self.starter_scene = false;
+                            self.cylinder_example = false;
                             self.file = Some(path);
                             self.dirty = false;
                             self.undo.clear();
@@ -479,7 +533,7 @@ impl SketchApp {
         ui.add_space(12.0);
         ui.separator();
         ui.label(
-            RichText::new("DRAWING PLANE")
+            RichText::new("DRAWING GUIDE")
                 .small()
                 .color(Color32::from_gray(140)),
         );
@@ -830,7 +884,7 @@ impl eframe::App for SketchApp {
                     if mods.shift {
                         self.plane_from_view();
                     } else {
-                        self.camera.align_guide(self.guide);
+                        self.align_active_guide();
                     }
                 }
             }
@@ -860,6 +914,13 @@ impl eframe::App for SketchApp {
                     .clicked()
                 {
                     self.request(Pending::House);
+                }
+                if ui
+                    .add_enabled(enabled, egui::Button::new("Lantern"))
+                    .on_hover_text("Open the editable cylindrical drawing-guide example")
+                    .clicked()
+                {
+                    self.request(Pending::Lantern);
                 }
                 if ui.add_enabled(enabled, egui::Button::new("Open")).clicked() {
                     self.request(Pending::Open);
@@ -904,7 +965,7 @@ impl eframe::App for SketchApp {
             ui.horizontal(|ui| {
                 ui.label(&self.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(self.guide.label());
+                    ui.label(self.active_guide_label());
                 });
             });
         });
@@ -926,6 +987,7 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.verify_cylinder(ctx, rect);
                 self.verify_house(ctx);
                 self.verify_canvas(ctx, rect);
                 self.canvas_input(ctx, rect, pen);
@@ -938,7 +1000,7 @@ impl eframe::App for SketchApp {
                 let id = self.renderer.render(
                     &self.doc,
                     &self.camera,
-                    self.guide,
+                    self.guide_preview(),
                     [
                         (rect.width() * scale).round() as u32,
                         (rect.height() * scale).round() as u32,
@@ -959,22 +1021,30 @@ impl eframe::App for SketchApp {
                 ui.painter().text(
                     badge.center(),
                     egui::Align2::CENTER_CENTER,
-                    format!("{}   /   {:+.2}", self.guide.label(), self.guide.depth),
+                    self.guide_badge(),
                     egui::FontId::proportional(13.0),
                     Color32::from_rgb(173, 210, 213),
                 );
-                if self.starter_scene {
+                if self.starter_scene || self.cylinder_example {
                     ui.painter().text(
                         rect.min + egui::vec2(22.0, 76.0),
                         egui::Align2::LEFT_TOP,
-                        "Japanese garden house",
+                        if self.cylinder_example {
+                            "Cylindrical lantern"
+                        } else {
+                            "Japanese garden house"
+                        },
                         egui::FontId::proportional(24.0),
                         Color32::from_rgb(240, 217, 172),
                     );
                     ui.painter().text(
                         rect.min + egui::vec2(23.0, 110.0),
                         egui::Align2::LEFT_TOP,
-                        "Editable starter drawing / New for a blank canvas",
+                        if self.cylinder_example {
+                            "Curved guide study / draw on the side, orbit to reach the back"
+                        } else {
+                            "Editable starter drawing / New for a blank canvas"
+                        },
                         egui::FontId::proportional(13.0),
                         Color32::from_rgb(171, 190, 182),
                     );
@@ -1037,6 +1107,7 @@ impl eframe::App for SketchApp {
             || self.drag.is_some()
             || self.verification_frame.is_some()
             || self.house_verification_frame.is_some()
+            || self.cylinder_verification_frame.is_some()
         {
             ctx.request_repaint_after(Duration::from_millis(8));
         }
@@ -1123,7 +1194,10 @@ impl SketchApp {
         self.verification_frame = Some(frame + 1);
     }
     fn capture_verification(&mut self, ctx: &egui::Context) {
-        if self.verification_frame.is_none() && self.house_verification_frame.is_none() {
+        if self.verification_frame.is_none()
+            && self.house_verification_frame.is_none()
+            && self.cylinder_verification_frame.is_none()
+        {
             return;
         }
         let screenshot = ctx.input(|i| {
@@ -1139,7 +1213,9 @@ impl SketchApp {
             let path = std::env::current_dir().unwrap().join("verification");
             let pixels: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
             image::save_buffer(
-                path.join(if self.house_verification_frame.is_some() {
+                path.join(if self.cylinder_verification_frame.is_some() {
+                    "cylinder-preview.png"
+                } else if self.house_verification_frame.is_some() {
                     "house-preview.png"
                 } else {
                     "preview.png"
@@ -1151,13 +1227,17 @@ impl SketchApp {
             )
             .unwrap();
             let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
-            let report = if self.house_verification_frame.is_some() {
+            let report = if self.cylinder_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+            } else if self.house_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["editable Japanese house strokes","duplicate and undo","New clears starter","House reloads starter","unsaved-change guard","sample save/reload","GPU screenshot"],"strokes":self.doc.strokes.len(),"points":self.doc.strokes.iter().map(|s|s.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else {
                 report
             };
             std::fs::write(
-                path.join(if self.house_verification_frame.is_some() {
+                path.join(if self.cylinder_verification_frame.is_some() {
+                    "cylinder-report.json"
+                } else if self.house_verification_frame.is_some() {
                     "house-report.json"
                 } else {
                     "report.json"

@@ -9,6 +9,7 @@ mod input;
 mod renderer;
 mod scenes;
 mod stabilizer;
+mod surface;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

@@ -187,7 +187,7 @@ impl SketchApp {
             self.status = "Document stroke limit reached".into();
             return;
         }
-        let shift = self.guide.basis().0 * 0.35;
+        let shift = self.active_guide_u() * 0.35;
         let Ok(mut after) = editing::transformed(&before, Vec3::ZERO, shift, Quat::IDENTITY, 1.0)
         else {
             self.status = "Cannot duplicate beyond document bounds".into();

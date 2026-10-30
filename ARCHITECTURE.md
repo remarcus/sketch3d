@@ -56,3 +56,13 @@ Selection highlighting is render-only. The renderer invalidates changed strokes 
 `DrawingPlane` holds an anchor, Euler rotation in degrees, and a normal offset. Its orthonormal basis drives both ray intersections and grid vertices. The app finishes active ink before changing a work plane; document points never depend on the current guide. Grid meshes are cached by the complete plane value and do not write depth, so they cannot occlude strokes.
 
 The camera now has roll as well as yaw/pitch. Its explicit basis avoids an up-vector singularity for vertical views. Align-to-plane reconstructs yaw/pitch/roll from the guide normal and vertical axis, centers on the guide origin, and preserves distance. Plane-from-view converts the camera basis back into guide rotation around its focus. Tests cover rotated/translated intersections, grid coplanarity, rolled view conversion, and vertical alignment. `planes.rs` owns the interface controls and the drawing/persistence smoke checks. Guides remain workspace state; no document schema change is required.
+
+## Cylindrical side guides
+
+`surface.rs` defines an open finite cylinder, preview geometry, and a captured `SurfaceStabilizer`. Ray intersections are solved in the cylinder's rotated local frame using a double-precision quadratic, then clipped to its finite height and forward ray range. Preview visibility is separate from the drawing surface.
+
+Plane stabilization retains world coordinates. Cylinder stabilization maps raw side hits into unwrapped `(angle * radius, height)` coordinates, preserving local world-unit distances and pressure. Both filtered points and the release tail are decoded back to the captured surface. Angular subdivisions are at most approximately 0.035 radians between emitted samples (within the subdivision limit), so the stored polyline approximates the arc with short chords. No cylinder metadata is added to stroke documents, and later transforms remain unconstrained world-space edits.
+
+A missed guide hit finishes the current segment and allows a new segment on re-entry during that contact. The filter detects raw angular jumps above 90 degrees to split discontinuous side changes. Normal pointer-up, cancellation, navigation, and guide changes clear the resume state. Guide changes finish against the captured surface, so a radius or orientation edit cannot relocate an active stroke's tail.
+
+`cylinders.rs` owns guide controls, alignment, the original editable lantern example, and the cylinder smoke workflow. Plane, cylinder, and hidden previews share the renderer's cached guide mesh. `--verify-cylinder` supplements the unchanged drawing/plane and house verification modes.
