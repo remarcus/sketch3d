@@ -15,6 +15,7 @@ An open-source, native 3D sketching prototype inspired by the idea of drawing in
 - Click/Shift-click selection, depth-aware picking, gold highlighting, and selection bounds.
 - Move, rotate, and uniform-scale handles, numeric transforms, grouped duplication and deletion.
 - Whole-stroke eraser, undo/redo, versioned JSON documents, atomic saves, and unsaved-change prompts.
+- Background GLB export for the whole drawing or selected strokes, preserving original colors and pressure-shaped geometry.
 - GPU depth testing and cached completed-stroke meshes. Only changed strokes are tessellated again.
 
 **Windows is the first supported tablet target.** The application structure is portable; native macOS and Linux pen input is not implemented yet. Those platforms currently have mouse input only and have not been verified on physical hardware.
@@ -65,6 +66,7 @@ The first hardware targets are a screenless Wacom tablet and a a pen display. **
 | Create drawing plane from view | Shift+F |
 | Undo / redo | Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y |
 | Save / save as | Ctrl/Cmd+S / Ctrl/Cmd+Shift+S |
+| Export whole drawing / selection as GLB | Export menu |
 | Open / new | Ctrl/Cmd+O / Ctrl/Cmd+N |
 | Reload house starter / lantern study | House / Lantern buttons |
 
@@ -89,7 +91,7 @@ cargo build --release
 
 ## Boundaries and next steps
 
-This is an early prototype, not a production art application. Native tablet backends for macOS/Linux, Wintab, additional curved guides, partial erasing, surface snapping, glTF export and autosave remain future work. Active-stroke tessellation rebuilds that stroke on change; long strokes should move to incremental ring updates. GPU meshes currently use one draw call per stroke; batching and spatial indexing will matter for large documents. File dialogs and save/open currently run on the UI thread.
+This is an early prototype, not a production art application. Native tablet backends for macOS/Linux, Wintab, additional curved guides, partial erasing, surface snapping, and autosave remain future work. Active-stroke tessellation rebuilds that stroke on change; long strokes should move to incremental ring updates. GPU meshes currently use one draw call per stroke; batching and spatial indexing will matter for large documents. File dialogs and save/open currently run on the UI thread.
 
 The immediate hardware test is pressure and tilt on the Wacom, followed by the Kamvas with mixed-DPI monitors. Low-latency behavior must be measured on those devices; no latency or frame-rate guarantee is claimed.
 
@@ -176,3 +178,40 @@ cargo run --release -- --verify-cylinder
 ```
 
 It exercises surface-bound drawing and release tails, misses and large side jumps, the angular seam, rotated guides, captured-surface completion, guide visibility/switching, duplication/deletion with undo, native document save/reload, and GPU rendering. Outputs are `verification/cylinder-report.json` and `verification/cylinder-preview.png`. Physical tablet testing remains a separate hardware task.
+
+## GLB export — SKETCH-002
+
+Use **Export → Whole drawing (.glb)** or **Export → Selected strokes (.glb)**. Choose a destination ending in `.glb` in the native save dialog. Selection export is available when drawable strokes are selected. Finish an active stroke or transform before exporting.
+
+Export takes a snapshot and builds the file in a background worker. You can continue drawing; edits made after that snapshot belong to a later export. The status bar reports completion or an error. Let an active export finish before closing the app.
+
+The result is a self-contained **binary glTF 2.0** file with indexed triangle meshes, outward-facing triangles, normals, and opaque PBR materials. Each drawable stroke becomes a named mesh object. Colors come from the original stroke data; pressure is baked into mesh thickness. Selection highlights, drawing guides, handles, cameras, and interface geometry are excluded. No external textures or binary sidecar files are required.
+
+One drawing world unit exports as **one meter**, with right-handed +X right, +Y up, and +Z front coordinates. Blender converts this to its +Z-up convention on import. Material factors preserve the drawing colors; lighting and tone mapping in other viewers can change their rendered appearance.
+
+**Keep the native `.sketch.json` drawing too.** GLB contains meshes, not editable brush control points, pressure input, or undo history. Export does not mark the native drawing as saved or change its file identity. The UI rejects destinations resolving to the open native drawing. Output replaces an existing destination only after the completed file has been written and synced; failed export leaves existing files intact. Empty scopes are rejected. This prototype limits binary geometry to 128 MiB and rejects individual strokes whose working meshes would exceed its per-stroke export budget.
+
+### Independent verification
+
+```sh
+cargo run --release -- --verify-export
+```
+
+This creates `verification/exports/house.glb`, `lantern.glb`, `pressure.glb`, `selection.glb`, and a source-geometry manifest. The normal `--verify` workflow also exercises the asynchronous UI path and verifies that source geometry, file identity, dirty state, selection, and undo/redo depths remain unchanged.
+
+To validate fixtures using the official Khronos validator, from the project root:
+
+```sh
+npm install --prefix verification/gltf-validator --no-save --package-lock=false --ignore-scripts gltf-validator@2.0.0-dev.3.10
+node scripts/verify_glb.cjs verification/exports
+```
+
+To check imports in an installed Blender (put `blender` on PATH or use its executable path):
+
+```sh
+blender --background --factory-startup --python-exit-code 1 --python scripts/verify_glb_blender.py -- verification/exports
+```
+
+The Blender check verifies stroke IDs, mesh counts, converted axes, per-stroke bounds, original color factors, and triangle counts. It also renders the imported house to `verification/exports/house-blender.png` and saves a review scene. Verification cameras, lighting, and floor are added by that script after geometry checks; they are not part of the GLB export. Node and Blender are development verification tools, not application runtime requirements. The verification directory is ignored by Git.
+
+Format reference: [Khronos glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html).

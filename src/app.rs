@@ -11,6 +11,8 @@ use glam::Vec3;
 use std::collections::HashSet;
 #[path = "cylinders.rs"]
 mod cylinders;
+#[path = "export_ui.rs"]
+mod export_ui;
 #[path = "planes.rs"]
 mod planes;
 #[path = "selection.rs"]
@@ -77,6 +79,9 @@ pub struct SketchApp {
     starter_scene: bool,
     cylinder_example: bool,
     cylinder_verification_frame: Option<u32>,
+    export_job: Option<export_ui::ExportJob>,
+    last_export_result: Option<Result<crate::export::ExportSummary, String>>,
+    export_snapshot: Option<export_ui::ExportSnapshot>,
 }
 impl SketchApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -144,6 +149,9 @@ impl SketchApp {
             starter_scene: false,
             cylinder_example: false,
             cylinder_verification_frame: None,
+            export_job: None,
+            last_export_result: None,
+            export_snapshot: None,
         };
         if std::env::args().any(|a| a == "--verify-cylinder") {
             app.verification_frame = None;
@@ -825,8 +833,12 @@ impl SketchApp {
 impl eframe::App for SketchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let start = Instant::now();
+        self.poll_export(ctx);
         self.capture_verification(ctx);
-        if ctx.input(|i| i.viewport().close_requested()) {
+        if ctx.input(|i| i.viewport().close_requested()) && self.export_job.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.status = "Export is finishing. Close again when it completes.".into();
+        } else if ctx.input(|i| i.viewport().close_requested()) {
             self.finish();
             if self.dirty {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -933,6 +945,27 @@ impl eframe::App for SketchApp {
                     .clicked()
                 {
                     self.save(true);
+                }
+                ui.add_enabled_ui(self.can_export(false), |ui| {
+                    ui.menu_button("Export", |ui| {
+                        if ui.button("Whole drawing (.glb)").clicked() {
+                            ui.close_menu();
+                            self.export_dialog(false, ctx);
+                        }
+                        if ui
+                            .add_enabled(
+                                self.can_export(true),
+                                egui::Button::new("Selected strokes (.glb)"),
+                            )
+                            .clicked()
+                        {
+                            ui.close_menu();
+                            self.export_dialog(true, ctx);
+                        }
+                    });
+                });
+                if self.export_job.is_some() {
+                    ui.spinner();
                 }
                 ui.separator();
                 if ui
@@ -1100,7 +1133,7 @@ impl eframe::App for SketchApp {
                 });
         }
         if self.show_help {
-            egui::Window::new("Drawing with a tablet").open(&mut self.show_help).resizable(false).show(ctx,|ui|{ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-stroke eraser   F: align camera to plane   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nPrototype limits: no Wintab, curved guides, model export, or autosave.\nSave your work using the Save button.");});
+            egui::Window::new("Drawing with a tablet").open(&mut self.show_help).resizable(false).show(ctx,|ui|{ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-stroke eraser   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides, or autosave.\nSave your work using the Save button.");});
         }
         self.frame_ms = start.elapsed().as_secs_f32() * 1000.0;
         if self.active.is_some()
@@ -1187,7 +1220,12 @@ impl SketchApp {
             3 => self.verify_selection(ctx, rect),
             4 => self.verify_stabilization(rect),
             5 => self.verify_planes(rect),
-            6 => ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())),
+            6 => self.verify_export_start(ctx),
+            7..=119 => {
+                if self.verify_export_done() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                }
+            }
             120 => panic!("Verification screenshot timed out"),
             _ => {}
         }
@@ -1226,7 +1264,7 @@ impl SketchApp {
                 image::ColorType::Rgba8,
             )
             .unwrap();
-            let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
+            let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload","background GLB export preserves document state"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
             let report = if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {

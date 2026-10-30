@@ -3,6 +3,8 @@
 mod app;
 mod document;
 mod editing;
+mod export;
+mod export_check;
 mod geometry;
 mod gizmo;
 mod input;
@@ -12,6 +14,13 @@ mod stabilizer;
 mod surface;
 
 fn main() -> eframe::Result {
+    if std::env::args().any(|a| a == "--verify-export") {
+        if let Err(error) = export_check::run() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()
