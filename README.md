@@ -97,6 +97,8 @@ The immediate hardware test is pressure and tilt on the Wacom, followed by the K
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
+Next planned work is the brush pass: new geometry types, pressure/tilt dynamics and taper, built-in textures, and local presets (SKETCH-009–012). Soft/transparent brushes follow separately; brush-library importing remains deferred. These are planned features, not current brush capabilities.
+
 ## License
 
 GPL-3.0-or-later. See LICENSE. Dependencies retain their own licenses.
