@@ -1,0 +1,6 @@
+/target/
+*.sketch.json
+
+
+/*.log
+/verification/

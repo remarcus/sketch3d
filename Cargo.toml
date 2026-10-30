@@ -1,0 +1,24 @@
+[package]
+name = "spatial-sketch"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "An open-source, tablet-first 3D sketching prototype"
+
+[dependencies]
+eframe = { version = "0.31.1", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
+glam = { version = "0.30", features = ["serde", "bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rfd = "0.15"
+raw-window-handle = "0.6"
+tempfile = "3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_Pointer", "Win32_UI_Input", "Win32_System_Threading"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
