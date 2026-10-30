@@ -77,7 +77,7 @@ Brush radius is in world units, so its visible size changes with camera distance
 
 ## Documents
 
-Documents use a versioned `.sketch.json` format with positions in world space. Version 4 adds procedural texture settings to brush shapes, dynamics, raw pressure, optional world-space pen lean, and frozen orientation. Version-1/2/3 drawings upgrade on load with solid ink and their existing appearance preserved. Older application versions cannot open version-4 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. Recovery snapshots protect completed edits automatically; use Save for your deliberate native drawing file.
+Documents use a versioned `.sketch.json` format with positions in world space. Version 5 adds named layers, visibility, locking, and stroke membership. Version-1–4 drawings upgrade into one visible, unlocked layer while preserving their brush appearance. Older application versions cannot open version-5 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. Recovery snapshots protect completed edits automatically; use Save for your deliberate native drawing file.
 
 ## Development
 
@@ -98,7 +98,7 @@ The immediate hardware test is pressure and tilt on the Wacom, followed by the K
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
-Next planned work is drawing layers (SKETCH-004), followed by stroke groups. Soft/transparent brushes follow separately; brush-library importing remains deferred.
+Next planned work is stroke groups (SKETCH-005). Soft/transparent brushes follow separately; brush-library importing remains deferred.
 
 ## License
 
@@ -284,3 +284,13 @@ Run the forced-crash regression on Windows from the project root:
 ```
 
 It starts an isolated edited session, waits for a confirmed snapshot, force-stops only that test process, and restarts the app. The restarted check restores exact data into an unsaved copy, validates cleanup/dismissal, and confirms the original native file's SHA256 is unchanged. Outputs include `verification/recovery-report.json`, `recovery-offer.png`, and `recovery-preview.png`. The test uses `verification/recovery`, leaving normal application recovery data untouched. Build the release executable first; the script has bounded waits and stops only processes it created.
+
+## Drawing layers — SKETCH-004
+
+The **Drawing layers** panel selects the active layer for new ink. **Add** creates and activates a named layer; **Rename** updates the active layer. Names must be unique. **Show** controls visibility; **Lock** protects its strokes. Drawing on a hidden/locked active layer is blocked with a status message.
+
+Hidden ink is excluded from the viewport, picking, selection, and GLB exports. Locked visible ink stays visible and exports, but picking/erasing/selection skip it (an editable stroke behind it can still be picked). Selected strokes can move to a visible, unlocked target layer. Duplication retains each source layer. All layer metadata and stroke reassignment operations support undo/redo and recovery snapshots; temporary selection is cleared when its strokes become protected.
+
+**Delete empty** refuses nonempty layers and the last remaining layer. Move or deliberately delete their editable strokes first; deleting a layer never implicitly deletes artwork. Native version-5 drawings preserve all layer state. Layers organize ink without changing its 3D positions or using a painter-style stacking order; scene depth still determines visibility.
+
+Run `cargo run --release -- --verify-layers` for drawing restrictions, visibility/picking, reassignment/undo, deletion guards, save/reload, and GPU rendering. Outputs are `verification/layer-report.json` and `verification/layer-preview.png`. `--verify-export` also creates `layers.glb`, demonstrating visible locked ink and exclusion of hidden strokes, with layer IDs/names retained as node metadata.

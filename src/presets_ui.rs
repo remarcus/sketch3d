@@ -400,6 +400,7 @@ pub fn preview_document(preset: &Preset) -> Document {
     Document {
         strokes: vec![Stroke {
             id: 1,
+            layer_id: 1,
             color: preset.color,
             radius: preset.radius,
             brush: preset.brush,

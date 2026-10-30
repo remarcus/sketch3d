@@ -79,6 +79,8 @@ impl SketchApp {
         }
         let selection = selected.then(|| self.selected.clone());
         let snapshot = Document {
+            layers: self.doc.layers.clone(),
+            active_layer: self.doc.active_layer,
             version: self.doc.version,
             strokes: self
                 .doc

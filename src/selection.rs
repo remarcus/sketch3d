@@ -18,7 +18,13 @@ impl SketchApp {
         if self.selected.is_empty() {
             return;
         }
-        let present: HashSet<_> = self.doc.strokes.iter().map(|s| s.id).collect();
+        let present: HashSet<_> = self
+            .doc
+            .strokes
+            .iter()
+            .filter(|s| self.doc.editable(s))
+            .map(|s| s.id)
+            .collect();
         self.selected.retain(|id| present.contains(id));
     }
     pub(super) fn commit_transform(&mut self) {
@@ -286,7 +292,13 @@ impl SketchApp {
             if a {
                 self.finish();
                 self.select_mode = true;
-                self.selected = self.doc.strokes.iter().map(|s| s.id).collect();
+                self.selected = self
+                    .doc
+                    .strokes
+                    .iter()
+                    .filter(|s| self.doc.editable(s))
+                    .map(|s| s.id)
+                    .collect();
             }
             if d && self.select_mode {
                 self.duplicate_selected();
@@ -331,7 +343,13 @@ impl SketchApp {
         ui.horizontal(|ui| {
             if ui.button("Select all").clicked() {
                 self.finish();
-                self.selected = self.doc.strokes.iter().map(|s| s.id).collect();
+                self.selected = self
+                    .doc
+                    .strokes
+                    .iter()
+                    .filter(|s| self.doc.editable(s))
+                    .map(|s| s.id)
+                    .collect();
             }
             if ui.button("Clear").clicked() {
                 self.finish();

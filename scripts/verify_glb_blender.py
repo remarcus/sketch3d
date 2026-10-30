@@ -76,6 +76,9 @@ for case in manifest["cases"]:
         obj = objects[expected["name"]]
         if str(obj.get("spatialSketchStrokeId")) != expected["id"]:
             raise AssertionError("Stroke ID metadata was lost")
+        if "layerId" in expected:
+            if str(obj.get("spatialSketchLayerId")) != expected["layerId"] or obj.get("spatialSketchLayerName") != expected["layerName"]:
+                raise AssertionError("Layer metadata was lost")
         points = [obj.matrix_world @ vertex.co for vertex in obj.data.vertices]
         low = [min(p[i] for p in points) for i in range(3)]
         high = [max(p[i] for p in points) for i in range(3)]

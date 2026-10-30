@@ -29,6 +29,7 @@ impl Artist {
         self.doc.strokes.push(Stroke {
             brush: Default::default(),
             id: self.doc.strokes.len() as u64 + 1,
+            layer_id: 1,
             color,
             radius,
             points: positions

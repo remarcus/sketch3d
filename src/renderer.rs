@@ -286,7 +286,7 @@ impl SceneRenderer {
         }
         let ids: HashSet<u64> = doc.strokes.iter().map(|s| s.id).collect();
         self.meshes.retain(|id, _| ids.contains(id));
-        for stroke in &doc.strokes {
+        for stroke in doc.strokes.iter().filter(|s| doc.visible(s)) {
             if self
                 .meshes
                 .get(&stroke.id)
@@ -371,7 +371,7 @@ impl SceneRenderer {
                 pass.draw(0..mesh.count, 0..1);
             }
             pass.set_pipeline(&self.triangles);
-            for stroke in &doc.strokes {
+            for stroke in doc.strokes.iter().filter(|s| doc.visible(s)) {
                 if let Some(mesh) = self.meshes.get(&stroke.id) {
                     pass.set_bind_group(
                         1,

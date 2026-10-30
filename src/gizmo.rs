@@ -95,7 +95,7 @@ fn distance(pos: Pos2, a: Pos2, b: Pos2) -> (f32, f32) {
 pub fn pick(doc: &Document, camera: &Camera, rect: Rect, pos: Pos2) -> Option<u64> {
     let matrix = camera.matrix(rect.aspect_ratio());
     let mut best: Option<(f32, f32, u64)> = None;
-    for stroke in &doc.strokes {
+    for stroke in doc.strokes.iter().filter(|s| doc.editable(s)) {
         let extent = crate::geometry::stroke_extent(stroke);
         let consider = |point: Vec3| -> Option<(Pos2, f32, f32)> {
             let (p, z) = project(camera, rect, point)?;
@@ -300,6 +300,7 @@ mod tests {
         camera.align(Plane::Front);
         let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
         let stroke = |id, z| Stroke {
+            layer_id: 1,
             id,
             color: [0.5; 3],
             radius: 0.02,
@@ -320,6 +321,7 @@ mod tests {
         let doc = Document {
             version: 1,
             strokes: vec![stroke(1, 1.0), stroke(2, 0.0)],
+            ..Document::default()
         };
         assert_eq!(pick(&doc, &camera, rect, rect.center()), Some(1));
         assert_eq!(pick(&doc, &camera, rect, rect.min), None);
@@ -334,5 +336,54 @@ mod tests {
             (axis_parameter(&camera, rect, pos, Vec3::ZERO, Vec3::X).unwrap() - 2.0).abs() < 0.001
         );
         assert!(axis_parameter(&camera, rect, rect.center(), Vec3::ZERO, Vec3::Z).is_none());
+    }
+}
+
+#[cfg(test)]
+mod layer_picking_tests {
+    use super::*;
+    use crate::document::{Brush, Layer, Point, Stroke};
+    use crate::geometry::Plane;
+    #[test]
+    fn protected_front_layers_do_not_intercept_editable_ink() {
+        let mut camera = Camera::default();
+        camera.align(Plane::Front);
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let mark = |id, layer_id, z| Stroke {
+            id,
+            layer_id,
+            color: [0.5; 3],
+            radius: 0.02,
+            brush: Brush::default(),
+            points: vec![
+                Point {
+                    position: Vec3::new(-1.0, 0.0, z),
+                    pressure: 1.0,
+                    tilt: None,
+                },
+                Point {
+                    position: Vec3::new(1.0, 0.0, z),
+                    pressure: 1.0,
+                    tilt: None,
+                },
+            ],
+        };
+        let mut doc = Document {
+            strokes: vec![mark(1, 1, 1.0), mark(2, 2, 0.0)],
+            ..Document::default()
+        };
+        doc.layers.push(Layer {
+            id: 2,
+            name: "Back".into(),
+            visible: true,
+            locked: false,
+        });
+        assert_eq!(pick(&doc, &camera, rect, rect.center()), Some(1));
+        doc.layers[0].locked = true;
+        assert_eq!(pick(&doc, &camera, rect, rect.center()), Some(2));
+        doc.layers[0].visible = false;
+        assert_eq!(pick(&doc, &camera, rect, rect.center()), Some(2));
+        doc.layers[1].locked = true;
+        assert_eq!(pick(&doc, &camera, rect, rect.center()), None);
     }
 }

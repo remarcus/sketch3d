@@ -481,6 +481,7 @@ mod tests {
         Document {
             strokes: vec![Stroke {
                 id: 1,
+                layer_id: 1,
                 color: [0.2, 0.7, 0.6],
                 radius: 0.03,
                 brush: Brush::default(),

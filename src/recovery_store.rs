@@ -428,6 +428,7 @@ mod tests {
             Document {
                 strokes: vec![Stroke {
                     id: 123,
+                    layer_id: 1,
                     color: [0.3, 0.6, 0.8],
                     radius: 0.08,
                     brush,
@@ -616,7 +617,7 @@ mod tests {
             .remove("texture");
         fs::write(dir.path().join("recovery-legacy.json"), old.to_string()).unwrap();
         let result = scan(dir.path(), "other").unwrap();
-        assert_eq!(result.candidates[0].snapshot.document.version, 4);
+        assert_eq!(result.candidates[0].snapshot.document.version, 5);
         assert_eq!(
             result.candidates[0].snapshot.document.strokes[0]
                 .brush

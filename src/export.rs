@@ -131,8 +131,27 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
     Ok(mesh)
 }
 pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=4) {
+    if !matches!(doc.version, 1..=5) {
         return Err("Unsupported source document version".into());
+    }
+    let mut layer_ids = HashSet::new();
+    let mut layer_names = HashSet::new();
+    if doc.layers.is_empty()
+        || doc.layers.len() > 256
+        || doc.layers.iter().any(|l| {
+            l.id == 0
+                || l.id == u64::MAX
+                || l.name.trim() != l.name
+                || l.name.is_empty()
+                || l.name.chars().count() > 64
+                || l.name.chars().any(char::is_control)
+                || !layer_names.insert(l.name.to_lowercase())
+        })
+        || doc.layers.iter().any(|l| !layer_ids.insert(l.id))
+        || !layer_ids.contains(&doc.active_layer)
+        || doc.strokes.iter().any(|s| !layer_ids.contains(&s.layer_id))
+    {
+        return Err("Invalid source layer references".into());
     }
     let mut binary = Vec::new();
     let mut views = Vec::new();
@@ -152,7 +171,8 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         bytes: 0,
     };
     for stroke in &doc.strokes {
-        if selected.is_some_and(|selection| !selection.contains(&stroke.id))
+        if !doc.visible(stroke)
+            || selected.is_some_and(|selection| !selection.contains(&stroke.id))
             || stroke.points.is_empty()
         {
             continue;
@@ -244,7 +264,7 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         let mesh_index = meshes.len();
         let name = format!("Stroke_{}", stroke.id);
         meshes.push(json!({"name":name,"primitives":[{"attributes":{"POSITION":position,"NORMAL":normal,"TEXCOORD_0":uv},"indices":indices,"material":material,"mode":4}]}));
-        nodes.push(json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string()}}));
+        nodes.push(json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":doc.layers.iter().find(|l|l.id==stroke.layer_id).unwrap().name}}));
         summary.strokes += 1;
         summary.vertices += mesh.vertices.len();
         summary.triangles += mesh.indices.len() / 3;
@@ -330,6 +350,7 @@ mod tests {
     fn stroke(id: u64, color: [f32; 3]) -> Stroke {
         Stroke {
             id,
+            layer_id: 1,
             color,
             radius: 0.1,
             brush: Default::default(),
@@ -352,6 +373,7 @@ mod tests {
         let doc = Document {
             version: 1,
             strokes: vec![stroke(7, [0.2, 0.6, 0.8])],
+            ..Document::default()
         };
         let exported = encode(&doc, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
@@ -474,7 +496,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 4);
+        assert_eq!(loaded.version, 5);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -511,6 +533,7 @@ mod tests {
         let doc = Document {
             version: 1,
             strokes: vec![stroke(1, [0.9, 0.1, 0.2]), stroke(2, [0.1, 0.8, 0.3])],
+            ..Document::default()
         };
         let original = doc.strokes.clone();
         let exported = encode(&doc, Some(&HashSet::from([2]))).unwrap();
@@ -534,6 +557,7 @@ mod tests {
         let doc = Document {
             version: 1,
             strokes: vec![a, stroke(2, [0.5; 3])],
+            ..Document::default()
         };
         let exported = encode(&doc, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
@@ -659,6 +683,7 @@ mod tests {
         let mut doc = Document {
             version: 1,
             strokes: vec![stroke(1, [0.5; 3])],
+            ..Document::default()
         };
         doc.strokes[0].points[0].pressure = f32::NAN;
         assert!(write_glb(&doc, None, &path).is_err());
@@ -677,6 +702,7 @@ mod tests {
         let doc = Document {
             version: 1,
             strokes: vec![stroke(1, [0.5; 3])],
+            ..Document::default()
         };
         let result = write_glb(&doc, None, &path).unwrap();
         assert_eq!(
@@ -685,5 +711,32 @@ mod tests {
         );
         gltf::Gltf::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(encode(&doc, Some(&HashSet::new())).is_err());
+    }
+    #[test]
+    fn layer_visibility_filters_whole_and_selected_exports_but_locks_do_not() {
+        let doc = crate::export_check::layered_fixture();
+        let source = serde_json::to_string(&doc).unwrap();
+        let encoded = encode(&doc, None).unwrap();
+        let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
+        assert_eq!(encoded.summary.strokes, 2);
+        assert_eq!(
+            parsed
+                .nodes()
+                .map(|n| n.name().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["Stroke_1001", "Stroke_1003"]
+        );
+        let hidden = HashSet::from([1002]);
+        assert!(encode(&doc, Some(&hidden)).is_err());
+        let locked = HashSet::from([1003]);
+        assert_eq!(encode(&doc, Some(&locked)).unwrap().summary.strokes, 1);
+        let loaded = Document::from_json(&source).unwrap();
+        assert_eq!(loaded.layers, doc.layers);
+        assert_eq!(loaded.strokes, doc.strokes);
+        assert_eq!(encode(&loaded, None).unwrap().bytes, encoded.bytes);
+        assert_eq!(serde_json::to_string(&doc).unwrap(), source);
+        let mut invalid = doc;
+        invalid.strokes[0].layer_id = 999;
+        assert!(encode(&invalid, None).is_err());
     }
 }

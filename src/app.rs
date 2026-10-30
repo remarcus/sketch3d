@@ -19,6 +19,8 @@ mod brushes;
 mod cylinders;
 #[path = "export_ui.rs"]
 mod export_ui;
+#[path = "layers_ui.rs"]
+mod layers_ui;
 #[path = "planes.rs"]
 mod planes;
 #[path = "preset_checks.rs"]
@@ -65,6 +67,9 @@ pub struct SketchApp {
     recovery_verify_crash: bool,
     recovery_offer_capture: bool,
     recovery_offer_requested: bool,
+    layer_name: String,
+    layer_target: u64,
+    layer_verification_frame: Option<u32>,
     pen: Option<PenInput>,
     input_status: String,
     doc: Document,
@@ -176,6 +181,9 @@ impl SketchApp {
             recovery_verify_crash: false,
             recovery_offer_capture: false,
             recovery_offer_requested: false,
+            layer_name: String::new(),
+            layer_target: 1,
+            layer_verification_frame: None,
             pen,
             input_status,
             doc: Document::default(),
@@ -228,7 +236,13 @@ impl SketchApp {
             last_export_result: None,
             export_snapshot: None,
         };
-        if std::env::args().any(|a| a == "--verify-recovery-crash" || a == "--verify-recovery") {
+        if std::env::args().any(|a| a == "--verify-layers") {
+            app.verification_frame = None;
+            app.layer_verification_frame = Some(0);
+            app.load_textures();
+        } else if std::env::args()
+            .any(|a| a == "--verify-recovery-crash" || a == "--verify-recovery")
+        {
             app.verification_frame = None;
             app.recovery_verification_frame = Some(0);
             app.recovery_verify_crash = std::env::args().any(|a| a == "--verify-recovery-crash");
@@ -328,6 +342,11 @@ impl SketchApp {
         if begin {
             self.finish();
         }
+        if !self.doc.active_editable() {
+            self.status =
+                "The active layer is hidden or locked. Choose an editable layer to draw.".into();
+            return;
+        }
         let ndc = glam::vec2(
             (position.x - rect.left()) / rect.width() * 2.0 - 1.0,
             1.0 - (position.y - rect.top()) / rect.height() * 2.0,
@@ -367,6 +386,7 @@ impl SketchApp {
                 Surface::Plane
             });
             self.doc.strokes.push(Stroke {
+                layer_id: self.doc.active_layer,
                 id,
                 color: self.color,
                 radius: self.radius,
@@ -589,6 +609,7 @@ impl SketchApp {
                 });
             }
             self.doc.strokes.push(Stroke {
+                layer_id: self.doc.active_layer,
                 id: self.next_id,
                 color: [[0.17, 0.82, 0.74], [0.96, 0.55, 0.30], [0.47, 0.58, 0.95]][j],
                 radius: 0.035,
@@ -634,6 +655,7 @@ impl SketchApp {
             }
         });
         ui.add_space(6.0);
+        self.layer_controls(ui);
         self.preset_controls(ui);
         if self.select_mode {
             self.selection_panel(ui);
@@ -849,6 +871,7 @@ impl SketchApp {
             && self.texture_verification_frame.is_none()
             && self.preset_verification_frame.is_none()
             && self.recovery_verification_frame.is_none()
+            && self.layer_verification_frame.is_none()
         {
             self.cancel();
             return;
@@ -1226,6 +1249,7 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.verify_layers(ctx, rect);
                 self.verify_recovery(ctx, rect);
                 self.verify_presets(ctx, rect);
                 self.verify_textures(ctx, rect);
@@ -1360,6 +1384,7 @@ impl eframe::App for SketchApp {
             || self.texture_verification_frame.is_some()
             || self.preset_verification_frame.is_some()
             || self.recovery_verification_frame.is_some()
+            || self.layer_verification_frame.is_some()
             || self.close_after_recovery
             || self.recovery.busy()
         {
@@ -1461,6 +1486,7 @@ impl SketchApp {
             && self.texture_verification_frame.is_none()
             && self.preset_verification_frame.is_none()
             && self.recovery_verification_frame.is_none()
+            && self.layer_verification_frame.is_none()
         {
             return;
         }
@@ -1489,7 +1515,9 @@ impl SketchApp {
                 return;
             }
             image::save_buffer(
-                path.join(if self.recovery_verification_frame.is_some() {
+                path.join(if self.layer_verification_frame.is_some() {
+                    "layer-preview.png"
+                } else if self.recovery_verification_frame.is_some() {
                     "recovery-preview.png"
                 } else if self.preset_verification_frame.is_some() {
                     "preset-preview.png"
@@ -1513,16 +1541,18 @@ impl SketchApp {
             )
             .unwrap();
             let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload","background GLB export preserves document state"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
-            let report = if self.recovery_verification_frame.is_some() {
+            let report = if self.layer_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["layer drawing and locking","visibility picking and erasing","layer reassignment undo redo","nonempty deletion protection","version 5 persistence","GPU layers"],"gpu":self.renderer.adapter})
+            } else if self.recovery_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["forced process termination","startup recovery offer","exact pressure tilt dynamics texture restoration","recovered copy is untitled and dirty","native source unchanged","new session snapshot durable before old retirement","Save New and close cleanup ordering","corrupt and unsupported issue visibility","GPU recovery workflow"],"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.preset_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["preset application captures resolved settings","create duplicate rename update delete and defaults","restart persistence","live GPU previews","library edits preserve existing ink and export","corrupt library fallback and explicit repair backup"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.texture_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 4 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 5 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.dynamics_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pen-up preserves last contact pressure and tilt","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 4 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pen-up preserves last contact pressure and tilt","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 5 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 4 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 5 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {
@@ -1531,7 +1561,9 @@ impl SketchApp {
                 report
             };
             std::fs::write(
-                path.join(if self.recovery_verification_frame.is_some() {
+                path.join(if self.layer_verification_frame.is_some() {
+                    "layer-report.json"
+                } else if self.recovery_verification_frame.is_some() {
                     "recovery-report.json"
                 } else if self.preset_verification_frame.is_some() {
                     "preset-report.json"

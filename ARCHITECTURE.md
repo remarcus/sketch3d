@@ -120,3 +120,11 @@ The renderer caches mask bind groups alongside cached stroke meshes and prunes u
 `recovery_ui.rs` integrates edit tracking, startup discovery, recover/dismiss/continue actions, reserved native-save locations, and close cleanup. A recovered drawing is untitled and dirty. Its original recovery entry is retired only after a new-session write succeeds (or a deliberate Save/discard makes retirement safe). New/Open/sample boundaries clear only the current session after the existing unsaved-change flow. Native file identity is retained only as recovery metadata until Save as. Closing waits for the ordered queue; failed cleanup requires an explicit second close to retain copies and exit.
 
 Software verification uses an isolated workspace recovery directory. `scripts/verify_recovery.ps1` kills its owned fixture process only after a durable snapshot, restarts the app, checks exact input/brush data and source-file hash preservation, and verifies startup offer/cleanup. Unit tests cover atomic storage, corruption/versions/staleness, live sessions, coalescing, retries, epoch ordering, dismissal path spelling, and persistent cleanup errors. No document schema change is required.
+
+## Flat layers and version 5
+
+Document layers have stable IDs, names, visibility, and locking; each stroke stores a layer ID and the document stores its active layer. Native versions 1–4 migrate to one visible/unlocked layer, preserving brush data. Version-5 validation rejects duplicate/invalid layers, missing active layers, and orphan memberships.
+
+Layer edits store before/after metadata and ID assignments rather than duplicate point arrays. The app finishes active strokes/transforms before applying layer changes and records them in normal edit/recovery history. Shared visible/editable helpers govern drawing, picking, selection snapshots, bounds, and export. Rendering skips hidden strokes; export retains locked visible ink and node layer metadata. Background export snapshots clone layer metadata alongside selected strokes. Empty-only deletion keeps membership valid and prevents implicit artwork loss.
+
+Layer order does not override depth testing. Groups and nested hierarchy are separate future work. Software verification supplements migration, protection, undo, and exporter parser tests with a graphical layer workflow.

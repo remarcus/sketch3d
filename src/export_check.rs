@@ -10,10 +10,11 @@ use std::collections::HashSet;
 
 pub fn pressure_fixture() -> Document {
     Document {
-        version: 4,
+        version: 5,
         strokes: vec![
             Stroke {
                 id: 1001,
+                layer_id: 1,
                 color: [0.17, 0.82, 0.74],
                 radius: 0.12,
                 brush: Default::default(),
@@ -37,6 +38,7 @@ pub fn pressure_fixture() -> Document {
             },
             Stroke {
                 id: 1002,
+                layer_id: 1,
                 color: [0.94, 0.35, 0.14],
                 radius: 0.08,
                 brush: Default::default(),
@@ -48,6 +50,7 @@ pub fn pressure_fixture() -> Document {
             },
             Stroke {
                 id: 1003,
+                layer_id: 1,
                 color: [0.35, 0.45, 0.9],
                 radius: 0.045,
                 brush: Default::default(),
@@ -65,6 +68,7 @@ pub fn pressure_fixture() -> Document {
                 ],
             },
         ],
+        ..Document::default()
     }
 }
 /// A small pressure-shaped sampler that also exercises double-sided materials and dots.
@@ -87,6 +91,7 @@ pub fn brush_fixture() -> Document {
         let y = 1.2 - row as f32 * 1.2;
         doc.strokes.push(Stroke {
             id: 2001 + row as u64 * 2,
+            layer_id: 1,
             color,
             radius: 0.16,
             brush,
@@ -109,6 +114,7 @@ pub fn brush_fixture() -> Document {
             glam::Quat::from_rotation_arc(Vec3::Z, Vec3::new(0.3, 0.2, 1.0).normalize());
         doc.strokes.push(Stroke {
             id: 2002 + row as u64 * 2,
+            layer_id: 1,
             color,
             radius: 0.16,
             brush: Brush {
@@ -169,6 +175,7 @@ pub fn dynamics_fixture() -> Document {
         let y = 1.8 - row as f32 * 1.2;
         doc.strokes.push(Stroke {
             id: 3001 + row as u64 * 2,
+            layer_id: 1,
             color,
             radius: 0.18,
             brush,
@@ -190,6 +197,7 @@ pub fn dynamics_fixture() -> Document {
         });
         doc.strokes.push(Stroke {
             id: 3002 + row as u64 * 2,
+            layer_id: 1,
             color,
             radius: 0.18,
             brush,
@@ -238,6 +246,7 @@ pub fn textured_fixture() -> Document {
         let y = 1.8 - row as f32 * 1.2;
         doc.strokes.push(Stroke {
             id: 4001 + row as u64 * 3,
+            layer_id: 1,
             color,
             radius: 0.18,
             brush,
@@ -258,6 +267,7 @@ pub fn textured_fixture() -> Document {
         });
         doc.strokes.push(Stroke {
             id: 4002 + row as u64 * 3,
+            layer_id: 1,
             color,
             radius: 0.18,
             brush,
@@ -270,6 +280,7 @@ pub fn textured_fixture() -> Document {
         // A short depth-oriented round companion exercises circumference UV seams.
         doc.strokes.push(Stroke {
             id: 4003 + row as u64 * 3,
+            layer_id: 1,
             color,
             radius: 0.11,
             brush: Brush {
@@ -287,6 +298,26 @@ pub fn textured_fixture() -> Document {
     }
     doc
 }
+/// Visible locked artwork exports; hidden artwork is excluded even if selected.
+pub fn layered_fixture() -> Document {
+    let mut doc = pressure_fixture();
+    doc.layers.push(crate::document::Layer {
+        id: 2,
+        name: "Hidden study".into(),
+        visible: false,
+        locked: false,
+    });
+    doc.layers.push(crate::document::Layer {
+        id: 3,
+        name: "Protected ink".into(),
+        visible: true,
+        locked: true,
+    });
+    doc.strokes[1].layer_id = 2;
+    doc.strokes[1].color = [1.0, 0.0, 1.0];
+    doc.strokes[2].layer_id = 3;
+    doc
+}
 pub fn run() -> Result<(), String> {
     let directory = std::env::current_dir()
         .map_err(|e| e.to_string())?
@@ -300,6 +331,7 @@ pub fn run() -> Result<(), String> {
         ("brushes", brush_fixture(), None),
         ("dynamics", dynamics_fixture(), None),
         ("textures", textured_fixture(), None),
+        ("layers", layered_fixture(), None),
         ("selection", pressure, Some(HashSet::from([1002]))),
     ];
     let mut cases = Vec::new();
@@ -312,7 +344,9 @@ pub fn run() -> Result<(), String> {
         }
         let mut strokes = Vec::new();
         for stroke in doc.strokes.iter().filter(|s| {
-            !s.points.is_empty() && selected.as_ref().is_none_or(|ids| ids.contains(&s.id))
+            !s.points.is_empty()
+                && doc.visible(s)
+                && selected.as_ref().is_none_or(|ids| ids.contains(&s.id))
         }) {
             let geometry = geometry::stroke_mesh(stroke);
             let min = geometry.iter().fold(Vec3::splat(f32::INFINITY), |min, v| {
@@ -340,7 +374,7 @@ pub fn run() -> Result<(), String> {
             } else {
                 0
             };
-            strokes.push(json!({"name":format!("Stroke_{}",stroke.id),"id":stroke.id.to_string(),"color":stroke.color,"doubleSided":stroke.brush.kind == BrushKind::Ribbon,"masked":masked,"opaquePixels":opaque_pixels,"uvMin":uv_min,"uvMax":uv_max,"min":min.to_array(),"max":max.to_array()}));
+            strokes.push(json!({"name":format!("Stroke_{}",stroke.id),"id":stroke.id.to_string(),"layerId":stroke.layer_id.to_string(),"layerName":doc.layers.iter().find(|l|l.id==stroke.layer_id).unwrap().name,"color":stroke.color,"doubleSided":stroke.brush.kind == BrushKind::Ribbon,"masked":masked,"opaquePixels":opaque_pixels,"uvMin":uv_min,"uvMax":uv_max,"min":min.to_array(),"max":max.to_array()}));
         }
         cases.push(json!({"name":name,"file":file,"summary":summary,"strokes":strokes}));
     }
