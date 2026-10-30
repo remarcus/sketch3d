@@ -180,6 +180,8 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
     }
     let mut rings = Vec::with_capacity(stroke.points.len());
     let mut previous_axis: Option<Vec3> = None;
+    let distances = crate::dynamics::arc_lengths(&stroke.points);
+    let total = distances.last().copied().unwrap_or(0.0);
     for (i, p) in stroke.points.iter().enumerate() {
         let prev = stroke.points[i.saturating_sub(1)].position;
         let next = stroke.points[(i + 1).min(stroke.points.len() - 1)].position;
@@ -195,7 +197,14 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
             .unwrap_or_else(|| tangent.cross(helper).normalize());
         previous_axis = Some(a);
         let b = tangent.cross(a).normalize();
-        let radius = stroke.radius * (0.12 + 0.88 * p.pressure);
+        let radius = stroke.radius
+            * crate::dynamics::pressure_scale(stroke.brush.dynamics.width, p.pressure)
+            * crate::dynamics::taper_factor(
+                distances[i],
+                total,
+                stroke.brush.dynamics.taper_start,
+                stroke.brush.dynamics.taper_end,
+            );
         let ring: Vec<Vertex> = (0..8)
             .map(|j| {
                 let angle = j as f32 * std::f32::consts::TAU / 8.0;
@@ -211,7 +220,8 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
     }
     if rings.len() == 1 {
         let p = stroke.points[0];
-        let r = stroke.radius * (0.12 + 0.88 * p.pressure);
+        let r = stroke.radius
+            * crate::dynamics::pressure_scale(stroke.brush.dynamics.width, p.pressure);
         let axes = [Vec3::X, Vec3::Z, -Vec3::X, -Vec3::Z];
         for up in [Vec3::Y, -Vec3::Y] {
             for i in 0..4 {
@@ -262,8 +272,56 @@ pub fn stroke_extent(stroke: &Stroke) -> f32 {
     }
 }
 
+/// Insert distance landmarks so a sparse two-sample stroke still reaches its
+/// full middle width. This changes only tessellation, never document samples.
+fn taper_points(stroke: &Stroke) -> Vec<crate::document::Point> {
+    let settings = stroke.brush.dynamics;
+    let distances = crate::dynamics::arc_lengths(&stroke.points);
+    let total = distances.last().copied().unwrap_or(0.0);
+    if total <= 1e-8 || (settings.taper_start == 0.0 && settings.taper_end == 0.0) {
+        return stroke.points.clone();
+    }
+    let mut landmarks = vec![settings.taper_start, total - settings.taper_end];
+    if settings.taper_start > 0.0 && settings.taper_end > 0.0 {
+        landmarks.push(total * settings.taper_start / (settings.taper_start + settings.taper_end));
+    }
+    landmarks.retain(|s| *s > 0.0 && *s < total);
+    landmarks.sort_by(f32::total_cmp);
+    landmarks.dedup_by(|a, b| (*a - *b).abs() < 1e-7);
+    let mut out = Vec::with_capacity(stroke.points.len() + landmarks.len());
+    if let Some(point) = stroke.points.first() {
+        out.push(*point);
+    }
+    for (i, pair) in stroke.points.windows(2).enumerate() {
+        let start = distances[i];
+        let end = distances[i + 1];
+        for &at in &landmarks {
+            if at > start + 1e-7 && at < end - 1e-7 {
+                let t = (at - start) / (end - start);
+                out.push(crate::document::Point {
+                    position: pair[0].position.lerp(pair[1].position, t),
+                    pressure: pair[0].pressure + (pair[1].pressure - pair[0].pressure) * t,
+                    tilt: crate::dynamics::interpolate_tilt(pair[0].tilt, pair[1].tilt, t),
+                });
+            }
+        }
+        out.push(pair[1]);
+    }
+    out
+}
 /// All ink is built in document space. Camera changes cannot rotate a brush mark.
 pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
+    let prepared;
+    let stroke = if stroke.brush.dynamics.taper_start > 0.0 || stroke.brush.dynamics.taper_end > 0.0
+    {
+        prepared = Stroke {
+            points: taper_points(stroke),
+            ..stroke.clone()
+        };
+        &prepared
+    } else {
+        stroke
+    };
     if stroke.brush.kind != BrushKind::Round {
         return flat_brush(stroke);
     }
@@ -302,6 +360,7 @@ struct BrushFrame {
     normal: Vec3,
     tangent: Vec3,
     radius: f32,
+    half_thickness: f32,
 }
 
 fn perpendicular(normal: Vec3) -> Vec3 {
@@ -331,7 +390,10 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
         }
         points.push(*point);
     }
+    let distances = crate::dynamics::arc_lengths(&points);
+    let total = distances.last().copied().unwrap_or(0.0);
     let reference = stroke.brush.normal.try_normalize().unwrap_or(Vec3::Z);
+    let mut previous_manual: Option<(Vec3, Vec3)> = None;
     let mut frames: Vec<BrushFrame> = Vec::with_capacity(points.len());
     for (i, point) in points.iter().enumerate() {
         let before = points[i.saturating_sub(1)].position;
@@ -341,13 +403,13 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
             .or_else(|| (point.position - before).try_normalize())
             .or_else(|| (after - point.position).try_normalize())
             .unwrap_or(stroke.brush.tangent);
-        let width = if let Some(previous) = frames.last() {
+        let manual_width = if let Some((previous_width, previous_normal)) = previous_manual {
             // Projection preserves the width sign even at an exact reversal.
-            frame_direction(previous.width - tangent * previous.width.dot(tangent)).unwrap_or_else(
+            frame_direction(previous_width - tangent * previous_width.dot(tangent)).unwrap_or_else(
                 || {
-                    let candidate = previous.normal.cross(tangent).normalize_or_zero();
+                    let candidate = previous_normal.cross(tangent).normalize_or_zero();
                     if candidate.length_squared() > 0.5 {
-                        if candidate.dot(previous.width) < 0.0 {
+                        if candidate.dot(previous_width) < 0.0 {
                             -candidate
                         } else {
                             candidate
@@ -368,12 +430,44 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
             let width = normal.cross(tangent).normalize();
             Quat::from_axis_angle(tangent, stroke.brush.angle_degrees.to_radians()) * width
         };
+        previous_manual = Some((manual_width, tangent.cross(manual_width).normalize()));
+        let mut width = if stroke.brush.dynamics.tilt_orientation {
+            point
+                .tilt
+                .and_then(|lean| frame_direction(lean - tangent * lean.dot(tangent)))
+                .map(|axis| {
+                    Quat::from_axis_angle(tangent, stroke.brush.angle_degrees.to_radians()) * axis
+                })
+                .unwrap_or(manual_width)
+        } else {
+            manual_width
+        };
+        // Width is an unoriented axis: choose the nearest hemisphere instead of
+        // twisting 180 degrees as reported tilt passes an azimuth boundary.
+        if frames
+            .last()
+            .is_some_and(|previous| width.dot(previous.width) < 0.0)
+        {
+            width = -width;
+        }
+        let taper = crate::dynamics::taper_factor(
+            distances[i],
+            total,
+            stroke.brush.dynamics.taper_start,
+            stroke.brush.dynamics.taper_end,
+        );
         frames.push(BrushFrame {
             center: point.position,
             width,
             normal: tangent.cross(width).normalize(),
             tangent,
-            radius: stroke.radius * (0.12 + 0.88 * point.pressure),
+            radius: stroke.radius
+                * crate::dynamics::pressure_scale(stroke.brush.dynamics.width, point.pressure)
+                * taper,
+            half_thickness: stroke.radius
+                * stroke.brush.thickness
+                * crate::dynamics::pressure_scale(stroke.brush.dynamics.thickness, point.pressure)
+                * taper,
         });
     }
     frames
@@ -422,7 +516,7 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
         let a = f.width * f.radius;
         let b = f.tangent * f.radius;
         let h = if stroke.brush.kind == BrushKind::Chisel {
-            f.normal * f.radius * stroke.brush.thickness
+            f.normal * f.half_thickness
         } else {
             Vec3::ZERO
         };
@@ -471,7 +565,7 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
     } else {
         let ring = |f: BrushFrame| {
             let a = f.width * f.radius;
-            let b = f.normal * f.radius * stroke.brush.thickness;
+            let b = f.normal * f.half_thickness;
             [
                 f.center + a + b,
                 f.center - a + b,
@@ -550,10 +644,12 @@ mod tests {
             brush: Default::default(),
             points: vec![
                 Point {
+                    tilt: None,
                     position: Vec3::ZERO,
                     pressure,
                 },
                 Point {
+                    tilt: None,
                     position: Vec3::Y,
                     pressure,
                 },
@@ -577,6 +673,7 @@ mod curve_regression {
             .map(|i| {
                 let t = i as f32 / 159.0 * std::f32::consts::TAU;
                 Point {
+                    tilt: None,
                     position: Vec3::new(t.cos(), t.sin(), 0.0),
                     pressure: 1.0,
                 }
@@ -679,6 +776,7 @@ mod brush_tests {
             points: positions
                 .iter()
                 .map(|&position| Point {
+                    tilt: None,
                     position,
                     pressure: 1.0,
                 })
@@ -806,5 +904,251 @@ mod brush_tests {
             assert_eq!(v.normal, Vec3::X.to_array());
         }
         valid(&new);
+    }
+}
+
+#[cfg(test)]
+mod dynamics_tests {
+    use super::*;
+    use crate::document::{Brush, Point};
+
+    fn line(kind: BrushKind, xs: &[f32]) -> Stroke {
+        Stroke {
+            id: 100,
+            color: [0.5; 3],
+            radius: 0.1,
+            brush: Brush {
+                kind,
+                ..Brush::default()
+            },
+            points: xs
+                .iter()
+                .map(|&x| Point {
+                    position: Vec3::X * x,
+                    pressure: 0.0,
+                    tilt: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn chisel_pressure_width_and_thickness_are_independent() {
+        let mut stroke = line(BrushKind::Chisel, &[0.0, 1.0]);
+        stroke.brush.dynamics.thickness.enabled = false;
+        let frames = brush_frames(&stroke);
+        assert!((frames[0].radius - 0.012).abs() < 1e-6);
+        assert!((frames[0].half_thickness - 0.02).abs() < 1e-6);
+        stroke.brush.dynamics.width.enabled = false;
+        stroke.brush.dynamics.thickness.enabled = true;
+        let frames = brush_frames(&stroke);
+        assert!((frames[0].radius - 0.1).abs() < 1e-6);
+        assert!((frames[0].half_thickness - 0.0024).abs() < 1e-6);
+    }
+
+    #[test]
+    fn taper_adds_distance_landmarks_and_matches_denser_sampling() {
+        for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
+            let mut sparse = line(kind, &[0.0, 1.0]);
+            sparse.brush.dynamics.width.enabled = false;
+            sparse.brush.dynamics.thickness.enabled = false;
+            sparse.brush.dynamics.taper_start = 0.25;
+            sparse.brush.dynamics.taper_end = 0.25;
+            let prepared = Stroke {
+                points: taper_points(&sparse),
+                ..sparse.clone()
+            };
+            let mut dense = sparse.clone();
+            dense.points = (0..=20)
+                .map(|i| Point {
+                    position: Vec3::X * i as f32 * 0.05,
+                    pressure: 0.0,
+                    tilt: None,
+                })
+                .collect();
+            let sparse_frames = brush_frames(&prepared);
+            let dense_frames = brush_frames(&dense);
+            for frame in &sparse_frames {
+                let matching = dense_frames
+                    .iter()
+                    .find(|f| f.center.distance(frame.center) < 1e-6)
+                    .unwrap();
+                assert!((frame.radius - matching.radius).abs() < 1e-6);
+                assert!((frame.half_thickness - matching.half_thickness).abs() < 1e-6);
+            }
+            assert!(sparse_frames.iter().any(|f| (f.radius - 0.1).abs() < 1e-6));
+            let mesh = stroke_mesh(&sparse);
+            assert!(mesh
+                .iter()
+                .all(|v| Vec3::from(v.position).is_finite() && Vec3::from(v.normal).is_finite()));
+            assert!(mesh.iter().map(|v| v.position[1].abs()).fold(0.0, f32::max) > 0.099);
+        }
+    }
+
+    #[test]
+    fn overlapping_tapers_keep_short_strokes_and_dots_finite() {
+        for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
+            for xs in [vec![0.0], vec![0.0, 0.001], vec![0.0, 0.1]] {
+                let mut stroke = line(kind, &xs);
+                stroke.brush.dynamics.taper_start = 1.0;
+                stroke.brush.dynamics.taper_end = 1.0;
+                let mesh = stroke_mesh(&stroke);
+                assert!(!mesh.is_empty());
+                assert!(mesh.iter().all(
+                    |v| Vec3::from(v.position).is_finite() && Vec3::from(v.normal).is_finite()
+                ));
+                if xs.len() == 1 {
+                    assert!((brush_frames(&stroke)[0].radius - 0.012).abs() < 1e-6);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tilt_uses_captured_directions_and_falls_back_to_manual_frame() {
+        let mut stroke = line(BrushKind::Chisel, &[0.0, 0.5, 1.0, 1.5]);
+        stroke.brush.dynamics.tilt_orientation = true;
+        stroke.points[0].tilt = Some(Vec3::Z);
+        stroke.points[1].tilt = None;
+        stroke.points[2].tilt = Some(Vec3::X); // Parallel to the path is undefined.
+        stroke.points[3].tilt = Some(-Vec3::Y);
+        let frames = brush_frames(&stroke);
+        assert!(frames[0].width.abs_diff_eq(Vec3::Z, 1e-6));
+        assert!(frames[1].width.abs_diff_eq(Vec3::Y, 1e-6));
+        assert!(frames[2].width.abs_diff_eq(Vec3::Y, 1e-6));
+        assert!(frames[3].width.abs_diff_eq(Vec3::Y, 1e-6));
+        assert!(frames.windows(2).all(|f| f[0].width.dot(f[1].width) >= 0.0));
+        stroke.brush.dynamics.tilt_orientation = false;
+        let disabled = stroke_mesh(&stroke);
+        for p in &mut stroke.points {
+            p.tilt = None;
+        }
+        let manual = stroke_mesh(&stroke);
+        assert_eq!(
+            disabled.iter().map(|v| v.position).collect::<Vec<_>>(),
+            manual.iter().map(|v| v.position).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(test)]
+mod dynamics_boundary_tests {
+    use super::*;
+    use crate::document::{Brush, Point};
+    #[test]
+    fn zero_pressure_dimensions_and_tilt_azimuth_wrap_stay_finite() {
+        for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
+            let mut stroke = Stroke {
+                id: 101,
+                color: [0.5; 3],
+                radius: 0.1,
+                brush: Brush {
+                    kind,
+                    ..Brush::default()
+                },
+                points: (0..4)
+                    .map(|i| Point {
+                        position: Vec3::X * i as f32,
+                        pressure: 0.0,
+                        tilt: Some(if i % 2 == 0 {
+                            Vec3::new(0.0, 0.001, -1.0).normalize()
+                        } else {
+                            Vec3::new(0.0, -0.001, 1.0).normalize()
+                        }),
+                    })
+                    .collect(),
+            };
+            stroke.brush.dynamics.width.minimum = 0.0;
+            stroke.brush.dynamics.thickness.minimum = 0.0;
+            stroke.brush.dynamics.tilt_orientation = true;
+            stroke.brush.dynamics.taper_start = 0.4;
+            stroke.brush.dynamics.taper_end = 0.4;
+            let frames = brush_frames(&stroke);
+            assert!(frames
+                .iter()
+                .all(|f| f.radius == 0.0 && f.half_thickness == 0.0));
+            assert!(frames.windows(2).all(|f| f[0].width.dot(f[1].width) > 0.99));
+            let mesh = stroke_mesh(&stroke);
+            assert!(mesh
+                .iter()
+                .all(|v| Vec3::from(v.position).is_finite() && Vec3::from(v.normal).is_finite()));
+            for point in &mut stroke.points {
+                point.pressure = 0.01;
+            }
+            let mesh = stroke_mesh(&stroke);
+            assert!(!mesh.is_empty());
+            assert!(mesh
+                .iter()
+                .all(|v| Vec3::from(v.position).is_finite() && Vec3::from(v.normal).is_finite()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod seam_dynamics_tests {
+    use super::*;
+    use crate::{
+        document::{Brush, Point},
+        surface::{Cylinder, Surface, SurfaceStabilizer},
+    };
+    #[test]
+    fn tapered_tilted_marks_cross_cylinder_seam_and_finish_on_surface() {
+        let cylinder = Cylinder::default();
+        for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
+            let mut filter = SurfaceStabilizer::default();
+            filter.start(Surface::Cylinder(cylinder));
+            let mut points = Vec::new();
+            for angle in [std::f32::consts::PI - 0.12, -std::f32::consts::PI + 0.12] {
+                let position = cylinder.point(angle, 0.2);
+                assert!(!filter.discontinuity(position));
+                points.extend(filter.push(
+                    Point {
+                        position,
+                        pressure: 0.75,
+                        tilt: Some(Vec3::Y),
+                    },
+                    0.05,
+                ));
+            }
+            points.extend(filter.finish());
+            let target = cylinder.point(-std::f32::consts::PI + 0.12, 0.2);
+            assert!(points.last().unwrap().position.distance(target) < 1e-5);
+            assert!(points
+                .windows(2)
+                .all(|p| p[0].position.distance(p[1].position) < 0.036));
+            assert!(points.iter().all(|p| {
+                let local = cylinder.to_local(p.position);
+                (local.x.hypot(local.z) - cylinder.radius).abs() < 1e-5
+                    && p.pressure == 0.75
+                    && p.tilt == Some(Vec3::Y)
+            }));
+            let mut stroke = Stroke {
+                id: 1,
+                color: [0.5; 3],
+                radius: 0.1,
+                brush: Brush {
+                    kind,
+                    ..Brush::default()
+                },
+                points,
+            };
+            stroke.brush.dynamics.tilt_orientation = true;
+            stroke.brush.dynamics.taper_start = 0.08;
+            stroke.brush.dynamics.taper_end = 0.1;
+            let prepared = Stroke {
+                points: taper_points(&stroke),
+                ..stroke.clone()
+            };
+            let frames = brush_frames(&prepared);
+            let maximum = frames.iter().map(|f| f.radius).fold(0.0, f32::max);
+            assert!(maximum > 0.07);
+            assert!(frames.first().unwrap().radius < maximum * 0.02);
+            assert!(frames.last().unwrap().radius < maximum * 0.02);
+            let mesh = stroke_mesh(&stroke);
+            assert!(!mesh.is_empty());
+            assert!(mesh
+                .iter()
+                .all(|v| Vec3::from(v.position).is_finite() && Vec3::from(v.normal).is_finite()));
+        }
     }
 }

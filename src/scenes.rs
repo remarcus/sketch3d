@@ -35,6 +35,7 @@ impl Artist {
                 .into_iter()
                 .enumerate()
                 .map(|(i, position)| Point {
+                    tilt: None,
                     position,
                     pressure: 0.88 + 0.08 * (i as f32 / count as f32 * PI).sin(),
                 })

@@ -168,6 +168,7 @@ impl Surface {
     }
     fn decode(self, point: Point) -> Point {
         Point {
+            tilt: point.tilt,
             position: match self {
                 Self::Plane => point.position,
                 Self::Cylinder(c) => c.decode(point.position),
@@ -219,6 +220,7 @@ impl SurfaceStabilizer {
                     filtered
                 } else {
                     Point {
+                        tilt: crate::dynamics::interpolate_tilt(previous.tilt, filtered.tilt, t),
                         position: previous.position.lerp(filtered.position, t),
                         pressure: previous.pressure + (filtered.pressure - previous.pressure) * t,
                     }
@@ -236,6 +238,7 @@ impl SurfaceStabilizer {
         self.last_raw = Some(parameter);
         let filtered = self.filter.push(
             Point {
+                tilt: world.tilt,
                 position: parameter,
                 pressure: world.pressure,
             },
@@ -300,6 +303,7 @@ mod tests {
             last = world;
             out.extend(filter.push(
                 Point {
+                    tilt: None,
                     position: world,
                     pressure: i as f32 / 80.0,
                 },
@@ -324,6 +328,7 @@ mod tests {
         filter.start(Surface::Cylinder(c));
         filter.push(
             Point {
+                tilt: None,
                 position: c.point(0.0, 0.0),
                 pressure: 0.0,
             },
@@ -332,6 +337,7 @@ mod tests {
         assert!(filter.discontinuity(c.point(2.0, 0.0)));
         let points = filter.push(
             Point {
+                tilt: None,
                 position: c.point(1.0, 0.5),
                 pressure: 1.0,
             },
@@ -350,6 +356,7 @@ mod tests {
         filter.start(Surface::Cylinder(c));
         filter.push(
             Point {
+                tilt: None,
                 position: c.point(0.0, 0.0),
                 pressure: 0.5,
             },
@@ -358,6 +365,7 @@ mod tests {
         let target = c.point(0.4, 0.3);
         filter.push(
             Point {
+                tilt: None,
                 position: target,
                 pressure: 0.7,
             },
@@ -369,5 +377,50 @@ mod tests {
         let tail = filter.finish();
         assert!(tail.last().unwrap().position.distance(target) < 0.00001);
         assert_eq!(tail.last().unwrap().pressure, 0.7);
+    }
+}
+
+#[cfg(test)]
+mod tilt_tests {
+    use super::*;
+    #[test]
+    fn cylinder_resampling_interpolates_optional_tilt_and_preserves_surface() {
+        let cylinder = Cylinder::default();
+        let mut filter = SurfaceStabilizer::default();
+        filter.start(Surface::Cylinder(cylinder));
+        filter.push(
+            Point {
+                position: cylinder.point(0.0, 0.0),
+                pressure: 0.2,
+                tilt: Some(Vec3::X),
+            },
+            0.0,
+        );
+        let points = filter.push(
+            Point {
+                position: cylinder.point(0.4, 0.2),
+                pressure: 0.8,
+                tilt: Some(Vec3::Y),
+            },
+            0.0,
+        );
+        assert!(points.len() > 5);
+        assert!(points
+            .iter()
+            .all(|p| p.tilt.is_some_and(|t| (t.length() - 1.0).abs() < 1e-6)));
+        assert_eq!(points.last().unwrap().tilt, Some(Vec3::Y));
+        let points = filter.push(
+            Point {
+                position: cylinder.point(0.8, 0.3),
+                pressure: 0.8,
+                tilt: None,
+            },
+            0.0,
+        );
+        assert!(points.iter().all(|p| p.tilt.is_none()));
+        for point in points {
+            let local = cylinder.to_local(point.position);
+            assert!((local.x.hypot(local.z) - cylinder.radius).abs() < 1e-5);
+        }
     }
 }

@@ -9,6 +9,8 @@ use crate::{editing::Edit, gizmo::Mode};
 use eframe::egui::{self, Color32, Key, PointerButton, Pos2, Rect, RichText, Vec2};
 use glam::Vec3;
 use std::collections::HashSet;
+#[path = "brush_dynamics.rs"]
+mod brush_dynamics;
 #[path = "brushes.rs"]
 mod brushes;
 #[path = "cylinders.rs"]
@@ -32,6 +34,7 @@ enum Pending {
     House,
     Lantern,
     Brushes,
+    Dynamics,
     Open,
     Close,
 }
@@ -50,7 +53,6 @@ pub struct SketchApp {
     color: [f32; 3],
     radius: f32,
     brush: Brush,
-    pressure_curve: f32,
     stabilization: f32,
     stabilizer: SurfaceStabilizer,
     eraser: bool,
@@ -80,6 +82,7 @@ pub struct SketchApp {
     frame_ms: f32,
     verification_frame: Option<u32>,
     brush_verification_frame: Option<u32>,
+    dynamics_verification_frame: Option<u32>,
     house_verification_frame: Option<u32>,
     starter_scene: bool,
     cylinder_example: bool,
@@ -122,7 +125,6 @@ impl SketchApp {
             color: [0.17, 0.82, 0.74],
             radius: 0.025,
             brush: Brush::default(),
-            pressure_curve: 1.0,
             stabilization: 0.35,
             stabilizer: SurfaceStabilizer::default(),
             eraser: false,
@@ -152,6 +154,7 @@ impl SketchApp {
             frame_ms: 0.0,
             verification_frame: std::env::args().any(|a| a == "--verify").then_some(0),
             brush_verification_frame: None,
+            dynamics_verification_frame: None,
             house_verification_frame: None,
             starter_scene: false,
             cylinder_example: false,
@@ -160,7 +163,11 @@ impl SketchApp {
             last_export_result: None,
             export_snapshot: None,
         };
-        if std::env::args().any(|a| a == "--verify-brushes") {
+        if std::env::args().any(|a| a == "--verify-dynamics") {
+            app.verification_frame = None;
+            app.dynamics_verification_frame = Some(0);
+            app.load_dynamics();
+        } else if std::env::args().any(|a| a == "--verify-brushes") {
             app.verification_frame = None;
             app.brush_verification_frame = Some(0);
             app.load_brushes();
@@ -173,7 +180,9 @@ impl SketchApp {
             app.house_verification_frame = Some(0);
             app.load_house();
         } else if app.verification_frame.is_none() {
-            if std::env::args().any(|a| a == "--brushes") {
+            if std::env::args().any(|a| a == "--dynamics") {
+                app.load_dynamics();
+            } else if std::env::args().any(|a| a == "--brushes") {
                 app.load_brushes();
             } else if std::env::args().any(|a| a == "--demo") {
                 app.demo();
@@ -193,7 +202,9 @@ impl SketchApp {
             if let Some(stroke) = self.doc.strokes.last_mut().filter(|s| s.id == id) {
                 for point in tail {
                     if stroke.points.last().is_none_or(|p| {
-                        p.position != point.position || p.pressure != point.pressure
+                        p.position != point.position
+                            || p.pressure != point.pressure
+                            || p.tilt != point.tilt
                     }) {
                         stroke.points.push(point);
                     }
@@ -218,6 +229,16 @@ impl SketchApp {
         }
     }
     fn add_point(&mut self, position: Pos2, pressure: f32, rect: Rect, begin: bool) {
+        self.add_point_with_tilt(position, pressure, rect, begin, None);
+    }
+    fn add_point_with_tilt(
+        &mut self,
+        position: Pos2,
+        pressure: f32,
+        rect: Rect,
+        begin: bool,
+        tilt: Option<Vec3>,
+    ) {
         if begin {
             self.finish();
         }
@@ -286,11 +307,12 @@ impl SketchApp {
         let Some(id) = self.active else {
             return;
         };
-        let pressure = pressure.clamp(0.0, 1.0).powf(self.pressure_curve);
+        let pressure = pressure.clamp(0.0, 1.0);
         let clip = self.camera.matrix(rect.aspect_ratio()) * world.extend(1.0);
         let world_per_pixel = 2.0 * 22.5_f32.to_radians().tan() * clip.w / rect.height();
         let points = self.stabilizer.push(
             Point {
+                tilt,
                 position: world,
                 pressure,
             },
@@ -301,6 +323,7 @@ impl SketchApp {
                 if stroke.points.last().is_none_or(|p| {
                     p.position.distance(point.position) > 0.001
                         || (p.pressure - point.pressure).abs() > 0.025
+                        || p.tilt != point.tilt
                 }) {
                     stroke.points.push(point);
                 }
@@ -393,6 +416,7 @@ impl SketchApp {
             Some(Pending::House) => self.load_house(),
             Some(Pending::Lantern) => self.load_lantern(),
             Some(Pending::Brushes) => self.load_brushes(),
+            Some(Pending::Dynamics) => self.load_dynamics(),
             Some(Pending::New) => {
                 self.starter_scene = false;
                 self.cylinder_example = false;
@@ -458,6 +482,7 @@ impl SketchApp {
                     _ => Vec3::new(t.cos() * 1.6, 0.0, t.sin() * 1.6),
                 };
                 points.push(Point {
+                    tilt: None,
                     position: pos,
                     pressure: 0.5 + 0.5 * (t * 2.0).sin().abs(),
                 });
@@ -544,7 +569,6 @@ impl SketchApp {
                     })
                     .logarithmic(true),
             );
-            ui.add(egui::Slider::new(&mut self.pressure_curve, 0.3..=2.5).text("Pressure"));
             ui.add(egui::Slider::new(&mut self.stabilization, 0.0..=1.0).text("Stabilize").custom_formatter(|v, _| format!("{:.0}%", v*100.0))).on_hover_text("0% gives raw input. Higher values reduce jitter and let the line trail the pen. It catches up on release; pressure is preserved.");
         }
         ui.add_space(12.0);
@@ -684,12 +708,23 @@ impl SketchApp {
         }
     }
     fn pointer_action(&mut self, pos: Pos2, pressure: f32, rect: Rect, begin: bool, shift: bool) {
+        self.pointer_action_with_tilt(pos, pressure, rect, begin, shift, None);
+    }
+    fn pointer_action_with_tilt(
+        &mut self,
+        pos: Pos2,
+        pressure: f32,
+        rect: Rect,
+        begin: bool,
+        shift: bool,
+        tilt: Option<Vec3>,
+    ) {
         if self.select_mode {
             self.select_pointer(pos, rect, begin, shift);
         } else if self.eraser {
             self.erase(pos, rect);
         } else {
-            self.add_point(pos, pressure, rect, begin);
+            self.add_point_with_tilt(pos, pressure, rect, begin, tilt);
         }
     }
     fn canvas_input(&mut self, ctx: &egui::Context, rect: Rect, mut pen: Vec<PenSample>) {
@@ -703,7 +738,10 @@ impl SketchApp {
                 i.smooth_scroll_delta.y,
             )
         });
-        if !ctx.input(|i| i.focused) && self.verification_frame.is_none() {
+        if !ctx.input(|i| i.focused)
+            && self.verification_frame.is_none()
+            && self.dynamics_verification_frame.is_none()
+        {
             self.cancel();
             return;
         }
@@ -758,12 +796,17 @@ impl SketchApp {
                 if sample.eraser {
                     self.erase(sample.position, rect);
                 } else {
-                    self.pointer_action(
+                    self.pointer_action_with_tilt(
                         sample.position,
                         sample.pressure.unwrap_or(1.0),
                         rect,
                         sample.phase == Phase::Down,
                         shift,
+                        crate::dynamics::screen_tilt(
+                            sample.tilt,
+                            self.camera.basis().0,
+                            self.camera.basis().1,
+                        ),
                     );
                 }
             }
@@ -950,6 +993,13 @@ impl eframe::App for SketchApp {
                 {
                     self.request(Pending::Brushes);
                 }
+                if ui
+                    .add_enabled(enabled, egui::Button::new("Dynamics"))
+                    .on_hover_text("Open the editable pressure, tilt, and taper study")
+                    .clicked()
+                {
+                    self.request(Pending::Dynamics);
+                }
                 if ui.add_enabled(enabled, egui::Button::new("Open")).clicked() {
                     self.request(Pending::Open);
                 }
@@ -1036,6 +1086,7 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.verify_dynamics(ctx, rect);
                 self.verify_brushes(ctx, rect);
                 self.verify_cylinder(ctx, rect);
                 self.verify_house(ctx);
@@ -1253,6 +1304,7 @@ impl SketchApp {
             && self.house_verification_frame.is_none()
             && self.cylinder_verification_frame.is_none()
             && self.brush_verification_frame.is_none()
+            && self.dynamics_verification_frame.is_none()
         {
             return;
         }
@@ -1269,7 +1321,9 @@ impl SketchApp {
             let path = std::env::current_dir().unwrap().join("verification");
             let pixels: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
             image::save_buffer(
-                path.join(if self.brush_verification_frame.is_some() {
+                path.join(if self.dynamics_verification_frame.is_some() {
+                    "dynamics-preview.png"
+                } else if self.brush_verification_frame.is_some() {
                     "brush-preview.png"
                 } else if self.cylinder_verification_frame.is_some() {
                     "cylinder-preview.png"
@@ -1285,8 +1339,10 @@ impl SketchApp {
             )
             .unwrap();
             let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload","background GLB export preserves document state"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
-            let report = if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 2 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+            let report = if self.dynamics_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pen-up preserves last contact pressure and tilt","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 3 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+            } else if self.brush_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 3 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {
@@ -1295,7 +1351,9 @@ impl SketchApp {
                 report
             };
             std::fs::write(
-                path.join(if self.brush_verification_frame.is_some() {
+                path.join(if self.dynamics_verification_frame.is_some() {
+                    "dynamics-report.json"
+                } else if self.brush_verification_frame.is_some() {
                     "brush-report.json"
                 } else if self.cylinder_verification_frame.is_some() {
                     "cylinder-report.json"

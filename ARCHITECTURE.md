@@ -2,12 +2,12 @@
 
 ## Data flow
 
-Native tablet messages -> chronological normalized samples -> ray/plane intersection -> editable stroke points -> tube tessellation -> cached vertex buffers -> depth-tested wgpu canvas -> egui texture.
+Native tablet messages -> chronological normalized samples -> ray/plane intersection -> editable stroke points -> brush dynamics and tessellation -> cached vertex buffers -> depth-tested wgpu canvas -> egui texture.
 
 ## Modules
 
 - `document.rs`: versioned file schema and validation. Does not depend on the UI or platform APIs.
-- `geometry.rs`: camera, ray/plane intersection, grid, and pressure-aware tube meshes. Unit tested separately from graphics hardware.
+- `geometry.rs`: camera, ray/plane intersection, grid, and brush meshes with pressure/tilt/taper. Unit tested separately from graphics hardware.
 - `input.rs`: normalized sample type and Windows Ink listener. Contains the platform-specific unsafe boundary.
 - `renderer.rs`: custom WGSL pipeline, offscreen color/depth targets, camera uniform, grid and per-stroke GPU cache. Reallocates buffers geometrically; completed stroke buffers are reused.
 - `editing.rs`: grouped snapshots, reversible edits, selection bounds, and validated transforms. Tests cover exact stroke order and attribute preservation.
@@ -49,7 +49,7 @@ Selection highlighting is render-only. The renderer invalidates changed strokes 
 
 ## Editable startup artwork
 
-`scenes.rs` builds the Japanese-style garden house deterministically as a version-1 document, with sequential stroke IDs and the same point/pressure/color/radius data as user-created strokes. The artwork is authored in code and needs no downloaded assets. `starter.rs` installs the sample, its camera, and its drawing guide; New and House share the existing unsaved-change flow. Neither operation replaces an edited document without that flow. The untouched example is not dirty; later edits use normal history and save behavior. `--blank` and the two verification modes isolate startup artwork from drawing workflow tests.
+`scenes.rs` builds the Japanese-style garden house deterministically using the current document version, with sequential stroke IDs and the same point/pressure/color/radius data as user-created strokes. The artwork is authored in code and needs no downloaded assets. `starter.rs` installs the sample, its camera, and its drawing guide; New and House share the existing unsaved-change flow. Neither operation replaces an edited document without that flow. The untouched example is not dirty; later edits use normal history and save behavior. `--blank` and the two verification modes isolate startup artwork from drawing workflow tests.
 
 ## Arbitrary work planes
 
@@ -77,8 +77,18 @@ The `gltf` crate is a dev-only independent parser used by unit tests. `export_ch
 
 ## Brush geometry and version 2
 
-`Stroke.brush` stores a round/ribbon/chisel kind, dimensionless thickness ratio, manual angle, and a frozen orthonormal normal/tangent pair. The pair is captured from the current guide at contact, so a dot has a complete frame even without a path tangent. Uniform scale changes radius, rotation changes both frame vectors, and edit snapshots preserve all brush metadata. Version-1 JSON upgrades to version 2 with the default round brush; unknown legacy brush extensions are ignored to preserve old appearance. Version-2 metadata is validated before use.
+`Stroke.brush` stores a round/ribbon/chisel kind, dimensionless thickness ratio, manual angle, and a frozen orthonormal normal/tangent pair. The pair is captured from the current guide at contact, so a dot has a complete frame even without a path tangent. Uniform scale changes radius, rotation changes both frame vectors, and edit snapshots preserve all brush metadata. Version-1 JSON gains the default round brush; unknown legacy brush extensions are ignored to preserve old appearance. Both old formats upgrade to the current version as described below.
 
 `geometry::stroke_mesh` is shared by the renderer and exporter. Round uses the legacy tube positions and pressure profile with corrected cap normals and triangle winding. Ribbon/chisel deduplicate coincident samples, derive path tangents, and transport the width axis by projection. A captured tangent resolves dot and normal-parallel cases. Chisel faces use flat normals; ribbons remain geometrically thin and use two-sided rendering/materials. `stroke_extent` conservatively covers cross-sections and dot footprints for selection bounds, picking, and erasing. Existing point-count mesh caching remains valid because shape settings are captured once; transform paths explicitly invalidate changed stroke IDs.
 
-`brushes.rs` owns shape controls, sampler loading, and the software brush workflow. The sampler also serves as an independent GLB export fixture. Additional pressure/tilt mappings, textured rendering, brush preset libraries, opacity, and import remain separately tracked tasks.
+`brushes.rs` owns shape controls, sampler loading, and the software brush workflow. The sampler also serves as an independent GLB export fixture. Textured rendering, brush preset libraries, opacity, and import remain separately tracked tasks.
+
+## Dynamics and version 3
+
+`dynamics.rs` defines persisted independent pressure mappings, taper envelopes, arc distances, screen-tilt conversion, and optional hemisphere-aligned tilt interpolation. `Brush.dynamics` is frozen at stroke creation; `Point.pressure` stores raw pressure for new strokes and `Point.tilt` stores optional normalized world lean. Version-1/2 files upgrade to v3 with default mappings and no tilt; their old baked pressure values retain the original geometry. Validation rejects nonfinite/out-of-range responses, taper lengths, and tilt axes.
+
+The pen contact path converts screen tilt using the current camera right/up basis, while pen-up and cancellation never add a pressure/tilt sample. Stabilization retains current contact dynamics, interpolates them for cylinder subdivision, and finishes with the last contact state. Missing tilt remains explicit rather than fabricated. Tilted cross-sections project lean perpendicular to the path, apply the captured manual angle, and choose a continuous axis hemisphere; a separate transported manual frame handles missing/singular lean.
+
+Geometry maps physical width and chisel thickness independently and applies the minimum of distance-from-start/end taper ramps. It inserts up to three private distance landmarks before tessellation, so a sparse two-point stroke reaches the same taper extrema as a denser straight path. Native samples remain unchanged. A 1% taper floor retains nonzero tips; zero pressure minima may intentionally collapse a dimension. Radius, taper distances, and tilt/frame vectors transform together. Renderer and GLB export share the mesh dispatcher, with export budgets allowing for landmark vertices.
+
+`brush_dynamics.rs` owns controls, the editable dynamics study, and a synthetic pen lifecycle smoke test. Hardware orientation/calibration and latency still need real-device validation.

@@ -77,7 +77,7 @@ Brush radius is in world units, so its visible size changes with camera distance
 
 ## Documents
 
-Documents use a versioned `.sketch.json` format with positions in world space. Version 2 stores brush shapes and frozen orientation; version-1 drawings load as round strokes and upgrade on save. Older application versions cannot open version-2 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. There is no autosave or crash recovery yet; save regularly.
+Documents use a versioned `.sketch.json` format with positions in world space. Version 3 stores brush shapes, dynamics, raw pressure, optional world-space pen lean, and frozen orientation. Version-1/2 drawings upgrade on load while preserving their existing appearance and baked pressure response. Older application versions cannot open version-3 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. There is no autosave or crash recovery yet; save regularly.
 
 ## Development
 
@@ -98,7 +98,7 @@ The immediate hardware test is pressure and tilt on the Wacom, followed by the K
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
-Next planned work is pressure/tilt dynamics and taper, built-in textures, and local presets (SKETCH-010–012). Soft/transparent brushes follow separately; brush-library importing remains deferred.
+Next planned work is built-in textures and local presets (SKETCH-011–012). Soft/transparent brushes follow separately; brush-library importing remains deferred.
 
 ## License
 
@@ -200,7 +200,7 @@ One drawing world unit exports as **one meter**, with right-handed +X right, +Y 
 cargo run --release -- --verify-export
 ```
 
-This creates `verification/exports/house.glb`, `lantern.glb`, `pressure.glb`, `brushes.glb`, `selection.glb`, and a source-geometry manifest. The normal `--verify` workflow also exercises the asynchronous UI path and verifies that source geometry, file identity, dirty state, selection, and undo/redo depths remain unchanged.
+This creates `verification/exports/house.glb`, `lantern.glb`, `pressure.glb`, `brushes.glb`, `dynamics.glb`, `selection.glb`, and a source-geometry manifest. The normal `--verify` workflow also exercises the asynchronous UI path and verifies that source geometry, file identity, dirty state, selection, and undo/redo depths remain unchanged.
 
 To validate fixtures using the official Khronos validator, from the project root:
 
@@ -221,10 +221,22 @@ Format reference: [Khronos glTF 2.0 specification](https://registry.khronos.org/
 
 ## Brush shapes — SKETCH-009
 
-Choose **Round**, **Ribbon**, or **Flat / chisel** in the brush panel. Round preserves the original tube profile. Ribbon makes a thin strip visible from either side. Flat/chisel makes a solid rectangular strip; its **Thickness** setting is a percentage of the full width. **Radius / Half width** controls world-space size. All three retain the existing pressure curve: pressure scales width, and chisel thickness scales proportionally. Independent dynamics and textures are the next tasks.
+Choose **Round**, **Ribbon**, or **Flat / chisel** in the brush panel. Round preserves the original tube profile. Ribbon makes a thin strip visible from either side. Flat/chisel makes a solid rectangular strip; its **Thickness** setting is a percentage of the full width. **Radius / Half width** controls world-space size. All three support configurable pressure width; chisel thickness has an independent pressure response. Textures remain a future task.
 
 **Angle** rotates ribbon/chisel cross-sections around the stroke direction. The starting frame comes from the drawing plane or the cylinder surface at first contact. It is transported smoothly along the path; it does not face the camera, and changing the guide or active brush leaves existing strokes fixed. Transport along a complex 3D curve can twist relative to the guide surface. Taps produce a finite patch or solid stamp. Ribbons have no physical thickness; they appear edge-on when viewed along their surface.
 
 **Brushes** opens an editable sampler: round at the top, ribbon in the middle, and chisel at the bottom, with pressure ramps and dots. Unsaved-change handling matches House and Lantern. Start with `cargo run --release -- --brushes`, or run `cargo run --release -- --verify-brushes` for drawing, selection, erasing, duplication, transforms, cylinder stabilization, save/reload, and GPU checks. Outputs are `verification/brush-report.json` and `verification/brush-preview.png`.
 
-Native files preserve brush type, thickness ratio, angle, and orientation. Duplication and undo retain these values; rotation and uniform scale transform the whole brush mark. GLB uses the same meshes as the viewport, with double-sided ribbon materials. Physical pen pressure still requires tablet validation; tilt remains diagnostic-only in this feature.
+Native files preserve brush type, thickness ratio, angle, and orientation. Duplication and undo retain these values; rotation and uniform scale transform the whole brush mark. GLB uses the same meshes as the viewport, with double-sided ribbon materials. Physical pen pressure still requires tablet validation; optional tilt orientation is available as described below.
+
+## Pressure, tilt, and taper — SKETCH-010
+
+Expand **Pressure, tilt & taper** in the brush panel. Enable **Pressure: width** to map pressure to width; chisel also offers **Pressure: thickness** independently. Each mapping has a minimum fraction and response exponent: 1 is linear, larger values need more pressure, smaller values reach full size sooner. Disable a mapping for a constant dimension. Defaults preserve the original 12% minimum and linear response. A zero minimum can produce invisible geometry at zero contact pressure.
+
+**Tilt orientation** uses reported pen lean to rotate ribbon/chisel cross-sections, with **Angle** as an additional rotation. Missing tilt, an upright pen, or lean parallel to the path uses the manual frame. Orientation is captured in world space, including camera roll, and transforms with the stroke. This is orientation control; tilt does not yet drive opacity or width. Physical Wacom/Huion tilt behavior remains unverified.
+
+**Start taper / End taper** set world-space distances independently. Both dimensions follow the taper; overlapping tapers reduce the middle of short strokes, while dots retain their footprint. The profile uses path distance rather than event count, and the mesh inserts taper landmarks for sparse strokes. Tips retain a 1% taper floor to avoid collapsing otherwise nonzero profiles. End taper previews while drawing and settles after the stabilized release tail. Scaling a stroke scales its taper lengths too.
+
+New strokes retain raw pressure, optional normalized pen lean, and a copy of all dynamics settings. Changing controls affects future strokes. Pen-up pressure/tilt is excluded, cancellation discards the unfinished stroke, and each completed stroke remains one undo step. Existing v1/v2 files retain their baked response through migration. GLB bakes the same dimensions, orientation, and taper as the viewport.
+
+**Dynamics** opens an editable four-row study: pressure width, independent pressure thickness, tilt ribbon, and distance taper. Start with `cargo run --release -- --dynamics`. Run `cargo run --release -- --verify-dynamics` for synthetic pen contact/release/cancellation, missing-tilt fallback, persistence, and GPU verification; outputs are `verification/dynamics-report.json` and `verification/dynamics-preview.png`. These software tests do not replace physical tablet testing.

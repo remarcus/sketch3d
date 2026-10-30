@@ -45,6 +45,9 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
                 || p.position.abs().max_element() > 10000.0
                 || !p.pressure.is_finite()
                 || !(0.0..=1.0).contains(&p.pressure)
+                || p.tilt.is_some_and(|tilt| {
+                    !tilt.is_finite() || (tilt.length_squared() - 1.0).abs() > 0.001
+                })
         })
     {
         return Err(format!(
@@ -55,6 +58,7 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
     let estimate = stroke
         .points
         .len()
+        .saturating_add(3) // Distance taper may insert three tessellation landmarks.
         .saturating_sub(1)
         .saturating_mul(48)
         .saturating_add(48);
@@ -65,6 +69,12 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
         ));
     }
     let source = geometry::stroke_mesh(stroke);
+    if source.len() > MAX_TRIANGLE_VERTICES_PER_STROKE {
+        return Err(format!(
+            "Stroke {} exceeds the working mesh budget",
+            stroke.id
+        ));
+    }
     let mut mesh = Mesh {
         vertices: Vec::new(),
         indices: Vec::new(),
@@ -119,7 +129,7 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
     Ok(mesh)
 }
 pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1 | 2) {
+    if !matches!(doc.version, 1..=3) {
         return Err("Unsupported source document version".into());
     }
     let mut binary = Vec::new();
@@ -279,10 +289,12 @@ mod tests {
             brush: Default::default(),
             points: vec![
                 Point {
+                    tilt: None,
                     position: Vec3::ZERO,
                     pressure: 0.2,
                 },
                 Point {
+                    tilt: None,
                     position: Vec3::Y,
                     pressure: 1.0,
                 },
@@ -371,6 +383,82 @@ mod tests {
         doc.strokes[0].brush.tangent = Vec3::X;
         doc.strokes[0].brush.thickness = 0.0;
         assert!(encode(&doc, None).is_err());
+    }
+    #[test]
+    fn independent_pressure_dimensions_are_baked_into_glb() {
+        let mut mark = stroke(9001, [0.2, 0.6, 0.8]);
+        mark.brush.kind = BrushKind::Chisel;
+        mark.brush.thickness = 0.5;
+        mark.brush.dynamics.width.enabled = false;
+        mark.brush.dynamics.thickness.minimum = 0.0;
+        mark.brush.dynamics.thickness.curve = 2.0;
+        let mut doc = Document::default();
+        doc.strokes.push(mark);
+        let exported = encode(&doc, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
+        let primitive = gltf.meshes().next().unwrap().primitives().next().unwrap();
+        let positions: Vec<Vec3> = primitive
+            .reader(|_| gltf.blob.as_deref())
+            .read_positions()
+            .unwrap()
+            .map(Vec3::from)
+            .collect();
+        let first: Vec<_> = positions.iter().filter(|p| p.y.abs() < 1e-5).collect();
+        let last: Vec<_> = positions
+            .iter()
+            .filter(|p| (p.y - 1.0).abs() < 1e-5)
+            .collect();
+        assert!(!first.is_empty() && !last.is_empty());
+        assert!(first
+            .iter()
+            .all(|p| (p.x.abs() - 0.1).abs() < 1e-5 && (p.z.abs() - 0.002).abs() < 1e-5));
+        assert!(last
+            .iter()
+            .all(|p| (p.x.abs() - 0.1).abs() < 1e-5 && (p.z.abs() - 0.05).abs() < 1e-5));
+        doc.strokes[0].points[0].tilt = Some(Vec3::ZERO);
+        assert!(encode(&doc, None).is_err());
+        doc.strokes[0].points[0].tilt = None;
+        doc.strokes[0].brush.dynamics.taper_start = f32::NAN;
+        assert!(encode(&doc, None).is_err());
+    }
+
+    #[test]
+    fn dynamics_survive_native_roundtrip_and_selected_export() {
+        let source = crate::export_check::dynamics_fixture();
+        let text = serde_json::to_string(&source).unwrap();
+        let loaded = Document::from_json(&text).unwrap();
+        assert_eq!(loaded.strokes, source.strokes);
+        assert_eq!(loaded.version, 3);
+        let exported = encode(&loaded, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
+        assert_eq!(gltf.meshes().count(), 8);
+        for (mesh, stroke) in gltf.meshes().zip(&loaded.strokes) {
+            let primitive = mesh.primitives().next().unwrap();
+            let positions: Vec<Vec3> = primitive
+                .reader(|_| gltf.blob.as_deref())
+                .read_positions()
+                .unwrap()
+                .map(Vec3::from)
+                .collect();
+            let expected = geometry::stroke_mesh(stroke);
+            let bounds = |points: &[Vec3]| {
+                points.iter().fold(
+                    (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+                    |(lo, hi), p| (lo.min(*p), hi.max(*p)),
+                )
+            };
+            let expected_positions: Vec<_> =
+                expected.iter().map(|v| Vec3::from(v.position)).collect();
+            let (lo, hi) = bounds(&positions);
+            let (expected_lo, expected_hi) = bounds(&expected_positions);
+            assert!(lo.abs_diff_eq(expected_lo, 1e-5) && hi.abs_diff_eq(expected_hi, 1e-5));
+        }
+        let selected = encode(&loaded, Some(&HashSet::from([3005]))).unwrap();
+        let parsed = gltf::Gltf::from_slice(&selected.bytes).unwrap();
+        assert_eq!(parsed.meshes().count(), 1);
+        assert_eq!(parsed.nodes().next().unwrap().name(), Some("Stroke_3005"));
+        assert!(parsed.materials().next().unwrap().double_sided());
+        assert_eq!(serde_json::to_string(&loaded).unwrap(), text);
     }
     #[test]
     fn selected_scope_uses_original_colors_and_excludes_other_strokes() {

@@ -306,10 +306,12 @@ mod tests {
             brush: Default::default(),
             points: vec![
                 Point {
+                    tilt: None,
                     position: Vec3::new(-1.0, 0.0, z),
                     pressure: 1.0,
                 },
                 Point {
+                    tilt: None,
                     position: Vec3::new(1.0, 0.0, z),
                     pressure: 1.0,
                 },

@@ -33,6 +33,11 @@ impl Stabilizer {
                         target
                     } else {
                         Point {
+                            tilt: crate::dynamics::interpolate_tilt(
+                                start.tilt,
+                                target.tilt,
+                                i as f32 / 8.0,
+                            ),
                             position: start.position.lerp(target.position, i as f32 / 8.0),
                             pressure: start.pressure
                                 + (target.pressure - start.pressure) * i as f32 / 8.0,
@@ -57,6 +62,7 @@ mod tests {
         let mut filter = Stabilizer::default();
         for i in 0..20 {
             let p = Point {
+                tilt: None,
                 position: Vec3::new(i as f32 * 0.1, (i as f32).sin(), 0.0),
                 pressure: i as f32 / 20.0,
             };
@@ -72,11 +78,13 @@ mod tests {
         let mut raw_variation = 0.0;
         let mut smooth_variation = 0.0;
         let mut last = Point {
+            tilt: None,
             position: Vec3::ZERO,
             pressure: 0.0,
         };
         for i in 0..100 {
             let p = Point {
+                tilt: None,
                 position: Vec3::new(
                     i as f32 * 0.01,
                     if i % 2 == 0 { 0.008 } else { -0.008 },
@@ -98,6 +106,7 @@ mod tests {
         let tail = filter.finish();
         assert_eq!(tail.last(), Some(&last));
         let next = Point {
+            tilt: None,
             position: Vec3::splat(5.0),
             pressure: 0.0,
         };
@@ -112,6 +121,7 @@ mod tests {
         let mut filter = Stabilizer::default();
         filter.push(
             Point {
+                tilt: None,
                 position: Vec3::ZERO,
                 pressure: 1.0,
             },
@@ -119,6 +129,7 @@ mod tests {
         );
         filter.push(
             Point {
+                tilt: None,
                 position: Vec3::X,
                 pressure: 0.2,
             },
@@ -126,5 +137,41 @@ mod tests {
         );
         filter.reset();
         assert!(filter.finish().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tilt_tests {
+    use super::*;
+    use glam::Vec3;
+    #[test]
+    fn release_tail_retains_last_contact_tilt_and_reset_clears_it() {
+        let mut filter = Stabilizer::default();
+        filter.push(
+            Point {
+                position: Vec3::ZERO,
+                pressure: 0.3,
+                tilt: Some(Vec3::X),
+            },
+            0.2,
+        );
+        let target = Point {
+            position: Vec3::Y,
+            pressure: 0.8,
+            tilt: Some(Vec3::Z),
+        };
+        let filtered = filter.push(target, 0.2);
+        assert_eq!(filtered.tilt, target.tilt);
+        let tail = filter.finish();
+        assert_eq!(tail.last(), Some(&target));
+        assert!(tail
+            .iter()
+            .all(|p| p.tilt.is_some_and(|t| t.abs_diff_eq(Vec3::Z, 1e-6))));
+        let mouse = Point {
+            position: Vec3::ONE,
+            pressure: 1.0,
+            tilt: None,
+        };
+        assert_eq!(filter.push(mouse, 0.2), mouse);
     }
 }

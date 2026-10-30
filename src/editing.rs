@@ -94,17 +94,20 @@ pub fn transformed(
     let mut after = before.clone();
     for (_, stroke) in &mut after {
         stroke.radius *= scale;
+        stroke.brush.dynamics.taper_start *= scale;
+        stroke.brush.dynamics.taper_end *= scale;
         stroke.brush.normal = rotation * stroke.brush.normal;
         stroke.brush.tangent = rotation * stroke.brush.tangent;
         if !stroke.brush.is_valid() {
-            return Err("Transform would invalidate brush orientation");
+            return Err("Transform would exceed brush dynamics or orientation limits");
         }
         if !(0.001..=1.0).contains(&stroke.radius) {
             return Err("Scale would exceed brush radius limits");
         }
         for point in &mut stroke.points {
+            point.tilt = point.tilt.map(|tilt| rotation * tilt);
             point.position = pivot + rotation * ((point.position - pivot) * scale) + translation;
-            if !point.position.is_finite() || point.position.abs().max_element() > 10000.0 {
+            if !point.is_valid() {
                 return Err("Transform exceeds document bounds");
             }
         }
@@ -125,6 +128,7 @@ mod tests {
             points: vec![Point {
                 position: Vec3::new(x, 0.0, 0.0),
                 pressure: 0.3,
+                tilt: None,
             }],
         }
     }
@@ -217,9 +221,10 @@ mod tests {
                 angle_degrees: 35.0,
                 normal: Vec3::Z,
                 tangent: Vec3::Y,
+                dynamics: Default::default(),
             };
             let mut doc = Document {
-                version: 2,
+                version: 3,
                 strokes: vec![s],
             };
             let original = doc.strokes.clone();
@@ -248,7 +253,7 @@ mod tests {
         s.brush.kind = BrushKind::Chisel;
         s.brush.thickness = 1.0;
         let doc = Document {
-            version: 2,
+            version: 3,
             strokes: vec![s],
         };
         let (min, max) = bounds(&doc, &HashSet::from([1])).unwrap();
@@ -270,9 +275,10 @@ mod tests {
                     angle_degrees: 37.0,
                     normal: rotation * Vec3::Z,
                     tangent: rotation * Vec3::X,
+                    dynamics: Default::default(),
                 };
                 let sample = Document {
-                    version: 2,
+                    version: 3,
                     strokes: vec![dot],
                 };
                 let (low, high) = bounds(&sample, &HashSet::from([1])).unwrap();
@@ -283,5 +289,46 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn tilt_and_taper_transform_with_the_mark_and_restore_exactly() {
+        let mut s = stroke(1, 1.0);
+        s.points[0].tilt = Some(Vec3::Y);
+        s.brush.dynamics.tilt_orientation = true;
+        s.brush.dynamics.taper_start = 0.4;
+        s.brush.dynamics.taper_end = 0.7;
+        let mut doc = Document {
+            version: 3,
+            strokes: vec![s],
+        };
+        let original = doc.strokes.clone();
+        let before = snapshot(&doc, &HashSet::from([1]));
+        let rotation = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+        let after = transformed(&before, Vec3::ZERO, Vec3::Y, rotation, 2.0).unwrap();
+        assert!(after[0].1.points[0].tilt.unwrap().distance(Vec3::Z) < 1e-6);
+        assert_eq!(after[0].1.brush.dynamics.taper_start, 0.8);
+        assert_eq!(after[0].1.brush.dynamics.taper_end, 1.4);
+        assert_eq!(
+            after[0].1.points[0].pressure,
+            original[0].points[0].pressure
+        );
+        let edit = Edit::Change { before, after };
+        edit.apply(&mut doc, true);
+        let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(loaded.strokes, doc.strokes);
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes, original);
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes, loaded.strokes);
+        let mut too_long = original[0].clone();
+        too_long.brush.dynamics.taper_start = 6.0;
+        assert!(transformed(
+            &vec![(0, too_long)],
+            Vec3::ZERO,
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            2.0
+        )
+        .is_err());
     }
 }

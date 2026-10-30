@@ -2,6 +2,7 @@
 
 mod app;
 mod document;
+mod dynamics;
 mod editing;
 mod export;
 mod export_check;

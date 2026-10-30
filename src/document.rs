@@ -1,3 +1,4 @@
+pub use crate::dynamics::{Dynamics, PressureMapping};
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +20,8 @@ pub struct Brush {
     pub angle_degrees: f32,
     pub normal: Vec3,
     pub tangent: Vec3,
+    #[serde(default)]
+    pub dynamics: Dynamics,
 }
 impl Default for Brush {
     fn default() -> Self {
@@ -28,12 +31,14 @@ impl Default for Brush {
             angle_degrees: 0.0,
             normal: Vec3::Z,
             tangent: Vec3::X,
+            dynamics: Dynamics::default(),
         }
     }
 }
 impl Brush {
     pub fn is_valid(&self) -> bool {
-        self.thickness.is_finite()
+        self.dynamics.is_valid()
+            && self.thickness.is_finite()
             && (0.02..=1.0).contains(&self.thickness)
             && self.angle_degrees.is_finite()
             && (-180.0..=180.0).contains(&self.angle_degrees)
@@ -49,6 +54,19 @@ impl Brush {
 pub struct Point {
     pub position: Vec3,
     pub pressure: f32,
+    #[serde(default)]
+    pub tilt: Option<Vec3>,
+}
+impl Point {
+    pub fn is_valid(&self) -> bool {
+        self.position.is_finite()
+            && self.position.abs().max_element() <= 10000.0
+            && self.pressure.is_finite()
+            && (0.0..=1.0).contains(&self.pressure)
+            && self
+                .tilt
+                .is_none_or(|tilt| tilt.is_finite() && (tilt.length_squared() - 1.0).abs() <= 0.001)
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stroke {
@@ -67,7 +85,7 @@ pub struct Document {
 impl Default for Document {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             strokes: Vec::new(),
         }
     }
@@ -76,22 +94,37 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1 | 2)) {
+        if !matches!(version, Some(1..=3)) {
             return Err("Unsupported document version".into());
         }
-        // Version 1 has no brush metadata. Ignore an unknown extension with
-        // that name rather than changing the appearance of a legacy drawing.
-        if version == Some(1) {
+        // Legacy pressure values already include the old response curve.
+        // Default dynamics reproduce that profile; ignore unknown newer fields.
+        if matches!(version, Some(1 | 2)) {
             if let Some(strokes) = value.get_mut("strokes").and_then(|v| v.as_array_mut()) {
                 for stroke in strokes {
                     if let Some(fields) = stroke.as_object_mut() {
-                        fields.remove("brush");
+                        if version == Some(1) {
+                            fields.remove("brush");
+                        } else if let Some(brush) =
+                            fields.get_mut("brush").and_then(|b| b.as_object_mut())
+                        {
+                            brush.remove("dynamics");
+                        }
+                        if let Some(points) =
+                            fields.get_mut("points").and_then(|p| p.as_array_mut())
+                        {
+                            for point in points {
+                                if let Some(point) = point.as_object_mut() {
+                                    point.remove("tilt");
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
         let mut doc: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
-        doc.version = 2;
+        doc.version = 3;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
         }
@@ -110,12 +143,7 @@ impl Document {
                     .color
                     .iter()
                     .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
-                || stroke.points.iter().any(|p| {
-                    !p.position.is_finite()
-                        || p.position.abs().max_element() > 10000.0
-                        || !p.pressure.is_finite()
-                        || !(0.0..=1.0).contains(&p.pressure)
-                })
+                || stroke.points.iter().any(|p| !p.is_valid())
             {
                 return Err("Invalid or oversized stroke data".into());
             }
@@ -135,6 +163,7 @@ mod tests {
             points: vec![Point {
                 position: Vec3::ONE,
                 pressure: 0.7,
+                tilt: None,
             }],
         }
     }
@@ -148,13 +177,21 @@ mod tests {
                 angle_degrees: -42.0,
                 normal: Vec3::new(1.0, 2.0, 3.0).normalize(),
                 tangent: Vec3::new(2.0, -1.0, 0.0).normalize(),
+                dynamics: Dynamics::default(),
             };
+            s.brush.dynamics.width.minimum = 0.05;
+            s.brush.dynamics.width.curve = 2.0;
+            s.brush.dynamics.thickness.enabled = false;
+            s.brush.dynamics.taper_start = 0.4;
+            s.brush.dynamics.taper_end = 0.7;
+            s.brush.dynamics.tilt_orientation = true;
+            s.points[0].tilt = Some(Vec3::X);
             let doc = Document {
-                version: 2,
+                version: 3,
                 strokes: vec![s],
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-            assert_eq!(loaded.version, 2);
+            assert_eq!(loaded.version, 3);
             assert_eq!(loaded.strokes, doc.strokes);
         }
     }
@@ -170,7 +207,7 @@ mod tests {
         // a new shape, or prevent an otherwise valid legacy file from opening.
         old["strokes"][0]["brush"] = serde_json::json!({"kind": "future_brush"});
         let loaded = Document::from_json(&old.to_string()).unwrap();
-        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.version, 3);
         assert_eq!(loaded.strokes, vec![original]);
         old["strokes"][0].as_object_mut().unwrap().remove("brush");
         let without_extension = Document::from_json(&old.to_string()).unwrap();
@@ -211,7 +248,7 @@ mod tests {
             let mut s = stroke();
             s.brush = brush;
             let doc = Document {
-                version: 2,
+                version: 3,
                 strokes: vec![s],
             };
             assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
@@ -236,12 +273,77 @@ mod tests {
     fn rejects_invalid_documents() {
         assert!(Document::from_json("{\"version\":99,\"strokes\":[]}").is_err());
         let mut doc = Document {
-            version: 2,
+            version: 3,
             strokes: vec![stroke(), stroke()],
         };
         assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
         doc.strokes.pop();
         doc.strokes[0].points[0].pressure = 1.1;
         assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
+    }
+    #[test]
+    fn version_two_migration_preserves_brush_shape_and_baked_pressure() {
+        let mut original = stroke();
+        original.brush.kind = BrushKind::Chisel;
+        original.brush.thickness = 0.6;
+        original.brush.angle_degrees = 43.0;
+        let mut value = serde_json::to_value(Document {
+            version: 2,
+            strokes: vec![original.clone()],
+        })
+        .unwrap();
+        value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
+        value["strokes"][0]["points"][0]["tilt"] = serde_json::json!("unknown extension");
+        let loaded = Document::from_json(&value.to_string()).unwrap();
+        assert_eq!(loaded.version, 3);
+        assert_eq!(loaded.strokes, vec![original]);
+    }
+    #[test]
+    fn rejects_invalid_dynamics_and_tilt_metadata() {
+        let original = Document {
+            version: 3,
+            strokes: vec![stroke()],
+        };
+        for dynamics in [
+            Dynamics {
+                width: PressureMapping {
+                    minimum: -0.1,
+                    ..PressureMapping::default()
+                },
+                ..Dynamics::default()
+            },
+            Dynamics {
+                thickness: PressureMapping {
+                    curve: 4.0,
+                    ..PressureMapping::default()
+                },
+                ..Dynamics::default()
+            },
+            Dynamics {
+                taper_start: -0.1,
+                ..Dynamics::default()
+            },
+            Dynamics {
+                taper_end: 10.1,
+                ..Dynamics::default()
+            },
+        ] {
+            let mut doc = original.clone();
+            doc.strokes[0].brush.dynamics = dynamics;
+            assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
+        }
+        for tilt in [Vec3::ZERO, Vec3::splat(1.0), Vec3::X * 2.0] {
+            let mut doc = original.clone();
+            doc.strokes[0].points[0].tilt = Some(tilt);
+            assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
+        }
+        let mut point = stroke().points[0];
+        point.tilt = Some(Vec3::splat(f32::NAN));
+        assert!(!point.is_valid());
+        assert!(!Dynamics {
+            taper_start: f32::INFINITY,
+            ..Dynamics::default()
+        }
+        .is_valid());
     }
 }
