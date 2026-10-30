@@ -7,7 +7,7 @@ An open-source, native 3D sketching prototype inspired by the idea of drawing in
 - Editable Japanese-style house and garden shown on startup.
 - Pressure-sensitive tube strokes stored as editable 3D control points.
 - Adjustable stroke stabilization with pressure preservation and endpoint catch-up.
-- Front, side, and ground drawing planes, with adjustable depth.
+- Freely oriented drawing planes with X/Y/Z rotation, anchor positioning, normal offset, and world-plane presets.
 - Orbit, pan, zoom, plane alignment, and camera reset.
 - Windows Ink pressure, tilt, barrel-button and eraser diagnostics, including coalesced pen history.
 - Mouse drawing with constant pressure, clearly distinguished from tablet input.
@@ -61,12 +61,13 @@ The first hardware targets are a screenless Wacom tablet and a a pen display. **
 | Pan | Space + Shift + drag, or middle mouse drag |
 | Zoom | Space + Alt + drag, or wheel |
 | Align camera to current plane | F |
+| Create drawing plane from view | Shift+F |
 | Undo / redo | Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y |
 | Save / save as | Ctrl/Cmd+S / Ctrl/Cmd+Shift+S |
 | Open / new | Ctrl/Cmd+O / Ctrl/Cmd+N |
 | Reload house starter | House button |
 
-When Windows Ink reports a barrel button directly, barrel + contact drag also orbits. Driver button mappings may instead generate a mouse button or shortcut. Essential controls do not require touch. A stroke ends when it leaves the canvas. An edge-on drawing plane cannot accept strokes: align the view or orbit away from the edge.
+When Windows Ink reports a barrel button directly, barrel + contact drag also orbits. Driver button mappings may instead generate a mouse button or shortcut. Essential controls do not require touch. A stroke ends when it leaves the canvas. An edge-on drawing plane cannot accept strokes: press F to align the view or orbit away from the edge.
 
 Brush radius is in world units, so its visible size changes with camera distance. The pressure curve maps input pressure before tessellation. Existing strokes preserve their original color, width, and pressure samples.
 
@@ -136,3 +137,17 @@ cargo run --release -- --verify-house
 ```
 
 This checks sample validity, duplication/undo, New/House switching, the unsaved-change guard, save/reload, and GPU rendering. It writes `verification/house-report.json` and `verification/house-preview.png`, then exits. The original `--verify` still exercises the drawing, selection, transform, and stabilization workflows independently of the startup scene.
+
+## Freely oriented drawing planes
+
+The Drawing plane panel supports more than the Front, Side, and Ground presets:
+
+- **Rotation X/Y/Z** sets the plane orientation in degrees, applied X then Y then Z.
+- **Anchor X/Y/Z** positions its local origin in world units. **Offset** shifts the plane along its rotated normal relative to that anchor.
+- **Plane from view (Shift+F)** creates a plane through the camera's focus point, with its axes aligned to the current camera view, including roll.
+- **Center on selection** places the anchor at the selected strokes' bounding-box center while retaining the current plane orientation, and clears Offset.
+- **Align view to plane (F)** centers the camera on the plane origin and aligns the camera axes to the plane. Camera distance is preserved.
+
+World-plane preset buttons reset both orientation and placement to that world plane. Changing any guide setting finishes an active stroke first; existing artwork stays fixed in world space. The cyan **N** arrow marks the normal on custom planes. The grid is a background guide and does not cut through ink. Duplication offsets follow the current plane's local horizontal axis.
+
+For a sloped detail, orbit to a useful angle, press Shift+F, position the plane with Anchor/Offset (or Center on selection), then press F and draw. Plane controls are temporary workspace state and are not saved with the drawing; the resulting 3D strokes retain their positions when saved and reopened. Curved guides and automatic surface snapping remain future work.

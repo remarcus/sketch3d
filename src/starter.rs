@@ -6,8 +6,8 @@ impl SketchApp {
         self.doc = scenes::japanese_house();
         self.next_id = self.doc.strokes.iter().map(|s| s.id).max().unwrap_or(0) + 1;
         self.camera = scenes::house_camera();
-        self.plane = Plane::Ground;
-        self.offset = -0.08;
+        self.guide = DrawingPlane::from_preset(Plane::Ground);
+        self.guide.depth = -0.08;
         self.file = None;
         self.dirty = false;
         self.active = None;

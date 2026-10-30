@@ -50,3 +50,9 @@ Selection highlighting is render-only. The renderer invalidates changed strokes 
 ## Editable startup artwork
 
 `scenes.rs` builds the Japanese-style garden house deterministically as a version-1 document, with sequential stroke IDs and the same point/pressure/color/radius data as user-created strokes. The artwork is authored in code and needs no downloaded assets. `starter.rs` installs the sample, its camera, and its drawing guide; New and House share the existing unsaved-change flow. Neither operation replaces an edited document without that flow. The untouched example is not dirty; later edits use normal history and save behavior. `--blank` and the two verification modes isolate startup artwork from drawing workflow tests.
+
+## Arbitrary work planes
+
+`DrawingPlane` holds an anchor, Euler rotation in degrees, and a normal offset. Its orthonormal basis drives both ray intersections and grid vertices. The app finishes active ink before changing a work plane; document points never depend on the current guide. Grid meshes are cached by the complete plane value and do not write depth, so they cannot occlude strokes.
+
+The camera now has roll as well as yaw/pitch. Its explicit basis avoids an up-vector singularity for vertical views. Align-to-plane reconstructs yaw/pitch/roll from the guide normal and vertical axis, centers on the guide origin, and preserves distance. Plane-from-view converts the camera basis back into guide rotation around its focus. Tests cover rotated/translated intersections, grid coplanarity, rolled view conversion, and vertical alignment. `planes.rs` owns the interface controls and the drawing/persistence smoke checks. Guides remain workspace state; no document schema change is required.

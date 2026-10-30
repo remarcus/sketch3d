@@ -1,7 +1,7 @@
 use crate::stabilizer::Stabilizer;
 use crate::{
     document::{Document, Point, Stroke},
-    geometry::{intersect_plane, Camera, Plane},
+    geometry::{intersect_plane, Camera, DrawingPlane, Plane},
     input::{PenInput, PenSample, Phase},
     renderer::SceneRenderer,
 };
@@ -9,6 +9,8 @@ use crate::{editing::Edit, gizmo::Mode};
 use eframe::egui::{self, Color32, Key, PointerButton, Pos2, Rect, RichText, Vec2};
 use glam::Vec3;
 use std::collections::HashSet;
+#[path = "planes.rs"]
+mod planes;
 #[path = "selection.rs"]
 mod selection;
 #[path = "starter.rs"]
@@ -32,8 +34,7 @@ pub struct SketchApp {
     input_status: String,
     doc: Document,
     camera: Camera,
-    plane: Plane,
-    offset: f32,
+    guide: DrawingPlane,
     color: [f32; 3],
     radius: f32,
     pressure_curve: f32,
@@ -94,8 +95,7 @@ impl SketchApp {
             input_status,
             doc: Document::default(),
             camera: Camera::default(),
-            plane: Plane::Front,
-            offset: 0.0,
+            guide: DrawingPlane::default(),
             color: [0.17, 0.82, 0.74],
             radius: 0.025,
             pressure_curve: 1.0,
@@ -179,7 +179,7 @@ impl SketchApp {
             1.0 - (position.y - rect.top()) / rect.height() * 2.0,
         );
         let (origin, direction) = self.camera.ray(ndc, rect.aspect_ratio());
-        let Some(world) = intersect_plane(origin, direction, self.plane, self.offset) else {
+        let Some(world) = intersect_plane(origin, direction, self.guide) else {
             self.status = "Plane is edge-on. Use Align view or rotate the camera.".into();
             return;
         };
@@ -336,8 +336,7 @@ impl SketchApp {
                 self.starter_scene = false;
                 self.next_id = 1;
                 self.camera = Camera::default();
-                self.plane = Plane::Front;
-                self.offset = 0.0;
+                self.guide = DrawingPlane::default();
                 self.doc = Document::default();
                 self.file = None;
                 self.dirty = false;
@@ -484,24 +483,7 @@ impl SketchApp {
                 .small()
                 .color(Color32::from_gray(140)),
         );
-        for plane in [Plane::Front, Plane::Side, Plane::Ground] {
-            if ui
-                .selectable_label(self.plane == plane, plane.label())
-                .clicked()
-            {
-                self.finish();
-                self.plane = plane;
-            }
-        }
-        let old = self.offset;
-        ui.add(egui::Slider::new(&mut self.offset, -4.0..=4.0).text("Depth"));
-        if old != self.offset {
-            self.finish();
-        }
-        if ui.button("Align view to plane [F]").clicked() {
-            self.finish();
-            self.camera.align(self.plane);
-        }
+        self.plane_controls(ui);
         if ui.button("Reset camera").clicked() {
             self.finish();
             self.camera = Camera::default();
@@ -845,7 +827,11 @@ impl eframe::App for SketchApp {
                 }
                 if f {
                     self.finish();
-                    self.camera.align(self.plane);
+                    if mods.shift {
+                        self.plane_from_view();
+                    } else {
+                        self.camera.align_guide(self.guide);
+                    }
                 }
             }
         }
@@ -918,7 +904,7 @@ impl eframe::App for SketchApp {
             ui.horizontal(|ui| {
                 ui.label(&self.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(self.plane.label());
+                    ui.label(self.guide.label());
                 });
             });
         });
@@ -952,8 +938,7 @@ impl eframe::App for SketchApp {
                 let id = self.renderer.render(
                     &self.doc,
                     &self.camera,
-                    self.plane,
-                    self.offset,
+                    self.guide,
                     [
                         (rect.width() * scale).round() as u32,
                         (rect.height() * scale).round() as u32,
@@ -966,6 +951,7 @@ impl eframe::App for SketchApp {
                     Color32::WHITE,
                 );
                 self.selection_overlay(ui, rect);
+                self.plane_overlay(ui, rect);
                 let badge =
                     Rect::from_min_size(rect.min + egui::vec2(20.0, 20.0), egui::vec2(200.0, 32.0));
                 ui.painter()
@@ -973,7 +959,7 @@ impl eframe::App for SketchApp {
                 ui.painter().text(
                     badge.center(),
                     egui::Align2::CENTER_CENTER,
-                    format!("{}   /   {:.1}", self.plane.label(), self.offset),
+                    format!("{}   /   {:+.2}", self.guide.label(), self.guide.depth),
                     egui::FontId::proportional(13.0),
                     Color32::from_rgb(173, 210, 213),
                 );
@@ -1044,7 +1030,7 @@ impl eframe::App for SketchApp {
                 });
         }
         if self.show_help {
-            egui::Window::new("Drawing with a tablet").open(&mut self.show_help).resizable(false).show(ctx,|ui|{ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-stroke eraser   F: align camera to plane\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nChoose Front, Side, or Ground, then move Depth to place the plane.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nPrototype limits: no Wintab, curved guides, model export, or autosave.\nSave your work using the Save button.");});
+            egui::Window::new("Drawing with a tablet").open(&mut self.show_help).resizable(false).show(ctx,|ui|{ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-stroke eraser   F: align camera to plane   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nPrototype limits: no Wintab, curved guides, model export, or autosave.\nSave your work using the Save button.");});
         }
         self.frame_ms = start.elapsed().as_secs_f32() * 1000.0;
         if self.active.is_some()
@@ -1129,7 +1115,8 @@ impl SketchApp {
             }
             3 => self.verify_selection(ctx, rect),
             4 => self.verify_stabilization(rect),
-            5 => ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())),
+            5 => self.verify_planes(rect),
+            6 => ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())),
             120 => panic!("Verification screenshot timed out"),
             _ => {}
         }
@@ -1163,7 +1150,7 @@ impl SketchApp {
                 image::ColorType::Rgba8,
             )
             .unwrap();
-            let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
+            let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
             let report = if self.house_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["editable Japanese house strokes","duplicate and undo","New clears starter","House reloads starter","unsaved-change guard","sample save/reload","GPU screenshot"],"strokes":self.doc.strokes.len(),"points":self.doc.strokes.iter().map(|s|s.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else {
@@ -1202,7 +1189,7 @@ impl SketchApp {
             1.0 - (endpoint.y - rect.top()) / rect.height() * 2.0,
         );
         let (o, d) = self.camera.ray(ndc, rect.aspect_ratio());
-        let expected = intersect_plane(o, d, self.plane, self.offset).unwrap();
+        let expected = intersect_plane(o, d, self.guide).unwrap();
         self.finish();
         let stroke = self.doc.strokes.last().unwrap();
         assert!(stroke.points.last().unwrap().position.distance(expected) < 0.00001);

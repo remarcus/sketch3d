@@ -98,6 +98,7 @@ pub fn house_camera() -> Camera {
     Camera {
         yaw: 0.62,
         pitch: 0.34,
+        roll: 0.0,
         distance: 15.2,
         target: Vec3::new(0.0, 1.55, 0.6),
     }

@@ -1,6 +1,6 @@
 use crate::document::Stroke;
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct Vertex {
@@ -22,17 +22,66 @@ impl Plane {
             Self::Ground => "Ground / XZ",
         }
     }
+}
+/// A work plane is interface state; existing stroke positions stay in world space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawingPlane {
+    pub anchor: Vec3,
+    pub rotation_degrees: Vec3,
+    pub depth: f32,
+}
+impl Default for DrawingPlane {
+    fn default() -> Self {
+        Self::from_preset(Plane::Front)
+    }
+}
+impl DrawingPlane {
+    pub fn from_preset(plane: Plane) -> Self {
+        let rotation_degrees = match plane {
+            Plane::Front => Vec3::ZERO,
+            Plane::Side => Vec3::new(0.0, 90.0, 0.0),
+            Plane::Ground => Vec3::new(-90.0, 0.0, 0.0),
+        };
+        Self {
+            anchor: Vec3::ZERO,
+            rotation_degrees,
+            depth: 0.0,
+        }
+    }
+    pub fn rotation(self) -> Quat {
+        let r = self.rotation_degrees * std::f32::consts::PI / 180.0;
+        Quat::from_euler(glam::EulerRot::ZYX, r.z, r.y, r.x)
+    }
     pub fn basis(self) -> (Vec3, Vec3, Vec3) {
-        match self {
-            Self::Front => (Vec3::X, Vec3::Y, Vec3::Z),
-            Self::Side => (-Vec3::Z, Vec3::Y, Vec3::X),
-            Self::Ground => (Vec3::X, -Vec3::Z, Vec3::Y),
+        let q = self.rotation();
+        (q * Vec3::X, q * Vec3::Y, q * Vec3::Z)
+    }
+    pub fn origin(self) -> Vec3 {
+        self.anchor + self.basis().2 * self.depth
+    }
+    pub fn preset(self) -> Option<Plane> {
+        [Plane::Front, Plane::Side, Plane::Ground]
+            .into_iter()
+            .find(|p| self.rotation().dot(Self::from_preset(*p).rotation()).abs() > 1.0 - 0.0000001)
+    }
+    pub fn label(self) -> &'static str {
+        self.preset().map(|p| p.label()).unwrap_or("Custom plane")
+    }
+    pub fn from_view(camera: &Camera) -> Self {
+        let (u, v, n) = camera.basis();
+        let q = Quat::from_mat3(&Mat3::from_cols(u, v, n));
+        let (z, y, x) = q.to_euler(glam::EulerRot::ZYX);
+        Self {
+            anchor: camera.target,
+            rotation_degrees: Vec3::new(x, y, z) * 180.0 / std::f32::consts::PI,
+            depth: 0.0,
         }
     }
 }
 pub struct Camera {
     pub yaw: f32,
     pub pitch: f32,
+    pub roll: f32,
     pub distance: f32,
     pub target: Vec3,
 }
@@ -41,12 +90,36 @@ impl Default for Camera {
         Self {
             yaw: 0.35,
             pitch: 0.22,
+            roll: 0.0,
             distance: 9.0,
             target: Vec3::ZERO,
         }
     }
 }
 impl Camera {
+    pub fn basis(&self) -> (Vec3, Vec3, Vec3) {
+        let n = Vec3::new(
+            self.yaw.sin() * self.pitch.cos(),
+            self.pitch.sin(),
+            self.yaw.cos() * self.pitch.cos(),
+        );
+        let right = Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin());
+        let up = n.cross(right);
+        (
+            right * self.roll.cos() + up * self.roll.sin(),
+            -right * self.roll.sin() + up * self.roll.cos(),
+            n,
+        )
+    }
+    pub fn align_guide(&mut self, guide: DrawingPlane) {
+        let (_, up, normal) = guide.basis();
+        self.yaw = normal.x.atan2(normal.z);
+        self.pitch = normal.y.clamp(-1.0, 1.0).asin();
+        self.roll = 0.0;
+        let (right, base_up, _) = self.basis();
+        self.roll = (-up.dot(right)).atan2(up.dot(base_up));
+        self.target = guide.origin();
+    }
     pub fn eye(&self) -> Vec3 {
         self.target
             + Vec3::new(
@@ -57,7 +130,7 @@ impl Camera {
     }
     pub fn matrix(&self, aspect: f32) -> Mat4 {
         Mat4::perspective_rh(45f32.to_radians(), aspect.max(0.01), 0.01, 1000.0)
-            * Mat4::look_at_rh(self.eye(), self.target, Vec3::Y)
+            * Mat4::look_at_rh(self.eye(), self.target, self.basis().1)
     }
     pub fn ray(&self, ndc: Vec2, aspect: f32) -> (Vec3, Vec3) {
         let inv = self.matrix(aspect).inverse();
@@ -66,13 +139,12 @@ impl Camera {
         (near, (far - near).normalize())
     }
     pub fn pan(&mut self, delta: Vec2, height: f32) {
-        let forward = (self.target - self.eye()).normalize();
-        let right = forward.cross(Vec3::Y).normalize();
-        let up = right.cross(forward);
+        let (right, up, _) = self.basis();
         self.target += (-right * delta.x + up * delta.y)
             * (2.0 * self.distance * 22.5f32.to_radians().tan() / height.max(1.0));
     }
     pub fn align(&mut self, plane: Plane) {
+        self.roll = 0.0;
         match plane {
             Plane::Front => {
                 self.yaw = 0.0;
@@ -89,13 +161,13 @@ impl Camera {
         }
     }
 }
-pub fn intersect_plane(origin: Vec3, direction: Vec3, plane: Plane, offset: f32) -> Option<Vec3> {
+pub fn intersect_plane(origin: Vec3, direction: Vec3, plane: DrawingPlane) -> Option<Vec3> {
     let (_, _, normal) = plane.basis();
     let denom = direction.dot(normal);
     if denom.abs() < 0.025 {
         return None;
     }
-    let t = (offset - origin.dot(normal)) / denom;
+    let t = (plane.origin() - origin).dot(normal) / denom;
     if !(0.0..1000.0).contains(&t) {
         return None;
     }
@@ -174,8 +246,9 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
     }
     out
 }
-pub fn grid(plane: Plane, offset: f32) -> Vec<Vertex> {
-    let (u, v, n) = plane.basis();
+pub fn grid(plane: DrawingPlane) -> Vec<Vertex> {
+    let (u, v, _) = plane.basis();
+    let origin = plane.origin();
     let mut vertices = Vec::new();
     for i in -12..=12 {
         for swap in [false, true] {
@@ -187,7 +260,7 @@ pub fn grid(plane: Plane, offset: f32) -> Vec<Vertex> {
             };
             for sign in [-1.0, 1.0] {
                 vertices.push(Vertex {
-                    position: (n * offset + a * i as f32 * 0.5 + b * 6.0 * sign).to_array(),
+                    position: (origin + a * i as f32 * 0.5 + b * 6.0 * sign).to_array(),
                     normal: [0.0; 3],
                     color,
                 });
@@ -205,9 +278,14 @@ mod tests {
         let mut c = Camera::default();
         c.align(Plane::Front);
         let (o, d) = c.ray(Vec2::ZERO, 1.5);
-        assert!(intersect_plane(o, d, Plane::Front, 0.0).unwrap().length() < 0.001);
-        assert!(intersect_plane(Vec3::Z, Vec3::X, Plane::Front, 0.0).is_none());
-        assert!(intersect_plane(Vec3::Z, Vec3::Z, Plane::Front, 0.0).is_none());
+        assert!(
+            intersect_plane(o, d, DrawingPlane::default())
+                .unwrap()
+                .length()
+                < 0.001
+        );
+        assert!(intersect_plane(Vec3::Z, Vec3::X, DrawingPlane::default()).is_none());
+        assert!(intersect_plane(Vec3::Z, Vec3::Z, DrawingPlane::default()).is_none());
     }
     #[test]
     fn pressure_geometry() {
@@ -264,5 +342,66 @@ mod curve_regression {
                 "Tube orientation flipped between adjacent rings"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod work_plane_tests {
+    use super::*;
+    fn custom() -> DrawingPlane {
+        DrawingPlane {
+            anchor: Vec3::new(1.2, -0.4, 2.0),
+            rotation_degrees: Vec3::new(31.0, -42.0, 23.0),
+            depth: 0.7,
+        }
+    }
+    #[test]
+    fn rotated_translated_plane_intersections_and_grid_agree() {
+        let plane = custom();
+        let (u, v, n) = plane.basis();
+        let expected = plane.origin() + u * 1.3 - v * 0.8;
+        let hit = intersect_plane(expected + n * 4.0, -n, plane).unwrap();
+        assert!(hit.distance(expected) < 0.00001);
+        assert!(intersect_plane(expected + n, u, plane).is_none());
+        assert!(intersect_plane(expected + n, n, plane).is_none());
+        for vertex in grid(plane) {
+            assert!((Vec3::from(vertex.position) - plane.origin()).dot(n).abs() < 0.00001);
+        }
+    }
+    #[test]
+    fn align_view_preserves_plane_axes_including_vertical_and_roll() {
+        for plane in [
+            custom(),
+            DrawingPlane::from_preset(Plane::Front),
+            DrawingPlane::from_preset(Plane::Side),
+            DrawingPlane::from_preset(Plane::Ground),
+        ] {
+            let mut camera = Camera::default();
+            camera.align_guide(plane);
+            let (u, v, n) = plane.basis();
+            let (right, up, normal) = camera.basis();
+            assert!(right.dot(u) > 0.9999);
+            assert!(up.dot(v) > 0.9999);
+            assert!(normal.dot(n) > 0.9999);
+            assert_eq!(camera.target, plane.origin());
+            let matrix = camera.matrix(1.4);
+            assert!(matrix.is_finite());
+            assert!(matrix.project_point3(plane.origin()).truncate().length() < 0.0001);
+        }
+    }
+    #[test]
+    fn plane_from_view_matches_rolled_camera_and_focus_point() {
+        let camera = Camera {
+            yaw: -0.8,
+            pitch: 0.6,
+            roll: 0.45,
+            target: Vec3::new(2.0, 1.0, -3.0),
+            ..Default::default()
+        };
+        let plane = DrawingPlane::from_view(&camera);
+        assert_eq!(plane.origin(), camera.target);
+        let (u, v, n) = plane.basis();
+        let (right, up, normal) = camera.basis();
+        assert!(u.dot(right) > 0.9999 && v.dot(up) > 0.9999 && n.dot(normal) > 0.9999);
     }
 }

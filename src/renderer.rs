@@ -1,6 +1,6 @@
 use crate::{
     document::Document,
-    geometry::{self, Camera, Plane, Vertex},
+    geometry::{self, Camera, DrawingPlane, Vertex},
 };
 use eframe::{
     egui,
@@ -23,7 +23,7 @@ pub struct SceneRenderer {
     bind: wgpu::BindGroup,
     meshes: HashMap<u64, Mesh>,
     selected: HashSet<u64>,
-    grid: Option<(Plane, f32, Mesh)>,
+    grid: Option<(DrawingPlane, Mesh)>,
     target: Option<(
         wgpu::TextureView,
         wgpu::TextureView,
@@ -76,7 +76,7 @@ impl SceneRenderer {
             vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3]}]},
             fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some("fs_main"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),
             primitive:wgpu::PrimitiveState {topology,cull_mode:None,..Default::default()},
-            depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:true,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
+            depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:topology != wgpu::PrimitiveTopology::LineList,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
             multisample:Default::default(),multiview:None,cache:None,
         })
         };
@@ -139,8 +139,7 @@ impl SceneRenderer {
         &mut self,
         doc: &Document,
         camera: &Camera,
-        plane: Plane,
-        offset: f32,
+        plane: DrawingPlane,
         size: [u32; 2],
     ) -> egui::TextureId {
         let limit = self.state.device.limits().max_texture_dimension_2d;
@@ -216,13 +215,9 @@ impl SceneRenderer {
                 self.meshes.insert(stroke.id, mesh);
             }
         }
-        if self
-            .grid
-            .as_ref()
-            .is_none_or(|g| g.0 != plane || g.1 != offset)
-        {
-            let mesh = self.mesh(&geometry::grid(plane, offset), 0);
-            self.grid = Some((plane, offset, mesh));
+        if self.grid.as_ref().is_none_or(|g| g.0 != plane) {
+            let mesh = self.mesh(&geometry::grid(plane), 0);
+            self.grid = Some((plane, mesh));
         }
         self.state.queue.write_buffer(
             &self.uniform,
@@ -269,7 +264,7 @@ impl SceneRenderer {
             });
             pass.set_bind_group(0, &self.bind, &[]);
             pass.set_pipeline(&self.lines);
-            if let Some((_, _, mesh)) = &self.grid {
+            if let Some((_, mesh)) = &self.grid {
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
