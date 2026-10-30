@@ -11,6 +11,8 @@ use glam::Vec3;
 use std::collections::HashSet;
 #[path = "selection.rs"]
 mod selection;
+#[path = "starter.rs"]
+mod starter;
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -19,6 +21,7 @@ use std::{
 #[derive(Clone, Copy)]
 enum Pending {
     New,
+    House,
     Open,
     Close,
 }
@@ -62,6 +65,8 @@ pub struct SketchApp {
     show_help: bool,
     frame_ms: f32,
     verification_frame: Option<u32>,
+    house_verification_frame: Option<u32>,
+    starter_scene: bool,
 }
 impl SketchApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -122,9 +127,19 @@ impl SketchApp {
             show_help: false,
             frame_ms: 0.0,
             verification_frame: std::env::args().any(|a| a == "--verify").then_some(0),
+            house_verification_frame: None,
+            starter_scene: false,
         };
-        if std::env::args().any(|a| a == "--demo") {
-            app.demo();
+        if std::env::args().any(|a| a == "--verify-house") {
+            app.verification_frame = None;
+            app.house_verification_frame = Some(0);
+            app.load_house();
+        } else if app.verification_frame.is_none() {
+            if std::env::args().any(|a| a == "--demo") {
+                app.demo();
+            } else if !std::env::args().any(|a| a == "--blank") {
+                app.load_house();
+            }
         }
         app
     }
@@ -316,7 +331,13 @@ impl SketchApp {
     fn execute_pending(&mut self) {
         self.confirm = false;
         match self.pending.take() {
+            Some(Pending::House) => self.load_house(),
             Some(Pending::New) => {
+                self.starter_scene = false;
+                self.next_id = 1;
+                self.camera = Camera::default();
+                self.plane = Plane::Front;
+                self.offset = 0.0;
                 self.doc = Document::default();
                 self.file = None;
                 self.dirty = false;
@@ -345,6 +366,7 @@ impl SketchApp {
                         Ok(doc) => {
                             self.next_id = doc.strokes.iter().map(|s| s.id).max().unwrap_or(0) + 1;
                             self.doc = doc;
+                            self.starter_scene = false;
                             self.file = Some(path);
                             self.dirty = false;
                             self.undo.clear();
@@ -846,6 +868,13 @@ impl eframe::App for SketchApp {
                 if ui.add_enabled(enabled, egui::Button::new("New")).clicked() {
                     self.request(Pending::New);
                 }
+                if ui
+                    .add_enabled(enabled, egui::Button::new("House"))
+                    .on_hover_text("Open the editable Japanese garden house sample")
+                    .clicked()
+                {
+                    self.request(Pending::House);
+                }
                 if ui.add_enabled(enabled, egui::Button::new("Open")).clicked() {
                     self.request(Pending::Open);
                 }
@@ -911,6 +940,7 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.verify_house(ctx);
                 self.verify_canvas(ctx, rect);
                 self.canvas_input(ctx, rect, pen);
                 let scale = ctx.pixels_per_point();
@@ -947,6 +977,22 @@ impl eframe::App for SketchApp {
                     egui::FontId::proportional(13.0),
                     Color32::from_rgb(173, 210, 213),
                 );
+                if self.starter_scene {
+                    ui.painter().text(
+                        rect.min + egui::vec2(22.0, 76.0),
+                        egui::Align2::LEFT_TOP,
+                        "Japanese garden house",
+                        egui::FontId::proportional(24.0),
+                        Color32::from_rgb(240, 217, 172),
+                    );
+                    ui.painter().text(
+                        rect.min + egui::vec2(23.0, 110.0),
+                        egui::Align2::LEFT_TOP,
+                        "Editable starter drawing / New for a blank canvas",
+                        egui::FontId::proportional(13.0),
+                        Color32::from_rgb(171, 190, 182),
+                    );
+                }
                 if self.doc.strokes.is_empty() {
                     ui.painter().text(
                         rect.center() + egui::vec2(0.0, -35.0),
@@ -1001,7 +1047,11 @@ impl eframe::App for SketchApp {
             egui::Window::new("Drawing with a tablet").open(&mut self.show_help).resizable(false).show(ctx,|ui|{ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-stroke eraser   F: align camera to plane\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nChoose Front, Side, or Ground, then move Depth to place the plane.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nPrototype limits: no Wintab, curved guides, model export, or autosave.\nSave your work using the Save button.");});
         }
         self.frame_ms = start.elapsed().as_secs_f32() * 1000.0;
-        if self.active.is_some() || self.drag.is_some() || self.verification_frame.is_some() {
+        if self.active.is_some()
+            || self.drag.is_some()
+            || self.verification_frame.is_some()
+            || self.house_verification_frame.is_some()
+        {
             ctx.request_repaint_after(Duration::from_millis(8));
         }
     }
@@ -1086,7 +1136,7 @@ impl SketchApp {
         self.verification_frame = Some(frame + 1);
     }
     fn capture_verification(&mut self, ctx: &egui::Context) {
-        if self.verification_frame.is_none() {
+        if self.verification_frame.is_none() && self.house_verification_frame.is_none() {
             return;
         }
         let screenshot = ctx.input(|i| {
@@ -1102,7 +1152,11 @@ impl SketchApp {
             let path = std::env::current_dir().unwrap().join("verification");
             let pixels: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
             image::save_buffer(
-                path.join("preview.png"),
+                path.join(if self.house_verification_frame.is_some() {
+                    "house-preview.png"
+                } else {
+                    "preview.png"
+                }),
                 &pixels,
                 image.size[0] as u32,
                 image.size[1] as u32,
@@ -1110,8 +1164,17 @@ impl SketchApp {
             )
             .unwrap();
             let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
+            let report = if self.house_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["editable Japanese house strokes","duplicate and undo","New clears starter","House reloads starter","unsaved-change guard","sample save/reload","GPU screenshot"],"strokes":self.doc.strokes.len(),"points":self.doc.strokes.iter().map(|s|s.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+            } else {
+                report
+            };
             std::fs::write(
-                path.join("report.json"),
+                path.join(if self.house_verification_frame.is_some() {
+                    "house-report.json"
+                } else {
+                    "report.json"
+                }),
                 serde_json::to_string_pretty(&report).unwrap(),
             )
             .unwrap();

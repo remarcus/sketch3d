@@ -4,6 +4,7 @@ An open-source, native 3D sketching prototype inspired by the idea of drawing in
 
 ## Current prototype
 
+- Editable Japanese-style house and garden shown on startup.
 - Pressure-sensitive tube strokes stored as editable 3D control points.
 - Adjustable stroke stabilization with pressure preservation and endpoint catch-up.
 - Front, side, and ground drawing planes, with adjustable depth.
@@ -25,7 +26,9 @@ Install stable Rust using https://rustup.rs. On Windows, the MSVC Rust toolchain
 cargo run --release
 ```
 
-For a built-in 3D example:
+The app opens with an original Japanese-style garden house drawn entirely from editable strokes. **New** starts a blank drawing; **House** reloads the sample, with an unsaved-change prompt when needed. For a blank startup, use `cargo run --release -- --blank`.
+
+For the original three-ring geometry example:
 
 ```sh
 cargo run --release -- --demo
@@ -61,6 +64,7 @@ The first hardware targets are a screenless Wacom tablet and a a pen display. **
 | Undo / redo | Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y |
 | Save / save as | Ctrl/Cmd+S / Ctrl/Cmd+Shift+S |
 | Open / new | Ctrl/Cmd+O / Ctrl/Cmd+N |
+| Reload house starter | House button |
 
 When Windows Ink reports a barrel button directly, barrel + contact drag also orbits. Driver button mappings may instead generate a mouse button or shortcut. Essential controls do not require touch. A stroke ends when it leaves the canvas. An edge-on drawing plane cannot accept strokes: align the view or orbit away from the edge.
 
@@ -120,3 +124,15 @@ Selection is temporary interface state, so it is not saved in the drawing or res
 The brush panel's **Stabilize** slider controls a spatial trailing filter. At 0%, positions are recorded directly. Higher values reduce hand jitter but let the line trail the pen; 35% is the initial setting. The radius is derived from screen pixels, so zooming does not radically change the feel. Pressure is passed through immediately rather than smoothed.
 
 On release, the stroke catches up to the final contact position with a short interpolated tail. Pen-up pressure is not treated as a new ink sample. The tail belongs to the same undo step as the stroke. Cancellation discards filter state, and a new stroke starts exactly at its first contact point. This is a position stabilizer, not curve fitting or a post-process on existing strokes.
+
+## Japanese garden house
+
+The startup scene is original procedural artwork, constructed from ordinary document strokes: curved tiled roof runs, timber framing, shoji-style screens, a raised veranda, stepping stones, a flowering tree, garden shrubs, and lanterns. No external artwork or network request is needed. Every component supports the existing selection, transform, erase, undo, and save tools. Selection and editing still operate per stroke; this is not a separate imported mesh or a grouped CAD model.
+
+The unmodified sample is treated as a fresh example, so simply closing it does not ask you to save. Editing makes it an unsaved drawing. New and House respect that unsaved state. New clears the sample and resets the camera and guide for drawing; House restores the sample and its presentation camera. `--blank` bypasses the sample on startup, while `--demo` opens the original ring example.
+
+```sh
+cargo run --release -- --verify-house
+```
+
+This checks sample validity, duplication/undo, New/House switching, the unsaved-change guard, save/reload, and GPU rendering. It writes `verification/house-report.json` and `verification/house-preview.png`, then exits. The original `--verify` still exercises the drawing, selection, transform, and stabilization workflows independently of the startup scene.
