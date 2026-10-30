@@ -23,8 +23,8 @@ impl SketchApp {
             if self.brush.kind != BrushKind::Round {
                 ui.checkbox(&mut self.brush.dynamics.tilt_orientation, "Tilt orientation").on_hover_text("Uses reported pen lean to orient the cross-section. Missing or upright tilt falls back to the manual frame.");
             }
-            ui.add(egui::Slider::new(&mut self.brush.dynamics.taper_start, 0.0..=3.0).text("Start taper"));
-            ui.add(egui::Slider::new(&mut self.brush.dynamics.taper_end, 0.0..=3.0).text("End taper"));
+            ui.add(egui::Slider::new(&mut self.brush.dynamics.taper_start, 0.0..=10.0).text("Start taper"));
+            ui.add(egui::Slider::new(&mut self.brush.dynamics.taper_end, 0.0..=10.0).text("End taper"));
             ui.small("Taper length is in world units. Mouse pressure is constant; missing tilt uses the manual angle.");
         });
     }

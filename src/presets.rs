@@ -1,0 +1,391 @@
+//! Versioned local brush configurations, independent of drawing documents.
+use crate::{
+    document::{Brush, BrushKind},
+    texture::{TextureKind, TextureSettings},
+};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashSet,
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
+
+const MAX_PRESETS: usize = 256;
+const FIRST_PERSONAL_ID: u64 = 100;
+const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Preset {
+    pub id: u64,
+    pub name: String,
+    pub brush: Brush,
+    pub radius: f32,
+    pub color: [f32; 3],
+    pub stabilization: f32,
+}
+impl Preset {
+    pub fn is_builtin(&self) -> bool {
+        (1..=6).contains(&self.id)
+    }
+    fn is_valid(&self) -> bool {
+        valid_name(&self.name).is_ok()
+            && self.brush.is_valid()
+            && self.radius.is_finite()
+            && (0.001..=1.0).contains(&self.radius)
+            && self
+                .color
+                .iter()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+            && self.stabilization.is_finite()
+            && (0.0..=1.0).contains(&self.stabilization)
+    }
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Library {
+    pub version: u32,
+    pub presets: Vec<Preset>,
+    pub next_id: u64,
+}
+impl Default for Library {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            presets: defaults(),
+            next_id: FIRST_PERSONAL_ID,
+        }
+    }
+}
+fn valid_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 64 || trimmed.chars().any(char::is_control) {
+        return Err("Preset name must contain 1–64 characters without control characters".into());
+    }
+    Ok(trimmed.to_owned())
+}
+fn defaults() -> Vec<Preset> {
+    [
+        ("Round Ink", BrushKind::Round, TextureKind::Solid, 0.025),
+        ("Ribbon", BrushKind::Ribbon, TextureKind::Solid, 0.055),
+        ("Flat Marker", BrushKind::Chisel, TextureKind::Solid, 0.08),
+        ("Chalk", BrushKind::Ribbon, TextureKind::Grain, 0.075),
+        ("Dry Brush", BrushKind::Chisel, TextureKind::DryBrush, 0.09),
+        (
+            "Diamond Pattern",
+            BrushKind::Ribbon,
+            TextureKind::Pattern,
+            0.09,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, (name, kind, texture, radius))| Preset {
+        id: i as u64 + 1,
+        name: name.into(),
+        brush: Brush {
+            kind,
+            texture: TextureSettings {
+                kind: texture,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        radius,
+        color: [0.17, 0.82, 0.74],
+        stabilization: 0.35,
+    })
+    .collect()
+}
+
+impl Library {
+    pub fn get(&self, id: u64) -> Option<&Preset> {
+        self.presets.iter().find(|p| p.id == id)
+    }
+    fn validate(&self) -> Result<(), String> {
+        if self.version != 1 {
+            return Err("Unsupported brush library version".into());
+        }
+        if self.presets.len() > MAX_PRESETS {
+            return Err("Brush library exceeds 256 presets".into());
+        }
+        if self.presets.iter().filter(|p| !p.is_builtin()).count() > MAX_PRESETS - 6 {
+            return Err(
+                "Brush library exceeds 250 personal presets; six slots are reserved for defaults"
+                    .into(),
+            );
+        }
+        if self.next_id < FIRST_PERSONAL_ID || self.next_id == u64::MAX {
+            return Err("Invalid next preset ID".into());
+        }
+        let mut names = HashSet::new();
+        let mut ids = HashSet::new();
+        for preset in &self.presets {
+            if !preset.is_valid() || preset.name != preset.name.trim() {
+                return Err("Invalid preset settings or name".into());
+            }
+            if !preset.is_builtin() && !(FIRST_PERSONAL_ID..self.next_id).contains(&preset.id) {
+                return Err("Invalid preset ID".into());
+            }
+            if !ids.insert(preset.id) {
+                return Err("Duplicate preset ID".into());
+            }
+            if !names.insert(preset.name.to_lowercase()) {
+                return Err("Preset names must be unique".into());
+            }
+        }
+        Ok(())
+    }
+    pub fn from_json(text: &str) -> Result<Self, String> {
+        if text.len() as u64 > MAX_FILE_BYTES {
+            return Err("Brush library file is too large".into());
+        }
+        let library: Self =
+            serde_json::from_str(text).map_err(|e| format!("Cannot read brush library: {e}"))?;
+        library.validate()?;
+        Ok(library)
+    }
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let metadata = fs::metadata(path).map_err(|e| format!("Cannot read brush library: {e}"))?;
+        if metadata.len() > MAX_FILE_BYTES {
+            return Err("Brush library file is too large".into());
+        }
+        Self::from_json(
+            &fs::read_to_string(path).map_err(|e| format!("Cannot read brush library: {e}"))?,
+        )
+    }
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        self.validate()?;
+        let bytes = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Err("Brush library file is too large".into());
+        }
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Cannot create brush library folder: {e}"))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        temporary.write_all(&bytes).map_err(|e| e.to_string())?;
+        temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+        temporary
+            .persist(path)
+            .map_err(|e| format!("Cannot save brush library: {e}"))?;
+        Ok(())
+    }
+    pub fn create(
+        &mut self,
+        name: &str,
+        brush: Brush,
+        radius: f32,
+        color: [f32; 3],
+        stabilization: f32,
+    ) -> Result<u64, String> {
+        let name = valid_name(name)?;
+        let id = self.next_id;
+        let mut changed = self.clone();
+        changed.next_id = id.checked_add(1).ok_or("No preset IDs available")?;
+        changed.presets.push(Preset {
+            id,
+            name,
+            brush,
+            radius,
+            color,
+            stabilization,
+        });
+        changed.validate()?;
+        *self = changed;
+        Ok(id)
+    }
+    pub fn duplicate(&mut self, id: u64, name: &str) -> Result<u64, String> {
+        let preset = self.get(id).cloned().ok_or("Preset no longer exists")?;
+        self.create(
+            name,
+            preset.brush,
+            preset.radius,
+            preset.color,
+            preset.stabilization,
+        )
+    }
+    pub fn rename(&mut self, id: u64, name: &str) -> Result<(), String> {
+        let name = valid_name(name)?;
+        let mut changed = self.clone();
+        changed
+            .presets
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or("Preset no longer exists")?
+            .name = name;
+        changed.validate()?;
+        *self = changed;
+        Ok(())
+    }
+    pub fn update(
+        &mut self,
+        id: u64,
+        brush: Brush,
+        radius: f32,
+        color: [f32; 3],
+        stabilization: f32,
+    ) -> Result<(), String> {
+        let mut changed = self.clone();
+        let preset = changed
+            .presets
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or("Preset no longer exists")?;
+        preset.brush = brush;
+        preset.radius = radius;
+        preset.color = color;
+        preset.stabilization = stabilization;
+        changed.validate()?;
+        *self = changed;
+        Ok(())
+    }
+    pub fn delete(&mut self, id: u64) -> Result<(), String> {
+        if self.get(id).is_none() {
+            return Err("Preset no longer exists".into());
+        }
+        let mut changed = self.clone();
+        changed.presets.retain(|p| p.id != id);
+        changed.validate()?;
+        *self = changed;
+        Ok(())
+    }
+    /// Built-in IDs are restored without deleting any personal preset. Resolve
+    /// a conflicting personal name first rather than silently renaming it.
+    pub fn restore_defaults(&mut self) -> Result<(), String> {
+        let mut changed = self.clone();
+        changed.presets.retain(|p| !p.is_builtin());
+        changed.presets.splice(0..0, defaults());
+        changed.validate()?;
+        *self = changed;
+        Ok(())
+    }
+}
+
+pub fn path() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    let base = std::env::var_os("LOCALAPPDATA")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .filter(|s| !s.is_empty())
+                .map(|p| PathBuf::from(p).join("AppData/Local"))
+        });
+    #[cfg(not(windows))]
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|s| !s.is_empty())
+                .map(|p| PathBuf::from(p).join(".config"))
+        });
+    base.map(|p| p.join("SpatialSketch/brushes.json"))
+        .ok_or_else(|| "Local application-data folder is unavailable".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn personal_presets_survive_atomic_save_restart_and_crud() {
+        let mut library = Library::default();
+        let id = library.duplicate(4, " My Chalk ").unwrap();
+        assert_eq!(library.get(id).unwrap().name, "My Chalk");
+        let mut brush = library.get(id).unwrap().brush;
+        brush.texture.seed = 123;
+        brush.dynamics.taper_end = 0.6;
+        library
+            .update(id, brush, 0.1, [0.2, 0.3, 0.4], 0.7)
+            .unwrap();
+        library.rename(id, "Warm Chalk").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/brushes.json");
+        library.save(&path).unwrap();
+        assert_eq!(Library::load(&path).unwrap(), library);
+        library.rename(id, "Renamed Chalk").unwrap();
+        library.save(&path).unwrap();
+        let mut restarted = Library::load(&path).unwrap();
+        assert_eq!(restarted, library);
+        restarted.delete(id).unwrap();
+        assert!(restarted.get(id).is_none());
+        assert!(restarted.delete(id).is_err());
+    }
+    #[test]
+    fn builtins_restore_without_modifying_personal_resolved_settings() {
+        let mut library = Library::default();
+        let personal = library.duplicate(5, "Personal Dry Brush").unwrap();
+        let resolved = library.get(personal).unwrap().clone();
+        library.rename(5, "Modified Builtin").unwrap();
+        library.delete(4).unwrap();
+        library.restore_defaults().unwrap();
+        assert_eq!(library.get(4).unwrap().name, "Chalk");
+        assert_eq!(library.get(5).unwrap().name, "Dry Brush");
+        assert_eq!(library.get(personal).unwrap(), &resolved);
+        // Drawing stores a value copy, independent of later preset changes.
+        let ink_brush = resolved.brush;
+        let mut modified = resolved.brush;
+        modified.texture.strength = 0.1;
+        library
+            .update(personal, modified, 0.04, [1.0; 3], 0.1)
+            .unwrap();
+        assert_ne!(library.get(personal).unwrap().brush, ink_brush);
+        assert_eq!(ink_brush, resolved.brush);
+    }
+    #[test]
+    fn invalid_changes_are_transactional_and_names_are_unique() {
+        let mut library = Library::default();
+        let original = library.clone();
+        for name in ["", "  ", "round ink", "bad\nname"] {
+            assert!(library.duplicate(1, name).is_err());
+            assert_eq!(library, original);
+        }
+        assert!(library.rename(2, "ROUND INK").is_err());
+        assert_eq!(library, original);
+        assert!(library
+            .update(1, Brush::default(), f32::NAN, [0.2; 3], 0.2)
+            .is_err());
+        assert_eq!(library, original);
+        library.delete(4).unwrap();
+        library.duplicate(1, "Chalk").unwrap();
+        let before_restore = library.clone();
+        assert!(library.restore_defaults().is_err());
+        assert_eq!(library, before_restore);
+    }
+    #[test]
+    fn corrupt_unsupported_and_invalid_library_files_remain_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brushes.json");
+        for text in ["{broken", "{\"version\":99,\"presets\":[],\"next_id\":100}"] {
+            fs::write(&path, text).unwrap();
+            assert!(Library::load(&path).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        }
+        let mut value = serde_json::to_value(Library::default()).unwrap();
+        value["presets"][0]["brush"]["texture"]["scale"] = serde_json::json!(0.0);
+        assert!(Library::from_json(&value.to_string()).is_err());
+        value = serde_json::to_value(Library::default()).unwrap();
+        value["next_id"] = serde_json::json!(3);
+        assert!(Library::from_json(&value.to_string()).is_err());
+        value = serde_json::to_value(Library::default()).unwrap();
+        value["presets"][1]["id"] = serde_json::json!(1);
+        assert!(Library::from_json(&value.to_string()).is_err());
+    }
+    #[test]
+    fn capacity_keeps_room_to_restore_default_brushes() {
+        let mut library = Library::default();
+        for index in 0..250 {
+            library.duplicate(1, &format!("Personal {index}")).unwrap();
+        }
+        let full = library.clone();
+        assert!(library.duplicate(1, "Overflow").is_err());
+        assert_eq!(library, full);
+        library.delete(6).unwrap();
+        assert!(library.duplicate(1, "Still overflow").is_err());
+        library.restore_defaults().unwrap();
+        assert_eq!(library.presets.len(), 256);
+    }
+}

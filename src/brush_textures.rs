@@ -13,7 +13,7 @@ impl SketchApp {
                 }
             });
             if self.brush.texture.kind!=TextureKind::Solid {
-                ui.add(egui::Slider::new(&mut self.brush.texture.scale,0.02..=3.0).logarithmic(true).text("Spacing"));
+                ui.add(egui::Slider::new(&mut self.brush.texture.scale,0.02..=10.0).logarithmic(true).text("Spacing"));
                 ui.add(egui::Slider::new(&mut self.brush.texture.strength,0.0..=1.0).text("Strength"));
                 if ui.button("Vary pattern").clicked() {self.brush.texture.seed=self.brush.texture.seed.wrapping_add(1);}
                 ui.small("Spacing is in world units. Gaps remain part of the selectable stroke footprint.");

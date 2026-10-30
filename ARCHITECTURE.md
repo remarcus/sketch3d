@@ -81,7 +81,7 @@ The `gltf` crate is a dev-only independent parser used by unit tests. `export_ch
 
 `geometry::stroke_mesh` is shared by the renderer and exporter. Round uses the legacy tube positions and pressure profile with corrected cap normals and triangle winding. Ribbon/chisel deduplicate coincident samples, derive path tangents, and transport the width axis by projection. A captured tangent resolves dot and normal-parallel cases. Chisel faces use flat normals; ribbons remain geometrically thin and use two-sided rendering/materials. `stroke_extent` conservatively covers cross-sections and dot footprints for selection bounds, picking, and erasing. Existing point-count mesh caching remains valid because shape settings are captured once; transform paths explicitly invalidate changed stroke IDs.
 
-`brushes.rs` owns shape controls, sampler loading, and the software brush workflow. The sampler also serves as an independent GLB export fixture. Brush preset libraries, opacity, and import remain separately tracked tasks.
+`brushes.rs` owns shape controls, sampler loading, and the software brush workflow. The sampler also serves as an independent GLB export fixture. Opacity and import remain separately tracked tasks.
 
 ## Dynamics and version 3
 
@@ -102,3 +102,11 @@ Geometry maps physical width and chisel thickness independently and applies the 
 The renderer caches mask bind groups alongside cached stroke meshes and prunes unused images. Its fragment shader samples the mask at explicit LOD 0 and discards holes before depth writes; display-only selection color retains coverage. GLB adds interleaved UVs, embedded PNG buffer views, deduplicated images/materials, repeat/nearest sampling, and MASK alpha cutoff 0.5. The Blender check follows the imported color multiplication nodes, verifies packed image alpha pixels and UV bounds, and rejects sidecars.
 
 `brush_textures.rs` owns controls and graphical smoke checks. `texture_check.rs` provides reproducible release CPU measurements for long strokes; it is not a GPU or hardware latency benchmark. Active strokes still rebuild on input, while completed strokes reuse buffers. Partial erasing and alpha-aware picking are outside this feature.
+
+## Local preset library
+
+`presets.rs` stores fully resolved Brush/radius/color/stabilization values in an independent version-1 library. Fixed built-in IDs 1–6 are recoverable; personal IDs start at 100. Transactional CRUD validates names, IDs, counts, and settings before updating memory. Atomic saves use a synced temporary file in the destination directory. Library validation does not read or mutate drawings.
+
+`presets_ui.rs` separates browsing from application: only Use preset returns a cloned configuration to `SketchApp`. A separate cached SceneRenderer displays a real synthetic-pressure/tilt stroke before selection. Library changes invalidate its preview without modifying the main canvas. Failed saves keep in-memory edits and an explicit retry action. Failed loads keep temporary defaults and block replacement until explicit repair creates and syncs a uniquely named byte-preserving backup. Restore defaults retains personal entries and reports name conflicts transactionally.
+
+`preset_checks.rs` exercises application, lifecycle, restart, fallback/repair, native stroke independence, unchanged GLB bytes, and preview rendering. Verification modes use workspace libraries under verification rather than normal application data. Library versions are independent of document versions; drawings retain resolved settings without requiring a preset ID or local library.
