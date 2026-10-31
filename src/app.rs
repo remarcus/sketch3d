@@ -133,6 +133,7 @@ pub struct SketchApp {
     obj_reference_models: std::collections::HashMap<u64, crate::obj_reference::ObjModel>,
     obj_surface_indices: std::collections::HashMap<u64, crate::obj_mesh_index::ObjMeshIndex>,
     model_stroke_contact: Option<(u64, u32, Pos2)>,
+    selected_model_reference: Option<u64>,
     image_asset_root: PathBuf,
     guide_name: String,
     loft_preview: Option<crate::document::guide_resources::LoftSurface>,
@@ -306,6 +307,7 @@ impl SketchApp {
             obj_reference_models: std::collections::HashMap::new(),
             obj_surface_indices: std::collections::HashMap::new(),
             model_stroke_contact: None,
+            selected_model_reference: None,
             image_asset_root,
             guide_name: String::new(),
             loft_preview: None,
@@ -1102,6 +1104,7 @@ impl SketchApp {
                 self.image_plane_assets.clear();
                 self.obj_reference_models.clear();
                 self.obj_surface_indices.clear();
+                self.selected_model_reference = None;
                 self.renderer.clear_image_plane_assets();
                 self.renderer.clear_obj_reference_models();
                 self.image_asset_root = std::env::temp_dir().join(format!(
@@ -1156,6 +1159,7 @@ impl SketchApp {
                             self.image_plane_assets = assets;
                             self.obj_reference_models = models;
                             self.obj_surface_indices.clear();
+                            self.selected_model_reference = None;
                             self.image_asset_root =
                                 crate::image_plane_storage::asset_root(&path).unwrap_or_default();
                             self.renderer.clear_image_plane_assets();

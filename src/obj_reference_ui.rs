@@ -3,6 +3,79 @@ use crate::document::model_references::ObjReferenceResource;
 use std::path::Path;
 
 impl SketchApp {
+    pub(super) fn pick_obj_reference(
+        &mut self,
+        rect: egui::Rect,
+        position: egui::Pos2,
+    ) -> Option<u64> {
+        let (origin, direction) = crate::gizmo::ray(&self.camera, rect, position);
+        let mut nearest: Option<(f32, u64)> = None;
+        for resource in self
+            .doc
+            .model_references
+            .iter()
+            .filter(|resource| resource.visible)
+        {
+            let id = resource.id;
+            let Some(model) = self.obj_reference_models.get(&id) else {
+                continue;
+            };
+            if !self.obj_surface_indices.contains_key(&id) {
+                if let Ok(index) = crate::obj_mesh_index::ObjMeshIndex::new(model) {
+                    self.obj_surface_indices.insert(id, index);
+                } else {
+                    continue;
+                }
+            }
+            let inverse = resource.rotation.inverse();
+            let local_origin = inverse * (origin - resource.center) / resource.scale;
+            let local_direction = inverse * direction / resource.scale;
+            let hit = self
+                .obj_surface_indices
+                .get(&id)
+                .and_then(|index| index.hit(model, local_origin, local_direction));
+            let Some(hit) = hit else {
+                continue;
+            };
+            let world = resource.center + resource.rotation * (hit.position * resource.scale);
+            let ray_t = (world - origin).dot(direction);
+            if ray_t > 0.0 && nearest.is_none_or(|(best, _)| ray_t < best) {
+                nearest = Some((ray_t, id));
+            }
+        }
+        nearest.map(|(_, id)| id)
+    }
+
+    pub(super) fn selected_obj_bounds(&self) -> Option<[glam::Vec3; 8]> {
+        let id = self.selected_model_reference?;
+        let resource = self
+            .doc
+            .model_references
+            .iter()
+            .find(|resource| resource.id == id && resource.visible)?;
+        let model = self.obj_reference_models.get(&id)?;
+        Some(std::array::from_fn(|index| {
+            let local = glam::Vec3::new(
+                if index & 1 == 0 {
+                    model.bounds[0].x
+                } else {
+                    model.bounds[1].x
+                },
+                if index & 2 == 0 {
+                    model.bounds[0].y
+                } else {
+                    model.bounds[1].y
+                },
+                if index & 4 == 0 {
+                    model.bounds[0].z
+                } else {
+                    model.bounds[1].z
+                },
+            );
+            resource.center + resource.rotation * (local * resource.scale)
+        }))
+    }
+
     pub(super) fn obj_reference_controls(&mut self, ui: &mut egui::Ui) {
         ui.collapsing("OBJ references", |ui| {
             if ui.button("Import OBJ reference…").clicked() {
@@ -47,6 +120,9 @@ impl SketchApp {
             }
             if let Some(index) = remove {
                 let resource = self.doc.model_references.remove(index);
+                if self.selected_model_reference == Some(resource.id) {
+                    self.selected_model_reference = None;
+                }
                 if self.doc.active_model_reference == Some(resource.id) {
                     self.doc.active_model_reference = None;
                 }

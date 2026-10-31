@@ -305,12 +305,35 @@ impl SketchApp {
                 }
             }
             let hit = gizmo::pick(&self.doc, &self.camera, rect, pos);
+            let model_hit = if hit.is_none() {
+                self.pick_obj_reference(rect, pos)
+            } else {
+                None
+            };
             if !shift {
                 self.selected.clear();
+                self.selected_model_reference = None;
             }
             if let Some(id) = hit {
                 let ids = self.doc.selection_for_stroke(id, self.individual_selection);
                 editing::toggle_selection(&mut self.selected, &ids, shift);
+            } else if let Some(id) = model_hit {
+                self.selected_model_reference =
+                    if shift && self.selected_model_reference == Some(id) {
+                        None
+                    } else {
+                        Some(id)
+                    };
+                self.status = format!(
+                    "{} selected. Transform it in Drawing → OBJ references.",
+                    self.doc
+                        .model_references
+                        .iter()
+                        .find(|resource| resource.id == id)
+                        .map(|resource| resource.name.as_str())
+                        .unwrap_or("OBJ reference")
+                );
+                return;
             }
             self.status = format!(
                 "{} stroke(s) selected. Shift-click toggles selection.",
@@ -1155,37 +1178,55 @@ if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete
                 );
             }
         }
-        let Some((min, max)) = editing::bounds(&self.doc, &self.selected) else {
-            return;
-        };
-        let corners: [Vec3; 8] = std::array::from_fn(|i| {
-            Vec3::new(
-                if i & 1 == 0 { min.x } else { max.x },
-                if i & 2 == 0 { min.y } else { max.y },
-                if i & 4 == 0 { min.z } else { max.z },
-            )
-        });
-        for i in 0..8 {
-            for bit in [1, 2, 4] {
-                let j = i ^ bit;
-                if j > i {
-                    if let (Some((a, _)), Some((b, _))) = (
-                        gizmo::project(&self.camera, rect, corners[i]),
-                        gizmo::project(&self.camera, rect, corners[j]),
-                    ) {
-                        painter.line_segment(
-                            [a, b],
-                            egui::Stroke::new(
-                                1.0_f32,
-                                Color32::from_rgba_unmultiplied(255, 201, 104, 110),
-                            ),
-                        );
-                    }
-                }
+        if let Some((min, max)) = editing::bounds(&self.doc, &self.selected) {
+            let corners: [Vec3; 8] = std::array::from_fn(|i| {
+                Vec3::new(
+                    if i & 1 == 0 { min.x } else { max.x },
+                    if i & 2 == 0 { min.y } else { max.y },
+                    if i & 4 == 0 { min.z } else { max.z },
+                )
+            });
+            paint_selection_box(
+                &painter,
+                &self.camera,
+                rect,
+                &corners,
+                Color32::from_rgba_unmultiplied(255, 201, 104, 110),
+            );
+            if let Some(layout) = self.layout(rect) {
+                layout.paint(&painter, self.drag.as_ref().map(|d| d.kind));
             }
         }
-        if let Some(layout) = self.layout(rect) {
-            layout.paint(&painter, self.drag.as_ref().map(|d| d.kind));
+        if let Some(corners) = self.selected_obj_bounds() {
+            paint_selection_box(
+                &painter,
+                &self.camera,
+                rect,
+                &corners,
+                Color32::from_rgba_unmultiplied(87, 224, 195, 220),
+            );
+        }
+    }
+}
+
+fn paint_selection_box(
+    painter: &egui::Painter,
+    camera: &crate::geometry::Camera,
+    rect: Rect,
+    corners: &[Vec3; 8],
+    color: Color32,
+) {
+    for i in 0..8 {
+        for bit in [1, 2, 4] {
+            let j = i ^ bit;
+            if j > i {
+                if let (Some((a, _)), Some((b, _))) = (
+                    gizmo::project(camera, rect, corners[i]),
+                    gizmo::project(camera, rect, corners[j]),
+                ) {
+                    painter.line_segment([a, b], egui::Stroke::new(1.5_f32, color));
+                }
+            }
         }
     }
 }
