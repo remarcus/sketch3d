@@ -14,7 +14,17 @@ An open-source, native 3D sketching prototype inspired by the idea of drawing in
 - Mouse drawing with constant pressure, clearly distinguished from tablet input.
 - Click/Shift-click selection, depth-aware picking, gold highlighting, and selection bounds.
 - Move, rotate, and uniform-scale handles, numeric transforms, grouped duplication and deletion.
-- Whole-stroke eraser, undo/redo, versioned JSON documents, atomic saves, and unsaved-change prompts.
+- Whole-stroke and partial-stroke erasers, undo/redo, versioned JSON documents, atomic saves, and unsaved-change prompts.
+- A local reference image board for bounded PNG/JPEG imports, panning, zooming, color sampling, and image ordering.
+- Transformable PNG/JPEG image planes with opacity, visibility, locking, active-plane brush drawing, native sidecar assets, undo/redo, and recovery.
+- Selected-stroke appearance previews for color, radius, opacity, and brush type, with explicit Apply/Cancel and one-step undo.
+- Drag brush selection and deselection with adjustable radius and visible-only or through-selection modes.
+- Planar circle and ellipse tools with center/radius, bounding-box, and typed-dimension workflows.
+- A planar smooth-curve tool with editable anchors/tangents, pressure-aware preview, and one-step commit.
+- Named, saved plane/cylinder/revolved/sphere/cone guides with one active brush target and surface-aware stabilization.
+- Selected-stroke Liquify previews with push/pull falloff controls and atomic undo.
+- Saved camera bookmarks and timed view sequences in separate local workspace settings.
+- Live plane-guide mirroring for brush and straight-line strokes, committed as one undoable pair.
 - Background GLB export for the whole drawing or selected strokes, preserving original colors and pressure-shaped geometry.
 - Round, ribbon, and flat/chisel brushes with pressure-shaped width, frozen orientation, and an editable brush sampler.
 - GPU depth testing and cached completed-stroke meshes. Only changed strokes are tessellated again.
@@ -54,7 +64,16 @@ The first hardware targets are a screenless Wacom tablet and a a pen display. **
 | Action | Input |
 | --- | --- |
 | Brush / whole-stroke eraser / select | B / E / V |
+| Partial-stroke eraser | Erase inspector: enable Partial stroke eraser, then sweep over the canvas |
 | Add/remove stroke from selection | Shift-click in Select tool |
+| Brush select/deselect strokes | Select inspector: enable Drag brush selection, choose mode, and sweep the canvas |
+| Edit selected stroke appearance | Select inspector: Edit appearance… |
+| Draw circles / ellipses | Choose Circle or Ellipse; drag on a plane or enable typed dimensions |
+| Add a scene image plane | Images inspector → Import image plane…; enable Draw here to ink on it |
+| Save or activate a guide | Drawing guide → Saved guides; use the guide toggle to set the active brush surface |
+| Draw a smooth curve | Choose Curve; add anchors and adjust tangent handles; Enter finishes, Escape cancels |
+| Deform selected strokes | Select strokes → Liquify selected strokes…; adjust the brush center/displacement, then Apply or Cancel |
+| Save/play camera views | View → Camera bookmarks and sequences… |
 | Select all / clear selection | Ctrl/Cmd+A / Escape |
 | Move / rotate / uniform scale | G / R / S in Select tool |
 | Duplicate selection | Ctrl/Cmd+D |
@@ -77,7 +96,7 @@ Brush radius is in world units, so its visible size changes with camera distance
 
 ## Documents
 
-Documents use a versioned `.sketch.json` format with positions in world space. Version 8 adds per-brush opacity, pressure-to-opacity mapping, and soft-edge settings; version 7 added editable planar fills with a physical paint offset, alongside flat groups and named layers. Versions 1–7 migrate while preserving their existing ink; versions 1–4 receive one visible, unlocked layer. Older application versions cannot open version-8 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. Recovery snapshots protect completed edits automatically; use Save for your deliberate native drawing file.
+Documents use a versioned `.sketch.json` format with positions in world space. Version 10 adds saved guide resources; version 9 added image-plane records whose source images are stored in a sibling `<drawing filename>.assets` folder. Version 8 adds per-brush opacity, pressure-to-opacity mapping, and soft-edge settings; version 7 added editable planar fills with a physical paint offset, alongside flat groups and named layers. Versions 1–9 migrate while preserving their existing ink; versions 1–4 receive one visible, unlocked layer. Older application versions cannot open version-10 files. Open validates version, IDs, positions, pressure, color, image metadata, guide geometry, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. Recovery snapshots protect completed edits and include bounded image assets; use Save for your deliberate native drawing file. PNG renders include scene image planes. GLB export contains stroke geometry only. Camera bookmarks/sequences live in a separate local workspace file and do not travel with the drawing or recovery snapshot. Saved guides and image planes currently target brush input; switch to the temporary guide for line, fill, shape, and curve tools.
 
 ## Development
 
@@ -98,7 +117,7 @@ The immediate hardware test is pressure and tilt on the Wacom, followed by the K
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
-Next planned work is thin-line rendering quality (SKETCH-022). Standalone benchmarks and hardware validation follow feature work. Soft/transparent brushes follow separately; brush-library importing remains deferred.
+Initial implementations are in place for the reference board, selected-stroke appearance, drag selection, partial erasing, circle/ellipse tools, and plane-guide mirroring (SKETCH-033 and SKETCH-035–039). See TASKS.md for remaining interaction, persistence, and edge-case checks and the next features through SKETCH-055. Manual display-scaling/Narrator checks (SKETCH-032) and physical tablet validation (SKETCH-006) also remain open. Thin-line rendering, soft brushes, brush-package importing, and the benchmark pass are complete.
 
 ## License
 
@@ -354,7 +373,7 @@ Use V to select a filled interior; concave cutouts stay unselectable. Fills supp
 
 **Open painted-house study** in the Fill tool opens an original editable wall/roof/window/porch example, including a concave porch and separate outlines. The original Japanese starter remains available through House. GLB exports fills as double-sided triangle meshes, bakes the offset, and adds optional planar-fill/offset metadata. It contains no UI draft, guides, lights, or presentation ground.
 
-Developer check: `cargo run --release -- --verify-fills` writes `verification/fills-report.json`, `fills-preview.png`, and `filled-house.png`. The export fixture set includes `fills.glb` for Khronos validation and Blender import. Forced-crash recovery verification now includes a planar fill alongside pressure/tilt/textured ink. Native version 8 validation bounds contour complexity and rejects malformed filled geometry; legacy files treat any unknown fill extension as ordinary ink, matching their original rendering.
+Developer check: `cargo run --release -- --verify-fills` writes `verification/fills-report.json`, `fills-preview.png`, and `filled-house.png`. The export fixture set includes `fills.glb` for Khronos validation and Blender import. Forced-crash recovery verification now includes a planar fill alongside pressure/tilt/textured ink. Document validation bounds contour complexity and rejects malformed filled geometry; legacy files treat any unknown fill extension as ordinary ink, matching their original rendering.
 ## Place a drawing plane on artwork
 
 Press **K**, use **Pick plane [K]** in the toolbar, or **Place plane on artwork** in Drawing guide. Click/tap a visible artwork surface to propose a plane. The grid and pink normal marker preview it; your current guide and artwork remain unchanged until you choose **Apply / Enter** or **Apply & face plane**. Click another surface to repick. **Cancel / Escape** keeps the previous guide, including cylinder/revolved mode and visibility. Space-drag and mouse navigation remain available while picking.
@@ -378,7 +397,19 @@ Artwork-only view is read-only for marks: ordinary contact and eraser contact do
 
 Recovery and unsaved-change prompts return to the workspace. Close requests also leave artwork view, including an export that temporarily blocks closing. Native save errors return to editing so the error can be seen. The compact toolbar indicates recovery issues; Recovery opens the normal recovery flow. Artwork-only mode is never remembered across restarts, so each launch starts with the workspace visible.
 
-Background and view mode do not change native document version 8, recovery content, GLB materials, or ink. Invalid, oversized, or newer-version preference files are retained on load; Scene shows the issue and uses defaults until you explicitly remember a valid preference. Reset changes the current session; use Remember afterward to reset the startup default as well.
+Background and view mode do not change native document version 11, recovery content, GLB materials, or ink. Invalid, oversized, or newer-version preference files are retained on load; Scene shows the issue and uses defaults until you explicitly remember a valid preference. Reset changes the current session; use Remember afterward to reset the startup default as well.
+
+## Saved freeform guide
+
+In **Drawing → Saved guides**, choose **Add freeform** to create an editable bounded sheet. Adjust the center and rotation, sweep depth, bend, and four local XY directrix control points. The directrix control X coordinates must remain increasing, which keeps the curve monotone and excludes loops. Activate the guide with **Use** and draw with the brush; new ink is stabilized on the guide while existing strokes remain fixed. The preview is a wire grid. Ray hits are approximated against a deterministic 64×8 triangle mesh, so the guide is suitable for sketching and reference construction rather than precision CAD. Line, fill, shape, and curve draft tools remain unavailable while a saved guide is active.
+
+## Loft guides
+
+Select 2–8 open cross-section strokes drawn in the same endpoint direction, then choose **Preview loft from selected strokes** in **Drawing → Saved guides**. The preview lists ordered sections and confirms that each stroke keeps its endpoint direction. Apply saves a snapshot; Cancel or Escape leaves the drawing unchanged. The tool samples each stroke by arc length, orders sections along their shared progression axis, and rejects degenerate, folded, or direction-mismatched sections. Later edits to source strokes do not alter the loft. Tension and transform are editable.
+
+## OBJ reference models
+
+Use **Drawing → OBJ references → Import OBJ reference…** to load a bounded Wavefront OBJ with optional relative MTL files. The importer supports positions, UVs, normals, objects/groups, polygon triangulation, and MTL diffuse color (`Kd`) plus opacity (`d`/`Tr`). Texture maps and other MTL properties are ignored; the inspector reports the count of unsupported directives. Paths cannot escape the OBJ directory. Imported files are normalized into the drawing's `.assets/models` folder, so reopening a saved drawing does not require the original source files. Models are separate read-only reference geometry: they can be shown/hidden, locked, moved, rotated, scaled, and undone, and they are excluded from GLB and artwork PNG exports. Recovery snapshots include the model and declared MTL files under their managed paths.
 
 Developer check: `cargo run --release -- --verify-presentation` uses isolated preferences and writes `verification/presentation-report.json` and `presentation-preview.png`. GPU readback checks blue/light/dark sRGB values. Lifecycle checks cover explicit preference restart, mode entry guards, read-only contact, workspace restoration, save-failure visibility, recovery/unsaved prompts, and unchanged JSON/GLB ink. Dedicated benchmarks remain deferred.
 ## Orthographic camera views
@@ -394,7 +425,7 @@ Select **Straight line [L]**, press on a plane guide, drag to preview, and relea
 
 The line freezes the current color, radius, brush shape, texture, dynamics, plane, layer, constraint, and angle step at contact. Start/end contact pressure and optional world tilt are retained and interpolated through ordinary brush geometry; pen-up updates position without replacing pressure with a hover/zero value. Mouse input uses fixed pressure. Taper/textures work normally; stabilization is bypassed for exact endpoints.
 
-Escape, cancelled contact, leaving the canvas, releasing over UI, or navigation/guide/view changes cancel an unfinished preview. Zero-length lines create no mark. Resolve a line preview before Save/Export, document switches, plane placement, or artwork-only mode. Completed lines support normal selection, groups, duplication, transforms, deletion, native save/recovery, and GLB export; creation is one undo step. No new document fields or version change are needed (native v8).
+Escape, cancelled contact, leaving the canvas, releasing over UI, or navigation/guide/view changes cancel an unfinished preview. Zero-length lines create no mark. Resolve a line preview before Save/Export, document switches, plane placement, or artwork-only mode. Completed lines support normal selection, groups, duplication, transforms, deletion, native save/recovery, and GLB export; creation is one undo step. Lines use the existing stroke fields and do not add line-specific document state.
 
 `--verify-lines` tests actual mouse event ordering, exact release endpoints, rotated orthographic constraints, pressure/tilt/taper capture, cancellation, protected layers, native reload, and GLB encoding, producing `verification/lines-preview.png` and `lines-report.json`. Export fixtures include `lines.glb`; forced-crash recovery includes a completed constrained line alongside fills and textured pen ink. Physical hardware testing and dedicated benchmarks remain deferred.
 
