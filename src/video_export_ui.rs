@@ -16,6 +16,7 @@ const MAX_PIXELS: u64 = 921_600;
 enum ExportMode {
     Turntable,
     Sequence(u64),
+    ReconstructedReveal,
 }
 
 pub(super) struct VideoRequest {
@@ -23,12 +24,15 @@ pub(super) struct VideoRequest {
     size: [u32; 2],
     fps: u32,
     mode: ExportMode,
+    duration: f32,
     replace: bool,
 }
 
 struct VideoJob {
     request: VideoRequest,
     document: Document,
+    reveal_strokes: Option<Vec<crate::document::Stroke>>,
+    revealed_stroke_count: usize,
     start_camera: Camera,
     bookmarks: crate::camera_bookmarks::CameraBookmarkStore,
     background: [f32; 3],
@@ -82,7 +86,7 @@ impl VideoExportUi {
 
     fn frame_count(&self, sequences: &[crate::camera_bookmarks::CameraSequence]) -> Option<usize> {
         let seconds = match self.mode {
-            ExportMode::Turntable => self.duration,
+            ExportMode::Turntable | ExportMode::ReconstructedReveal => self.duration,
             ExportMode::Sequence(id) => sequences
                 .iter()
                 .find(|sequence| sequence.id == id)?
@@ -106,6 +110,11 @@ impl VideoExportUi {
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut self.mode, ExportMode::Turntable, "Turntable");
+                        ui.selectable_value(
+                            &mut self.mode,
+                            ExportMode::ReconstructedReveal,
+                            "Reconstructed reveal",
+                        );
                         for sequence in sequences {
                             ui.selectable_value(
                                 &mut self.mode,
@@ -114,11 +123,14 @@ impl VideoExportUi {
                             );
                         }
                     });
-                    if self.mode == ExportMode::Turntable {
+                    if !matches!(self.mode, ExportMode::Sequence(_)) {
                         ui.add(
-                            egui::Slider::new(&mut self.duration, 1.0..=40.0)
+                            egui::Slider::new(&mut self.duration, 1.0..=20.0)
                                 .text("Duration (seconds)"),
                         );
+                    }
+                    if self.mode == ExportMode::ReconstructedReveal {
+                        ui.small("Reconstructed from the current visible stroke order. This is not recorded history and has no historical timing.");
                     }
                     ui.horizontal(|ui| {
                         ui.add(
@@ -177,6 +189,7 @@ impl VideoExportUi {
                         size: [self.width, self.height],
                         fps: self.fps,
                         mode: self.mode,
+                        duration: self.duration,
                         replace: false,
                     };
                     self.dialog_open = false;
@@ -255,7 +268,7 @@ impl VideoExportUi {
             );
         }
         let seconds = match request.mode {
-            ExportMode::Turntable => self.duration,
+            ExportMode::Turntable | ExportMode::ReconstructedReveal => request.duration,
             ExportMode::Sequence(id) => {
                 let duration = bookmarks
                     .sequences
@@ -275,6 +288,22 @@ impl VideoExportUi {
         {
             return Err("Animated export exceeds its frame, rate, or dimension limits".into());
         }
+        let mut document = document.clone();
+        let reveal_strokes = if request.mode == ExportMode::ReconstructedReveal {
+            let visible: Vec<_> = document
+                .strokes
+                .iter()
+                .filter(|stroke| document.visible(stroke))
+                .cloned()
+                .collect();
+            if visible.is_empty() {
+                return Err("The drawing has no visible strokes to reveal".into());
+            }
+            document.strokes.clear();
+            Some(visible)
+        } else {
+            None
+        };
         let parent = request
             .path
             .parent()
@@ -304,7 +333,9 @@ impl VideoExportUi {
             .map_err(|error| error.to_string())?;
         self.job = Some(VideoJob {
             request,
-            document: document.clone(),
+            document,
+            reveal_strokes,
+            revealed_stroke_count: 0,
             start_camera: camera,
             bookmarks: bookmarks.clone(),
             background,
@@ -355,6 +386,18 @@ impl VideoExportUi {
                             valid_camera = false;
                         }
                     }
+                }
+                ExportMode::ReconstructedReveal => {}
+            }
+            if job.request.mode == ExportMode::ReconstructedReveal {
+                if let Some(strokes) = &job.reveal_strokes {
+                    let target_count = strokes.len() * (job.next_frame + 1) / job.frame_count;
+                    job.document.strokes.extend(
+                        strokes[job.revealed_stroke_count..target_count]
+                            .iter()
+                            .cloned(),
+                    );
+                    job.revealed_stroke_count = target_count;
                 }
             }
             if valid_camera {

@@ -420,6 +420,8 @@ Enable **Draw here** on one visible, unlocked model to place freehand strokes on
 
 Choose **Export → Animated GIF (.gif)…** for a fixed-focus full turntable or a saved camera sequence. Sequence export uses the saved timing and camera sampler; turntables use the current view as a fixed-pivot start pose. The exporter samples deterministically and renders clean artwork frames without selection handles or editing overlays. Output is bounded to 480 frames, 24 FPS, and 921,600 pixels per frame, with progress and cancellation. The current camera and drawing are not changed. GIF encoding uses the bundled Rust `gif` and `color_quant` crates (MIT/Apache-2.0 and MIT); no external encoder is required. Existing destinations require overwrite confirmation, and incomplete/cancelled output is discarded from a temporary file.
 
+The **Reconstructed reveal** mode is a synthetic preview from the current visible strokes in saved document order. It spreads those strokes evenly across the chosen duration; it does not claim to reproduce when they were drawn. Deleted strokes are absent, while imports and mirrored copies appear in their current list order. Native document saves already preserve this order, so no recording log or additional storage is needed.
+
 Developer check: `cargo run --release -- --verify-presentation` uses isolated preferences and writes `verification/presentation-report.json` and `presentation-preview.png`. GPU readback checks blue/light/dark sRGB values. Lifecycle checks cover explicit preference restart, mode entry guards, read-only contact, workspace restoration, save-failure visibility, recovery/unsaved prompts, and unchanged JSON/GLB ink. Dedicated benchmarks remain deferred.
 ## Orthographic camera views
 
