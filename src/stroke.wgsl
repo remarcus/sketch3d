@@ -48,7 +48,8 @@ fn visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
         coverage=1.0;
     }
     let normal=normalize(in.normal);
-    let shade=scene.light.w+scene.settings.x*abs(dot(normal,scene.light.xyz))*visibility(in.world,normal);
+    var shade=scene.light.w+scene.settings.x*abs(dot(normal,scene.light.xyz))*visibility(in.world,normal);
+    if scene.shadow.w > 0.5 { shade = floor(shade * 4.0 + 0.5) / 4.0; }
     return vec4<f32>(apply_grain(in.color*shade, in.position.xy),coverage);
 }
 @fragment fn fs_transparent(in: Output) -> @location(0) vec4<f32> {
@@ -58,6 +59,7 @@ fn visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     if length(in.normal)>=0.1 {
         let normal=normalize(in.normal);
         shade=scene.light.w+scene.settings.x*abs(dot(normal,scene.light.xyz))*visibility(in.world,normal);
+        if scene.shadow.w > 0.5 { shade = floor(shade * 4.0 + 0.5) / 4.0; }
     }
     return vec4<f32>(apply_grain(in.color*shade, in.position.xy),in.opacity*mask_alpha);
 }

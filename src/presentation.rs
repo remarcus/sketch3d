@@ -76,6 +76,8 @@ pub struct Preferences {
     #[serde(default)]
     pub grain: f32,
     #[serde(default)]
+    pub toon_shading: bool,
+    #[serde(default)]
     pub background_image: Option<BackgroundImageSettings>,
     #[serde(default)]
     pub layout: LayoutPreferences,
@@ -83,9 +85,10 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            version: 4,
+            version: 5,
             background: [0.018, 0.029, 0.046].map(linear_to_srgb),
             grain: 0.0,
+            toon_shading: false,
             background_image: None,
             layout: LayoutPreferences::default(),
         }
@@ -93,7 +96,7 @@ impl Default for Preferences {
 }
 impl Preferences {
     fn valid(&self) -> bool {
-        (1..=4).contains(&self.version)
+        (1..=5).contains(&self.version)
             && self
                 .background
                 .iter()
@@ -125,8 +128,8 @@ impl Preferences {
         if !prefs.valid() {
             return Err("Unsupported or invalid presentation preferences".into());
         }
-        // Older versions stored no grain amount, which defaults to zero.
-        prefs.version = 4;
+        // Older versions stored no post-processing settings; effects default off.
+        prefs.version = 5;
         Ok(prefs)
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -193,7 +196,7 @@ mod tests {
         let path = dir.path().join("presentation.json");
         std::fs::write(&path, br#"{"version":1,"background":[0.1,0.2,0.3]}"#).unwrap();
         let prefs = Preferences::load(&path).unwrap();
-        assert_eq!(prefs.version, 4);
+        assert_eq!(prefs.version, 5);
         assert_eq!(prefs.background, [0.1, 0.2, 0.3]);
         assert_eq!(prefs.layout, LayoutPreferences::default());
     }

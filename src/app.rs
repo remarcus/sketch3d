@@ -520,6 +520,7 @@ impl SketchApp {
             }
         }
         app.renderer.grain = app.presentation.preferences.grain;
+        app.renderer.toon_shading = app.presentation.preferences.toon_shading;
         app.recovery.request_scan();
         app.sync_presentation_background();
         app

@@ -14,6 +14,7 @@ impl SketchApp {
         }
         let mut artwork_requested = false;
         let grain_before = self.presentation.preferences.grain;
+        let toon_before = self.presentation.preferences.toon_shading;
         egui::Window::new("Scene lighting").open(&mut self.show_scene).default_width(300.0)
             .max_height((ctx.screen_rect().height()-100.0).max(200.0)).vscroll(true)
             .anchor(egui::Align2::RIGHT_TOP,egui::vec2(-255.0,60.0)).show(ctx,|ui| {
@@ -31,6 +32,7 @@ impl SketchApp {
                 if ui.button("Reset film grain").clicked() {
                     self.presentation.preferences.grain = 0.0;
                 }
+                ui.checkbox(&mut self.presentation.preferences.toon_shading, "Toon shading (4 light bands)");
                 let light=&mut self.renderer.lighting;
                 ui_style::section(ui, "Directional light");
                 ui_style::slider_row(ui, "Direction", "light-azimuth", &mut light.azimuth, -180.0..=180.0, 1.0, "°");
@@ -62,8 +64,11 @@ impl SketchApp {
                 if ui.button("Reset scene lighting").clicked() {*light=Lighting::default();}
                 ui.separator();ui.small("Lighting and ground reset on restart. Background uses Remember background. Native Save, recovery, and GLB export contain artwork only. The ground is not paintable or selectable; use a drawing guide for ink.");
             });
-        if self.presentation.preferences.grain != grain_before {
+        if self.presentation.preferences.grain != grain_before
+            || self.presentation.preferences.toon_shading != toon_before
+        {
             self.renderer.grain = self.presentation.preferences.grain;
+            self.renderer.toon_shading = self.presentation.preferences.toon_shading;
             self.presentation.remember();
         }
         if artwork_requested {

@@ -249,6 +249,7 @@ pub struct SceneRenderer {
     pub lighting: Lighting,
     pub background: [f32; 3],
     pub grain: f32,
+    pub toon_shading: bool,
     pub adapter: String,
 }
 impl SceneRenderer {
@@ -556,6 +557,7 @@ impl SceneRenderer {
             target: None,
             background: crate::presentation::Preferences::default().background,
             grain: 0.0,
+            toon_shading: false,
             adapter,
         }
     }
@@ -1196,7 +1198,7 @@ impl SceneRenderer {
                 1.0 / SHADOW_SIZE as f32,
                 settings.bias,
                 f32::from(self.sample_count() > 1),
-                0.0,
+                f32::from(self.toon_shading),
             ],
             camera: camera.eye().extend(self.grain.clamp(0.0, 0.12)).to_array(),
         };
@@ -1541,7 +1543,7 @@ impl SceneRenderer {
                 1.0 / SHADOW_SIZE as f32,
                 settings.bias,
                 f32::from(sample_count > 1),
-                0.0,
+                f32::from(self.toon_shading),
             ],
             camera: camera.eye().extend(self.grain.clamp(0.0, 0.12)).to_array(),
         };
