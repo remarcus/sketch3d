@@ -98,7 +98,7 @@ The immediate hardware test is pressure and tilt on the Wacom, followed by the K
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
-Next planned work is the optional startup tutorial (SKETCH-015). Soft/transparent brushes follow separately; brush-library importing remains deferred.
+Next planned work is scene lighting and ground shadows (SKETCH-017). Standalone benchmarks and hardware validation follow feature work. Soft/transparent brushes follow separately; brush-library importing remains deferred.
 
 ## License
 
@@ -312,3 +312,16 @@ In selection mode (V), select strokes on one editable layer, then choose **Group
 Groups share the selection transform pivot. Duplicating a complete group creates an independent group; copying only some members creates ungrouped strokes. Groups stay on one layer, so moving them between layers requires selecting every member. Layer visibility and locking protect all members consistently. Grouping, duplication, transforms, and ungrouping support undo, native saving, and recovery. GLB exports preserve separate meshes with group metadata.
 
 Delete removes the selected strokes: normally a whole group, or individual members in individual mode. The whole-stroke eraser still removes one stroke at a time. A group may retain a single member; empty groups disappear automatically. Nested groups and brush import remain future work.
+## Optional startup tutorial
+
+On first launch, a welcome panel offers **Start practice** or **Skip**. Nine optional lessons cover marks/undo/erasing, actual pressure feedback, mouse and pen navigation, brush shapes/textures/presets, stabilization/taper, plane/curved guides, selection/transforms, layers/groups, and native Save versus GLB Export/recovery. Relevant control sections receive a turquoise tutorial marker. Use Back, Next, Finish, or Exit practice at any time; no exercise requires touch, tilt, or a particular tablet brand.
+
+The offer normally appears once after starting or skipping. **Offer tutorial on every startup** remembers a recurring offer. **Help → Start / replay tutorial** opens it again, and Help also provides the startup preference and shortcuts. Startup recovery decisions appear before the tutorial.
+
+Practice uses a separate blank drawing and edit history. Your original document, native path, dirty state, selection, history, camera, guides, and brush settings stay in memory and return on exit. The normal unsaved-change prompt appears before entering, leaving unsaved practice, or closing. Closing from practice first handles practice, then any unsaved original drawing. New/Open/sample and recovery switches require leaving practice first.
+
+Autosave continues protecting the suspended original. **Practice itself has no automatic recovery**; use Save as to keep it deliberately, or GLB Export for practice meshes. Saving practice does not clear the original's recovery protection or change its file. Personal brush-library edits remain real library edits, as stated in the lesson.
+
+Preferences are stored separately from native drawings in `%LOCALAPPDATA%/SpatialSketch/onboarding.json` on Windows (beside the brush library on other platforms). Missing preferences offer first-launch onboarding; invalid, oversized, or newer-version preferences are left intact on load and reported in Help. An explicit preference change/start/skip can replace them with current settings. Preference save errors stay visible.
+
+Developer check: `cargo run --release -- --verify-tutorial` uses isolated workspace preferences and recovery storage. It verifies entry/exit cancellation, optional navigation, practice saving, exact original/history restoration, original recovery snapshots, close guards, and the lesson UI. Output: `verification/tutorial-preview.png` and `verification/tutorial-report.json`. Physical tablet validation remains deferred.

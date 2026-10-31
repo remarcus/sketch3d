@@ -20,6 +20,7 @@ mod stabilizer;
 mod surface;
 mod texture;
 mod texture_check;
+mod tutorial;
 
 fn main() -> eframe::Result {
     if std::env::args().any(|a| a == "--benchmark-textures") {

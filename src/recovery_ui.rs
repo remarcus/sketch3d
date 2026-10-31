@@ -19,6 +19,9 @@ fn age_label(time: u64) -> String {
 }
 impl SketchApp {
     pub(super) fn record_recovery_edit(&mut self) {
+        if self.tutorial.practice.is_some() {
+            return;
+        }
         self.close_cleanup_failed = false;
         self.recovery.mark_edit();
     }
@@ -75,6 +78,21 @@ impl SketchApp {
         }
     }
     pub(super) fn tick_recovery(&mut self, ctx: &egui::Context) {
+        if let Some(practice) = &self.tutorial.practice {
+            self.recovery.tick(
+                &practice.doc,
+                practice
+                    .file
+                    .clone()
+                    .or_else(|| self.recovered_source.clone()),
+                !practice.dirty,
+                Instant::now(),
+            );
+            if practice.dirty && self.recovery.revision > self.recovery.protected_revision {
+                ctx.request_repaint_after(Duration::from_millis(500));
+            }
+            return;
+        }
         let blocked = self.active.is_some()
             || self.drag.is_some()
             || !self.dirty

@@ -35,6 +35,8 @@ mod revolved_ui;
 mod selection;
 #[path = "starter.rs"]
 mod starter;
+#[path = "tutorial_ui.rs"]
+mod tutorial_ui;
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -42,6 +44,9 @@ use std::{
 
 #[derive(Clone, Copy)]
 enum Pending {
+    TutorialStart,
+    TutorialEnd,
+    TutorialClose,
     New,
     House,
     Lantern,
@@ -55,6 +60,7 @@ enum Pending {
 }
 
 pub struct SketchApp {
+    tutorial: tutorial_ui::TutorialUi,
     renderer: SceneRenderer,
     preset_ui: crate::presets_ui::PresetUi,
     recovery: crate::recovery::Recovery,
@@ -174,6 +180,7 @@ impl SketchApp {
         };
         let recovery = crate::recovery::Recovery::new(recovery_path, cc.egui_ctx.clone());
         let mut app = Self {
+            tutorial: tutorial_ui::TutorialUi::new(),
             renderer,
             preset_ui,
             recovery,
@@ -251,7 +258,10 @@ impl SketchApp {
             last_export_result: None,
             export_snapshot: None,
         };
-        if std::env::args().any(|a| a == "--verify-groups") {
+        if std::env::args().any(|a| a == "--verify-tutorial") {
+            app.verification_frame = None;
+            app.load_house();
+        } else if std::env::args().any(|a| a == "--verify-groups") {
             app.verification_frame = None;
             app.group_verification_frame = Some(0);
             app.load_house();
@@ -537,10 +547,12 @@ impl SketchApp {
         })();
         match result {
             Ok(()) => {
-                self.close_cleanup_failed = false;
-                self.recovery.mark_saved();
-                self.retire_recovered_source();
-                self.recovered_source = None;
+                if self.tutorial.practice.is_none() {
+                    self.close_cleanup_failed = false;
+                    self.recovery.mark_saved();
+                    self.retire_recovered_source();
+                    self.recovered_source = None;
+                }
                 self.status = format!("Saved {}", path.display());
                 self.file = Some(path);
                 self.dirty = false;
@@ -552,8 +564,20 @@ impl SketchApp {
             }
         }
     }
-    fn request(&mut self, pending: Pending) {
+    fn request(&mut self, mut pending: Pending) {
         self.finish();
+        if self.tutorial.practice.is_some()
+            && !matches!(
+                pending,
+                Pending::TutorialEnd | Pending::TutorialClose | Pending::Close
+            )
+        {
+            self.status = "Exit practice before opening another drawing or recovery copy.".into();
+            return;
+        }
+        if self.tutorial.practice.is_some() && matches!(pending, Pending::Close) {
+            pending = Pending::TutorialClose;
+        }
         self.pending = Some(pending);
         if self.dirty {
             self.confirm = true;
@@ -564,6 +588,12 @@ impl SketchApp {
     fn execute_pending(&mut self) {
         self.confirm = false;
         match self.pending.take() {
+            Some(Pending::TutorialStart) => self.start_practice(),
+            Some(Pending::TutorialEnd) => self.end_practice(),
+            Some(Pending::TutorialClose) => {
+                self.end_practice();
+                self.request(Pending::Close);
+            }
             Some(Pending::House) => self.load_house(),
             Some(Pending::Lantern) => self.load_lantern(),
             Some(Pending::Brushes) => self.load_brushes(),
@@ -695,14 +725,18 @@ impl SketchApp {
         if self.select_mode {
             self.group_controls(ui);
         }
+        self.tutorial_hint(ui, "Drawing layers");
         self.layer_controls(ui);
+        self.tutorial_hint(ui, "Brush library");
         self.preset_controls(ui);
         if self.select_mode {
+            self.tutorial_hint(ui, "Select");
             self.selection_panel(ui);
         } else {
             if self.eraser {
                 ui.label("Eraser removes whole strokes.");
             }
+            self.tutorial_hint(ui, "Brush");
             self.brush_controls(ui);
             ui.label("INK COLOR");
             ui.color_edit_button_rgb(&mut self.color);
@@ -742,6 +776,7 @@ impl SketchApp {
                 .small()
                 .color(Color32::from_gray(140)),
         );
+        self.tutorial_hint(ui, "Drawing guide");
         self.plane_controls(ui);
         if ui.button("Reset camera").clicked() {
             self.finish();
@@ -755,12 +790,14 @@ impl SketchApp {
                 .color(Color32::from_gray(140)),
         );
         ui.label("Space + drag    Orbit\nSpace + Shift    Pan\nSpace + Alt       Zoom\nRight drag        Orbit\nMiddle drag      Pan\nScroll                Zoom");
+        self.tutorial_hint(ui, "Navigation");
         if ui.button("All shortcuts / help").clicked() {
             self.finish();
             self.show_help = true;
         }
     }
     fn diagnostics(&mut self, ui: &mut egui::Ui) {
+        self.tutorial_hint(ui, "Input lab");
         ui.add_space(8.0);
         ui.label(
             RichText::new("INPUT LAB")
@@ -914,12 +951,22 @@ impl SketchApp {
             && self.layer_verification_frame.is_none()
             && self.vase_verification_frame.is_none()
             && self.group_verification_frame.is_none()
+            && self.tutorial.verification_frame.is_none()
         {
             self.cancel();
             return;
         }
-        let blocked =
-            self.confirm || self.show_help || self.recovery_prompt || self.close_after_recovery;
+        let blocked = self.confirm
+            || self.show_help
+            || self.tutorial.offer
+            || self.recovery_prompt
+            || self.close_after_recovery;
+        let inside_canvas = |p| {
+            rect.contains(p)
+                && ctx
+                    .layer_id_at(p)
+                    .is_none_or(|layer| layer.order == egui::Order::Background)
+        };
         let scale = ctx.pixels_per_point();
         for sample in &mut pen {
             sample.position.x /= scale;
@@ -941,7 +988,7 @@ impl SketchApp {
                     self.pressure_history.pop_front();
                 }
             }
-            let inside = rect.contains(sample.position);
+            let inside = inside_canvas(sample.position);
             let previous = self.pen_previous.replace(sample.position);
             if blocked {
                 self.finish();
@@ -998,7 +1045,7 @@ impl SketchApp {
             let nav = pointer.button_down(PointerButton::Secondary)
                 || pointer.button_down(PointerButton::Middle)
                 || (space && pointer.primary_down());
-            if nav && pointer.interact_pos().is_some_and(|p| rect.contains(p)) {
+            if nav && pointer.interact_pos().is_some_and(inside_canvas) {
                 self.mouse_down = false;
                 self.navigate(
                     pointer.delta(),
@@ -1015,12 +1062,12 @@ impl SketchApp {
                             button: PointerButton::Primary,
                             pressed: true,
                             modifiers,
-                        } if rect.contains(pos) => {
+                        } if inside_canvas(pos) => {
                             self.mouse_down = true;
                             self.pointer_action(pos, 1.0, rect, true, modifiers.shift);
                         }
                         egui::Event::PointerMoved(pos) if self.mouse_down => {
-                            if rect.contains(pos) || self.drag.is_some() {
+                            if inside_canvas(pos) || (self.drag.is_some() && !rect.contains(pos)) {
                                 self.pointer_action(pos, 1.0, rect, false, shift);
                             } else {
                                 self.mouse_down = false;
@@ -1048,7 +1095,7 @@ impl SketchApp {
                 }
             }
         }
-        if pointer.hover_pos().is_some_and(|p| rect.contains(p)) && scroll != 0.0 {
+        if pointer.hover_pos().is_some_and(inside_canvas) && scroll != 0.0 {
             self.finish();
             self.camera.distance =
                 (self.camera.distance * (-scroll * 0.002).exp()).clamp(0.3, 150.0);
@@ -1076,15 +1123,11 @@ impl eframe::App for SketchApp {
                 return;
             }
             self.finish();
-            if self.dirty {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.request(Pending::Close);
-            } else {
-                self.approve_recovery_close();
-            }
+            self.request(Pending::Close);
         }
         if !self.confirm
             && !self.show_help
+            && !self.tutorial.offer
             && !self.recovery_prompt
             && !self.close_after_recovery
             && !ctx.wants_keyboard_input()
@@ -1160,7 +1203,14 @@ impl eframe::App for SketchApp {
                         .color(Color32::from_gray(140)),
                 );
                 ui.separator();
-                let enabled = !self.confirm && !self.recovery_prompt && !self.close_after_recovery;
+                let enabled = !self.confirm
+                    && !self.recovery_prompt
+                    && !self.close_after_recovery
+                    && !self.tutorial.offer;
+                if ui.add_enabled(enabled, egui::Button::new("Help")).clicked() {
+                    self.finish();
+                    self.show_help = true;
+                }
                 if ui.add_enabled(enabled, egui::Button::new("New")).clicked() {
                     self.request(Pending::New);
                 }
@@ -1268,7 +1318,13 @@ impl eframe::App for SketchApp {
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Recovery").clicked() {
+                if ui
+                    .add_enabled(
+                        self.tutorial.practice.is_none() && !self.tutorial.offer,
+                        egui::Button::new("Recovery"),
+                    )
+                    .clicked()
+                {
                     self.recovery_prompt = true;
                     self.recovery.request_scan();
                 }
@@ -1283,7 +1339,10 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_enabled_ui(
-                        !self.confirm && !self.recovery_prompt && !self.close_after_recovery,
+                        !self.confirm
+                            && !self.recovery_prompt
+                            && !self.close_after_recovery
+                            && !self.tutorial.offer,
                         |ui| self.tools(ui),
                     );
                 });
@@ -1299,6 +1358,7 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.verify_tutorial(ctx, rect);
                 self.verify_groups(ctx, rect);
                 self.verify_vase(ctx, rect);
                 self.verify_layers(ctx, rect);
@@ -1395,7 +1455,13 @@ impl eframe::App for SketchApp {
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.label("There are unsaved changes.");
+                    if self.tutorial.practice.is_some() {
+                        ui.label("Practice has unsaved changes. Save or discard practice to return to your original drawing, or cancel to keep practicing.");
+                    } else if matches!(self.pending, Some(Pending::TutorialStart)) {
+                        ui.label("Your drawing has unsaved changes. Save a disk copy first, or continue without saving; it will stay in memory during practice.");
+                    } else {
+                        ui.label("There are unsaved changes.");
+                    }
                     ui.horizontal(|ui| {
                         if ui.button("Save and continue").clicked() && self.save(false) {
                             let close = matches!(self.pending, Some(Pending::Close));
@@ -1420,8 +1486,9 @@ impl eframe::App for SketchApp {
                     });
                 });
         }
+        self.show_tutorial(ctx);
         if self.show_help {
-            egui::Window::new("Drawing with a tablet").open(&mut self.show_help).resizable(false).show(ctx,|ui|{ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-stroke eraser   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
+            egui::Window::new("Drawing with a tablet").default_width(540.0).max_height((ctx.screen_rect().height()-80.0).max(200.0)).vscroll(true).show(ctx,|ui|{self.tutorial_help(ui);ui.separator();if ui.button("Close help").clicked(){self.show_help=false;}ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-stroke eraser   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
         }
         self.show_recovery(ctx);
         self.tick_recovery(ctx);
@@ -1439,6 +1506,7 @@ impl eframe::App for SketchApp {
             || self.layer_verification_frame.is_some()
             || self.vase_verification_frame.is_some()
             || self.group_verification_frame.is_some()
+            || self.tutorial.verification_frame.is_some()
             || self.close_after_recovery
             || self.recovery.busy()
         {
