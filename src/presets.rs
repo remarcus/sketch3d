@@ -14,6 +14,8 @@ use std::{
 const MAX_PRESETS: usize = 256;
 const FIRST_PERSONAL_ID: u64 = 100;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_PACKAGE_BYTES: u64 = 64 * 1024;
+const PACKAGE_FORMAT: &str = "spatial-sketch-brush";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Preset {
@@ -23,6 +25,136 @@ pub struct Preset {
     pub radius: f32,
     pub color: [f32; 3],
     pub stabilization: f32,
+}
+
+/// Portable, self-contained brush definition. Version 1 supports built-in
+/// procedural brush and texture features; it contains no external assets.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BrushPackage {
+    pub format: String,
+    pub version: u32,
+    pub preset: PackagePreset,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PackagePreset {
+    pub name: String,
+    pub brush: Brush,
+    pub radius: f32,
+    pub color: [f32; 3],
+    pub stabilization: f32,
+}
+
+impl BrushPackage {
+    pub fn from_preset(preset: &Preset) -> Self {
+        Self {
+            format: PACKAGE_FORMAT.into(),
+            version: 1,
+            preset: PackagePreset {
+                name: preset.name.clone(),
+                brush: preset.brush,
+                radius: preset.radius,
+                color: preset.color,
+                stabilization: preset.stabilization,
+            },
+        }
+    }
+
+    pub fn to_json(&self) -> Result<String, String> {
+        let preset = self.as_preset()?;
+        let canonical = Self::from_preset(&preset);
+        let text = serde_json::to_string_pretty(&canonical).map_err(|e| e.to_string())?;
+        if text.len() as u64 > MAX_PACKAGE_BYTES {
+            return Err("Brush package is too large".into());
+        }
+        Ok(text)
+    }
+
+    pub fn from_json(text: &str) -> Result<Self, String> {
+        if text.len() as u64 > MAX_PACKAGE_BYTES {
+            return Err("Brush package is too large".into());
+        }
+        let package: Self =
+            serde_json::from_str(text).map_err(|e| format!("Cannot read brush package: {e}"))?;
+        package.as_preset()?;
+        Ok(package)
+    }
+
+    fn as_preset(&self) -> Result<Preset, String> {
+        if self.format != PACKAGE_FORMAT {
+            return Err("This is not a Spatial Sketch brush package".into());
+        }
+        if self.version != 1 {
+            return Err("Unsupported brush package version".into());
+        }
+        let preset = Preset {
+            id: FIRST_PERSONAL_ID,
+            name: valid_name(&self.preset.name)?,
+            brush: self.preset.brush,
+            radius: self.preset.radius,
+            color: self.preset.color,
+            stabilization: self.preset.stabilization,
+        };
+        if !preset.is_valid() {
+            return Err("Brush package contains invalid brush settings".into());
+        }
+        Ok(preset)
+    }
+
+    /// Imports by allocating a fresh local ID and resolving name collisions
+    /// with an explicit, deterministic suffix.
+    pub fn import_into(&self, library: &mut Library) -> Result<u64, String> {
+        let preset = self.as_preset()?;
+        let base = format!("{} (imported)", preset.name);
+        let mut name = base.clone();
+        let mut suffix = 2_u32;
+        while library
+            .presets
+            .iter()
+            .any(|existing| existing.name.eq_ignore_ascii_case(&name))
+        {
+            name = format!("{base} {suffix}");
+            suffix = suffix
+                .checked_add(1)
+                .ok_or("No unique preset names available")?;
+        }
+        library.create(
+            &name,
+            preset.brush,
+            preset.radius,
+            preset.color,
+            preset.stabilization,
+        )
+    }
+
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let metadata = fs::metadata(path).map_err(|e| format!("Cannot read brush package: {e}"))?;
+        if metadata.len() > MAX_PACKAGE_BYTES {
+            return Err("Brush package is too large".into());
+        }
+        let text =
+            fs::read_to_string(path).map_err(|e| format!("Cannot read brush package: {e}"))?;
+        Self::from_json(&text)
+    }
+
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        let text = self.to_json()?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Cannot create brush package folder: {e}"))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        temporary
+            .write_all(text.as_bytes())
+            .map_err(|e| e.to_string())?;
+        temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+        temporary
+            .persist(path)
+            .map_err(|e| format!("Cannot save brush package: {e}"))?;
+        Ok(())
+    }
 }
 impl Preset {
     pub fn is_builtin(&self) -> bool {
@@ -387,5 +519,54 @@ mod tests {
         assert!(library.duplicate(1, "Still overflow").is_err());
         library.restore_defaults().unwrap();
         assert_eq!(library.presets.len(), 256);
+    }
+
+    #[test]
+    fn brush_package_roundtrip_allocates_local_id_and_resolves_name_collisions() {
+        let mut source = Library::default();
+        let id = source.duplicate(4, "Custom Chalk").unwrap();
+        let package = BrushPackage::from_preset(source.get(id).unwrap());
+        let json = package.to_json().unwrap();
+        let decoded = BrushPackage::from_json(&json).unwrap();
+        let mut destination = Library::default();
+        let imported = decoded.import_into(&mut destination).unwrap();
+        assert_eq!(imported, 100);
+        assert_eq!(
+            destination.get(imported).unwrap().name,
+            "Custom Chalk (imported)"
+        );
+        assert_eq!(
+            destination.get(imported).unwrap().brush,
+            source.get(id).unwrap().brush
+        );
+        let imported_again = decoded.import_into(&mut destination).unwrap();
+        assert_eq!(
+            destination.get(imported_again).unwrap().name,
+            "Custom Chalk (imported) 2"
+        );
+    }
+
+    #[test]
+    fn brush_package_file_roundtrip_is_atomic_and_portable() {
+        let package = BrushPackage::from_preset(&Library::default().presets[0]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/Round Ink.brush.json");
+        package.save(&path).unwrap();
+        assert_eq!(BrushPackage::load(&path).unwrap(), package);
+    }
+
+    #[test]
+    fn brush_package_rejects_wrong_format_version_invalid_settings_and_oversize() {
+        let package = BrushPackage::from_preset(&Library::default().presets[0]);
+        let mut value = serde_json::to_value(&package).unwrap();
+        value["format"] = serde_json::json!("other-brush-format");
+        assert!(BrushPackage::from_json(&value.to_string()).is_err());
+        value = serde_json::to_value(&package).unwrap();
+        value["version"] = serde_json::json!(2);
+        assert!(BrushPackage::from_json(&value.to_string()).is_err());
+        value = serde_json::to_value(&package).unwrap();
+        value["preset"]["radius"] = serde_json::json!(f32::NAN);
+        assert!(BrushPackage::from_json(&value.to_string()).is_err());
+        assert!(BrushPackage::from_json(&" ".repeat(MAX_PACKAGE_BYTES as usize + 1)).is_err());
     }
 }
