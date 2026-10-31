@@ -13,11 +13,14 @@ type GuideEditState = (
     Option<u64>,
     Vec<crate::image_planes::ImagePlane>,
     Option<u64>,
+    Option<u64>,
 );
 
 impl SketchApp {
     pub(super) fn resource_target_active(&self) -> bool {
-        self.doc.active_guide.is_some() || self.doc.active_image_plane.is_some()
+        self.doc.active_guide.is_some()
+            || self.doc.active_image_plane.is_some()
+            || self.doc.active_model_reference.is_some()
     }
 
     fn guide_edit_state(&self) -> GuideEditState {
@@ -26,6 +29,7 @@ impl SketchApp {
             self.doc.active_guide,
             self.doc.image_planes.clone(),
             self.doc.active_image_plane,
+            self.doc.active_model_reference,
         )
     }
 
@@ -35,6 +39,7 @@ impl SketchApp {
             self.doc.active_guide,
             self.doc.image_planes.clone(),
             self.doc.active_image_plane,
+            self.doc.active_model_reference,
         );
         if before == after {
             return;
@@ -237,6 +242,7 @@ impl SketchApp {
                 if self.doc.guide_resources.iter().any(|guide| guide.id == id && guide.visible && !guide.locked) {
                     self.doc.active_guide = Some(id);
                     self.doc.active_image_plane = None;
+                    self.doc.active_model_reference = None;
                     for plane in &mut self.doc.image_planes { plane.drawable = false; }
                     changed = true;
                 }
@@ -309,6 +315,7 @@ impl SketchApp {
         self.doc.guide_resources.push(guide);
         self.doc.active_guide = Some(id);
         self.doc.active_image_plane = None;
+        self.doc.active_model_reference = None;
         for plane in &mut self.doc.image_planes {
             plane.drawable = false;
         }

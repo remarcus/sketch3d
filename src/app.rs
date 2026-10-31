@@ -131,6 +131,8 @@ pub struct SketchApp {
     liquify_ui: liquify_ui::LiquifyUi,
     image_plane_assets: std::collections::HashMap<u64, crate::image_planes::ImageAsset>,
     obj_reference_models: std::collections::HashMap<u64, crate::obj_reference::ObjModel>,
+    obj_surface_indices: std::collections::HashMap<u64, crate::obj_mesh_index::ObjMeshIndex>,
+    model_stroke_contact: Option<(u64, u32, Pos2)>,
     image_asset_root: PathBuf,
     guide_name: String,
     loft_preview: Option<crate::document::guide_resources::LoftSurface>,
@@ -302,6 +304,8 @@ impl SketchApp {
             liquify_ui: Default::default(),
             image_plane_assets: std::collections::HashMap::new(),
             obj_reference_models: std::collections::HashMap::new(),
+            obj_surface_indices: std::collections::HashMap::new(),
+            model_stroke_contact: None,
             image_asset_root,
             guide_name: String::new(),
             loft_preview: None,
@@ -501,10 +505,12 @@ impl SketchApp {
         app
     }
     fn finish(&mut self) {
+        let model_surface_stroke = self.model_stroke_contact.is_some();
         self.finish_appearance_edit(false);
         self.finish_partial_erase(true);
         self.cancel_line();
         self.resume_ink = false;
+        self.model_stroke_contact = None;
         self.commit_transform();
         let tail = self.stabilizer.finish();
         if let Some(id) = self.active {
@@ -528,9 +534,34 @@ impl SketchApp {
                 .filter(|stroke| stroke.id == id)
                 .cloned()
             {
-                self.commit_drawn_stroke(stroke, true);
+                if model_surface_stroke {
+                    self.commit_model_surface_stroke(stroke);
+                } else {
+                    self.commit_drawn_stroke(stroke, true);
+                }
             }
         }
+    }
+
+    fn commit_model_surface_stroke(&mut self, stroke: Stroke) {
+        let Some(index) = self
+            .doc
+            .strokes
+            .iter()
+            .position(|item| item.id == stroke.id)
+        else {
+            return;
+        };
+        let edit = Edit::Change {
+            before: Vec::new(),
+            after: vec![(index, stroke)],
+        };
+        edit.apply(&mut self.doc, true);
+        self.undo.push(edit);
+        self.redo.clear();
+        self.dirty = true;
+        self.record_recovery_edit();
+        self.renderer.invalidate();
     }
     fn cancel(&mut self) {
         self.cancel_brush_selection();
@@ -565,6 +596,10 @@ impl SketchApp {
         if !self.doc.active_editable() {
             self.status =
                 "The active layer is hidden or locked. Choose an editable layer to draw.".into();
+            return;
+        }
+        if self.doc.active_model_reference.is_some() {
+            self.add_model_point_with_tilt(position, pressure, rect, begin, tilt);
             return;
         }
         let ndc = glam::vec2(
@@ -703,6 +738,148 @@ impl SketchApp {
             }
         }
     }
+
+    fn add_model_point_with_tilt(
+        &mut self,
+        position: Pos2,
+        pressure: f32,
+        rect: Rect,
+        begin: bool,
+        tilt: Option<Vec3>,
+    ) {
+        if begin {
+            self.finish();
+            self.model_stroke_contact = None;
+        }
+        let ndc = glam::vec2(
+            (position.x - rect.left()) / rect.width() * 2.0 - 1.0,
+            1.0 - (position.y - rect.top()) / rect.height() * 2.0,
+        );
+        let (origin, direction) = self.camera.ray(ndc, rect.aspect_ratio());
+        let Some(id) = self.doc.active_model_reference else {
+            return;
+        };
+        let Some(resource) = self
+            .doc
+            .model_references
+            .iter()
+            .find(|resource| resource.id == id && resource.visible && !resource.locked)
+            .cloned()
+        else {
+            self.finish();
+            self.model_stroke_contact = None;
+            self.resume_ink = begin;
+            self.status = "The active OBJ surface is hidden, locked, or missing.".into();
+            return;
+        };
+        let Some(model) = self.obj_reference_models.get(&id) else {
+            self.finish();
+            self.model_stroke_contact = None;
+            self.resume_ink = begin;
+            self.status = "The active OBJ surface is not loaded.".into();
+            return;
+        };
+        if !self.obj_surface_indices.contains_key(&id) {
+            match crate::obj_mesh_index::ObjMeshIndex::new(model) {
+                Ok(index) => {
+                    self.obj_surface_indices.insert(id, index);
+                }
+                Err(error) => {
+                    self.finish();
+                    self.model_stroke_contact = None;
+                    self.resume_ink = begin;
+                    self.status = format!("Cannot index OBJ surface: {error}");
+                    return;
+                }
+            }
+        }
+        let inverse = resource.rotation.inverse();
+        let local_origin = inverse * (origin - resource.center) / resource.scale;
+        let local_direction = inverse * direction / resource.scale;
+        let hit = self
+            .obj_surface_indices
+            .get(&id)
+            .and_then(|index| index.hit(model, local_origin, local_direction));
+        let Some(hit) = hit else {
+            let resume = begin || self.active.is_some() || self.resume_ink;
+            self.finish();
+            self.model_stroke_contact = None;
+            self.resume_ink = resume;
+            self.status = "No OBJ surface hit. The missed region split the stroke.".into();
+            return;
+        };
+        let world = resource.center + resource.rotation * (hit.position * resource.scale);
+        if !world.is_finite() || world.abs().max_element() > 10_000.0 {
+            self.finish();
+            self.model_stroke_contact = None;
+            self.resume_ink = true;
+            return;
+        }
+        let connected = self.model_stroke_contact.is_some_and(
+            |(previous_id, previous_triangle, previous_screen)| {
+                previous_id == id
+                    && position.distance(previous_screen) <= 24.0
+                    && (previous_triangle == hit.triangle_index
+                        || self.obj_surface_indices.get(&id).is_some_and(|index| {
+                            index.triangles_adjacent(previous_triangle, hit.triangle_index)
+                        }))
+            },
+        );
+        if self.active.is_some() && !connected {
+            self.finish();
+            self.resume_ink = true;
+        }
+        if begin || (self.resume_ink && self.active.is_none()) {
+            self.finish();
+            if self.next_id == u64::MAX {
+                self.status = "No more stroke IDs available".into();
+                return;
+            }
+            let id = self.next_id;
+            self.next_id += 1;
+            self.active = Some(id);
+            let normal = (resource.rotation * hit.normal).normalize_or_zero();
+            let view_right = self.camera.basis().0;
+            let tangent = (view_right - normal * view_right.dot(normal)).normalize_or_zero();
+            self.doc.strokes.push(Stroke {
+                fill: None,
+                group_id: None,
+                layer_id: self.doc.active_layer,
+                id,
+                color: self.color,
+                radius: self.radius,
+                brush: Brush {
+                    normal,
+                    tangent,
+                    ..self.brush
+                },
+                points: Vec::new(),
+            });
+        }
+        let Some(stroke_id) = self.active else {
+            return;
+        };
+        let point = Point {
+            tilt,
+            position: world,
+            pressure: pressure.clamp(0.0, 1.0),
+        };
+        if let Some(stroke) = self
+            .doc
+            .strokes
+            .last_mut()
+            .filter(|stroke| stroke.id == stroke_id)
+        {
+            if stroke.points.last().is_none_or(|last| {
+                last.position.distance(point.position) > 0.001
+                    || (last.pressure - point.pressure).abs() > 0.025
+                    || last.tilt != point.tilt
+            }) {
+                stroke.points.push(point);
+            }
+        }
+        self.model_stroke_contact = Some((id, hit.triangle_index, position));
+    }
     fn erase(&mut self, position: Pos2, rect: Rect) {
         self.finish();
         let picked = crate::gizmo::pick(&self.doc, &self.camera, rect, position);
@@ -742,6 +919,7 @@ impl SketchApp {
             }
             if models_changed {
                 self.refresh_obj_reference_meshes();
+                self.refresh_image_plane_textures();
             }
             self.sync_selection();
         }
@@ -769,6 +947,7 @@ impl SketchApp {
             }
             if models_changed {
                 self.refresh_obj_reference_meshes();
+                self.refresh_image_plane_textures();
             }
             self.sync_selection();
         }
@@ -922,6 +1101,7 @@ impl SketchApp {
                 self.loft_preview = None;
                 self.image_plane_assets.clear();
                 self.obj_reference_models.clear();
+                self.obj_surface_indices.clear();
                 self.renderer.clear_image_plane_assets();
                 self.renderer.clear_obj_reference_models();
                 self.image_asset_root = std::env::temp_dir().join(format!(
@@ -975,6 +1155,7 @@ impl SketchApp {
                             self.loft_preview = None;
                             self.image_plane_assets = assets;
                             self.obj_reference_models = models;
+                            self.obj_surface_indices.clear();
                             self.image_asset_root =
                                 crate::image_plane_storage::asset_root(&path).unwrap_or_default();
                             self.renderer.clear_image_plane_assets();

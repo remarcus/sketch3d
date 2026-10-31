@@ -17,12 +17,14 @@ impl SketchApp {
             Vec<crate::image_planes::ImagePlane>,
             Option<u64>,
             Option<u64>,
+            Option<u64>,
         ),
     ) {
         let after = (
             self.doc.image_planes.clone(),
             self.doc.active_image_plane,
             self.doc.active_guide,
+            self.doc.active_model_reference,
         );
         if before == after {
             return;
@@ -177,6 +179,7 @@ impl SketchApp {
             self.doc.image_planes.clone(),
             self.doc.active_image_plane,
             self.doc.active_guide,
+            self.doc.active_model_reference,
         );
         ui.horizontal(|ui| {
             if ui.button("Import image plane…").clicked() {
@@ -324,6 +327,7 @@ impl SketchApp {
                 plane.drawable = plane.id == id;
             }
             self.doc.active_guide = None;
+            self.doc.active_model_reference = None;
             self.doc.active_image_plane = Some(id);
             changed_any = true;
         } else if let Some((id, false)) = active_change {
@@ -360,6 +364,7 @@ impl SketchApp {
             self.doc.image_planes.clone(),
             self.doc.active_image_plane,
             self.doc.active_guide,
+            self.doc.active_model_reference,
         );
         if self.doc.image_planes.len() >= crate::image_planes::MAX_IMAGE_PLANES {
             self.status = "This drawing already has the maximum number of image planes.".into();

@@ -4,6 +4,14 @@ use glam::{Quat, Vec3};
 use std::collections::HashSet;
 
 pub type Snapshot = Vec<(usize, Stroke)>;
+pub type ModelReferenceState = (
+    Vec<crate::document::model_references::ObjReferenceResource>,
+    Option<u64>,
+    Vec<crate::image_planes::ImagePlane>,
+    Option<u64>,
+    Vec<crate::document::guide_resources::GuideResource>,
+    Option<u64>,
+);
 
 /// A partial appearance update. `None` means leave that property exactly as-is,
 /// including when the selected strokes have mixed values.
@@ -125,9 +133,11 @@ pub enum Edit {
             Vec<crate::image_planes::ImagePlane>,
             Option<u64>,
             Option<u64>,
+            Option<u64>,
         ),
         after: (
             Vec<crate::image_planes::ImagePlane>,
+            Option<u64>,
             Option<u64>,
             Option<u64>,
         ),
@@ -138,17 +148,19 @@ pub enum Edit {
             Option<u64>,
             Vec<crate::image_planes::ImagePlane>,
             Option<u64>,
+            Option<u64>,
         ),
         after: (
             Vec<crate::document::guide_resources::GuideResource>,
             Option<u64>,
             Vec<crate::image_planes::ImagePlane>,
             Option<u64>,
+            Option<u64>,
         ),
     },
     ModelReferences {
-        before: Vec<crate::document::model_references::ObjReferenceResource>,
-        after: Vec<crate::document::model_references::ObjReferenceResource>,
+        before: ModelReferenceState,
+        after: ModelReferenceState,
     },
 }
 impl Edit {
@@ -183,25 +195,31 @@ impl Edit {
                 }
             }
             Self::ImagePlanes { before, after } => {
-                let (planes, active, active_guide) = if forward { after } else { before };
+                let (planes, active, active_guide, active_model) =
+                    if forward { after } else { before };
                 doc.image_planes = planes.clone();
                 doc.active_image_plane = *active;
                 doc.active_guide = *active_guide;
+                doc.active_model_reference = *active_model;
             }
             Self::Guides { before, after } => {
-                let (guides, active_guide, planes, active_image_plane) =
+                let (guides, active_guide, planes, active_image_plane, active_model) =
                     if forward { after } else { before };
                 doc.guide_resources = guides.clone();
                 doc.active_guide = *active_guide;
                 doc.image_planes = planes.clone();
                 doc.active_image_plane = *active_image_plane;
+                doc.active_model_reference = *active_model;
             }
             Self::ModelReferences { before, after } => {
-                doc.model_references = if forward {
-                    after.clone()
-                } else {
-                    before.clone()
-                };
+                let (models, active_model, planes, active_plane, guides, active_guide) =
+                    if forward { after } else { before };
+                doc.model_references = models.clone();
+                doc.active_model_reference = *active_model;
+                doc.image_planes = planes.clone();
+                doc.active_image_plane = *active_plane;
+                doc.guide_resources = guides.clone();
+                doc.active_guide = *active_guide;
             }
         }
     }

@@ -10,10 +10,12 @@ impl SketchApp {
             }
             ui.small("OBJ models are read-only references. They do not become strokes or GLB export geometry.");
 
-            let before = self.doc.model_references.clone();
+            let before = self.model_reference_edit_state();
             let mut remove = None;
             let mut changed = false;
             let mut geometry_changed = false;
+            let mut activate = None;
+            let active_model_reference = self.doc.active_model_reference;
             for index in 0..self.doc.model_references.len() {
                 let original = self.doc.model_references[index].clone();
                 let mut resource_changed = false;
@@ -21,6 +23,10 @@ impl SketchApp {
                     let resource = &mut self.doc.model_references[index];
                     ui.horizontal(|ui| {
                         ui.strong(&resource.name);
+                        let mut active = active_model_reference == Some(resource.id);
+                        if ui.checkbox(&mut active, "Draw here").changed() {
+                            activate = Some((resource.id, active));
+                        }
                         resource_changed |= ui.checkbox(&mut resource.visible, "Visible").changed();
                         resource_changed |= ui.checkbox(&mut resource.locked, "Locked").changed();
                         if ui.small_button("Remove").clicked() {
@@ -40,17 +46,47 @@ impl SketchApp {
                 geometry_changed |= resource_changed;
             }
             if let Some(index) = remove {
-                self.doc.model_references.remove(index);
+                let resource = self.doc.model_references.remove(index);
+                if self.doc.active_model_reference == Some(resource.id) {
+                    self.doc.active_model_reference = None;
+                }
                 changed = true;
+            }
+            if let Some((id, true)) = activate {
+                if self.doc.model_references.iter().any(|resource| {
+                    resource.id == id && resource.visible && !resource.locked
+                }) {
+                    self.doc.active_model_reference = Some(id);
+                    self.doc.active_image_plane = None;
+                    self.doc.active_guide = None;
+                    for plane in &mut self.doc.image_planes {
+                        plane.drawable = false;
+                    }
+                    changed = true;
+                }
+            } else if let Some((id, false)) = activate {
+                if self.doc.active_model_reference == Some(id) {
+                    self.doc.active_model_reference = None;
+                    changed = true;
+                }
+            }
+            if let Some(id) = self.doc.active_model_reference {
+                if self.doc.model_references.iter().any(|resource| {
+                    resource.id == id && (!resource.visible || resource.locked)
+                }) {
+                    self.doc.active_model_reference = None;
+                    changed = true;
+                }
             }
             if changed {
                 self.undo.push(Edit::ModelReferences {
                     before,
-                    after: self.doc.model_references.clone(),
+                    after: self.model_reference_edit_state(),
                 });
                 self.redo.clear();
                 self.dirty = true;
                 self.record_recovery_edit();
+                self.refresh_image_plane_textures();
                 if geometry_changed {
                     self.refresh_obj_reference_meshes();
                 }
@@ -156,14 +192,14 @@ impl SketchApp {
             );
             return;
         }
-        let before = self.doc.model_references.clone();
+        let before = self.model_reference_edit_state();
         self.doc.model_references.push(resource.clone());
         self.obj_reference_models.insert(id, bundled_model);
         self.next_id = id + 1;
         self.refresh_obj_reference_meshes();
         self.undo.push(Edit::ModelReferences {
             before,
-            after: self.doc.model_references.clone(),
+            after: self.model_reference_edit_state(),
         });
         self.redo.clear();
         self.dirty = true;
@@ -284,6 +320,17 @@ impl SketchApp {
                 self.status = format!("Cannot render OBJ reference: {error}");
             }
         }
+    }
+
+    fn model_reference_edit_state(&self) -> crate::editing::ModelReferenceState {
+        (
+            self.doc.model_references.clone(),
+            self.doc.active_model_reference,
+            self.doc.image_planes.clone(),
+            self.doc.active_image_plane,
+            self.doc.guide_resources.clone(),
+            self.doc.active_guide,
+        )
     }
 }
 
