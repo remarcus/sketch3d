@@ -163,6 +163,137 @@ impl DrawingLibrary {
         Ok(())
     }
 
+    pub fn rename_drawing(&mut self, source: &Path, new_stem: &str) -> Result<PathBuf, String> {
+        let stem = new_stem.trim();
+        if !valid_file_stem(stem) {
+            return Err(
+                "Use a file name of 1–96 characters without path separators or reserved characters"
+                    .into(),
+            );
+        }
+        let source_metadata = fs::symlink_metadata(source).map_err(|error| error.to_string())?;
+        if !source_metadata.is_file() || source_metadata.file_type().is_symlink() {
+            return Err("The drawing must be a regular file".into());
+        }
+        if source_metadata.len() > MAX_DRAWING_BYTES {
+            return Err("The drawing exceeds the 64 MiB document limit".into());
+        }
+        let source_file = File::open(source).map_err(|error| error.to_string())?;
+        let mut document_bytes = Vec::with_capacity(source_metadata.len() as usize);
+        source_file
+            .take(MAX_DRAWING_BYTES + 1)
+            .read_to_end(&mut document_bytes)
+            .map_err(|error| error.to_string())?;
+        if document_bytes.len() as u64 > MAX_DRAWING_BYTES {
+            return Err("The drawing exceeds the 64 MiB document limit".into());
+        }
+        crate::document::Document::from_json(
+            std::str::from_utf8(&document_bytes).map_err(|error| error.to_string())?,
+        )?;
+        let extension = source
+            .extension()
+            .ok_or("The drawing has no file extension")?;
+        let mut new_file_name = stem.to_owned();
+        new_file_name.push('.');
+        new_file_name.push_str(&extension.to_string_lossy());
+        let destination = source.with_file_name(new_file_name);
+        if source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .zip(destination.file_name().and_then(|name| name.to_str()))
+            .is_some_and(|(old, new)| old.eq_ignore_ascii_case(new))
+        {
+            return Err("Choose a different drawing name".into());
+        }
+        if fs::symlink_metadata(&destination).is_ok() {
+            return Err("A drawing with that name already exists".into());
+        }
+        let source_assets = crate::image_plane_storage::asset_root(source)?;
+        let destination_assets = crate::image_plane_storage::asset_root(&destination)?;
+        let old_key = path_key(source);
+        let assets_exist = match fs::symlink_metadata(&source_assets) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => true,
+            Ok(_) => return Err("The drawing resource folder is not a regular directory".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.to_string()),
+        };
+        if fs::symlink_metadata(&destination_assets).is_ok() {
+            return Err("A resource folder with that name already exists".into());
+        }
+        if assets_exist {
+            fs::create_dir(&destination_assets)
+                .map_err(|error| format!("Cannot create renamed resource folder: {error}"))?;
+            let mut asset_bytes = 0;
+            let mut asset_files = 0;
+            if let Err(error) = copy_asset_tree(
+                &source_assets,
+                &destination_assets,
+                &mut asset_bytes,
+                &mut asset_files,
+            ) {
+                let cleanup = fs::remove_dir_all(&destination_assets);
+                return Err(cleanup.err().map_or(error.clone(), |cleanup| {
+                    format!("{error}; resource-folder cleanup also failed: {cleanup}")
+                }));
+            }
+        }
+        let install = (|| -> Result<(), String> {
+            let parent = destination.parent().ok_or("Invalid drawing path")?;
+            let mut temp =
+                tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+            temp.write_all(&document_bytes)
+                .map_err(|error| error.to_string())?;
+            temp.as_file()
+                .sync_all()
+                .map_err(|error| error.to_string())?;
+            temp.persist_noclobber(&destination)
+                .map_err(|error| error.error.to_string())?;
+            Ok(())
+        })();
+        if let Err(error) = install {
+            if assets_exist {
+                let _ = fs::remove_dir_all(&destination_assets);
+            }
+            return Err(format!("Cannot install renamed drawing: {error}"));
+        }
+        if let Err(error) = fs::remove_file(source) {
+            let file_cleanup = fs::remove_file(&destination);
+            let assets_cleanup = if assets_exist {
+                fs::remove_dir_all(&destination_assets)
+            } else {
+                Ok(())
+            };
+            let cleanup = file_cleanup
+                .err()
+                .or_else(|| assets_cleanup.err())
+                .map(|cleanup| format!("; rollback also failed: {cleanup}"))
+                .unwrap_or_default();
+            return Err(format!(
+                "Cannot remove old drawing after copying: {error}{cleanup}"
+            ));
+        }
+        let asset_cleanup_error = if assets_exist {
+            fs::remove_dir_all(&source_assets).err()
+        } else {
+            None
+        };
+        let new_path = destination.canonicalize().unwrap_or(destination);
+        let new_key = path_key(&new_path);
+        self.recent.retain(|path| path_key(path) != old_key);
+        self.recent.insert(0, new_path.clone());
+        self.recent.truncate(MAX_RECENT);
+        if let Some(folder) = self.assignments.remove(&old_key) {
+            self.assignments.insert(new_key, folder);
+        }
+        self.save_index();
+        if let Some(error) = asset_cleanup_error {
+            self.notice = Some(format!(
+                "Drawing renamed, but old resource cleanup failed: {error}"
+            ));
+        }
+        Ok(new_path)
+    }
+
     pub fn record(&mut self, path: &Path) {
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         self.recent.retain(|recent| recent != &path);
@@ -220,6 +351,26 @@ fn valid_folder(name: &str) -> bool {
         && name
             .chars()
             .all(|character| !character.is_control() && character != '/' && character != '\\')
+}
+
+fn valid_file_stem(name: &str) -> bool {
+    if name.trim().is_empty()
+        || name.chars().count() > 96
+        || name.ends_with([' ', '.'])
+        || name == "."
+        || name == ".."
+        || name.chars().any(|character| {
+            character.is_control()
+                || ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&character)
+        })
+    {
+        return false;
+    }
+    let device_name = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    !matches!(device_name.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        && !(device_name.len() == 4
+            && (device_name.starts_with("COM") || device_name.starts_with("LPT"))
+            && device_name.as_bytes()[3].is_ascii_digit())
 }
 
 /// Copy a validated native drawing and its complete managed resource folder.

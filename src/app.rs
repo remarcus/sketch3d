@@ -123,6 +123,8 @@ pub struct SketchApp {
     drawing_library_filter: String,
     library_folder_filter: String,
     new_library_folder: String,
+    rename_library_source: Option<PathBuf>,
+    rename_library_stem: String,
     library_open_path: Option<PathBuf>,
     show_view: bool,
     view_verification_frame: Option<u32>,
@@ -301,6 +303,8 @@ impl SketchApp {
             drawing_library_filter: String::new(),
             library_folder_filter: "All folders".into(),
             new_library_folder: String::new(),
+            rename_library_source: None,
+            rename_library_stem: String::new(),
             library_open_path: None,
             line: Default::default(),
             curve_tool: Default::default(),
@@ -1647,6 +1651,7 @@ impl SketchApp {
         }
         let mut selected = None;
         let mut copy_source = None;
+        let mut rename_source = None;
         let mut browse = false;
         let mut folder_changes = Vec::new();
         let mut create_folder = false;
@@ -1720,6 +1725,15 @@ impl SketchApp {
                                 if ui.add_enabled(path.is_file(), egui::Button::new("Copy saved file…")).clicked() {
                                     copy_source = Some(path.clone());
                                 }
+                                let is_current = self.file.as_ref().is_some_and(|file| {
+                                    file.canonicalize().ok() == path.canonicalize().ok()
+                                });
+                                let can_rename = path.is_file()
+                                    && !(is_current && self.dirty)
+                                    && self.recovered_source.is_none();
+                                if ui.add_enabled(can_rename, egui::Button::new("Rename…")).clicked() {
+                                    rename_source = Some(path.clone());
+                                }
                             });
                         });
                         ui.separator();
@@ -1729,6 +1743,67 @@ impl SketchApp {
                     ui.small(notice);
                 }
             });
+        if let Some(path) = rename_source {
+            self.rename_library_stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default()
+                .to_owned();
+            self.rename_library_source = Some(path);
+        }
+        let mut rename_confirmed = false;
+        let mut rename_cancelled = false;
+        if self.rename_library_source.is_some() {
+            egui::Window::new("Rename saved drawing")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(
+                        "The drawing and its managed resource folder will be renamed together.",
+                    );
+                    ui.text_edit_singleline(&mut self.rename_library_stem);
+                    ui.horizontal(|ui| {
+                        rename_confirmed = ui.button("Rename").clicked();
+                        rename_cancelled = ui.button("Cancel").clicked();
+                    });
+                });
+        }
+        if rename_cancelled {
+            self.rename_library_source = None;
+        } else if rename_confirmed {
+            if let Some(source) = self.rename_library_source.take() {
+                let current_file = self
+                    .file
+                    .as_ref()
+                    .is_some_and(|file| file.canonicalize().ok() == source.canonicalize().ok());
+                match self
+                    .drawing_library
+                    .rename_drawing(&source, &self.rename_library_stem)
+                {
+                    Ok(path) => {
+                        let mut reload_issue = None;
+                        if current_file {
+                            self.file = Some(path.clone());
+                            if let Ok(root) = crate::image_plane_storage::asset_root(&path) {
+                                self.image_asset_root = root;
+                            }
+                            match self.load_obj_reference_models(&self.image_asset_root) {
+                                Ok(models) => {
+                                    self.obj_reference_models = models;
+                                    self.refresh_obj_reference_meshes();
+                                }
+                                Err(error) => reload_issue = Some(error),
+                            }
+                        }
+                        self.status = reload_issue.map_or_else(
+                            || format!("Renamed drawing to {}", path.display()),
+                            |error| format!("Drawing renamed, but an OBJ reference could not be reloaded: {error}"),
+                        );
+                    }
+                    Err(error) => self.status = format!("Rename failed: {error}"),
+                }
+            }
+        }
         for (path, folder) in folder_changes {
             if let Err(error) = self.drawing_library.assign_folder(&path, folder.as_deref()) {
                 self.status = format!("Cannot organize drawing: {error}");
