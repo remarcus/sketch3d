@@ -1,3 +1,4 @@
+use super::ui_style;
 use super::*;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Constraint {
@@ -80,18 +81,28 @@ impl SketchApp {
         }
         ui.strong("STRAIGHT LINE");
         ui.label("Press, drag to preview, then release to draw. Escape cancels. Uses a plane guide only.");
-        ui.horizontal_wrapped(|ui| {
-            for (constraint, label) in [
-                (Constraint::Free, "Free angle"),
-                (Constraint::Horizontal, "Horizontal"),
-                (Constraint::Vertical, "Vertical"),
-                (Constraint::Angle, "Angle snap"),
-            ] {
-                ui.selectable_value(&mut self.line.constraint, constraint, label);
-            }
+        ui_style::field_row(ui, "Constraint", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (constraint, label) in [
+                    (Constraint::Free, "Free angle"),
+                    (Constraint::Horizontal, "Horizontal"),
+                    (Constraint::Vertical, "Vertical"),
+                    (Constraint::Angle, "Angle snap"),
+                ] {
+                    ui.radio_value(&mut self.line.constraint, constraint, label);
+                }
+            });
         });
         if self.line.constraint == Constraint::Angle {
-            ui.add(egui::Slider::new(&mut self.line.step, 1.0..=90.0).text("Snap step °"));
+            ui_style::slider_row(
+                ui,
+                "Snap step",
+                "line-snap-step",
+                &mut self.line.step,
+                1.0..=90.0,
+                1.0,
+                "°",
+            );
         }
         ui.small("Constraints follow the captured plane axes. Start/end contact pressure and tilt are retained; mouse uses fixed pressure. Taper and textures use the normal brush settings. Stabilization is bypassed.");
         if self.line.draft.is_some() && ui.button("Cancel line").clicked() {

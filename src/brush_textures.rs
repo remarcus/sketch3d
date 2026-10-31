@@ -1,3 +1,4 @@
+use super::ui_style;
 use super::*;
 use crate::{
     editing, export_check, geometry,
@@ -7,10 +8,12 @@ use crate::{
 impl SketchApp {
     pub(super) fn texture_controls(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Surface texture").default_open(true).show(ui,|ui| {
-            ui.horizontal_wrapped(|ui| {
+            ui_style::field_row(ui, "Pattern", |ui| {
+                ui.horizontal_wrapped(|ui| {
                 for kind in [TextureKind::Solid,TextureKind::Grain,TextureKind::DryBrush,TextureKind::Pattern] {
-                    ui.selectable_value(&mut self.brush.texture.kind,kind,kind.label());
+                    ui.radio_value(&mut self.brush.texture.kind,kind,kind.label());
                 }
+                });
             });
             if self.brush.texture.kind!=TextureKind::Solid {
                 ui.add(egui::Slider::new(&mut self.brush.texture.scale,0.02..=10.0).logarithmic(true).text("Spacing"));

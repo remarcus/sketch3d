@@ -2,10 +2,11 @@
 use crate::{
     document::{Document, Point, Stroke},
     geometry::Camera,
-    presets::{Library, Preset},
+    presets::{BrushPackage, Library, Preset},
     renderer::SceneRenderer,
     surface::GuidePreview,
 };
+use eframe::egui::WidgetInfo;
 use eframe::{egui, egui_wgpu};
 use glam::Vec3;
 use std::{
@@ -25,6 +26,9 @@ pub struct PresetUi {
     repair_needed: bool,
     preview_preset: Option<Preset>,
     preview_doc: Document,
+    search: String,
+    browser_open: bool,
+    focus_search: bool,
 }
 impl PresetUi {
     pub fn new(state: egui_wgpu::RenderState, path: Result<PathBuf, String>) -> Self {
@@ -54,6 +58,9 @@ impl PresetUi {
             repair_needed,
             preview_preset: None,
             preview_doc: Document::default(),
+            search: String::new(),
+            browser_open: false,
+            focus_search: false,
         }
     }
 
@@ -94,6 +101,10 @@ impl PresetUi {
             .get(id)
             .map_or_else(|| "My brush".into(), |p| p.name.clone());
     }
+
+    pub(super) fn browser_is_open(&self) -> bool {
+        self.browser_open
+    }
     pub fn repair_library(&mut self) -> Result<(), String> {
         if !self.repair_needed {
             return Ok(());
@@ -119,21 +130,29 @@ impl PresetUi {
         egui::CollapsingHeader::new("Brush library")
             .default_open(true)
             .show(ui, |ui| {
-                let before = self.selected;
-                let text = self
+                let selected_name = self
                     .library
                     .get(self.selected)
-                    .map_or("No presets", |p| p.name.as_str());
-                egui::ComboBox::from_id_salt("brush-preset-picker")
-                    .width(ui.available_width() - 12.0)
-                    .selected_text(text)
-                    .show_ui(ui, |ui| {
-                        for preset in &self.library.presets {
-                            ui.selectable_value(&mut self.selected, preset.id, &preset.name);
-                        }
-                    });
-                if self.selected != before {
-                    self.choose(self.selected);
+                    .map_or("No presets", |preset| preset.name.as_str());
+                let was_open = self.browser_open;
+                let trigger = ui.add(
+                    egui::Button::new(format!("Browse brushes  ·  {selected_name}"))
+                        .selected(self.browser_open),
+                );
+                let trigger_id = trigger.id;
+                if trigger.clicked() {
+                    self.browser_open = !self.browser_open;
+                    self.focus_search = self.browser_open;
+                }
+                if self.browser_open {
+                    if let Some(preset) = self.show_browser(ui.ctx()) {
+                        self.notice =
+                            format!("Using {}. Existing marks keep their settings.", preset.name);
+                        chosen = Some(preset);
+                    }
+                }
+                if was_open && !self.browser_open {
+                    ui.memory_mut(|memory| memory.request_focus(trigger_id));
                 }
                 if let Some(preset) = self.library.get(self.selected).cloned() {
                     self.preview(ui, &preset);
@@ -212,11 +231,6 @@ impl PresetUi {
                             format!("Using {}. Existing marks keep their settings.", preset.name);
                     }
                 }
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.name)
-                        .hint_text("Preset name")
-                        .char_limit(64),
-                );
                 if self.repair_needed {
                     ui.small(
                         "The saved library needs repair. Original data will be backed up first.",
@@ -227,134 +241,323 @@ impl PresetUi {
                         }
                     }
                 }
-                ui.add_enabled_ui(!self.repair_needed, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui
-                            .button("Save as new")
-                            .on_hover_text("Save the current brush controls as a personal preset")
-                            .clicked()
-                        {
-                            let name = if self
-                                .library
-                                .get(self.selected)
-                                .is_some_and(|p| p.name == self.name)
+                ui.menu_button("Manage presets", |ui| {
+                    ui.label("Preset name");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.name)
+                            .hint_text("Preset name")
+                            .char_limit(64),
+                    );
+                    ui.add_enabled_ui(!self.repair_needed, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .button("Save as new")
+                                .on_hover_text(
+                                    "Save the current brush controls as a personal preset",
+                                )
+                                .clicked()
                             {
-                                unique_name(&self.library, "My brush")
-                            } else {
-                                self.name.clone()
-                            };
-                            match self.library.create(
-                                &name,
-                                current.brush,
-                                current.radius,
-                                current.color,
-                                current.stabilization,
-                            ) {
-                                Ok(id) => {
-                                    self.choose(id);
-                                    self.persist("Preset created");
+                                let name = if self
+                                    .library
+                                    .get(self.selected)
+                                    .is_some_and(|p| p.name == self.name)
+                                {
+                                    unique_name(&self.library, "My brush")
+                                } else {
+                                    self.name.clone()
+                                };
+                                match self.library.create(
+                                    &name,
+                                    current.brush,
+                                    current.radius,
+                                    current.color,
+                                    current.stabilization,
+                                ) {
+                                    Ok(id) => {
+                                        self.choose(id);
+                                        self.persist("Preset created");
+                                        ui.close_menu();
+                                    }
+                                    Err(error) => self.notice = error,
                                 }
-                                Err(error) => self.notice = error,
                             }
-                        }
+                            if ui
+                                .add_enabled(
+                                    self.library.get(self.selected).is_some(),
+                                    egui::Button::new("Duplicate"),
+                                )
+                                .clicked()
+                            {
+                                let name = if self
+                                    .library
+                                    .get(self.selected)
+                                    .is_some_and(|p| p.name == self.name)
+                                {
+                                    unique_name(&self.library, &format!("{} copy", self.name))
+                                } else {
+                                    self.name.clone()
+                                };
+                                match self.library.duplicate(self.selected, &name) {
+                                    Ok(id) => {
+                                        self.choose(id);
+                                        self.persist("Preset duplicated");
+                                        ui.close_menu();
+                                    }
+                                    Err(error) => self.notice = error,
+                                }
+                            }
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            let exists = self.library.get(self.selected).is_some();
+                            if ui
+                                .add_enabled(exists, egui::Button::new("Rename"))
+                                .clicked()
+                            {
+                                match self.library.rename(self.selected, &self.name) {
+                                    Ok(()) => {
+                                        self.choose(self.selected);
+                                        self.persist("Preset renamed");
+                                        ui.close_menu();
+                                    }
+                                    Err(error) => self.notice = error,
+                                }
+                            }
+                            if ui
+                                .add_enabled(exists, egui::Button::new("Update"))
+                                .on_hover_text(
+                                    "Replace this preset with the current brush controls",
+                                )
+                                .clicked()
+                            {
+                                match self.library.update(
+                                    self.selected,
+                                    current.brush,
+                                    current.radius,
+                                    current.color,
+                                    current.stabilization,
+                                ) {
+                                    Ok(()) => {
+                                        self.persist("Preset updated");
+                                        ui.close_menu();
+                                    }
+                                    Err(error) => self.notice = error,
+                                }
+                            }
+                            if ui
+                                .add_enabled(exists, egui::Button::new("Delete"))
+                                .clicked()
+                            {
+                                match self.library.delete(self.selected) {
+                                    Ok(()) => {
+                                        self.choose(
+                                            self.library.presets.first().map_or(0, |p| p.id),
+                                        );
+                                        self.persist("Preset deleted");
+                                        ui.close_menu();
+                                    }
+                                    Err(error) => self.notice = error,
+                                }
+                            }
+                        });
                         if ui
-                            .add_enabled(
-                                self.library.get(self.selected).is_some(),
-                                egui::Button::new("Duplicate"),
+                            .button("Restore built-in defaults")
+                            .on_hover_text(
+                                "Restore six built-in brushes while keeping personal presets",
                             )
                             .clicked()
                         {
-                            let name = if self
-                                .library
-                                .get(self.selected)
-                                .is_some_and(|p| p.name == self.name)
-                            {
-                                unique_name(&self.library, &format!("{} copy", self.name))
-                            } else {
-                                self.name.clone()
-                            };
-                            match self.library.duplicate(self.selected, &name) {
-                                Ok(id) => {
-                                    self.choose(id);
-                                    self.persist("Preset duplicated");
-                                }
-                                Err(error) => self.notice = error,
-                            }
-                        }
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        let exists = self.library.get(self.selected).is_some();
-                        if ui
-                            .add_enabled(exists, egui::Button::new("Rename"))
-                            .clicked()
-                        {
-                            match self.library.rename(self.selected, &self.name) {
-                                Ok(()) => {
-                                    self.choose(self.selected);
-                                    self.persist("Preset renamed");
-                                }
-                                Err(error) => self.notice = error,
-                            }
-                        }
-                        if ui
-                            .add_enabled(exists, egui::Button::new("Update"))
-                            .on_hover_text("Replace this preset with the current brush controls")
-                            .clicked()
-                        {
-                            match self.library.update(
-                                self.selected,
-                                current.brush,
-                                current.radius,
-                                current.color,
-                                current.stabilization,
-                            ) {
-                                Ok(()) => self.persist("Preset updated"),
-                                Err(error) => self.notice = error,
-                            }
-                        }
-                        if ui
-                            .add_enabled(exists, egui::Button::new("Delete"))
-                            .clicked()
-                        {
-                            match self.library.delete(self.selected) {
+                            match self.library.restore_defaults() {
                                 Ok(()) => {
                                     self.choose(self.library.presets.first().map_or(0, |p| p.id));
-                                    self.persist("Preset deleted");
+                                    self.persist("Built-in defaults restored");
+                                    ui.close_menu();
                                 }
-                                Err(error) => self.notice = error,
+                                Err(error) => self.notice = format!("Restore failed: {error}"),
                             }
                         }
                     });
+                    if self.path.is_some()
+                        && !self.repair_needed
+                        && ui
+                            .button("Save library")
+                            .on_hover_text(
+                                "Retry saving the current library without changing presets",
+                            )
+                            .clicked()
+                    {
+                        self.persist("Library saved");
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui
-                        .button("Restore built-in defaults")
+                        .add_enabled(
+                            !self.repair_needed,
+                            egui::Button::new("Import brush package…"),
+                        )
                         .on_hover_text(
-                            "Restore six built-in brushes while keeping personal presets",
+                            "Import a Spatial Sketch .brush.json file as a personal preset",
                         )
                         .clicked()
                     {
-                        match self.library.restore_defaults() {
-                            Ok(()) => {
-                                self.choose(self.library.presets.first().map_or(0, |p| p.id));
-                                self.persist("Built-in defaults restored");
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Spatial Sketch brush", &["brush.json", "json"])
+                            .pick_file()
+                        {
+                            match BrushPackage::load(&path)
+                                .and_then(|package| package.import_into(&mut self.library))
+                            {
+                                Ok(id) => {
+                                    self.choose(id);
+                                    self.persist("Brush imported");
+                                }
+                                Err(error) => {
+                                    self.notice = format!("Brush import failed: {error}");
+                                }
                             }
-                            Err(error) => self.notice = format!("Restore failed: {error}"),
                         }
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.repair_needed && self.library.get(self.selected).is_some(),
+                            egui::Button::new("Export selected brush…"),
+                        )
+                        .on_hover_text("Save the selected brush as a portable .brush.json package")
+                        .clicked()
+                    {
+                        if let Some(preset) = self.library.get(self.selected) {
+                            let suggested = format!("{}.brush.json", safe_file_stem(&preset.name));
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Spatial Sketch brush", &["brush.json"])
+                                .set_file_name(&suggested)
+                                .save_file()
+                            {
+                                let result = BrushPackage::from_preset(preset).save(&path);
+                                self.notice = match result {
+                                    Ok(()) => {
+                                        format!("Brush package exported to {}", path.display())
+                                    }
+                                    Err(error) => format!("Brush export failed: {error}"),
+                                };
+                            }
+                        }
+                        ui.close_menu();
                     }
                 });
-                if self.path.is_some()
-                    && !self.repair_needed
-                    && ui
-                        .button("Save library")
-                        .on_hover_text("Retry saving the current library without changing presets")
-                        .clicked()
-                {
-                    self.persist("Library saved");
-                }
                 if !self.notice.is_empty() {
                     ui.small(&self.notice);
                 }
             });
         chosen
+    }
+
+    fn show_browser(&mut self, ctx: &egui::Context) -> Option<Preset> {
+        let mut open = true;
+        let mut close = false;
+        let mut selected_id = self.selected;
+        let mut use_id = None;
+        let viewport = ctx.screen_rect().size();
+        let dialog_size = egui::vec2(
+            (viewport.x - 32.0).clamp(420.0, 760.0),
+            (viewport.y - 48.0).clamp(360.0, 560.0),
+        );
+        egui::Window::new("Brush browser")
+            .id(egui::Id::new("brush-browser-window"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .fixed_size(dialog_size)
+            .resizable(false)
+            .collapsible(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Search brushes");
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text("Name, shape, or pattern")
+                            .id_salt("brush-browser-search")
+                            .desired_width(ui.available_width().clamp(360.0, 440.0)),
+                    );
+                    response.widget_info(|| {
+                        let mut info =
+                            WidgetInfo::text_edit(ui.is_enabled(), &self.search, &self.search);
+                        info.label = Some("Search brushes by name, shape, or pattern".into());
+                        info
+                    });
+                    if self.focus_search {
+                        response.request_focus();
+                        self.focus_search = false;
+                    }
+                });
+                ui.small("Choose a card to preview it. Browsing never changes the active brush.");
+                ui.separator();
+
+                let query = self.search.trim().to_lowercase();
+                let filtered: Vec<Preset> = self
+                    .library
+                    .presets
+                    .iter()
+                    .filter(|preset| preset_matches(preset, &query))
+                    .cloned()
+                    .collect();
+                if filtered.is_empty() {
+                    ui.label("No brushes match this search.");
+                } else {
+                    egui::ScrollArea::vertical()
+                        .id_salt("brush-browser-results")
+                        .auto_shrink([true, false])
+                        .show(ui, |ui| {
+                            egui::Grid::new("brush-browser-grid")
+                                .num_columns(2)
+                                .spacing(egui::vec2(12.0, 10.0))
+                                .show(ui, |ui| {
+                                    for (index, preset) in filtered.iter().enumerate() {
+                                        let selected = selected_id == preset.id;
+                                        egui::Frame::group(ui.style())
+                                            .stroke(if selected {
+                                                ui.visuals().selection.stroke
+                                            } else {
+                                                ui.visuals().widgets.noninteractive.bg_stroke
+                                            })
+                                            .show(ui, |ui| {
+                                                ui.set_min_width(245.0);
+                                                let response = ui.radio(selected, &preset.name);
+                                                if response.clicked() {
+                                                    selected_id = preset.id;
+                                                }
+                                                brush_thumbnail(ui, preset);
+                                                ui.small(format!(
+                                                    "{} · {}",
+                                                    brush_kind_label(preset),
+                                                    preset.brush.texture.kind.label()
+                                                ));
+                                            });
+                                        if index % 2 == 1 {
+                                            ui.end_row();
+                                        }
+                                    }
+                                });
+                        });
+                }
+
+                if let Some(preset) = self.library.get(selected_id).cloned() {
+                    ui.separator();
+                    ui.strong(format!("Preview: {}", preset.name));
+                    self.preview(ui, &preset);
+                    describe_preset(ui, &preset);
+                    if ui.button("Use selected preset").clicked() {
+                        use_id = Some(selected_id);
+                        close = true;
+                    }
+                }
+                if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                    close = true;
+                }
+            });
+        self.browser_open = open && !close;
+        if selected_id != self.selected {
+            self.choose(selected_id);
+        }
+        use_id.and_then(|id| self.library.get(id).cloned())
     }
 
     fn preview(&mut self, ui: &mut egui::Ui, preset: &Preset) {
@@ -393,6 +596,97 @@ impl PresetUi {
         }
         ui.small("Preview uses synthetic pressure and tilt.");
     }
+}
+
+fn preset_matches(preset: &Preset, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let kind = brush_kind_label(preset).to_lowercase();
+    preset.name.to_lowercase().contains(query)
+        || kind.contains(query)
+        || preset
+            .brush
+            .texture
+            .kind
+            .label()
+            .to_lowercase()
+            .contains(query)
+}
+
+fn safe_file_stem(name: &str) -> String {
+    let stem: String = name
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '-' | '_' | ' ') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let stem = stem.trim();
+    if stem.is_empty() {
+        "brush".into()
+    } else {
+        stem.to_owned()
+    }
+}
+
+fn brush_kind_label(preset: &Preset) -> &'static str {
+    match preset.brush.kind {
+        crate::document::BrushKind::Round => "Round",
+        crate::document::BrushKind::Ribbon => "Ribbon",
+        crate::document::BrushKind::Chisel => "Chisel",
+    }
+}
+
+/// Compact vector sample for each card; the selected preset also gets the full
+/// renderer-backed preview below the result grid.
+fn brush_thumbnail(ui: &mut egui::Ui, preset: &Preset) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(225.0, 48.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
+    let color = egui::Color32::from_rgb(
+        (preset.color[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (preset.color[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (preset.color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+    );
+    let left = rect.left() + 14.0;
+    let right = rect.right() - 14.0;
+    let center = rect.center().y;
+    let width = (4.0 + preset.radius.clamp(0.0, 0.25) * 32.0).clamp(4.0, 12.0);
+    let points = vec![
+        egui::pos2(left, center + 5.0),
+        egui::pos2(egui::lerp(left..=right, 0.33), center - 4.0),
+        egui::pos2(egui::lerp(left..=right, 0.67), center + 3.0),
+        egui::pos2(right, center - 5.0),
+    ];
+    painter.add(egui::Shape::line(points, egui::Stroke::new(width, color)));
+    if preset.brush.kind != crate::document::BrushKind::Round {
+        painter.circle_filled(egui::pos2(left, center + 5.0), width * 0.45, color);
+        painter.circle_filled(egui::pos2(right, center - 5.0), width * 0.45, color);
+    }
+}
+
+fn describe_preset(ui: &mut egui::Ui, preset: &Preset) {
+    ui.small(format!(
+        "{} · {} · radius {:.3}",
+        brush_kind_label(preset),
+        preset.brush.texture.kind.label(),
+        preset.radius
+    ));
+    ui.small(format!(
+        "Pressure width: {} · taper {:.2}/{:.2} · stabilize {:.0}%",
+        if preset.brush.dynamics.width.enabled {
+            "on"
+        } else {
+            "off"
+        },
+        preset.brush.dynamics.taper_start,
+        preset.brush.dynamics.taper_end,
+        preset.stabilization * 100.0
+    ));
 }
 
 /// A preview copies resolved settings and never refers back to a library ID.
@@ -486,6 +780,24 @@ fn backup_original(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn browser_search_matches_names_shapes_and_patterns_without_applying() {
+        let library = Library::default();
+        let preset = &library.presets[0];
+        assert!(preset_matches(preset, ""));
+        assert!(preset_matches(preset, &preset.name.to_lowercase()));
+        assert!(preset_matches(
+            preset,
+            &brush_kind_label(preset).to_lowercase()
+        ));
+        assert!(preset_matches(
+            preset,
+            &preset.brush.texture.kind.label().to_lowercase()
+        ));
+        assert!(!preset_matches(preset, "no matching brush"));
+        assert_eq!(library.get(preset.id).unwrap().name, preset.name);
+    }
+
     #[test]
     fn preview_preserves_resolved_settings_and_sample_pressure_is_valid() {
         let preset = Library::default().get(4).unwrap().clone();

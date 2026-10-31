@@ -474,8 +474,9 @@ impl SketchApp {
                 );
             }
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut repeat.space, RepeatSpace::World, "World axes");
-                ui.selectable_value(&mut repeat.space, RepeatSpace::Guide, "Guide axes");
+                ui.label("Offset axes");
+                ui.radio_value(&mut repeat.space, RepeatSpace::World, "World");
+                ui.radio_value(&mut repeat.space, RepeatSpace::Guide, "Guide");
             });
             match preview.as_ref().unwrap() {
                 Ok(copies) => {
@@ -817,7 +818,7 @@ impl SketchApp {
                 let unit = if self.transform_mode == Mode::Rotate { "°" } else { "wu" };
                 ui.label(if self.transform_mode==Mode::Rotate{"Rotation in degrees (X, then Y, then Z)"}else{"Offset in world units"});
                 for (i, axis) in ["X", "Y", "Z"].iter().enumerate() {
-                    ui_style::numeric_row(ui, &format!("{axis}"), ("transform-axis", i), &mut self.transform_values[i], None, unit);
+                    ui_style::numeric_row(ui, axis, ("transform-axis", i), &mut self.transform_values[i], None, unit);
                 }
             }
             if ui.button("Reset numeric values").clicked() {

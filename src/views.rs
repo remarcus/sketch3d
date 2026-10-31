@@ -54,8 +54,9 @@ impl SketchApp {
         let mut open = self.show_view;
         egui::Window::new("Camera view").open(&mut open).default_width(300.0).anchor(egui::Align2::RIGHT_TOP,egui::vec2(-255.0,60.0)).show(ctx,|ui| {
             ui.horizontal(|ui| {
-                if ui.selectable_label(self.camera.projection==Projection::Perspective,"Perspective").clicked() {self.set_projection(Projection::Perspective);}
-                if ui.selectable_label(self.camera.projection==Projection::Orthographic,"Orthographic").clicked() {self.set_projection(Projection::Orthographic);}
+                ui.label("Projection");
+                if ui.radio(self.camera.projection==Projection::Perspective,"Perspective").clicked() {self.set_projection(Projection::Perspective);}
+                if ui.radio(self.camera.projection==Projection::Orthographic,"Orthographic").clicked() {self.set_projection(Projection::Orthographic);}
             });
             ui.horizontal(|ui| {for (label,plane) in [("Front [1]",Plane::Front),("Side [3]",Plane::Side),("Top [7]",Plane::Ground)] {
                 if ui.button(label).clicked() {self.face_world_view(plane);}

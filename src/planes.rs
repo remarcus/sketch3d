@@ -12,35 +12,37 @@ impl SketchApp {
             "Drawing plane placed through the camera focus, facing the current view.".into();
     }
     pub(super) fn plane_controls(&mut self, ui: &mut egui::Ui) {
+        ui_style::section(ui, "Drawing guide");
         if ui.button("Place plane on artwork [K]").clicked() {
             self.begin_placement();
         }
-        ui.horizontal(|ui| {
-            if ui
-                .selectable_label(!self.use_cylinder && !self.use_revolved, "Plane")
-                .clicked()
-            {
-                self.finish();
-                self.use_cylinder = false;
-                self.use_revolved = false;
-            }
-            if ui
-                .selectable_label(self.use_cylinder && !self.use_revolved, "Cylinder")
-                .clicked()
-            {
-                self.finish();
-                self.use_cylinder = true;
-                self.use_revolved = false;
-            }
+        ui_style::field_row(ui, "Guide type", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let mut kind = if self.use_revolved {
+                    2
+                } else if self.use_cylinder {
+                    1
+                } else {
+                    0
+                };
+                for (value, label) in [(0, "Plane"), (1, "Cylinder"), (2, "Revolved")] {
+                    ui.radio_value(&mut kind, value, label);
+                }
+                if kind
+                    != if self.use_revolved {
+                        2
+                    } else if self.use_cylinder {
+                        1
+                    } else {
+                        0
+                    }
+                {
+                    self.finish();
+                    self.use_cylinder = kind == 1;
+                    self.use_revolved = kind == 2;
+                }
+            });
         });
-        if ui
-            .selectable_label(self.use_revolved, "Revolved profile")
-            .clicked()
-        {
-            self.finish();
-            self.use_revolved = true;
-            self.use_cylinder = false;
-        }
         if ui.checkbox(&mut self.guide_visible, "Show guide").changed() {
             self.finish();
         }
@@ -53,14 +55,14 @@ impl SketchApp {
             return;
         }
         let before = self.guide;
-        ui.horizontal(|ui| {
+        ui_style::field_row(ui, "Preset", |ui| {
             for (plane, label) in [
                 (Plane::Front, "Front"),
                 (Plane::Side, "Side"),
                 (Plane::Ground, "Ground"),
             ] {
                 if ui
-                    .selectable_label(self.guide.preset() == Some(plane), label)
+                    .radio(self.guide.preset() == Some(plane), label)
                     .on_hover_text("Reset orientation and placement to this world plane")
                     .clicked()
                 {

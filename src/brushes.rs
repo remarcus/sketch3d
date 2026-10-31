@@ -13,7 +13,7 @@ impl SketchApp {
                     (BrushKind::Ribbon, "Ribbon"),
                     (BrushKind::Chisel, "Flat / chisel"),
                 ] {
-                    ui.selectable_value(&mut self.brush.kind, kind, label);
+                    ui.radio_value(&mut self.brush.kind, kind, label);
                 }
             });
         });
