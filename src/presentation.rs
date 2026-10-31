@@ -17,17 +17,12 @@ pub fn srgb_to_linear(c: f32) -> f32 {
         ((c + 0.055) / 1.055).powf(2.4)
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InspectorTab {
+    #[default]
     Properties,
     Layers,
-}
-
-impl Default for InspectorTab {
-    fn default() -> Self {
-        Self::Properties
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -6,7 +6,7 @@ license = "GPL-3.0-or-later"
 description = "An open-source, tablet-first 3D sketching prototype"
 
 [dependencies]
-eframe = { version = "0.31.1", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
+eframe = { version = "0.31.1", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland", "accesskit"] }
 glam = { version = "0.30", features = ["serde", "bytemuck"] }
 bytemuck = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

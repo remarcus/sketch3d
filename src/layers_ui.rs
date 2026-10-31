@@ -3,6 +3,7 @@ use crate::{
     editing::{self, LayerAction},
     gizmo,
 };
+use eframe::egui::{WidgetInfo, WidgetType};
 
 const RENAMING_LAYER_ID: &str = "layer-list-renaming-id";
 const FOCUS_RENAME_LAYER_ID: &str = "layer-list-focus-rename-id";
@@ -98,6 +99,15 @@ impl SketchApp {
                                                 .desired_width(ui.available_width().max(60.0))
                                                 .char_limit(64),
                                         );
+                                        edit.widget_info(|| {
+                                            let mut info = WidgetInfo::text_edit(
+                                                ui.is_enabled(),
+                                                &self.layer_name,
+                                                &self.layer_name,
+                                            );
+                                            info.label = Some(format!("Rename layer {layer_name}"));
+                                            info
+                                        });
                                         if focus_rename == Some(layer_id) {
                                             edit.request_focus();
                                             ui.memory_mut(|memory| {
@@ -250,19 +260,28 @@ impl SketchApp {
 
                 ui.horizontal(|ui| {
                     ui.label("Move artwork to");
-                    egui::ComboBox::from_id_salt("layer-target")
+                    let selected_name = self
+                        .doc
+                        .layers
+                        .iter()
+                        .find(|layer| layer.id == self.layer_target)
+                        .map_or("Choose layer", |layer| layer.name.as_str());
+                    let combo = egui::ComboBox::from_id_salt("layer-target")
                         .selected_text(
-                            self.doc
-                                .layers
-                                .iter()
-                                .find(|layer| layer.id == self.layer_target)
-                                .map_or("Choose layer", |layer| layer.name.as_str()),
+                            selected_name,
                         )
                         .show_ui(ui, |ui| {
                             for layer in &self.doc.layers {
                                 ui.selectable_value(&mut self.layer_target, layer.id, &layer.name);
                             }
                         });
+                    combo.response.widget_info(|| {
+                        WidgetInfo::labeled(
+                            WidgetType::ComboBox,
+                            combo.response.enabled(),
+                            format!("Move artwork to: {selected_name}"),
+                        )
+                    });
                 });
                 if ui
                     .add_enabled(

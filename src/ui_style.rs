@@ -4,8 +4,12 @@
 //! common row and section without moving application state or changing its
 //! semantics.
 
-use eframe::egui::{self, Align, Color32, Key, Layout, Response, RichText, Stroke, Ui, Vec2};
+use eframe::egui::{
+    self, Align, Color32, Key, Layout, Response, RichText, Stroke, Ui, Vec2, WidgetInfo,
+};
 use std::{hash::Hash, ops::RangeInclusive};
+
+const CURRENT_FIELD_LABEL: &str = "ui-style-current-field-accessible-label";
 
 pub const FIELD_LABEL_WIDTH: f32 = 104.0;
 pub const CONTROL_HEIGHT: f32 = 36.0;
@@ -49,9 +53,27 @@ pub fn field_row<R>(ui: &mut Ui, label: &str, add_control: impl FnOnce(&mut Ui) 
                 ui.label(label).on_hover_text(label);
             },
         );
-        add_control(ui)
+        let label_id = ui.make_persistent_id(CURRENT_FIELD_LABEL);
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(label_id, label.to_owned()));
+        let result = add_control(ui);
+        ui.ctx().data_mut(|data| data.remove::<String>(label_id));
+        result
     })
     .inner
+}
+
+fn accessible_field_label(ui: &Ui, suffix: &str) -> Option<String> {
+    let label_id = ui.make_persistent_id(CURRENT_FIELD_LABEL);
+    ui.ctx()
+        .data(|data| data.get_temp::<String>(label_id))
+        .map(|label| {
+            if suffix.is_empty() {
+                label
+            } else {
+                format!("{label}, {suffix}")
+            }
+        })
 }
 
 #[derive(Clone)]
@@ -98,6 +120,13 @@ pub fn numeric_field(
             .desired_width(68.0)
             .horizontal_align(egui::Align::RIGHT),
     );
+    if let Some(label) = accessible_field_label(ui, suffix) {
+        response.widget_info(|| {
+            let mut info = WidgetInfo::text_edit(ui.is_enabled(), &state.text, &state.text);
+            info.label = Some(label.clone());
+            info
+        });
+    }
     if response.gained_focus() {
         state.editing = true;
         state.warning = None;
@@ -179,9 +208,11 @@ pub fn slider_row(
         id_source,
         value,
         range,
-        display_scale,
-        suffix,
-        false,
+        SliderDisplay {
+            scale: display_scale,
+            suffix,
+            logarithmic: false,
+        },
     )
 }
 
@@ -200,10 +231,18 @@ pub fn logarithmic_slider_row(
         id_source,
         value,
         range,
-        display_scale,
-        suffix,
-        true,
+        SliderDisplay {
+            scale: display_scale,
+            suffix,
+            logarithmic: true,
+        },
     )
+}
+
+struct SliderDisplay<'a> {
+    scale: f32,
+    suffix: &'a str,
+    logarithmic: bool,
 }
 
 fn slider_row_inner(
@@ -212,21 +251,33 @@ fn slider_row_inner(
     id_source: impl Hash,
     value: &mut f32,
     range: RangeInclusive<f32>,
-    display_scale: f32,
-    suffix: &str,
-    logarithmic: bool,
+    display: SliderDisplay<'_>,
 ) -> Response {
     field_row(ui, label, |ui| {
-        let edit_width = 68.0 + if suffix.is_empty() { 0.0 } else { 18.0 };
+        let edit_width = 68.0 + if display.suffix.is_empty() { 0.0 } else { 18.0 };
         let slider_width = (ui.available_width() - edit_width - 6.0).max(32.0);
         let mut slider = egui::Slider::new(value, range.clone())
             .show_value(false)
             .trailing_fill(false);
-        if logarithmic {
+        if display.logarithmic {
             slider = slider.logarithmic(true);
         }
-        ui.add_sized(Vec2::new(slider_width, CONTROL_HEIGHT), slider);
-        numeric_field(ui, id_source, value, Some(range), display_scale, suffix)
+        let slider_response = ui.add_sized(Vec2::new(slider_width, CONTROL_HEIGHT), slider);
+        slider_response.widget_info(|| {
+            WidgetInfo::slider(
+                ui.is_enabled(),
+                f64::from(*value),
+                format!("{label}, {}", display.suffix),
+            )
+        });
+        numeric_field(
+            ui,
+            id_source,
+            value,
+            Some(range),
+            display.scale,
+            display.suffix,
+        )
     })
 }
 
@@ -253,10 +304,11 @@ pub fn integer_slider_row(
     field_row(ui, label, |ui| {
         let edit_width = 68.0;
         let slider_width = (ui.available_width() - edit_width - 6.0).max(32.0);
-        ui.add_sized(
+        let slider_response = ui.add_sized(
             Vec2::new(slider_width, CONTROL_HEIGHT),
             egui::Slider::new(value, range.clone()).show_value(false),
         );
+        slider_response.widget_info(|| WidgetInfo::slider(ui.is_enabled(), *value as f64, label));
         integer_field(ui, id_source, value, range)
     })
 }
@@ -285,6 +337,13 @@ fn integer_field(
             .desired_width(68.0)
             .horizontal_align(egui::Align::RIGHT),
     );
+    if let Some(label) = accessible_field_label(ui, "") {
+        response.widget_info(|| {
+            let mut info = WidgetInfo::text_edit(ui.is_enabled(), &state.text, &state.text);
+            info.label = Some(label.clone());
+            info
+        });
+    }
     if response.gained_focus() {
         state.editing = true;
         state.warning = None;
