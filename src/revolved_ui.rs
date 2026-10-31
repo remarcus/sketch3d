@@ -1,3 +1,4 @@
+use super::ui_style;
 use super::*;
 use crate::{
     gizmo,
@@ -82,19 +83,7 @@ impl SketchApp {
         let mut remove = None;
         for i in 0..next.count {
             ui.horizontal(|ui| {
-                ui.label(format!("{}", i + 1));
-                ui.add(
-                    egui::DragValue::new(&mut next.profile[i].radius)
-                        .prefix("R ")
-                        .speed(0.01)
-                        .range(0.05..=10.0),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut next.profile[i].height)
-                        .prefix("Y ")
-                        .speed(0.01)
-                        .range(-20.0..=20.0),
-                );
+                ui.strong(format!("Profile {}", i + 1));
                 if ui
                     .add_enabled(next.count > 2, egui::Button::new("−"))
                     .clicked()
@@ -102,6 +91,22 @@ impl SketchApp {
                     remove = Some(i);
                 }
             });
+            ui_style::numeric_row(
+                ui,
+                &format!("Profile {} · Radius", i + 1),
+                ("revolved-radius", i),
+                &mut next.profile[i].radius,
+                Some(0.05..=10.0),
+                "wu",
+            );
+            ui_style::numeric_row(
+                ui,
+                &format!("Profile {} · Height", i + 1),
+                ("revolved-height", i),
+                &mut next.profile[i].height,
+                Some(-20.0..=20.0),
+                "wu",
+            );
         }
         if let Some(i) = remove {
             for j in i..next.count - 1 {
@@ -129,25 +134,41 @@ impl SketchApp {
             next.profile[i + 1] = p;
             next.count += 1;
         }
-        ui.label("Center / rotation");
-        ui.horizontal(|ui| {
-            for i in 0..3 {
+        ui_style::section(ui, "Guide placement");
+        for (i, axis) in ["X", "Y", "Z"].iter().enumerate() {
+            ui_style::field_row(ui, &format!("Center {axis}"), |ui| {
                 ui.add(
                     egui::DragValue::new(&mut next.center[i])
                         .speed(0.02)
                         .range(-1000.0..=1000.0),
                 );
-            }
-        });
-        ui.horizontal(|ui| {
-            for i in 0..3 {
+                ui_style::numeric_field(
+                    ui,
+                    ("revolved-center", i),
+                    &mut next.center[i],
+                    Some(-1000.0..=1000.0),
+                    1.0,
+                    "wu",
+                )
+            });
+        }
+        for (i, axis) in ["X", "Y", "Z"].iter().enumerate() {
+            ui_style::field_row(ui, &format!("Rotation {axis}"), |ui| {
                 ui.add(
                     egui::DragValue::new(&mut next.rotation_degrees[i])
                         .speed(0.5)
                         .range(-180.0..=180.0),
                 );
-            }
-        });
+                ui_style::numeric_field(
+                    ui,
+                    ("revolved-rotation", i),
+                    &mut next.rotation_degrees[i],
+                    Some(-180.0..=180.0),
+                    1.0,
+                    "°",
+                )
+            });
+        }
         if ui.button("Profile from view").clicked() {
             let plane = DrawingPlane::from_view(&self.camera);
             next.center = plane.anchor;

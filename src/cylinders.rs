@@ -1,3 +1,4 @@
+use super::ui_style;
 use super::*;
 use crate::{editing, gizmo, scenes};
 
@@ -82,37 +83,58 @@ impl SketchApp {
                 .small()
                 .color(Color32::from_rgb(119, 203, 195)),
         );
-        ui.label("Rotation in degrees");
-        ui.horizontal(|ui| {
-            for (i, label) in ["X ", "Y ", "Z "].iter().enumerate() {
+        ui_style::section(ui, "Cylinder geometry");
+        for (i, axis) in ["X", "Y", "Z"].iter().enumerate() {
+            ui_style::field_row(ui, &format!("Rotation {axis}"), |ui| {
                 ui.add(
                     egui::DragValue::new(&mut self.cylinder.rotation_degrees[i])
-                        .prefix(*label)
                         .speed(0.5)
                         .range(-180.0..=180.0),
                 );
-            }
-        });
-        ui.label("Center in world units");
-        ui.horizontal(|ui| {
-            for (i, label) in ["X ", "Y ", "Z "].iter().enumerate() {
+                ui_style::numeric_field(
+                    ui,
+                    ("cylinder-rotation", i),
+                    &mut self.cylinder.rotation_degrees[i],
+                    Some(-180.0..=180.0),
+                    1.0,
+                    "°",
+                )
+            });
+        }
+        for (i, axis) in ["X", "Y", "Z"].iter().enumerate() {
+            ui_style::field_row(ui, &format!("Center {axis}"), |ui| {
                 ui.add(
                     egui::DragValue::new(&mut self.cylinder.center[i])
-                        .prefix(*label)
                         .speed(0.02)
                         .range(-1000.0..=1000.0),
                 );
-            }
-        });
-        ui.add(
-            egui::Slider::new(&mut self.cylinder.radius, 0.05..=10.0)
-                .logarithmic(true)
-                .text("Radius"),
+                ui_style::numeric_field(
+                    ui,
+                    ("cylinder-center", i),
+                    &mut self.cylinder.center[i],
+                    Some(-1000.0..=1000.0),
+                    1.0,
+                    "wu",
+                )
+            });
+        }
+        ui_style::logarithmic_slider_row(
+            ui,
+            "Radius",
+            "cylinder-radius",
+            &mut self.cylinder.radius,
+            0.05..=10.0,
+            1.0,
+            "wu",
         );
-        ui.add(
-            egui::Slider::new(&mut self.cylinder.height, 0.1..=20.0)
-                .logarithmic(true)
-                .text("Height"),
+        ui_style::logarithmic_slider_row(
+            ui,
+            "Height",
+            "cylinder-height",
+            &mut self.cylinder.height,
+            0.1..=20.0,
+            1.0,
+            "wu",
         );
         if self.cylinder != before {
             self.finish();
