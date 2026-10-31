@@ -33,8 +33,13 @@ fn visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
 }
 @fragment fn fs_main(in: Output) -> @location(0) vec4<f32> {
     if length(in.normal)<0.1 { return vec4<f32>(in.color,1.0); }
-    if textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a<0.5 { discard; }
+    let mask_alpha=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a;
+    var coverage=mask_alpha;
+    if scene.shadow.z<0.5 {
+        if mask_alpha<0.5 { discard; }
+        coverage=1.0;
+    }
     let normal=normalize(in.normal);
     let shade=scene.light.w+scene.settings.x*abs(dot(normal,scene.light.xyz))*visibility(in.world,normal);
-    return vec4<f32>(in.color*shade,1.0);
+    return vec4<f32>(in.color*shade,coverage);
 }

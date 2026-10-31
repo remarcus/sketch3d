@@ -156,7 +156,31 @@ impl SketchApp {
                 image::ColorType::Rgba8,
             )
             .unwrap();
-            std::fs::write(root.join("lines-report.json"),serde_json::to_vec_pretty(&serde_json::json!({"passed":true,"checks":["mouse press drag release endpoints","rotated orthographic plane constraints","contact pressure tilt and taper capture","draft save and document guards","cancel outside release locked layers and curved guide exclusion","undo native reload and GLB export","GPU architectural line study"],"gpu":self.renderer.adapter,"physical_tablet_tested":false})).unwrap()).unwrap();
+            let canvas_size = [rect.width().round() as u32, rect.height().round() as u32];
+            let canvas_pixels = canvas_size[0] as u64 * canvas_size[1] as u64;
+            let samples = self.renderer.sample_count();
+            std::fs::write(
+                root.join("lines-report.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "passed": true,
+                    "checks": [
+                        "mouse press drag release endpoints",
+                        "rotated orthographic plane constraints",
+                        "contact pressure tilt and taper capture",
+                        "draft save and document guards",
+                        "cancel outside release locked layers and curved guide exclusion",
+                        "undo native reload and GLB export",
+                        "GPU architectural line study"
+                    ],
+                    "gpu": self.renderer.adapter,
+                    "canvas_size_px": canvas_size,
+                    "canvas_sample_count": samples,
+                    "canvas_sample_positions_per_frame": canvas_pixels * samples as u64,
+                    "physical_tablet_tested": false
+                }))
+                .unwrap(),
+            )
+            .unwrap();
             self.allow_close = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }

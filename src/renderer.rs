@@ -25,9 +25,11 @@ struct SceneUniform {
 struct CanvasTarget {
     color: wgpu::Texture,
     view: wgpu::TextureView,
+    multisample_color: Option<wgpu::TextureView>,
     depth: wgpu::TextureView,
     id: egui::TextureId,
     size: [u32; 2],
+    sample_count: u32,
 }
 
 struct Mesh {
@@ -37,6 +39,23 @@ struct Mesh {
     points: usize,
     bounds: Option<(Vec3, Vec3)>,
 }
+
+fn canvas_sample_count(adapter: &wgpu::Adapter) -> u32 {
+    let color = adapter
+        .get_texture_format_features(wgpu::TextureFormat::Rgba8UnormSrgb)
+        .flags;
+    let depth = adapter
+        .get_texture_format_features(wgpu::TextureFormat::Depth32Float)
+        .flags;
+    if color.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_X4)
+        && depth.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_X4)
+    {
+        4
+    } else {
+        1
+    }
+}
+
 pub struct SceneRenderer {
     state: egui_wgpu::RenderState,
     triangles: wgpu::RenderPipeline,
@@ -196,6 +215,7 @@ impl SceneRenderer {
             bind_group_layouts: &[&layout, &texture_layout, &shadow_layout],
             push_constant_ranges: &[],
         });
+        let sample_count = canvas_sample_count(&state.adapter);
         let create = |topology| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:Some("3D strokes"),layout:Some(&pipeline_layout),
@@ -203,7 +223,7 @@ impl SceneRenderer {
             fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some("fs_main"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),
             primitive:wgpu::PrimitiveState {topology,cull_mode:None,..Default::default()},
             depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:topology != wgpu::PrimitiveTopology::LineList,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
-            multisample:Default::default(),multiview:None,cache:None,
+            multisample:wgpu::MultisampleState {count:sample_count,mask:!0,alpha_to_coverage_enabled:sample_count > 1},multiview:None,cache:None,
         })
         };
         let triangles = create(wgpu::PrimitiveTopology::TriangleList);
@@ -309,6 +329,9 @@ impl SceneRenderer {
         self.invalidate_ids(&changed);
         self.selected.clone_from(selected);
     }
+    pub fn sample_count(&self) -> u32 {
+        self.target.as_ref().map_or(1, |target| target.sample_count)
+    }
     fn mesh(&self, vertices: &[Vertex], points: usize) -> Mesh {
         let data = bytemuck::cast_slice(vertices);
         let capacity = data.len().max(4).next_power_of_two();
@@ -347,6 +370,7 @@ impl SceneRenderer {
                 height: size[1],
                 depth_or_array_layers: 1,
             };
+            let sample_count = canvas_sample_count(&self.state.adapter);
             let color = self.state.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("3D canvas"),
                 size: extent,
@@ -359,11 +383,26 @@ impl SceneRenderer {
                     | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
+            let multisample_color = (sample_count > 1).then(|| {
+                self.state
+                    .device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("3D canvas multisample color"),
+                        size: extent,
+                        mip_level_count: 1,
+                        sample_count,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            });
             let depth = self.state.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("Canvas depth"),
                 size: extent,
                 mip_level_count: 1,
-                sample_count: 1,
+                sample_count,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Depth32Float,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -379,9 +418,11 @@ impl SceneRenderer {
             self.target = Some(CanvasTarget {
                 color,
                 view,
+                multisample_color,
                 depth: depth_view,
                 id,
                 size,
+                sample_count,
             });
         }
         let solid = TextureSettings::default();
@@ -483,7 +524,12 @@ impl SceneRenderer {
                 settings.strength,
                 settings.bias / fit.as_ref().map_or(1.0, |f| f.depth_span),
             ],
-            shadow: [1.0 / SHADOW_SIZE as f32, settings.bias, 0.0, 0.0],
+            shadow: [
+                1.0 / SHADOW_SIZE as f32,
+                settings.bias,
+                f32::from(self.sample_count() > 1),
+                0.0,
+            ],
         };
         self.state
             .queue
@@ -528,8 +574,8 @@ impl SceneRenderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Canvas pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target.view,
-                    resolve_target: None,
+                    view: target.multisample_color.as_ref().unwrap_or(&target.view),
+                    resolve_target: target.multisample_color.as_ref().map(|_| &target.view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: crate::presentation::srgb_to_linear(self.background[0]) as f64,
