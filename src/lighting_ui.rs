@@ -3,12 +3,19 @@ use crate::lighting::Lighting;
 
 impl SketchApp {
     pub(super) fn show_lighting(&mut self, ctx: &egui::Context) {
-        if !self.show_scene || self.confirm || self.recovery_prompt || self.tutorial.offer {
+        if !self.show_scene
+            || self.presentation.artwork
+            || self.confirm
+            || self.recovery_prompt
+            || self.tutorial.offer
+        {
             return;
         }
+        let mut artwork_requested = false;
         egui::Window::new("Scene lighting").open(&mut self.show_scene).default_width(300.0)
             .max_height((ctx.screen_rect().height()-100.0).max(200.0)).vscroll(true)
             .anchor(egui::Align2::RIGHT_TOP,egui::vec2(-255.0,60.0)).show(ctx,|ui| {
+                artwork_requested = self.presentation.controls(ui);
                 let light=&mut self.renderer.lighting;
                 ui.label("Directional light");
                 ui.add(egui::Slider::new(&mut light.azimuth,-180.0..=180.0).text("Direction °"));
@@ -33,8 +40,11 @@ impl SketchApp {
                     ui.horizontal(|ui| {ui.label("Color");ui.color_edit_button_rgb(&mut light.ground_color);});
                 });
                 if ui.button("Reset scene lighting").clicked() {*light=Lighting::default();}
-                ui.separator();ui.small("Workspace preview only: resets on restart. Native Save, recovery, and GLB export contain artwork only. The ground is not paintable or selectable; use a drawing guide for ink.");
+                ui.separator();ui.small("Lighting and ground reset on restart. Background uses Remember background. Native Save, recovery, and GLB export contain artwork only. The ground is not paintable or selectable; use a drawing guide for ink.");
             });
+        if artwork_requested {
+            self.toggle_artwork();
+        }
     }
 
     pub(super) fn verify_lighting(&mut self, ctx: &egui::Context, _rect: Rect) {

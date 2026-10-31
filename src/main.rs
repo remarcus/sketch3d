@@ -12,6 +12,7 @@ mod input;
 mod lighting;
 mod placement;
 mod polygon;
+mod presentation;
 mod presets;
 mod presets_ui;
 mod recovery;

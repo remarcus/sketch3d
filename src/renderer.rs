@@ -54,6 +54,7 @@ pub struct SceneRenderer {
     shadow_bind: wgpu::BindGroup,
     target: Option<CanvasTarget>,
     pub lighting: Lighting,
+    pub background: [f32; 3],
     pub adapter: String,
 }
 impl SceneRenderer {
@@ -226,6 +227,7 @@ impl SceneRenderer {
             shadow_view,
             shadow_bind,
             target: None,
+            background: crate::presentation::Preferences::default().background,
             adapter,
         }
     }
@@ -530,9 +532,9 @@ impl SceneRenderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.018,
-                            g: 0.029,
-                            b: 0.046,
+                            r: crate::presentation::srgb_to_linear(self.background[0]) as f64,
+                            g: crate::presentation::srgb_to_linear(self.background[1]) as f64,
+                            b: crate::presentation::srgb_to_linear(self.background[2]) as f64,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,

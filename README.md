@@ -98,7 +98,7 @@ The immediate hardware test is pressure and tilt on the Wacom, followed by the K
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
-Next planned work is presentation background and artwork-only view (SKETCH-020). Standalone benchmarks and hardware validation follow feature work. Soft/transparent brushes follow separately; brush-library importing remains deferred.
+Next planned work is orthographic views and straight-line assistance (SKETCH-021). Standalone benchmarks and hardware validation follow feature work. Soft/transparent brushes follow separately; brush-library importing remains deferred.
 
 ## License
 
@@ -362,3 +362,16 @@ Round strokes produce a local tangent plane using interpolated surface normals; 
 Placement mode pauses ordinary drawing, selection, and edit shortcuts; the preview panel remains interactive. Resolve an unfinished fill contour before starting. Leaving for another document or practice/close action ends placement without applying the preview. Native Save and GLB Export never include a pending preview. Existing manual planes, plane-from-view, presets, and numeric controls remain available after applying/cancelling.
 
 Developer check: `cargo run --release -- --verify-placement` writes `verification/placement-preview.png` and `placement-report.json`. Unit checks cover rotated/locked/hidden references, nearest hits, back faces, round/chisel surfaces and caps, misses without a halo, and masked holes. The graphical workflow verifies cancellation of an existing curved guide, flip/offset, unchanged document/history/GLB bytes, alignment, and new ink constrained to the accepted plane. Physical tablet and performance campaigns remain deferred.
+## Background and artwork-only view
+
+Open **Scene → Background** to choose a canvas color, the **Dark / Blue / Light** presets, or **Reset background**. Canvas background is independent of stroke, fill, and presentation-ground colors. **Remember background** saves the current color as your startup default; other color changes are session-only. Lighting and ground still reset on restart. Background preferences live in `%LOCALAPPDATA%/SpatialSketch/presentation.json` on Windows, beside the brush library on other platforms, separately from drawings and onboarding.
+
+Use **Artwork [Tab]**, the Scene panel button, or **Tab** to enter artwork-only view. It hides side panels, the main toolbar/status bar, grids, guide badges, selection gold/handles, and sample labels. The **Workspace [Tab]** button stays visible alongside **Save** and **Recovery**. Tab or Escape returns to editing. Shortcuts apply when a text field is not being edited; the mouse/pen Workspace button is always available.
+
+Artwork-only view is read-only for marks: ordinary contact and eraser contact do not edit artwork. Orbit/pan/zoom still work through Space/pen or mouse controls, and Ctrl/Cmd+S (Shift for Save as) can save. Selection, tool/guide settings, open Scene-panel state, and edit history return unchanged; deliberate camera navigation is retained. Finish/cancel a fill draft, plane preview, tutorial, or active dialog before entering. Entry finishes an active stroke/transform normally.
+
+Recovery and unsaved-change prompts return to the workspace. Close requests also leave artwork view, including an export that temporarily blocks closing. Native save errors return to editing so the error can be seen. The compact toolbar indicates recovery issues; Recovery opens the normal recovery flow. Artwork-only mode is never remembered across restarts, so each launch starts with the workspace visible.
+
+Background and view mode do not change native document version 7, recovery content, GLB materials, or ink. Invalid, oversized, or newer-version preference files are retained on load; Scene shows the issue and uses defaults until you explicitly remember a valid preference. Reset changes the current session; use Remember afterward to reset the startup default as well.
+
+Developer check: `cargo run --release -- --verify-presentation` uses isolated preferences and writes `verification/presentation-report.json` and `presentation-preview.png`. GPU readback checks blue/light/dark sRGB values. Lifecycle checks cover explicit preference restart, mode entry guards, read-only contact, workspace restoration, save-failure visibility, recovery/unsaved prompts, and unchanged JSON/GLB ink. Dedicated benchmarks remain deferred.

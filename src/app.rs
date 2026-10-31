@@ -35,6 +35,10 @@ mod placement_checks;
 mod placement_ui;
 #[path = "planes.rs"]
 mod planes;
+#[path = "presentation_checks.rs"]
+mod presentation_checks;
+#[path = "presentation_ui.rs"]
+mod presentation_ui;
 #[path = "preset_checks.rs"]
 mod preset_checks;
 #[path = "recovery_ui.rs"]
@@ -71,6 +75,7 @@ enum Pending {
 }
 
 pub struct SketchApp {
+    presentation: presentation_ui::PresentationUi,
     placement: placement_ui::PlacementUi,
     fills: fills_ui::FillUi,
     show_scene: bool,
@@ -195,6 +200,7 @@ impl SketchApp {
         };
         let recovery = crate::recovery::Recovery::new(recovery_path, cc.egui_ctx.clone());
         let mut app = Self {
+            presentation: presentation_ui::PresentationUi::new(),
             placement: Default::default(),
             fills: Default::default(),
             show_scene: false,
@@ -277,7 +283,10 @@ impl SketchApp {
             last_export_result: None,
             export_snapshot: None,
         };
-        if std::env::args().any(|a| a == "--verify-placement") {
+        if std::env::args().any(|a| a == "--verify-presentation") {
+            app.verification_frame = None;
+            app.load_house();
+        } else if std::env::args().any(|a| a == "--verify-placement") {
             app.verification_frame = None;
             app.placement.verification_frame = Some(0);
             app.load_fill_study();
@@ -577,6 +586,7 @@ impl SketchApp {
             return false;
         };
         if self.reserved_recovery_destination(&path) {
+            self.leave_artwork();
             self.status = "Choose a native save location outside the recovery folder.".into();
             return false;
         }
@@ -605,11 +615,13 @@ impl SketchApp {
             }
             Err(e) => {
                 self.status = format!("Save failed: {e}");
+                self.leave_artwork();
                 false
             }
         }
     }
     fn request(&mut self, mut pending: Pending) {
+        self.leave_artwork();
         self.cancel_placement();
         if self.fills.draft.is_some() {
             self.status =
@@ -997,6 +1009,9 @@ impl SketchApp {
         shift: bool,
         tilt: Option<Vec3>,
     ) {
+        if self.presentation.artwork {
+            return;
+        }
         if self.placement.active {
             if begin {
                 self.pick_placement(pos, rect);
@@ -1037,6 +1052,7 @@ impl SketchApp {
             && self.lighting_verification_frame.is_none()
             && self.fills.verification_frame.is_none()
             && self.placement.verification_frame.is_none()
+            && self.presentation.verification_frame.is_none()
         {
             self.cancel();
             return;
@@ -1099,7 +1115,7 @@ impl SketchApp {
                 continue;
             }
             if sample.contact {
-                if sample.eraser && !self.placement.active {
+                if sample.eraser && !self.placement.active && !self.presentation.artwork {
                     self.erase(sample.position, rect);
                 } else {
                     self.pointer_action_with_tilt(
@@ -1192,8 +1208,12 @@ impl eframe::App for SketchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let start = Instant::now();
         self.poll_recovery(ctx);
+        self.ensure_workspace();
         self.poll_export(ctx);
         self.capture_verification(ctx);
+        if ctx.input(|i| i.viewport().close_requested()) {
+            self.leave_artwork();
+        }
         if ctx.input(|i| i.viewport().close_requested())
             && !self.allow_close
             && self.export_job.is_some()
@@ -1210,7 +1230,7 @@ impl eframe::App for SketchApp {
             self.finish();
             self.request(Pending::Close);
         }
-        let was_placing = self.placement.active;
+        let was_artwork = self.presentation.artwork;
         if !self.confirm
             && !self.show_help
             && !self.recovery_prompt
@@ -1218,11 +1238,25 @@ impl eframe::App for SketchApp {
             && !self.close_after_recovery
             && !ctx.wants_keyboard_input()
         {
+            self.presentation_shortcuts(ctx);
+        }
+        let was_placing = self.placement.active;
+        if !self.confirm
+            && !self.show_help
+            && !self.recovery_prompt
+            && !self.tutorial.offer
+            && !self.close_after_recovery
+            && !ctx.wants_keyboard_input()
+            && !self.presentation.artwork
+            && !was_artwork
+        {
             self.placement_shortcuts(ctx);
         }
         if !self.confirm
             && !self.placement.active
             && !was_placing
+            && !self.presentation.artwork
+            && !was_artwork
             && !self.show_help
             && !self.tutorial.offer
             && !self.recovery_prompt
@@ -1288,193 +1322,205 @@ impl eframe::App for SketchApp {
                 }
             }
         }
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.add_space(7.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("SPATIAL / SKETCH")
-                        .strong()
-                        .size(20.0)
-                        .color(Color32::from_rgb(99, 229, 207)),
-                );
-                ui.label(
-                    RichText::new("0.1  /  RUST PROTOTYPE")
-                        .small()
-                        .color(Color32::from_gray(140)),
-                );
-                ui.separator();
-                let enabled = !self.confirm
-                    && !self.recovery_prompt
-                    && !self.close_after_recovery
-                    && !self.tutorial.offer
-                    && !self.placement.active;
-                if ui
-                    .add_enabled(enabled, egui::Button::new("Pick plane [K]"))
-                    .clicked()
-                {
-                    self.begin_placement();
-                }
-                if ui
-                    .add_enabled(enabled, egui::Button::new("Scene"))
-                    .clicked()
-                {
-                    self.finish();
-                    self.show_scene = !self.show_scene;
-                }
-                if ui.add_enabled(enabled, egui::Button::new("Help")).clicked() {
-                    self.finish();
-                    self.show_help = true;
-                }
-                if ui.add_enabled(enabled, egui::Button::new("New")).clicked() {
-                    self.request(Pending::New);
-                }
-                if ui
-                    .add_enabled(enabled, egui::Button::new("House"))
-                    .on_hover_text("Open the editable Japanese garden house sample")
-                    .clicked()
-                {
-                    self.request(Pending::House);
-                }
-                if ui
-                    .add_enabled(enabled, egui::Button::new("Lantern"))
-                    .on_hover_text("Open the editable cylindrical drawing-guide example")
-                    .clicked()
-                {
-                    self.request(Pending::Lantern);
-                }
-                if ui
-                    .add_enabled(enabled, egui::Button::new("Brushes"))
-                    .on_hover_text("Open the editable brush sampler")
-                    .clicked()
-                {
-                    self.request(Pending::Brushes);
-                }
-                if ui
-                    .add_enabled(enabled, egui::Button::new("Dynamics"))
-                    .on_hover_text("Open the editable pressure, tilt, and taper study")
-                    .clicked()
-                {
-                    self.request(Pending::Dynamics);
-                }
-                if ui
-                    .add_enabled(enabled, egui::Button::new("Textures"))
-                    .on_hover_text("Open the editable texture study")
-                    .clicked()
-                {
-                    self.request(Pending::Textures);
-                }
-                if ui
-                    .add_enabled(enabled, egui::Button::new("Vase"))
-                    .on_hover_text("Editable revolved-surface painting study")
-                    .clicked()
-                {
-                    self.request(Pending::Vase);
-                }
-                if ui.add_enabled(enabled, egui::Button::new("Open")).clicked() {
-                    self.request(Pending::Open);
-                }
-                if ui.add_enabled(enabled, egui::Button::new("Save")).clicked() {
-                    self.save(false);
-                }
-                if ui
-                    .add_enabled(enabled, egui::Button::new("Save as"))
-                    .clicked()
-                {
-                    self.save(true);
-                }
-                ui.add_enabled_ui(self.can_export(false), |ui| {
-                    ui.menu_button("Export", |ui| {
-                        if ui.button("Whole drawing (.glb)").clicked() {
-                            ui.close_menu();
-                            self.export_dialog(false, ctx);
-                        }
-                        if ui
-                            .add_enabled(
-                                self.can_export(true),
-                                egui::Button::new("Selected strokes (.glb)"),
-                            )
-                            .clicked()
-                        {
-                            ui.close_menu();
-                            self.export_dialog(true, ctx);
-                        }
+        self.ensure_workspace();
+        if !self.presentation.artwork {
+            egui::TopBottomPanel::top("header").show(ctx, |ui| {
+                ui.add_space(7.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("SPATIAL / SKETCH")
+                            .strong()
+                            .size(20.0)
+                            .color(Color32::from_rgb(99, 229, 207)),
+                    );
+                    ui.label(
+                        RichText::new("0.1  /  RUST PROTOTYPE")
+                            .small()
+                            .color(Color32::from_gray(140)),
+                    );
+                    ui.separator();
+                    let enabled = !self.confirm
+                        && !self.recovery_prompt
+                        && !self.close_after_recovery
+                        && !self.tutorial.offer
+                        && !self.placement.active;
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Artwork [Tab]"))
+                        .clicked()
+                    {
+                        self.toggle_artwork();
+                    }
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Pick plane [K]"))
+                        .clicked()
+                    {
+                        self.begin_placement();
+                    }
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Scene"))
+                        .clicked()
+                    {
+                        self.finish();
+                        self.show_scene = !self.show_scene;
+                    }
+                    if ui.add_enabled(enabled, egui::Button::new("Help")).clicked() {
+                        self.finish();
+                        self.show_help = true;
+                    }
+                    if ui.add_enabled(enabled, egui::Button::new("New")).clicked() {
+                        self.request(Pending::New);
+                    }
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("House"))
+                        .on_hover_text("Open the editable Japanese garden house sample")
+                        .clicked()
+                    {
+                        self.request(Pending::House);
+                    }
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Lantern"))
+                        .on_hover_text("Open the editable cylindrical drawing-guide example")
+                        .clicked()
+                    {
+                        self.request(Pending::Lantern);
+                    }
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Brushes"))
+                        .on_hover_text("Open the editable brush sampler")
+                        .clicked()
+                    {
+                        self.request(Pending::Brushes);
+                    }
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Dynamics"))
+                        .on_hover_text("Open the editable pressure, tilt, and taper study")
+                        .clicked()
+                    {
+                        self.request(Pending::Dynamics);
+                    }
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Textures"))
+                        .on_hover_text("Open the editable texture study")
+                        .clicked()
+                    {
+                        self.request(Pending::Textures);
+                    }
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Vase"))
+                        .on_hover_text("Editable revolved-surface painting study")
+                        .clicked()
+                    {
+                        self.request(Pending::Vase);
+                    }
+                    if ui.add_enabled(enabled, egui::Button::new("Open")).clicked() {
+                        self.request(Pending::Open);
+                    }
+                    if ui.add_enabled(enabled, egui::Button::new("Save")).clicked() {
+                        self.save(false);
+                    }
+                    if ui
+                        .add_enabled(enabled, egui::Button::new("Save as"))
+                        .clicked()
+                    {
+                        self.save(true);
+                    }
+                    ui.add_enabled_ui(self.can_export(false), |ui| {
+                        ui.menu_button("Export", |ui| {
+                            if ui.button("Whole drawing (.glb)").clicked() {
+                                ui.close_menu();
+                                self.export_dialog(false, ctx);
+                            }
+                            if ui
+                                .add_enabled(
+                                    self.can_export(true),
+                                    egui::Button::new("Selected strokes (.glb)"),
+                                )
+                                .clicked()
+                            {
+                                ui.close_menu();
+                                self.export_dialog(true, ctx);
+                            }
+                        });
+                    });
+                    if self.export_job.is_some() {
+                        ui.spinner();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            enabled
+                                && (!self.undo.is_empty()
+                                    || self.active.is_some()
+                                    || self.drag.is_some()),
+                            egui::Button::new("Undo"),
+                        )
+                        .clicked()
+                    {
+                        self.undo();
+                    }
+                    if ui
+                        .add_enabled(enabled && !self.redo.is_empty(), egui::Button::new("Redo"))
+                        .clicked()
+                    {
+                        self.redo();
+                    }
+                    ui.label(if self.dirty {
+                        "Unsaved changes"
+                    } else {
+                        "Saved / blank"
                     });
                 });
-                if self.export_job.is_some() {
-                    ui.spinner();
-                }
-                ui.separator();
-                if ui
-                    .add_enabled(
-                        enabled
-                            && (!self.undo.is_empty()
-                                || self.active.is_some()
-                                || self.drag.is_some()),
-                        egui::Button::new("Undo"),
-                    )
-                    .clicked()
-                {
-                    self.undo();
-                }
-                if ui
-                    .add_enabled(enabled && !self.redo.is_empty(), egui::Button::new("Redo"))
-                    .clicked()
-                {
-                    self.redo();
-                }
-                ui.label(if self.dirty {
-                    "Unsaved changes"
-                } else {
-                    "Saved / blank"
+                ui.add_space(7.0);
+            });
+            egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            self.tutorial.practice.is_none()
+                                && !self.tutorial.offer
+                                && !self.placement.active,
+                            egui::Button::new("Recovery"),
+                        )
+                        .clicked()
+                    {
+                        self.recovery_prompt = true;
+                        self.recovery.request_scan();
+                    }
+                    ui.label(&self.status);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(self.active_guide_label());
+                    });
                 });
             });
-            ui.add_space(7.0);
-        });
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        self.tutorial.practice.is_none()
-                            && !self.tutorial.offer
-                            && !self.placement.active,
-                        egui::Button::new("Recovery"),
-                    )
-                    .clicked()
-                {
-                    self.recovery_prompt = true;
-                    self.recovery.request_scan();
-                }
-                ui.label(&self.status);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(self.active_guide_label());
+            egui::SidePanel::left("tools")
+                .exact_width(240.0)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.add_enabled_ui(
+                            !self.confirm
+                                && !self.recovery_prompt
+                                && !self.close_after_recovery
+                                && !self.tutorial.offer
+                                && !self.placement.active,
+                            |ui| self.tools(ui),
+                        );
+                    });
                 });
-            });
-        });
-        egui::SidePanel::left("tools")
-            .exact_width(240.0)
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.add_enabled_ui(
-                        !self.confirm
-                            && !self.recovery_prompt
-                            && !self.close_after_recovery
-                            && !self.tutorial.offer
-                            && !self.placement.active,
-                        |ui| self.tools(ui),
-                    );
+            egui::SidePanel::right("diagnostics")
+                .exact_width(245.0)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.diagnostics(ui));
                 });
-            });
-        egui::SidePanel::right("diagnostics")
-            .exact_width(245.0)
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| self.diagnostics(ui));
-            });
+        } else {
+            self.artwork_bar(ctx);
+        }
         let pen = self.pen.as_ref().map(|p| p.drain()).unwrap_or_default();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.verify_presentation(ctx, rect);
                 self.verify_placement(ctx, rect);
                 self.verify_fills(ctx, rect);
                 self.verify_lighting(ctx, rect);
@@ -1492,17 +1538,22 @@ impl eframe::App for SketchApp {
                 self.verify_canvas(ctx, rect);
                 self.canvas_input(ctx, rect, pen);
                 let scale = ctx.pixels_per_point();
-                if self.select_mode {
+                if self.select_mode && !self.presentation.artwork {
                     self.renderer.set_selection(&self.selected);
                 } else {
                     self.renderer.set_selection(&HashSet::new());
                 }
+                self.renderer.background = self.presentation.preferences.background;
                 let id = self.renderer.render(
                     &self.doc,
                     &self.camera,
-                    self.placement_preview()
-                        .map(GuidePreview::Plane)
-                        .unwrap_or_else(|| self.guide_preview()),
+                    if self.presentation.artwork {
+                        GuidePreview::Hidden
+                    } else {
+                        self.placement_preview()
+                            .map(GuidePreview::Plane)
+                            .unwrap_or_else(|| self.guide_preview())
+                    },
                     [
                         (rect.width() * scale).round() as u32,
                         (rect.height() * scale).round() as u32,
@@ -1514,62 +1565,66 @@ impl eframe::App for SketchApp {
                     Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
-                self.fill_overlay(ui, rect);
-                self.selection_overlay(ui, rect);
-                self.plane_overlay(ui, rect);
-                self.placement_overlay(ui, rect);
-                let badge =
-                    Rect::from_min_size(rect.min + egui::vec2(20.0, 20.0), egui::vec2(200.0, 32.0));
-                ui.painter()
-                    .rect_filled(badge, 5.0, Color32::from_black_alpha(110));
-                ui.painter().text(
-                    badge.center(),
-                    egui::Align2::CENTER_CENTER,
-                    self.guide_badge(),
-                    egui::FontId::proportional(13.0),
-                    Color32::from_rgb(173, 210, 213),
-                );
-                if self.starter_scene || self.cylinder_example {
-                    ui.painter().text(
-                        rect.min + egui::vec2(22.0, 76.0),
-                        egui::Align2::LEFT_TOP,
-                        if self.cylinder_example {
-                            "Cylindrical lantern"
-                        } else {
-                            "Japanese garden house"
-                        },
-                        egui::FontId::proportional(24.0),
-                        Color32::from_rgb(240, 217, 172),
+                if !self.presentation.artwork {
+                    self.fill_overlay(ui, rect);
+                    self.selection_overlay(ui, rect);
+                    self.plane_overlay(ui, rect);
+                    self.placement_overlay(ui, rect);
+                    let badge = Rect::from_min_size(
+                        rect.min + egui::vec2(20.0, 20.0),
+                        egui::vec2(200.0, 32.0),
                     );
+                    ui.painter()
+                        .rect_filled(badge, 5.0, Color32::from_black_alpha(110));
                     ui.painter().text(
-                        rect.min + egui::vec2(23.0, 110.0),
-                        egui::Align2::LEFT_TOP,
-                        if self.cylinder_example {
-                            "Curved guide study / draw on the side, orbit to reach the back"
-                        } else {
-                            "Editable starter drawing / New for a blank canvas"
-                        },
+                        badge.center(),
+                        egui::Align2::CENTER_CENTER,
+                        self.guide_badge(),
                         egui::FontId::proportional(13.0),
-                        Color32::from_rgb(171, 190, 182),
+                        Color32::from_rgb(173, 210, 213),
                     );
+                    if self.starter_scene || self.cylinder_example {
+                        ui.painter().text(
+                            rect.min + egui::vec2(22.0, 76.0),
+                            egui::Align2::LEFT_TOP,
+                            if self.cylinder_example {
+                                "Cylindrical lantern"
+                            } else {
+                                "Japanese garden house"
+                            },
+                            egui::FontId::proportional(24.0),
+                            Color32::from_rgb(240, 217, 172),
+                        );
+                        ui.painter().text(
+                            rect.min + egui::vec2(23.0, 110.0),
+                            egui::Align2::LEFT_TOP,
+                            if self.cylinder_example {
+                                "Curved guide study / draw on the side, orbit to reach the back"
+                            } else {
+                                "Editable starter drawing / New for a blank canvas"
+                            },
+                            egui::FontId::proportional(13.0),
+                            Color32::from_rgb(171, 190, 182),
+                        );
+                    }
+                    if self.doc.strokes.is_empty() {
+                        ui.painter().text(
+                            rect.center() + egui::vec2(0.0, -35.0),
+                            egui::Align2::CENTER_CENTER,
+                            "Your next idea starts here.",
+                            egui::FontId::proportional(25.0),
+                            Color32::from_gray(190),
+                        );
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "Pen to draw   /   Space + drag to explore",
+                            egui::FontId::proportional(14.0),
+                            Color32::from_gray(125),
+                        );
+                    }
                 }
-                if self.doc.strokes.is_empty() {
-                    ui.painter().text(
-                        rect.center() + egui::vec2(0.0, -35.0),
-                        egui::Align2::CENTER_CENTER,
-                        "Your next idea starts here.",
-                        egui::FontId::proportional(25.0),
-                        Color32::from_gray(190),
-                    );
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "Pen to draw   /   Space + drag to explore",
-                        egui::FontId::proportional(14.0),
-                        Color32::from_gray(125),
-                    );
-                }
-                if response.hovered() {
+                if response.hovered() && !self.presentation.artwork {
                     ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
                 }
             });
@@ -1636,6 +1691,7 @@ impl eframe::App for SketchApp {
             || self.lighting_verification_frame.is_some()
             || self.fills.verification_frame.is_some()
             || self.placement.verification_frame.is_some()
+            || self.presentation.verification_frame.is_some()
             || self.close_after_recovery
             || self.recovery.busy()
         {
