@@ -1,3 +1,4 @@
+use super::ui_style;
 use super::*;
 use crate::lighting::Lighting;
 
@@ -17,16 +18,16 @@ impl SketchApp {
             .anchor(egui::Align2::RIGHT_TOP,egui::vec2(-255.0,60.0)).show(ctx,|ui| {
                 artwork_requested = self.presentation.controls(ui);
                 let light=&mut self.renderer.lighting;
-                ui.label("Directional light");
-                ui.add(egui::Slider::new(&mut light.azimuth,-180.0..=180.0).text("Direction °"));
-                ui.add(egui::Slider::new(&mut light.elevation,10.0..=85.0).text("Elevation °"));
-                ui.add(egui::Slider::new(&mut light.intensity,0.0..=1.5).text("Intensity"));
-                ui.add(egui::Slider::new(&mut light.ambient,0.0..=1.0).text("Ambient"));
+                ui_style::section(ui, "Directional light");
+                ui_style::slider_row(ui, "Direction", "light-azimuth", &mut light.azimuth, -180.0..=180.0, 1.0, "°");
+                ui_style::slider_row(ui, "Elevation", "light-elevation", &mut light.elevation, 10.0..=85.0, 1.0, "°");
+                ui_style::slider_row(ui, "Intensity", "light-intensity", &mut light.intensity, 0.0..=1.5, 1.0, "");
+                ui_style::slider_row(ui, "Ambient", "light-ambient", &mut light.ambient, 0.0..=1.0, 100.0, "%");
                 ui.separator();
                 ui.checkbox(&mut light.shadows,"Cast shadows");
                 ui.add_enabled_ui(light.shadows,|ui| {
-                    ui.add(egui::Slider::new(&mut light.strength,0.0..=1.0).text("Shadow strength"));
-                    ui.add(egui::Slider::new(&mut light.bias,0.0001..=0.03).logarithmic(true).text("Bias (world units)"));
+                    ui_style::slider_row(ui, "Shadow strength", "light-shadow-strength", &mut light.strength, 0.0..=1.0, 100.0, "%");
+                    ui_style::logarithmic_slider_row(ui, "Bias", "light-shadow-bias", &mut light.bias, 0.0001..=0.03, 1.0, "wu");
                     ui.small("Increase bias to reduce surface speckles; too much can detach thin shadows.");
                 });
                 ui.separator(); ui.checkbox(&mut light.ground,"Show ground");
@@ -34,9 +35,11 @@ impl SketchApp {
                     if light.fit_ground(&self.doc) {light.shadows=true;} else {self.status="No visible artwork to fit the ground to.".into();}
                 }
                 ui.add_enabled_ui(light.ground,|ui| {
-                    ui.horizontal(|ui| {ui.label("Height Y");ui.add(egui::DragValue::new(&mut light.ground_height).speed(0.02).range(-20_000.0..=20_000.0));});
-                    ui.horizontal(|ui| {ui.label("Center X/Z");for value in &mut light.ground_center {ui.add(egui::DragValue::new(value).speed(0.05).range(-20_000.0..=20_000.0));}});
-                    ui.horizontal(|ui| {ui.label("Size");ui.add(egui::DragValue::new(&mut light.ground_size).speed(0.2).range(0.1..=40_000.0));});
+                    ui_style::numeric_row(ui, "Height Y", "ground-height", &mut light.ground_height, Some(-20_000.0..=20_000.0), "wu");
+                    for (i, axis) in ["X", "Z"].iter().enumerate() {
+                        ui_style::numeric_row(ui, &format!("Center {axis}"), ("ground-center", i), &mut light.ground_center[i], Some(-20_000.0..=20_000.0), "wu");
+                    }
+                    ui_style::numeric_row(ui, "Size", "ground-size", &mut light.ground_size, Some(0.1..=40_000.0), "wu");
                     ui.horizontal(|ui| {ui.label("Color");ui.color_edit_button_rgb(&mut light.ground_color);});
                 });
                 if ui.button("Reset scene lighting").clicked() {*light=Lighting::default();}

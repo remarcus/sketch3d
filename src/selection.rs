@@ -1,3 +1,4 @@
+use super::ui_style;
 use super::*;
 use crate::{
     editing::{self, Snapshot},
@@ -455,17 +456,23 @@ impl SketchApp {
             ui.set_min_width(340.0);
             ui.heading("Repeat details");
             let repeat = self.repeat.as_mut().unwrap();
-            ui.add(egui::Slider::new(&mut repeat.count, 1..=MAX_REPEAT_COPIES).text("Copies"));
-            ui.horizontal(|ui| {
-                for (axis, label) in ["X", "Y", "Z"].into_iter().enumerate() {
-                    ui.add(
-                        egui::DragValue::new(&mut repeat.spacing[axis])
-                            .speed(0.02)
-                            .range(-1000.0..=1000.0)
-                            .prefix(format!("{label} ")),
-                    );
-                }
-            });
+            ui_style::integer_slider_row(
+                ui,
+                "Copies",
+                "repeat-count",
+                &mut repeat.count,
+                1..=MAX_REPEAT_COPIES,
+            );
+            for (axis, label) in ["X", "Y", "Z"].into_iter().enumerate() {
+                ui_style::numeric_row(
+                    ui,
+                    &format!("Spacing {label}"),
+                    ("repeat-spacing", axis),
+                    &mut repeat.spacing[axis],
+                    Some(-1000.0..=1000.0),
+                    "wu",
+                );
+            }
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut repeat.space, RepeatSpace::World, "World axes");
                 ui.selectable_value(&mut repeat.space, RepeatSpace::Guide, "Guide axes");
@@ -804,8 +811,19 @@ impl SketchApp {
             ui.horizontal(|ui|{for(mode,label)in[(Mode::Move,"Move [G]"),(Mode::Rotate,"Rotate [R]"),(Mode::Scale,"Scale [S]")]{if ui.selectable_label(self.transform_mode==mode,label).clicked(){self.finish();self.transform_mode=mode;self.transform_values=[0.0;3];}}});
             ui.label(match self.transform_mode{Mode::Move=>"Drag an axis arrow, or the center square to move in the view plane.",Mode::Rotate=>"Drag a colored ring to rotate around its world axis. Orbit to expose other rings.",Mode::Scale=>"Drag the gold square to scale the group and its brush widths uniformly."});
             ui.add_space(4.0);
-            if self.transform_mode==Mode::Scale{ui.add(egui::DragValue::new(&mut self.scale_value).speed(0.01).range(0.01..=100.0).prefix("Factor "));}
-            else{ui.label(if self.transform_mode==Mode::Rotate{"Rotation in degrees (X, then Y, then Z)"}else{"Offset in world units"});ui.horizontal(|ui|{for(i,label)in["X ","Y ","Z "].iter().enumerate(){ui.add(egui::DragValue::new(&mut self.transform_values[i]).speed(if self.transform_mode==Mode::Rotate{0.5}else{0.02}).prefix(*label));}});}
+            if self.transform_mode==Mode::Scale {
+                ui_style::numeric_row(ui, "Scale factor", "transform-scale", &mut self.scale_value, Some(0.01..=100.0), "×");
+            } else {
+                let unit = if self.transform_mode == Mode::Rotate { "°" } else { "wu" };
+                ui.label(if self.transform_mode==Mode::Rotate{"Rotation in degrees (X, then Y, then Z)"}else{"Offset in world units"});
+                for (i, axis) in ["X", "Y", "Z"].iter().enumerate() {
+                    ui_style::numeric_row(ui, &format!("{axis}"), ("transform-axis", i), &mut self.transform_values[i], None, unit);
+                }
+            }
+            if ui.button("Reset numeric values").clicked() {
+                self.transform_values = [0.0; 3];
+                self.scale_value = 1.0;
+            }
             if ui.button("Apply values").clicked(){self.numeric_transform();}
             ui.horizontal(|ui|{if ui.button("Duplicate").on_hover_text("Ctrl/Cmd+D").clicked(){self.duplicate_selected();}
 if ui.button("Repeat…").on_hover_text("Create evenly spaced independent copies with a live preview").clicked(){self.begin_repeat();}

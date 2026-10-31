@@ -21,16 +21,25 @@ impl SketchApp {
             self.brush.softness = 0.0;
         }
         if self.brush.kind != BrushKind::Round {
-            ui_style::field_row(ui, "Angle", |ui| {
-                ui.add(egui::Slider::new(&mut self.brush.angle_degrees, -180.0..=180.0).suffix("°"))
-            });
+            ui_style::slider_row(
+                ui,
+                "Angle",
+                "brush-angle",
+                &mut self.brush.angle_degrees,
+                -180.0..=180.0,
+                1.0,
+                "°",
+            );
             if self.brush.kind == BrushKind::Chisel {
-                ui_style::field_row(ui, "Thickness", |ui| {
-                    ui.add(
-                        egui::Slider::new(&mut self.brush.thickness, 0.02..=1.0)
-                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                    )
-                })
+                ui_style::slider_row(
+                    ui,
+                    "Thickness",
+                    "brush-thickness",
+                    &mut self.brush.thickness,
+                    0.02..=1.0,
+                    100.0,
+                    "%",
+                )
                 .on_hover_text("Thickness as a percentage of brush width.");
             }
             ui.small("Orientation starts from the guide, then follows the stroke. Orbit to view it from either side.");

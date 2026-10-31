@@ -4,7 +4,8 @@
 //! common row and section without moving application state or changing its
 //! semantics.
 
-use eframe::egui::{self, Align, Color32, Layout, RichText, Stroke, Ui, Vec2};
+use eframe::egui::{self, Align, Color32, Key, Layout, Response, RichText, Stroke, Ui, Vec2};
+use std::{hash::Hash, ops::RangeInclusive};
 
 pub const FIELD_LABEL_WIDTH: f32 = 104.0;
 pub const CONTROL_HEIGHT: f32 = 36.0;
@@ -51,6 +52,340 @@ pub fn field_row<R>(ui: &mut Ui, label: &str, add_control: impl FnOnce(&mut Ui) 
         add_control(ui)
     })
     .inner
+}
+
+#[derive(Clone)]
+struct NumericEditState {
+    text: String,
+    editing: bool,
+    warning: Option<String>,
+}
+
+/// A precise numeric editor. Enter commits; Escape restores; clicking away
+/// commits a valid value and discards an invalid one. Ranges are expressed in
+/// the stored value's units; `display_scale` allows values such as 0.35 to be
+/// edited as 35% without changing the model representation.
+pub fn numeric_field(
+    ui: &mut Ui,
+    id_source: impl Hash,
+    value: &mut f32,
+    range: Option<RangeInclusive<f32>>,
+    display_scale: f32,
+    suffix: &str,
+) -> Response {
+    let id = ui.make_persistent_id(id_source);
+    let display_scale = if display_scale.is_finite() && display_scale != 0.0 {
+        display_scale
+    } else {
+        1.0
+    };
+    let mut state = ui
+        .ctx()
+        .data(|data| data.get_temp::<NumericEditState>(id))
+        .unwrap_or_else(|| NumericEditState {
+            text: format_numeric(*value * display_scale),
+            editing: false,
+            warning: None,
+        });
+
+    if !state.editing {
+        state.text = format_numeric(*value * display_scale);
+    }
+
+    let mut response = ui.add(
+        egui::TextEdit::singleline(&mut state.text)
+            .id(id)
+            .desired_width(68.0)
+            .horizontal_align(egui::Align::RIGHT),
+    );
+    if response.gained_focus() {
+        state.editing = true;
+        state.warning = None;
+        state.text = format_numeric(*value * display_scale);
+    }
+    if response.changed() {
+        state.warning = None;
+        state.editing = true;
+    }
+
+    if state.warning.is_some() {
+        ui.painter().rect_stroke(
+            response.rect.expand(1.0),
+            3.0,
+            Stroke::new(1.5_f32, Color32::from_rgb(238, 95, 95)),
+            egui::StrokeKind::Outside,
+        );
+        response = response.on_hover_text(state.warning.as_deref().unwrap_or_default());
+    }
+
+    if state.editing && response.has_focus() {
+        let enter = ui.input(|input| input.key_pressed(Key::Enter));
+        let escape = ui.input(|input| input.key_pressed(Key::Escape));
+        if escape {
+            state.text = format_numeric(*value * display_scale);
+            state.editing = false;
+            state.warning = None;
+            response.surrender_focus();
+        } else if enter {
+            match parse_numeric(&state.text, display_scale, range.as_ref()) {
+                Ok(parsed) => {
+                    *value = parsed;
+                    state.text = format_numeric(*value * display_scale);
+                    state.editing = false;
+                    state.warning = None;
+                    response.surrender_focus();
+                }
+                Err(error) => state.warning = Some(error),
+            }
+        }
+    } else if state.editing && response.lost_focus() {
+        match parse_numeric(&state.text, display_scale, range.as_ref()) {
+            Ok(parsed) => {
+                *value = parsed;
+                state.text = format_numeric(*value * display_scale);
+                state.warning = None;
+            }
+            Err(error) => {
+                state.text = format_numeric(*value * display_scale);
+                state.warning = Some(format!("{error} Uncommitted value was discarded."));
+            }
+        }
+        state.editing = false;
+    }
+
+    if !suffix.is_empty() {
+        ui.label(egui::RichText::new(suffix).small());
+    }
+    if let Some(warning) = &state.warning {
+        ui.colored_label(Color32::from_rgb(255, 145, 145), warning);
+    }
+    ui.ctx().data_mut(|data| data.insert_temp(id, state));
+    response
+}
+
+/// Pairs the exact slider range with a keyboard-editable value in one row.
+pub fn slider_row(
+    ui: &mut Ui,
+    label: &str,
+    id_source: impl Hash + Clone,
+    value: &mut f32,
+    range: RangeInclusive<f32>,
+    display_scale: f32,
+    suffix: &str,
+) -> Response {
+    slider_row_inner(
+        ui,
+        label,
+        id_source,
+        value,
+        range,
+        display_scale,
+        suffix,
+        false,
+    )
+}
+
+pub fn logarithmic_slider_row(
+    ui: &mut Ui,
+    label: &str,
+    id_source: impl Hash + Clone,
+    value: &mut f32,
+    range: RangeInclusive<f32>,
+    display_scale: f32,
+    suffix: &str,
+) -> Response {
+    slider_row_inner(
+        ui,
+        label,
+        id_source,
+        value,
+        range,
+        display_scale,
+        suffix,
+        true,
+    )
+}
+
+fn slider_row_inner(
+    ui: &mut Ui,
+    label: &str,
+    id_source: impl Hash,
+    value: &mut f32,
+    range: RangeInclusive<f32>,
+    display_scale: f32,
+    suffix: &str,
+    logarithmic: bool,
+) -> Response {
+    field_row(ui, label, |ui| {
+        let edit_width = 68.0 + if suffix.is_empty() { 0.0 } else { 18.0 };
+        let slider_width = (ui.available_width() - edit_width - 6.0).max(32.0);
+        let mut slider = egui::Slider::new(value, range.clone())
+            .show_value(false)
+            .trailing_fill(false);
+        if logarithmic {
+            slider = slider.logarithmic(true);
+        }
+        ui.add_sized(Vec2::new(slider_width, CONTROL_HEIGHT), slider);
+        numeric_field(ui, id_source, value, Some(range), display_scale, suffix)
+    })
+}
+
+pub fn numeric_row(
+    ui: &mut Ui,
+    label: &str,
+    id_source: impl Hash,
+    value: &mut f32,
+    range: Option<RangeInclusive<f32>>,
+    suffix: &str,
+) -> Response {
+    field_row(ui, label, |ui| {
+        numeric_field(ui, id_source, value, range, 1.0, suffix)
+    })
+}
+
+pub fn integer_slider_row(
+    ui: &mut Ui,
+    label: &str,
+    id_source: impl Hash + Clone,
+    value: &mut usize,
+    range: RangeInclusive<usize>,
+) -> Response {
+    field_row(ui, label, |ui| {
+        let edit_width = 68.0;
+        let slider_width = (ui.available_width() - edit_width - 6.0).max(32.0);
+        ui.add_sized(
+            Vec2::new(slider_width, CONTROL_HEIGHT),
+            egui::Slider::new(value, range.clone()).show_value(false),
+        );
+        integer_field(ui, id_source, value, range)
+    })
+}
+
+fn integer_field(
+    ui: &mut Ui,
+    id_source: impl Hash,
+    value: &mut usize,
+    range: RangeInclusive<usize>,
+) -> Response {
+    let id = ui.make_persistent_id(id_source);
+    let mut state = ui
+        .ctx()
+        .data(|data| data.get_temp::<NumericEditState>(id))
+        .unwrap_or_else(|| NumericEditState {
+            text: value.to_string(),
+            editing: false,
+            warning: None,
+        });
+    if !state.editing {
+        state.text = value.to_string();
+    }
+    let mut response = ui.add(
+        egui::TextEdit::singleline(&mut state.text)
+            .id(id)
+            .desired_width(68.0)
+            .horizontal_align(egui::Align::RIGHT),
+    );
+    if response.gained_focus() {
+        state.editing = true;
+        state.warning = None;
+        state.text = value.to_string();
+    }
+    if response.changed() {
+        state.editing = true;
+        state.warning = None;
+    }
+    if let Some(warning) = &state.warning {
+        ui.painter().rect_stroke(
+            response.rect.expand(1.0),
+            3.0,
+            Stroke::new(1.5_f32, Color32::from_rgb(238, 95, 95)),
+            egui::StrokeKind::Outside,
+        );
+        response = response.on_hover_text(warning);
+    }
+    if state.editing && response.has_focus() {
+        let enter = ui.input(|input| input.key_pressed(Key::Enter));
+        let escape = ui.input(|input| input.key_pressed(Key::Escape));
+        if escape {
+            state.text = value.to_string();
+            state.editing = false;
+            state.warning = None;
+            response.surrender_focus();
+        } else if enter {
+            match state.text.trim().parse::<usize>() {
+                Ok(parsed) if range.contains(&parsed) => {
+                    *value = parsed;
+                    state.text = parsed.to_string();
+                    state.editing = false;
+                    state.warning = None;
+                    response.surrender_focus();
+                }
+                Ok(_) => {
+                    state.warning = Some(format!(
+                        "Enter a whole number from {} to {}.",
+                        range.start(),
+                        range.end()
+                    ));
+                }
+                Err(_) => state.warning = Some("Enter a valid whole number.".into()),
+            }
+        }
+    } else if state.editing && response.lost_focus() {
+        match state.text.trim().parse::<usize>() {
+            Ok(parsed) if range.contains(&parsed) => {
+                *value = parsed;
+                state.text = parsed.to_string();
+                state.warning = None;
+            }
+            _ => {
+                state.text = value.to_string();
+                state.warning = Some(format!(
+                    "Invalid value was discarded. Enter a whole number from {} to {}.",
+                    range.start(),
+                    range.end()
+                ));
+            }
+        }
+        state.editing = false;
+    }
+    if let Some(warning) = &state.warning {
+        ui.colored_label(Color32::from_rgb(255, 145, 145), warning);
+    }
+    ui.ctx().data_mut(|data| data.insert_temp(id, state));
+    response
+}
+
+fn format_numeric(value: f32) -> String {
+    if !value.is_finite() {
+        return "0".into();
+    }
+    let text = format!("{value:.6}");
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
+fn parse_numeric(
+    text: &str,
+    display_scale: f32,
+    range: Option<&RangeInclusive<f32>>,
+) -> Result<f32, String> {
+    let shown = text
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| "Enter a valid number.".to_owned())?;
+    let value = shown / display_scale;
+    if !value.is_finite() {
+        return Err("Value must be finite.".into());
+    }
+    if let Some(range) = range {
+        if !range.contains(&value) {
+            return Err(format!(
+                "Enter a value from {} to {}.",
+                format_numeric(*range.start() * display_scale),
+                format_numeric(*range.end() * display_scale)
+            ));
+        }
+    }
+    Ok(value)
 }
 
 /// Shows the interactive states used by shared controls. Hover/pressed and
@@ -113,4 +448,23 @@ pub fn component_showcase(ui: &mut Ui) {
 
 fn showcase_row<R>(ui: &mut Ui, label: &str, add_sample: impl FnOnce(&mut Ui) -> R) -> R {
     field_row(ui, label, add_sample)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numeric_parser_preserves_precision_and_display_units() {
+        assert!((parse_numeric("1.234567", 1.0, None).unwrap() - 1.234567).abs() < 1e-6);
+        assert!((parse_numeric("35", 100.0, Some(&(0.0..=1.0))).unwrap() - 0.35).abs() < 1e-6);
+    }
+
+    #[test]
+    fn numeric_parser_rejects_nonfinite_and_out_of_range_values() {
+        assert!(parse_numeric("NaN", 1.0, None).is_err());
+        assert!(parse_numeric("inf", 1.0, None).is_err());
+        assert!(parse_numeric("101", 100.0, Some(&(0.0..=1.0))).is_err());
+        assert!(parse_numeric("nope", 1.0, None).is_err());
+    }
 }

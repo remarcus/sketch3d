@@ -1,15 +1,28 @@
+use super::ui_style;
 use super::*;
 use crate::{document::PressureMapping, export_check};
 
 fn mapping_controls(ui: &mut egui::Ui, label: &str, mapping: &mut PressureMapping) {
     ui.checkbox(&mut mapping.enabled, label);
     if mapping.enabled {
-        ui.add(
-            egui::Slider::new(&mut mapping.minimum, 0.0..=1.0)
-                .text("Minimum")
-                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+        ui_style::slider_row(
+            ui,
+            "Minimum",
+            (label, "minimum"),
+            &mut mapping.minimum,
+            0.0..=1.0,
+            100.0,
+            "%",
         );
-        ui.add(egui::Slider::new(&mut mapping.curve, 0.3..=3.0).text("Response"));
+        ui_style::slider_row(
+            ui,
+            "Response",
+            (label, "curve"),
+            &mut mapping.curve,
+            0.3..=3.0,
+            1.0,
+            "",
+        );
     }
 }
 
@@ -20,24 +33,16 @@ impl SketchApp {
             if self.brush.kind == BrushKind::Chisel {
                 mapping_controls(ui, "Pressure: thickness", &mut self.brush.dynamics.thickness);
             }
-            ui.add(
-                egui::Slider::new(&mut self.brush.opacity, 0.0..=1.0)
-                    .text("Opacity")
-                    .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-            );
+            ui_style::slider_row(ui, "Opacity", "brush-opacity", &mut self.brush.opacity, 0.0..=1.0, 100.0, "%");
             if self.brush.kind != BrushKind::Chisel {
-                ui.add(
-                    egui::Slider::new(&mut self.brush.softness, 0.0..=1.0)
-                        .text("Soft edges")
-                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                );
+                ui_style::slider_row(ui, "Soft edges", "brush-softness", &mut self.brush.softness, 0.0..=1.0, 100.0, "%");
             }
             mapping_controls(ui, "Pressure: opacity", &mut self.brush.dynamics.opacity);
             if self.brush.kind != BrushKind::Round {
                 ui.checkbox(&mut self.brush.dynamics.tilt_orientation, "Tilt orientation").on_hover_text("Uses reported pen lean to orient the cross-section. Missing or upright tilt falls back to the manual frame.");
             }
-            ui.add(egui::Slider::new(&mut self.brush.dynamics.taper_start, 0.0..=10.0).text("Start taper"));
-            ui.add(egui::Slider::new(&mut self.brush.dynamics.taper_end, 0.0..=10.0).text("End taper"));
+            ui_style::slider_row(ui, "Start taper", "taper-start", &mut self.brush.dynamics.taper_start, 0.0..=10.0, 1.0, "wu");
+            ui_style::slider_row(ui, "End taper", "taper-end", &mut self.brush.dynamics.taper_end, 0.0..=10.0, 1.0, "wu");
             ui.small("Taper length is in world units. Mouse pressure is constant; missing tilt uses the manual angle.");
         });
     }

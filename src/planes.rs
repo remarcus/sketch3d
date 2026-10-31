@@ -1,3 +1,4 @@
+use super::ui_style;
 use super::*;
 use crate::{editing, gizmo};
 
@@ -73,29 +74,43 @@ impl SketchApp {
                 .small()
                 .color(Color32::from_rgb(119, 203, 195)),
         );
-        ui.label("Rotation in degrees");
-        ui.horizontal(|ui| {
-            for (i, label) in ["X ", "Y ", "Z "].iter().enumerate() {
-                ui.add(
-                    egui::DragValue::new(&mut self.guide.rotation_degrees[i])
-                        .prefix(*label)
-                        .speed(0.5)
-                        .range(-180.0..=180.0),
-                );
-            }
-        });
-        ui.label("Anchor in world units");
-        ui.horizontal(|ui| {
-            for (i, label) in ["X ", "Y ", "Z "].iter().enumerate() {
-                ui.add(
-                    egui::DragValue::new(&mut self.guide.anchor[i])
-                        .prefix(*label)
-                        .speed(0.02)
-                        .range(-20000.0..=20000.0),
-                );
-            }
-        });
-        ui.add(egui::Slider::new(&mut self.guide.depth,-4.0..=4.0).text("Offset")).on_hover_text("Move the plane along its normal, relative to the anchor. Existing strokes stay fixed.");
+        ui_style::section(ui, "Guide geometry");
+        for (i, axis) in ["X", "Y", "Z"].iter().enumerate() {
+            ui_style::field_row(ui, &format!("Rotation {axis}"), |ui| {
+                ui_style::numeric_field(
+                    ui,
+                    ("guide-rotation", i),
+                    &mut self.guide.rotation_degrees[i],
+                    Some(-180.0..=180.0),
+                    1.0,
+                    "°",
+                )
+            });
+        }
+        for (i, axis) in ["X", "Y", "Z"].iter().enumerate() {
+            ui_style::field_row(ui, &format!("Anchor {axis}"), |ui| {
+                ui_style::numeric_field(
+                    ui,
+                    ("guide-anchor", i),
+                    &mut self.guide.anchor[i],
+                    Some(-20_000.0..=20_000.0),
+                    1.0,
+                    "wu",
+                )
+            });
+        }
+        ui_style::slider_row(
+            ui,
+            "Offset",
+            "guide-depth",
+            &mut self.guide.depth,
+            -4.0..=4.0,
+            1.0,
+            "wu",
+        )
+        .on_hover_text(
+            "Move the plane along its normal, relative to the anchor. Existing strokes stay fixed.",
+        );
         if self.guide != before {
             self.finish();
         }
