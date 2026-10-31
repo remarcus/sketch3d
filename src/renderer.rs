@@ -664,6 +664,256 @@ impl SceneRenderer {
         target.id
     }
 
+    /// Render clean artwork into an independent target for PNG export.
+    pub fn render_png_pixels(
+        &mut self,
+        doc: &Document,
+        camera: &Camera,
+        size: [u32; 2],
+        background: [f32; 3],
+        settings: Lighting,
+    ) -> Result<Vec<u8>, String> {
+        let limit = self.state.device.limits().max_texture_dimension_2d;
+        let pixel_count = (size[0] as u64)
+            .checked_mul(size[1] as u64)
+            .ok_or("PNG dimensions overflow")?;
+        if size.contains(&0)
+            || size
+                .iter()
+                .any(|dimension| *dimension > limit || *dimension > 8192)
+            || pixel_count > 8_388_608
+        {
+            return Err(
+                "Image dimensions exceed the 8192-pixel or 8-megapixel export limit".into(),
+            );
+        }
+        if !background
+            .iter()
+            .all(|channel| channel.is_finite() && (0.0..=1.0).contains(channel))
+        {
+            return Err("Canvas background must contain finite RGB values from 0 to 1".into());
+        }
+
+        let extent = wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        };
+        let sample_count = canvas_sample_count(&self.state.adapter);
+        let color = self.state.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Artwork PNG export target"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let color_view = color.create_view(&Default::default());
+        let multisample_color = (sample_count > 1).then(|| {
+            self.state
+                .device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Artwork PNG multisample color"),
+                    size: extent,
+                    mip_level_count: 1,
+                    sample_count,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        });
+        let depth_texture = self.state.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Artwork PNG depth"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth = depth_texture.create_view(&Default::default());
+
+        let solid = TextureSettings::default();
+        for texture_settings in std::iter::once(solid).chain(
+            doc.strokes
+                .iter()
+                .filter(|stroke| doc.visible(stroke))
+                .map(|s| s.brush.texture),
+        ) {
+            let key = texture::key(texture_settings);
+            if !self.textures.contains_key(&key) {
+                let bind = self.create_mask(texture_settings);
+                self.textures.insert(key, bind);
+            }
+        }
+        let meshes: Vec<_> = doc
+            .strokes
+            .iter()
+            .filter(|stroke| doc.visible(stroke))
+            .map(|stroke| {
+                let vertices = geometry::stroke_mesh(stroke);
+                (stroke, self.mesh(&vertices, stroke.points.len()))
+            })
+            .collect();
+        let bounds = meshes
+            .iter()
+            .filter_map(|(_, mesh)| mesh.bounds)
+            .reduce(|(lo, hi), (min, max)| (lo.min(min), hi.max(max)));
+        let shadow_enabled = settings.shadows && bounds.is_some();
+        let fit = bounds.map(|(min, max)| lighting::shadow_fit(min, max, settings));
+        let light = settings.direction();
+        let uniform = SceneUniform {
+            view: camera
+                .matrix(size[0] as f32 / size[1] as f32)
+                .to_cols_array(),
+            light_view: fit
+                .as_ref()
+                .map_or(Mat4::IDENTITY, |f| f.matrix)
+                .to_cols_array(),
+            light: [light.x, light.y, light.z, settings.ambient],
+            settings: [
+                settings.intensity,
+                f32::from(shadow_enabled),
+                settings.strength,
+                settings.bias / fit.as_ref().map_or(1.0, |f| f.depth_span),
+            ],
+            shadow: [
+                1.0 / SHADOW_SIZE as f32,
+                settings.bias,
+                f32::from(sample_count > 1),
+                0.0,
+            ],
+        };
+        self.state
+            .queue
+            .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
+        let mut encoder =
+            self.state
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Artwork PNG export"),
+                });
+        if shadow_enabled {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Artwork PNG shadows"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.shadow_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.shadow_pipeline);
+            pass.set_bind_group(0, &self.bind, &[]);
+            for (stroke, mesh) in &meshes {
+                pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
+                pass.set_vertex_buffer(0, mesh.buffer.slice(..));
+                pass.draw(0..mesh.count, 0..1);
+            }
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Artwork PNG color"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: multisample_color.as_ref().unwrap_or(&color_view),
+                    resolve_target: multisample_color.as_ref().map(|_| &color_view),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: crate::presentation::srgb_to_linear(background[0]) as f64,
+                            g: crate::presentation::srgb_to_linear(background[1]) as f64,
+                            b: crate::presentation::srgb_to_linear(background[2]) as f64,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_bind_group(0, &self.bind, &[]);
+            pass.set_bind_group(1, &self.textures[&texture::key(solid)], &[]);
+            pass.set_bind_group(2, &self.shadow_bind, &[]);
+            if settings.ground {
+                pass.set_pipeline(&self.triangles);
+                if let Some((cached_settings, ground)) = &self.ground {
+                    if *cached_settings == settings {
+                        pass.set_vertex_buffer(0, ground.buffer.slice(..));
+                        pass.draw(0..ground.count, 0..1);
+                    }
+                }
+            }
+            pass.set_pipeline(&self.triangles);
+            for (stroke, mesh) in &meshes {
+                pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
+                pass.set_vertex_buffer(0, mesh.buffer.slice(..));
+                pass.draw(0..mesh.count, 0..1);
+            }
+        }
+        let row = (size[0] * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buffer = self.state.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Artwork PNG readback"),
+            size: (row as u64) * size[1] as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &color,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(size[1]),
+                },
+            },
+            extent,
+        );
+        self.state.queue.submit(Some(encoder.finish()));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        self.state.device.poll(wgpu::Maintain::Wait);
+        receiver
+            .recv()
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        let mapped = buffer.slice(..).get_mapped_range();
+        let pixels = mapped
+            .chunks(row as usize)
+            .flat_map(|bytes| bytes[..size[0] as usize * 4].iter().copied())
+            .collect();
+        drop(mapped);
+        buffer.unmap();
+        Ok(pixels)
+    }
+
     /// Verification-only readback; normal frames never wait for GPU pixels.
     pub fn verification_pixels(&self) -> Vec<u8> {
         let target = self.target.as_ref().unwrap();

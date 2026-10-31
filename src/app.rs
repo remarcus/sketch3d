@@ -41,6 +41,8 @@ mod placement_checks;
 mod placement_ui;
 #[path = "planes.rs"]
 mod planes;
+#[path = "png_export_ui.rs"]
+mod png_export_ui;
 #[path = "presentation_checks.rs"]
 mod presentation_checks;
 #[path = "presentation_ui.rs"]
@@ -172,6 +174,8 @@ pub struct SketchApp {
     export_job: Option<export_ui::ExportJob>,
     last_export_result: Option<Result<crate::export::ExportSummary, String>>,
     export_snapshot: Option<export_ui::ExportSnapshot>,
+    png_export: png_export_ui::PngExportUi,
+    png_verification_frame: Option<u32>,
 }
 impl SketchApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -304,6 +308,8 @@ impl SketchApp {
             export_job: None,
             last_export_result: None,
             export_snapshot: None,
+            png_export: Default::default(),
+            png_verification_frame: None,
         };
         if std::env::args().any(|a| a == "--verify-lines") {
             app.verification_frame = None;
@@ -342,6 +348,10 @@ impl SketchApp {
         } else if std::env::args().any(|a| a == "--verify-palette") {
             app.verification_frame = None;
             app.load_fill_study();
+        } else if std::env::args().any(|a| a == "--verify-png") {
+            app.verification_frame = None;
+            app.load_fill_study();
+            app.png_verification_frame = Some(0);
         } else if std::env::args().any(|a| a == "--verify-vase") {
             app.verification_frame = None;
             app.vase_verification_frame = Some(0);
@@ -1336,6 +1346,9 @@ impl eframe::App for SketchApp {
         self.poll_recovery(ctx);
         self.ensure_workspace();
         self.poll_export(ctx);
+        if let Some(status) = self.png_export.poll(ctx) {
+            self.status = status;
+        }
         self.capture_verification(ctx);
         if ctx.input(|i| i.viewport().close_requested()) {
             self.leave_artwork();
@@ -1345,10 +1358,10 @@ impl eframe::App for SketchApp {
         }
         if ctx.input(|i| i.viewport().close_requested())
             && !self.allow_close
-            && self.export_job.is_some()
+            && (self.export_job.is_some() || self.png_export.is_running())
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.status = "Export is finishing. Close again when it completes.".into();
+            self.status = "An image export is finishing. Close again when it completes.".into();
         } else if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             if self.close_cleanup_failed {
@@ -1571,7 +1584,7 @@ impl eframe::App for SketchApp {
                     {
                         self.save(true);
                     }
-                    ui.add_enabled_ui(self.can_export(false), |ui| {
+                    ui.add_enabled_ui(self.can_export(false) || self.can_export_png(), |ui| {
                         ui.menu_button("Export", |ui| {
                             if ui.button("Whole drawing (.glb)").clicked() {
                                 ui.close_menu();
@@ -1587,9 +1600,19 @@ impl eframe::App for SketchApp {
                                 ui.close_menu();
                                 self.export_dialog(true, ctx);
                             }
+                            if ui
+                                .add_enabled(
+                                    self.can_export_png(),
+                                    egui::Button::new("Artwork image (.png)…"),
+                                )
+                                .clicked()
+                            {
+                                ui.close_menu();
+                                self.png_export.begin();
+                            }
                         });
                     });
-                    if self.export_job.is_some() {
+                    if self.export_job.is_some() || self.png_export.is_running() {
                         ui.spinner();
                     }
                     ui.separator();
@@ -1662,6 +1685,7 @@ impl eframe::App for SketchApp {
             self.artwork_bar(ctx);
         }
         self.repeat_modal(ctx);
+        self.png_export.show(ctx);
         let pen = self.pen.as_ref().map(|p| p.drain()).unwrap_or_default();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -1717,6 +1741,10 @@ impl eframe::App for SketchApp {
                     Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
+                if let Some((destination, size, allow_overwrite)) = self.png_export.take_request() {
+                    self.start_png_export(destination, size, allow_overwrite, ctx);
+                }
+                self.verify_png_export(ctx);
                 if !self.presentation.artwork {
                     self.line_overlay(ui, rect);
                     self.fill_overlay(ui, rect);

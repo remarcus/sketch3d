@@ -411,3 +411,9 @@ Expand **Scene palette** in the workspace tools to add the current RGB color as 
 Choose **Sample artwork [I]** or press I, then click or tap visible ink or a planar fill. Sampling picks the nearest visible artwork and reads its stored base color, so lighting and selection highlighting do not affect the result. Hidden layers are skipped; visible locked layers can be sampled. A sample changes the current color only. Contact is consumed until release, so a press-drag cannot leave a mark. Escape or **Cancel sampling** returns to the brush without changing artwork.
 
 Run `cargo run --release -- --verify-palette` for fill/outline sampling, visibility/locking, contact cancellation, palette CRUD, and restart persistence checks. It writes `verification/palette-preview.png`, `verification/palette-report.json`, and an isolated palette file under `verification/palette/`.
+
+## Artwork image export
+
+Choose **Export → Artwork image (.png)…** to save the current view as a PNG. Set dimensions up to 8192 pixels per side and 8 megapixels total. The export uses the current camera target and vertical framing; changing the output aspect changes the horizontal framing. It keeps the current background and lighting and includes visible layers, while omitting guides, selection tint, handles, and interface overlays. The export renders from a snapshot and does not change the drawing, camera, selection, history, or workspace presentation.
+
+An existing destination requires a separate overwrite confirmation. Run `cargo run --release -- --verify-png` to render and inspect the storefront fixture at two dimensions; it writes `verification/artwork-1024x768.png`, `verification/artwork-640x480.png`, and `verification/png-report.json`.
