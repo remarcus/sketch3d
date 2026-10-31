@@ -13,6 +13,25 @@ pub(super) struct Drag {
     view_normal: Vec3,
     translation: Vec3,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RepeatSpace {
+    World,
+    Guide,
+}
+
+#[derive(Clone)]
+pub(super) struct RepeatState {
+    source: Snapshot,
+    count: usize,
+    spacing: [f32; 3],
+    space: RepeatSpace,
+}
+
+const MAX_REPEAT_COPIES: usize = 100;
+const MAX_DOCUMENT_STROKES: usize = 100_000;
+const MAX_DOCUMENT_POINTS: usize = 2_000_000;
+
 impl SketchApp {
     pub(super) fn sync_selection(&mut self) {
         if self.selected.is_empty() {
@@ -220,6 +239,424 @@ impl SketchApp {
         self.status =
             "Duplicated selection with a small offset. Move the copies with the handles.".into();
     }
+
+    fn repeated_strokes(&self, repeat: &RepeatState) -> Result<Vec<(usize, Stroke)>, String> {
+        if repeat.count == 0 || repeat.count > MAX_REPEAT_COPIES {
+            return Err(format!("Repeat count must be 1–{MAX_REPEAT_COPIES}"));
+        }
+        let selected: HashSet<_> = repeat.source.iter().map(|(_, stroke)| stroke.id).collect();
+        if selected.len() != self.selected.len()
+            || repeat
+                .source
+                .iter()
+                .any(|(_, stroke)| !self.doc.editable(stroke))
+        {
+            return Err("Repeat requires a visible selection on editable layers".into());
+        }
+        let spacing = Vec3::from(repeat.spacing);
+        if !spacing.is_finite() || spacing.length_squared() <= 1.0e-10 {
+            return Err("Enter a non-zero spacing offset".into());
+        }
+        let stroke_count = repeat
+            .source
+            .len()
+            .checked_mul(repeat.count)
+            .ok_or("Repeat would create too many strokes")?;
+        if self
+            .doc
+            .strokes
+            .len()
+            .checked_add(stroke_count)
+            .is_none_or(|count| count > MAX_DOCUMENT_STROKES)
+        {
+            return Err("Repeat exceeds the 100,000-stroke document limit".into());
+        }
+        let source_points: usize = repeat
+            .source
+            .iter()
+            .map(|(_, stroke)| stroke.points.len())
+            .sum();
+        let copied_points = source_points
+            .checked_mul(repeat.count)
+            .ok_or("Repeat would create too many points")?;
+        let total_points: usize = self
+            .doc
+            .strokes
+            .iter()
+            .map(|stroke| stroke.points.len())
+            .sum();
+        if total_points
+            .checked_add(copied_points)
+            .is_none_or(|count| count > MAX_DOCUMENT_POINTS)
+        {
+            return Err("Repeat exceeds the 2,000,000-point document limit".into());
+        }
+        let total_ids = u64::try_from(stroke_count).map_err(|_| "No more stroke IDs available")?;
+        if self
+            .next_id
+            .checked_add(total_ids)
+            .is_none_or(|next| next == u64::MAX)
+        {
+            return Err("No more stroke IDs available".into());
+        }
+        let local_offset = match repeat.space {
+            RepeatSpace::World => spacing,
+            RepeatSpace::Guide => {
+                let rotation = if self.use_cylinder {
+                    self.cylinder.rotation()
+                } else if self.use_revolved {
+                    self.revolved.rotation()
+                } else {
+                    self.guide.rotation()
+                };
+                rotation * spacing
+            }
+        };
+        let mut next_group = self
+            .doc
+            .strokes
+            .iter()
+            .filter_map(|stroke| stroke.group_id)
+            .max()
+            .unwrap_or(0);
+        let mut copies = Vec::with_capacity(stroke_count);
+        for instance in 1..=repeat.count {
+            let translation = local_offset * instance as f32;
+            let mut copy =
+                editing::transformed(&repeat.source, Vec3::ZERO, translation, Quat::IDENTITY, 1.0)
+                    .map_err(str::to_owned)?;
+            editing::remap_duplicate_groups_with_next(
+                &self.doc,
+                &repeat.source,
+                &mut copy,
+                &mut next_group,
+            )?;
+            for (_, stroke) in &mut copy {
+                stroke.id = self.next_id + copies.len() as u64;
+                copies.push((0, stroke.clone()));
+            }
+        }
+        let base = self.doc.strokes.len();
+        for (index, (position, _)) in copies.iter_mut().enumerate() {
+            *position = base + index;
+        }
+        Ok(copies)
+    }
+
+    fn update_repeat_preview(&mut self) -> Result<Vec<Stroke>, String> {
+        let Some(repeat) = &self.repeat else {
+            self.renderer.set_repeat_preview(&[]);
+            return Ok(Vec::new());
+        };
+        match self.repeated_strokes(repeat) {
+            Ok(copies) => {
+                let strokes: Vec<_> = copies.into_iter().map(|(_, stroke)| stroke).collect();
+                self.renderer.set_repeat_preview(&strokes);
+                Ok(strokes)
+            }
+            Err(error) => {
+                self.renderer.set_repeat_preview(&[]);
+                Err(error)
+            }
+        }
+    }
+
+    fn begin_repeat(&mut self) {
+        self.finish();
+        let source = editing::snapshot(&self.doc, &self.selected);
+        if source.is_empty() || source.len() != self.selected.len() {
+            self.status = "Select visible strokes on unlocked layers to repeat".into();
+            return;
+        }
+        let guide_rotation = if self.use_cylinder {
+            self.cylinder.rotation()
+        } else if self.use_revolved {
+            self.revolved.rotation()
+        } else {
+            self.guide.rotation()
+        };
+        let axis = guide_rotation * Vec3::X;
+        let (minimum, maximum) = source
+            .iter()
+            .flat_map(|(_, stroke)| {
+                let extent = crate::geometry::stroke_extent(stroke);
+                stroke.points.iter().map(move |point| {
+                    let projection = point.position.dot(axis);
+                    (projection - extent, projection + extent)
+                })
+            })
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), range| {
+                (min.min(range.0), max.max(range.1))
+            });
+        let spacing = (maximum - minimum + 0.2).max(0.35);
+        self.repeat = Some(RepeatState {
+            source,
+            count: 3,
+            spacing: [spacing, 0.0, 0.0],
+            space: RepeatSpace::Guide,
+        });
+        if let Err(error) = self.update_repeat_preview() {
+            self.status = error;
+        }
+    }
+
+    fn cancel_repeat(&mut self) {
+        self.repeat = None;
+        self.renderer.set_repeat_preview(&[]);
+    }
+
+    fn apply_repeat(&mut self) {
+        let Some(repeat) = &self.repeat else {
+            return;
+        };
+        let copies = match self.repeated_strokes(repeat) {
+            Ok(copies) => copies,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+        if copies.is_empty() {
+            self.status = "Repeat has no copies to apply".into();
+            return;
+        }
+        let new_selection: HashSet<_> = copies.iter().map(|(_, stroke)| stroke.id).collect();
+        let edit = Edit::Change {
+            before: Vec::new(),
+            after: copies,
+        };
+        self.next_id += new_selection.len() as u64;
+        edit.apply(&mut self.doc, true);
+        self.undo.push(edit);
+        self.redo.clear();
+        self.selected = new_selection;
+        self.cancel_repeat();
+        self.dirty = true;
+        self.record_recovery_edit();
+        self.renderer.invalidate();
+        self.status = "Repeated copies added. Undo removes the entire repeat.".into();
+    }
+
+    pub(super) fn repeat_modal(&mut self, ctx: &egui::Context) {
+        if self.repeat.is_none() {
+            return;
+        }
+        if ctx.input(|input| input.key_pressed(Key::Escape)) {
+            self.cancel_repeat();
+            return;
+        }
+        let preview = self
+            .repeat
+            .as_ref()
+            .map(|repeat| self.repeated_strokes(repeat));
+        let mut apply = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("repeat-details-modal")).show(ctx, |ui| {
+            ui.set_min_width(340.0);
+            ui.heading("Repeat details");
+            let repeat = self.repeat.as_mut().unwrap();
+            ui.add(egui::Slider::new(&mut repeat.count, 1..=MAX_REPEAT_COPIES).text("Copies"));
+            ui.horizontal(|ui| {
+                for (axis, label) in ["X", "Y", "Z"].into_iter().enumerate() {
+                    ui.add(
+                        egui::DragValue::new(&mut repeat.spacing[axis])
+                            .speed(0.02)
+                            .range(-1000.0..=1000.0)
+                            .prefix(format!("{label} ")),
+                    );
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut repeat.space, RepeatSpace::World, "World axes");
+                ui.selectable_value(&mut repeat.space, RepeatSpace::Guide, "Guide axes");
+            });
+            match preview.as_ref().unwrap() {
+                Ok(copies) => {
+                    ui.label(format!("Previewing {} strokes", copies.len()));
+                    ui.label("Copies remain individually editable; Apply is one undo step.");
+                }
+                Err(error) => {
+                    ui.colored_label(egui::Color32::LIGHT_RED, error);
+                }
+            }
+            ui.horizontal(|ui| {
+                apply = ui
+                    .add_enabled(
+                        preview.as_ref().is_some_and(Result::is_ok),
+                        egui::Button::new("Apply"),
+                    )
+                    .clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        let _ = self.update_repeat_preview();
+        if cancel {
+            self.cancel_repeat();
+        } else if apply {
+            self.apply_repeat();
+        }
+    }
+
+    pub(super) fn verify_repeat(&mut self, ctx: &egui::Context) {
+        let Some(frame) = self.repeat_verification_frame else {
+            return;
+        };
+        if frame == 1 {
+            self.guide.rotation_degrees = Vec3::new(0.0, 37.0, 0.0);
+            let source_ids: HashSet<_> = self
+                .doc
+                .strokes
+                .iter()
+                .filter(|stroke| self.doc.editable(stroke))
+                .map(|stroke| stroke.id)
+                .collect();
+            assert!(self.doc.strokes.iter().any(|stroke| stroke.fill.is_some()));
+            let grouped = editing::group_selected(&self.doc, &source_ids).unwrap();
+            grouped.apply(&mut self.doc, true);
+            self.undo.push(grouped);
+            self.selected = source_ids.clone();
+            self.select_mode = true;
+            let group = self.doc.strokes[0].group_id.unwrap();
+            let grouped_doc = self.doc.strokes.clone();
+            let history_depth = self.undo.len();
+            let repeat = RepeatState {
+                source: editing::snapshot(&self.doc, &source_ids),
+                count: 3,
+                spacing: [2.0, 0.0, 0.0],
+                space: RepeatSpace::Guide,
+            };
+            self.repeat = Some(repeat.clone());
+            let copies = self
+                .repeated_strokes(self.repeat.as_ref().unwrap())
+                .unwrap();
+            assert_eq!(copies.len(), source_ids.len() * 3);
+            let basis = self.guide.rotation() * Vec3::X;
+            for instance in 0..3 {
+                let copy_group = copies[instance * source_ids.len()].1.group_id.unwrap();
+                assert_ne!(copy_group, group);
+                assert!(
+                    copies[instance * source_ids.len()..(instance + 1) * source_ids.len()]
+                        .iter()
+                        .all(|(_, stroke)| stroke.group_id == Some(copy_group))
+                );
+                for (source_index, (_, stroke)) in copies
+                    [instance * source_ids.len()..(instance + 1) * source_ids.len()]
+                    .iter()
+                    .enumerate()
+                {
+                    let source = &self.repeat.as_ref().unwrap().source[source_index].1;
+                    assert_eq!(stroke.fill, source.fill);
+                    assert_eq!(stroke.color, source.color);
+                    assert_eq!(stroke.brush, source.brush);
+                    assert_eq!(stroke.radius, source.radius);
+                    assert_eq!(stroke.layer_id, source.layer_id);
+                    assert!(
+                        (stroke.points[0].position
+                            - source.points[0].position
+                            - basis * (2.0 * (instance + 1) as f32))
+                            .length()
+                            < 1.0e-4
+                    );
+                }
+            }
+            let expected_copy_count = copies.len();
+            let copied_ids: HashSet<_> = copies.iter().map(|(_, stroke)| stroke.id).collect();
+            assert_eq!(copied_ids.len(), expected_copy_count);
+            assert!(copied_ids.is_disjoint(&source_ids));
+            self.renderer.set_repeat_preview(
+                &copies
+                    .iter()
+                    .map(|(_, stroke)| stroke.clone())
+                    .collect::<Vec<_>>(),
+            );
+            self.cancel_repeat();
+            assert_eq!(self.doc.strokes, grouped_doc);
+            assert_eq!(self.undo.len(), history_depth);
+            self.repeat = Some(repeat);
+            self.update_repeat_preview().unwrap();
+            assert_eq!(expected_copy_count, source_ids.len() * 3);
+        }
+        if frame == 2 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+        }
+        let shot = ctx.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        if let Some(image) = shot {
+            let root = std::env::current_dir().unwrap().join("verification");
+            let bytes: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+            image::save_buffer(
+                root.join("repeat-preview.png"),
+                &bytes,
+                image.size[0] as u32,
+                image.size[1] as u32,
+                image::ColorType::Rgba8,
+            )
+            .unwrap();
+            let grouped_doc = self.doc.strokes.clone();
+            let history_depth = self.undo.len();
+            self.doc.layers[0].locked = true;
+            assert!(self
+                .repeated_strokes(self.repeat.as_ref().unwrap())
+                .is_err());
+            self.doc.layers[0].locked = false;
+            let expected = self
+                .repeated_strokes(self.repeat.as_ref().unwrap())
+                .unwrap();
+            let expected_after: Vec<_> =
+                expected.iter().map(|(_, stroke)| stroke.clone()).collect();
+            self.apply_repeat();
+            assert_eq!(self.undo.len(), history_depth + 1);
+            let applied_doc = self.doc.strokes.clone();
+            assert_eq!(applied_doc.len(), grouped_doc.len() + expected_after.len());
+            assert_eq!(&applied_doc[grouped_doc.len()..], expected_after.as_slice());
+            let groups: HashSet<_> = expected_after.iter().filter_map(|s| s.group_id).collect();
+            assert_eq!(groups.len(), 3);
+            let serialized = serde_json::to_string(&self.doc).unwrap();
+            let native_path = root.join("repeat.sketch.json");
+            std::fs::write(&native_path, serialized).unwrap();
+            let loaded =
+                Document::from_json(&std::fs::read_to_string(native_path).unwrap()).unwrap();
+            assert_eq!(loaded.strokes, self.doc.strokes);
+            let export = crate::export::encode(&loaded, None).unwrap();
+            assert_eq!(export.summary.strokes as usize, self.doc.strokes.len());
+            std::fs::create_dir_all(root.join("exports")).unwrap();
+            std::fs::write(root.join("exports/repeat.glb"), &export.bytes).unwrap();
+            self.undo();
+            assert_eq!(self.doc.strokes, grouped_doc);
+            self.redo();
+            assert_eq!(self.doc.strokes, applied_doc);
+            std::fs::write(
+                root.join("repeat-report.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "passed": true,
+                    "checks": [
+                        "rotated guide-local spacing",
+                        "live preview and cancel preserve artwork/history",
+                        "fresh independent group and stroke IDs",
+                        "fill, outline, color, brush, and layer metadata preserved",
+                        "locked source layer rejected",
+                        "apply is one undo step; redo restores exact copies",
+                        "native save/reload and GLB output include copies"
+                    ],
+                    "copies": expected_after.len(),
+                    "source_strokes": grouped_doc.len(),
+                    "gpu": self.renderer.adapter
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            self.cancel_repeat();
+            self.recovery.discard();
+            self.allow_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        assert!(frame < 150, "Repeat screenshot timed out");
+        self.repeat_verification_frame = Some(frame + 1);
+    }
     pub(super) fn delete_selected(&mut self) {
         self.finish();
         let before = editing::snapshot(&self.doc, &self.selected);
@@ -371,6 +808,7 @@ impl SketchApp {
             else{ui.label(if self.transform_mode==Mode::Rotate{"Rotation in degrees (X, then Y, then Z)"}else{"Offset in world units"});ui.horizontal(|ui|{for(i,label)in["X ","Y ","Z "].iter().enumerate(){ui.add(egui::DragValue::new(&mut self.transform_values[i]).speed(if self.transform_mode==Mode::Rotate{0.5}else{0.02}).prefix(*label));}});}
             if ui.button("Apply values").clicked(){self.numeric_transform();}
             ui.horizontal(|ui|{if ui.button("Duplicate").on_hover_text("Ctrl/Cmd+D").clicked(){self.duplicate_selected();}
+if ui.button("Repeat…").on_hover_text("Create evenly spaced independent copies with a live preview").clicked(){self.begin_repeat();}
 if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete_selected();}});
         });
         ui.label(RichText::new("One drag = one undo step. Escape cancels a drag.").small());

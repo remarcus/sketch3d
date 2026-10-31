@@ -683,12 +683,25 @@ pub fn remap_duplicate_groups(
     before: &Snapshot,
     after: &mut Snapshot,
 ) -> Result<(), String> {
+    let mut next = doc
+        .strokes
+        .iter()
+        .filter_map(|stroke| stroke.group_id)
+        .max()
+        .unwrap_or(0);
+    remap_duplicate_groups_with_next(doc, before, after, &mut next)
+}
+
+pub fn remap_duplicate_groups_with_next(
+    doc: &Document,
+    before: &Snapshot,
+    after: &mut Snapshot,
+    next: &mut u64,
+) -> Result<(), String> {
     let copied: HashSet<_> = before.iter().map(|(_, s)| s.id).collect();
-    let mut next = 0;
     let mut counts = std::collections::HashMap::<u64, (usize, usize)>::new();
     for stroke in &doc.strokes {
         if let Some(group) = stroke.group_id {
-            next = next.max(group);
             let count = counts.entry(group).or_default();
             count.0 += 1;
             if copied.contains(&stroke.id) {
@@ -709,12 +722,12 @@ pub fn remap_duplicate_groups(
             let new = if let Some(id) = groups.get(&group) {
                 *id
             } else {
-                next = next
+                *next = next
                     .checked_add(1)
                     .filter(|id| *id != u64::MAX)
                     .ok_or("No group IDs available")?;
-                groups.insert(group, next);
-                next
+                groups.insert(group, *next);
+                *next
             };
             stroke.group_id = Some(new);
         }

@@ -65,6 +65,7 @@ pub struct SceneRenderer {
     texture_layout: wgpu::BindGroupLayout,
     textures: HashMap<(TextureKind, u32, u32), wgpu::BindGroup>,
     meshes: HashMap<u64, Mesh>,
+    repeat_preview: Vec<(crate::document::Stroke, Mesh)>,
     selected: HashSet<u64>,
     grid: Option<(GuidePreview, Mesh)>,
     ground: Option<(Lighting, Mesh)>,
@@ -239,6 +240,7 @@ impl SceneRenderer {
             texture_layout,
             textures: HashMap::new(),
             meshes: HashMap::new(),
+            repeat_preview: Vec::new(),
             selected: HashSet::new(),
             grid: None,
             ground: None,
@@ -331,6 +333,26 @@ impl SceneRenderer {
     }
     pub fn sample_count(&self) -> u32 {
         self.target.as_ref().map_or(1, |target| target.sample_count)
+    }
+    pub fn set_repeat_preview(&mut self, strokes: &[crate::document::Stroke]) {
+        if self
+            .repeat_preview
+            .iter()
+            .map(|(stroke, _)| stroke)
+            .eq(strokes.iter())
+        {
+            return;
+        }
+        self.repeat_preview = strokes
+            .iter()
+            .map(|stroke| {
+                let mut vertices = geometry::stroke_mesh(stroke);
+                for vertex in &mut vertices {
+                    vertex.color = [0.12, 0.78, 0.92];
+                }
+                (stroke.clone(), self.mesh(&vertices, stroke.points.len()))
+            })
+            .collect();
     }
     fn mesh(&self, vertices: &[Vertex], points: usize) -> Mesh {
         let data = bytemuck::cast_slice(vertices);
@@ -430,10 +452,18 @@ impl SceneRenderer {
             .strokes
             .iter()
             .map(|s| texture::key(s.brush.texture))
+            .chain(
+                self.repeat_preview
+                    .iter()
+                    .map(|(stroke, _)| texture::key(stroke.brush.texture)),
+            )
             .chain(std::iter::once(texture::key(solid)))
             .collect();
         self.textures.retain(|key, _| needed.contains(key));
-        for settings in std::iter::once(solid).chain(doc.strokes.iter().map(|s| s.brush.texture)) {
+        for settings in std::iter::once(solid)
+            .chain(doc.strokes.iter().map(|s| s.brush.texture))
+            .chain(self.repeat_preview.iter().map(|(s, _)| s.brush.texture))
+        {
             let key = texture::key(settings);
             if !self.textures.contains_key(&key) {
                 let bind = self.create_mask(settings);
@@ -623,6 +653,11 @@ impl SceneRenderer {
                     pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                     pass.draw(0..mesh.count, 0..1);
                 }
+            }
+            for (stroke, mesh) in &self.repeat_preview {
+                pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
+                pass.set_vertex_buffer(0, mesh.buffer.slice(..));
+                pass.draw(0..mesh.count, 0..1);
             }
         }
         self.state.queue.submit(Some(encoder.finish()));

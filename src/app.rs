@@ -111,6 +111,8 @@ pub struct SketchApp {
     layer_target: u64,
     layer_verification_frame: Option<u32>,
     group_verification_frame: Option<u32>,
+    repeat_verification_frame: Option<u32>,
+    repeat: Option<selection::RepeatState>,
     individual_selection: bool,
     pen: Option<PenInput>,
     input_status: String,
@@ -239,6 +241,8 @@ impl SketchApp {
             layer_target: 1,
             layer_verification_frame: None,
             group_verification_frame: None,
+            repeat_verification_frame: None,
+            repeat: None,
             individual_selection: false,
             pen,
             input_status,
@@ -325,6 +329,10 @@ impl SketchApp {
             app.verification_frame = None;
             app.group_verification_frame = Some(0);
             app.load_house();
+        } else if std::env::args().any(|a| a == "--verify-repeat") {
+            app.verification_frame = None;
+            app.repeat_verification_frame = Some(0);
+            app.load_fill_study();
         } else if std::env::args().any(|a| a == "--verify-vase") {
             app.verification_frame = None;
             app.vase_verification_frame = Some(0);
@@ -1294,6 +1302,7 @@ impl eframe::App for SketchApp {
             && !self.recovery_prompt
             && !self.tutorial.offer
             && !self.close_after_recovery
+            && self.repeat.is_none()
             && !ctx.wants_keyboard_input()
         {
             self.view_shortcuts(ctx);
@@ -1305,6 +1314,7 @@ impl eframe::App for SketchApp {
             && !self.recovery_prompt
             && !self.tutorial.offer
             && !self.close_after_recovery
+            && self.repeat.is_none()
             && !ctx.wants_keyboard_input()
             && !self.presentation.artwork
             && !was_artwork
@@ -1320,6 +1330,7 @@ impl eframe::App for SketchApp {
             && !self.tutorial.offer
             && !self.recovery_prompt
             && !self.close_after_recovery
+            && self.repeat.is_none()
             && !ctx.wants_keyboard_input()
         {
             self.line_shortcuts(ctx);
@@ -1580,6 +1591,7 @@ impl eframe::App for SketchApp {
         } else {
             self.artwork_bar(ctx);
         }
+        self.repeat_modal(ctx);
         let pen = self.pen.as_ref().map(|p| p.drain()).unwrap_or_default();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -1594,6 +1606,7 @@ impl eframe::App for SketchApp {
                 self.verify_lighting(ctx, rect);
                 self.verify_tutorial(ctx, rect);
                 self.verify_groups(ctx, rect);
+                self.verify_repeat(ctx);
                 self.verify_vase(ctx, rect);
                 self.verify_layers(ctx, rect);
                 self.verify_recovery(ctx, rect);
