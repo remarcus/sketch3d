@@ -306,6 +306,9 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
 }
 /// Conservative brush radius, shared by selection and geometry bounds.
 pub fn stroke_extent(stroke: &Stroke) -> f32 {
+    if stroke.fill.is_some() {
+        return 0.0;
+    }
     let dot = !stroke.points.is_empty()
         && stroke
             .points
@@ -359,6 +362,9 @@ fn taper_points(stroke: &Stroke) -> Vec<crate::document::Point> {
 }
 /// All ink is built in document space. Camera changes cannot rotate a brush mark.
 pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
+    if stroke.fill.is_some() {
+        return crate::polygon::mesh(stroke);
+    }
     let prepared;
     let stroke = if stroke.brush.dynamics.taper_start > 0.0 || stroke.brush.dynamics.taper_end > 0.0
     {
@@ -748,6 +754,7 @@ mod tests {
     fn pressure_geometry() {
         let make = |pressure| Stroke {
             id: 1,
+            fill: None,
             group_id: None,
             layer_id: 1,
             color: [0.5; 3],
@@ -792,6 +799,7 @@ mod curve_regression {
             .collect();
         let stroke = Stroke {
             id: 1,
+            fill: None,
             group_id: None,
             layer_id: 1,
             color: [0.5; 3],
@@ -880,6 +888,7 @@ mod brush_tests {
     fn mark(kind: BrushKind, positions: &[Vec3]) -> Stroke {
         Stroke {
             id: 7,
+            fill: None,
             group_id: None,
             layer_id: 1,
             color: [0.3, 0.6, 0.9],
@@ -1030,6 +1039,7 @@ mod dynamics_tests {
     fn line(kind: BrushKind, xs: &[f32]) -> Stroke {
         Stroke {
             id: 100,
+            fill: None,
             group_id: None,
             layer_id: 1,
             color: [0.5; 3],
@@ -1157,6 +1167,7 @@ mod dynamics_boundary_tests {
         for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
             let mut stroke = Stroke {
                 id: 101,
+                fill: None,
                 group_id: None,
                 layer_id: 1,
                 color: [0.5; 3],
@@ -1243,6 +1254,7 @@ mod seam_dynamics_tests {
             }));
             let mut stroke = Stroke {
                 id: 1,
+                fill: None,
                 group_id: None,
                 layer_id: 1,
                 color: [0.5; 3],
@@ -1291,6 +1303,7 @@ mod texture_uv_tests {
         brush.texture.scale = 0.2;
         Stroke {
             id: 1,
+            fill: None,
             group_id: None,
             layer_id: 1,
             color: [0.5; 3],

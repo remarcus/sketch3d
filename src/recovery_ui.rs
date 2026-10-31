@@ -214,6 +214,13 @@ impl SketchApp {
                     std::fs::create_dir_all(&root).unwrap();
                     self.file = Some(source.clone());
                     assert!(self.save(false));
+                    let mut fill = crate::polygon::study().strokes.remove(0);
+                    fill.id = self.next_id;
+                    self.next_id += 1;
+                    self.doc.strokes.push(fill.clone());
+                    self.undo.push(Edit::Add(fill));
+                    self.dirty = true;
+                    self.record_recovery_edit();
                     self.camera.align_guide(self.guide);
                     self.brush.kind = BrushKind::Chisel;
                     self.brush.texture.kind = crate::texture::TextureKind::Grain;

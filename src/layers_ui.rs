@@ -89,7 +89,7 @@ impl SketchApp {
                 assert!(editing::layer_edit(&self.doc, LayerAction::Delete(1)).is_err());
                 let loaded =
                     Document::from_json(&serde_json::to_string(&self.doc).unwrap()).unwrap();
-                assert_eq!(loaded.version, 6);
+                assert_eq!(loaded.version, 7);
                 assert_eq!(loaded.layers, self.doc.layers);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.status="Layer drawing, lock/visibility, reassignment, undo, and persistence checks passed.".into();

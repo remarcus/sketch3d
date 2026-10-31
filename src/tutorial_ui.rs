@@ -12,6 +12,8 @@ pub(super) struct TutorialUi {
     pub verification_frame: Option<u32>,
 }
 pub(super) struct Practice {
+    fill_enabled: bool,
+    fill_offset: f32,
     lighting: crate::lighting::Lighting,
     pub doc: Document,
     camera: Camera,
@@ -110,6 +112,8 @@ impl SketchApp {
             );
         }
         self.tutorial.practice = Some(Practice {
+            fill_enabled: self.fills.enabled,
+            fill_offset: self.fills.offset,
             lighting: self.renderer.lighting,
             doc: std::mem::take(&mut self.doc),
             camera: std::mem::take(&mut self.camera),
@@ -141,6 +145,8 @@ impl SketchApp {
             layer_name: std::mem::take(&mut self.layer_name),
         });
         self.renderer.lighting = Default::default();
+        self.cancel_fill_tool();
+        self.fills.offset = 0.003;
         self.guide = DrawingPlane::from_preset(Plane::Front);
         self.camera.align(Plane::Front);
         self.use_cylinder = false;
@@ -174,6 +180,9 @@ impl SketchApp {
             return;
         };
         self.renderer.lighting = p.lighting;
+        self.fills.enabled = p.fill_enabled;
+        self.fills.offset = p.fill_offset;
+        self.fills.draft = None;
         self.doc = p.doc;
         self.camera = p.camera;
         self.undo = p.undo;

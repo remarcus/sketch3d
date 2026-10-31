@@ -93,6 +93,7 @@ impl SketchApp {
         doc.strokes.push(Stroke {
             id: 1,
             layer_id: 1,
+            fill: None,
             group_id: None,
             color: [0.85, 0.7, 0.35],
             radius: 0.6,
@@ -224,6 +225,7 @@ impl SketchApp {
             building.strokes.push(Stroke {
                 id,
                 layer_id: 1,
+                fill: None,
                 group_id: None,
                 color,
                 radius,

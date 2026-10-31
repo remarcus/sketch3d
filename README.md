@@ -77,7 +77,7 @@ Brush radius is in world units, so its visible size changes with camera distance
 
 ## Documents
 
-Documents use a versioned `.sketch.json` format with positions in world space. Version 6 adds flat stroke groups alongside named layers, visibility, and locking. Versions 1–5 migrate without changing resolved brush appearance; versions 1–4 receive one visible, unlocked layer. Older application versions cannot open version-6 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. Recovery snapshots protect completed edits automatically; use Save for your deliberate native drawing file.
+Documents use a versioned `.sketch.json` format with positions in world space. Version 7 adds editable planar fills with a physical paint offset, alongside flat groups and named layers. Versions 1–6 migrate while preserving their existing ink; versions 1–4 receive one visible, unlocked layer. Older application versions cannot open version-7 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. Recovery snapshots protect completed edits automatically; use Save for your deliberate native drawing file.
 
 ## Development
 
@@ -98,7 +98,7 @@ The immediate hardware test is pressure and tilt on the Wacom, followed by the K
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
-Next planned work is filled planar shapes and outline layering (SKETCH-018). Standalone benchmarks and hardware validation follow feature work. Soft/transparent brushes follow separately; brush-library importing remains deferred.
+Next planned work is placing drawing planes on existing artwork (SKETCH-019). Standalone benchmarks and hardware validation follow feature work. Soft/transparent brushes follow separately; brush-library importing remains deferred.
 
 ## License
 
@@ -331,8 +331,21 @@ Open **Scene** in the top toolbar to adjust directional light azimuth/elevation,
 
 The ground is a presentation surface, not ink or a drawing guide: it cannot be picked, painted, grouped, or exported. Use the normal plane/curved guides for drawing. Hidden strokes neither receive nor cast visible shadows; locked visible strokes still do. Selection gold affects display color only, and textured brush holes also let light through.
 
-Lighting and ground are **temporary workspace settings** retained while switching drawings in the same session and reset on restart. They do not mark the document dirty, have no edit-history commands, and are excluded from native Save, recovery snapshots, and GLB export. Native document version remains 6. Tutorial practice starts with default lighting and restores the suspended original's lighting on exit. Exported meshes keep their original colors/materials; downstream applications supply their own lights and floor.
+Lighting and ground are **temporary workspace settings** retained while switching drawings in the same session and reset on restart. They do not mark the document dirty, have no edit-history commands, and are excluded from native Save, recovery snapshots, and GLB export. Native document version is now 7; lighting remains workspace-only. Tutorial practice starts with default lighting and restores the suspended original's lighting on exit. Exported meshes keep their original colors/materials; downstream applications supply their own lights and floor.
 
 The renderer uses one fixed 2048×2048 directional depth map with filtered comparisons. Its world-space fit is independent of the camera. **Bias** is in world units: raise it slightly for speckles on surfaces, lower it for detached shadows. Very thin marks in large drawings can exceed the map's resolution; changing artwork bounds or light direction can also change sampling. There are no cascaded maps, physical area-light penumbras, or guaranteed subpixel shadow detail in this pass. Shadows are off by default, preserving the existing presentation until enabled. Standalone GPU benchmarks remain deferred to SKETCH-007.
 
 Developer check: `cargo run --release -- --verify-lighting` verifies actual GPU pixels for ground darkening, masked shadow holes, selection invariance, hidden/locked rules, orbit/angle handling, and unchanged native/GLB ink. It writes `verification/lighting-report.json`, a UI preview, and house/planar/building images. Readback synchronization is used only by verification, never by normal frames.
+## Filled planar shapes and outlines
+
+Choose **Planar fill [P]**, select a plane guide, and click/tap corners. Click the first corner again or use **Close & fill / Enter** to commit. Concave simple polygons are supported, with 3–256 corners and no holes. **Undo corner / Backspace** removes the last draft corner; **Escape / Cancel contour** clears the draft. The fill color and paint offset are taken when closing. Pressure, taper, stabilization, and brush textures do not affect a solid fill.
+
+The first corner captures the plane and layer. Orbiting and guide adjustments leave the draft on that captured plane. Cylinder/revolved guides cannot create fills: choose Plane first. Self-intersections, duplicates, degenerate area, invalid offsets, and nonplanar data report an error and leave the draft available to correct. Drafts do not alter existing artwork, enter edit history, or autosave. Finish/cancel before native Save, Export, switching drawings, leaving practice, or closing the app. Switching to Brush/Erase/Select explicitly cancels the unfinished contour.
+
+**Paint behind plane** defaults to 0.003 world units opposite the captured plane normal. Draw outlines using B on the same guide plane; the fill sits slightly behind them. This is actual saved mesh separation, so GLB viewers see the same layering without special depth settings. Other objects still occlude both paint and outlines normally. Zero offset can cause z-fighting. From behind, the physical fill can hide outlines on its front side. Very large distances or tiny details may require an appropriate offset; there is no global always-on-top ink mode.
+
+Use V to select a filled interior; concave cutouts stay unselectable. Fills support object transforms, duplication, mixed fill/stroke groups, layer visibility/locking, whole-mark erasing/deletion, undo/redo, native saving, and recovery. Scaling also scales the paint offset. Existing brush-radius/point/offset limits apply to transforms. This first version edits completed fills as objects; per-corner editing, holes, automatic freehand closure recognition, textured fills, extrusion, and a bucket fill are outside this pass.
+
+**Open painted-house study** in the Fill tool opens an original editable wall/roof/window/porch example, including a concave porch and separate outlines. The original Japanese starter remains available through House. GLB exports fills as double-sided triangle meshes, bakes the offset, and adds optional planar-fill/offset metadata. It contains no UI draft, guides, lights, or presentation ground.
+
+Developer check: `cargo run --release -- --verify-fills` writes `verification/fills-report.json`, `fills-preview.png`, and `filled-house.png`. The export fixture set includes `fills.glb` for Khronos validation and Blender import. Forced-crash recovery verification now includes a planar fill alongside pressure/tilt/textured ink. Native version 7 validation bounds contour complexity and rejects malformed filled geometry; legacy files treat any unknown fill extension as ordinary ink, matching their original rendering.

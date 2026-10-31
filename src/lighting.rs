@@ -60,8 +60,12 @@ pub fn document_bounds(doc: &Document) -> Option<(Vec3, Vec3)> {
     for stroke in doc.strokes.iter().filter(|s| doc.visible(s)) {
         let extent = Vec3::splat(geometry::stroke_extent(stroke));
         for point in &stroke.points {
-            min = min.min(point.position - extent);
-            max = max.max(point.position + extent);
+            let position = point.position
+                - stroke
+                    .fill
+                    .map_or(Vec3::ZERO, |fill| stroke.brush.normal * fill.offset);
+            min = min.min(position - extent);
+            max = max.max(position + extent);
         }
     }
     min.is_finite().then_some((min, max))

@@ -93,8 +93,12 @@ pub fn bounds(doc: &Document, selected: &HashSet<u64>) -> Option<(Vec3, Vec3)> {
     {
         let extent = Vec3::splat(crate::geometry::stroke_extent(stroke));
         for point in &stroke.points {
-            min = min.min(point.position - extent);
-            max = max.max(point.position + extent);
+            let position = point.position
+                - stroke
+                    .fill
+                    .map_or(Vec3::ZERO, |fill| stroke.brush.normal * fill.offset);
+            min = min.min(position - extent);
+            max = max.max(position + extent);
         }
     }
     min.is_finite().then_some((min, max))
@@ -116,6 +120,9 @@ pub fn transformed(
     }
     let mut after = before.clone();
     for (_, stroke) in &mut after {
+        if let Some(fill) = &mut stroke.fill {
+            fill.offset *= scale;
+        }
         stroke.radius *= scale;
         stroke.brush.texture.scale *= scale;
         stroke.brush.dynamics.taper_start *= scale;
@@ -135,6 +142,9 @@ pub fn transformed(
                 return Err("Transform exceeds document bounds");
             }
         }
+        if stroke.fill.is_some() && crate::polygon::triangulate(stroke).is_err() {
+            return Err("Transform would exceed planar fill limits");
+        }
     }
     Ok(after)
 }
@@ -145,6 +155,7 @@ mod tests {
     use crate::document::{Brush, BrushKind, Point};
     fn stroke(id: u64, x: f32) -> Stroke {
         Stroke {
+            fill: None,
             group_id: None,
             layer_id: 1,
             id,
@@ -252,7 +263,7 @@ mod tests {
                 texture: Default::default(),
             };
             let mut doc = Document {
-                version: 6,
+                version: 7,
                 strokes: vec![s],
                 ..Document::default()
             };
@@ -282,7 +293,7 @@ mod tests {
         s.brush.kind = BrushKind::Chisel;
         s.brush.thickness = 1.0;
         let doc = Document {
-            version: 6,
+            version: 7,
             strokes: vec![s],
             ..Document::default()
         };
@@ -309,7 +320,7 @@ mod tests {
                     texture: Default::default(),
                 };
                 let sample = Document {
-                    version: 6,
+                    version: 7,
                     strokes: vec![dot],
                     ..Document::default()
                 };
@@ -330,7 +341,7 @@ mod tests {
         s.brush.dynamics.taper_start = 0.4;
         s.brush.dynamics.taper_end = 0.7;
         let mut doc = Document {
-            version: 6,
+            version: 7,
             strokes: vec![s],
             ..Document::default()
         };
@@ -525,6 +536,7 @@ mod layer_tests {
         Document {
             strokes: vec![Stroke {
                 id: 1,
+                fill: None,
                 group_id: None,
                 layer_id: 1,
                 color: [0.3; 3],
@@ -718,6 +730,7 @@ mod group_tests {
             strokes: (1..=3)
                 .map(|id| Stroke {
                     id,
+                    fill: None,
                     group_id: None,
                     layer_id: 1,
                     color: [0.5; 3],
@@ -819,6 +832,7 @@ mod large_group_tests {
             strokes: (1..=10000)
                 .map(|id| Stroke {
                     id,
+                    fill: None,
                     group_id: Some(1 + (id - 1) / 10),
                     layer_id: 1,
                     color: [0.5; 3],

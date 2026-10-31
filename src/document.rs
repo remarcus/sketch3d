@@ -93,6 +93,8 @@ pub fn layers_default() -> Vec<Layer> {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stroke {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<PlanarFill>,
     #[serde(default)]
     pub group_id: Option<u64>,
     #[serde(default = "default_layer_id")]
@@ -103,6 +105,11 @@ pub struct Stroke {
     #[serde(default)]
     pub brush: Brush,
     pub points: Vec<Point>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlanarFill {
+    /// Physical separation behind the captured guide normal, in world units.
+    pub offset: f32,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Document {
@@ -116,7 +123,7 @@ impl Default for Document {
         Self {
             layers: layers_default(),
             active_layer: 1,
-            version: 6,
+            version: 7,
             strokes: Vec::new(),
         }
     }
@@ -165,8 +172,17 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=6)) {
+        if !matches!(version, Some(1..=7)) {
             return Err("Unsupported document version".into());
+        }
+        if matches!(version, Some(1..=6)) {
+            if let Some(strokes) = value.get_mut("strokes").and_then(|v| v.as_array_mut()) {
+                for stroke in strokes {
+                    if let Some(fields) = stroke.as_object_mut() {
+                        fields.remove("fill");
+                    }
+                }
+            }
         }
         if matches!(version, Some(1..=5)) {
             if let Some(strokes) = value.get_mut("strokes").and_then(|v| v.as_array_mut()) {
@@ -226,7 +242,7 @@ impl Document {
             }
         }
         let mut doc: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
-        doc.version = 6;
+        doc.version = 7;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
         }
@@ -271,6 +287,9 @@ impl Document {
             {
                 return Err("Invalid stroke IDs".into());
             }
+            if stroke.fill.is_some() {
+                crate::polygon::triangulate(stroke)?;
+            }
             total += stroke.points.len();
             if total > 2_000_000
                 || !stroke.brush.is_valid()
@@ -293,6 +312,7 @@ mod tests {
     use super::*;
     fn stroke() -> Stroke {
         Stroke {
+            fill: None,
             group_id: None,
             layer_id: 1,
             id: 1,
@@ -329,11 +349,11 @@ mod tests {
             let doc = Document {
                 layers: layers_default(),
                 active_layer: 1,
-                version: 6,
+                version: 7,
                 strokes: vec![s],
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-            assert_eq!(loaded.version, 6);
+            assert_eq!(loaded.version, 7);
             assert_eq!(loaded.strokes, doc.strokes);
         }
     }
@@ -351,7 +371,7 @@ mod tests {
         // a new shape, or prevent an otherwise valid legacy file from opening.
         old["strokes"][0]["brush"] = serde_json::json!({"kind": "future_brush"});
         let loaded = Document::from_json(&old.to_string()).unwrap();
-        assert_eq!(loaded.version, 6);
+        assert_eq!(loaded.version, 7);
         assert_eq!(loaded.strokes, vec![original]);
         old["strokes"][0].as_object_mut().unwrap().remove("brush");
         let without_extension = Document::from_json(&old.to_string()).unwrap();
@@ -394,7 +414,7 @@ mod tests {
             let doc = Document {
                 layers: layers_default(),
                 active_layer: 1,
-                version: 6,
+                version: 7,
                 strokes: vec![s],
             };
             assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
@@ -421,7 +441,7 @@ mod tests {
         let mut doc = Document {
             layers: layers_default(),
             active_layer: 1,
-            version: 6,
+            version: 7,
             strokes: vec![stroke(), stroke()],
         };
         assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
@@ -445,7 +465,7 @@ mod tests {
         value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
         value["strokes"][0]["points"][0]["tilt"] = serde_json::json!("unknown extension");
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 6);
+        assert_eq!(loaded.version, 7);
         assert_eq!(loaded.strokes, vec![original]);
     }
     #[test]
@@ -453,7 +473,7 @@ mod tests {
         let original = Document {
             layers: layers_default(),
             active_layer: 1,
-            version: 6,
+            version: 7,
             strokes: vec![stroke()],
         };
         for dynamics in [
@@ -512,7 +532,7 @@ mod tests {
         let doc = Document {
             layers: layers_default(),
             active_layer: 1,
-            version: 6,
+            version: 7,
             strokes: vec![mark.clone()],
         };
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
@@ -522,7 +542,7 @@ mod tests {
         legacy["strokes"][0]["brush"]["texture"] = serde_json::json!({"kind":"future_pattern"});
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
         mark.brush.texture = TextureSettings::default();
-        assert_eq!(loaded.version, 6);
+        assert_eq!(loaded.version, 7);
         assert_eq!(loaded.strokes, vec![mark]);
     }
     #[test]
@@ -536,7 +556,7 @@ mod tests {
             let mut doc = serde_json::to_value(Document {
                 layers: layers_default(),
                 active_layer: 1,
-                version: 6,
+                version: 7,
                 strokes: vec![stroke()],
             })
             .unwrap();
@@ -552,6 +572,7 @@ mod layer_tests {
     #[test]
     fn version_four_migration_preserves_all_resolved_ink() {
         let mut stroke = Stroke {
+            fill: None,
             group_id: None,
             id: 8,
             layer_id: 1,
@@ -579,7 +600,7 @@ mod layer_tests {
         value["active_layer"] = serde_json::json!(99);
         value["strokes"][0]["layer_id"] = serde_json::json!("unknown");
         let migrated = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(migrated.version, 6);
+        assert_eq!(migrated.version, 7);
         assert_eq!(migrated.strokes, vec![original]);
         assert_eq!(migrated.layers, layers_default());
         assert_eq!(migrated.active_layer, 1);
@@ -595,6 +616,7 @@ mod layer_tests {
         });
         doc.active_layer = 2;
         let stroke = Stroke {
+            fill: None,
             group_id: None,
             id: 1,
             layer_id: 2,
@@ -643,6 +665,7 @@ mod layer_tests {
                 "blank_name" => doc.layers[0].name = " ".into(),
                 "active_missing" => doc.active_layer = 2,
                 "orphan" => doc.strokes.push(Stroke {
+                    fill: None,
                     group_id: None,
                     id: 1,
                     layer_id: 2,
@@ -668,6 +691,7 @@ mod group_tests {
     fn mark(id: u64) -> Stroke {
         Stroke {
             id,
+            fill: None,
             group_id: Some(7),
             layer_id: 1,
             color: [0.3; 3],
@@ -705,7 +729,7 @@ mod group_tests {
             s.group_id = None;
         }
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 6);
+        assert_eq!(loaded.version, 7);
         assert_eq!(loaded.strokes, doc.strokes);
         assert_eq!(loaded.layers, doc.layers);
     }

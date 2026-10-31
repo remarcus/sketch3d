@@ -481,6 +481,7 @@ mod tests {
         Document {
             strokes: vec![Stroke {
                 id: 1,
+                fill: None,
                 group_id: None,
                 layer_id: 1,
                 color: [0.2, 0.7, 0.6],

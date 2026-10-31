@@ -95,7 +95,18 @@ fn distance(pos: Pos2, a: Pos2, b: Pos2) -> (f32, f32) {
 pub fn pick(doc: &Document, camera: &Camera, rect: Rect, pos: Pos2) -> Option<u64> {
     let matrix = camera.matrix(rect.aspect_ratio());
     let mut best: Option<(f32, f32, u64)> = None;
+    let (origin, direction) = ray(camera, rect, pos);
     for stroke in doc.strokes.iter().filter(|s| doc.editable(s)) {
+        if stroke.fill.is_some() {
+            if let Some(hit) = crate::polygon::ray_hit(stroke, origin, direction) {
+                if let Some((_, depth)) = project(camera, rect, hit) {
+                    if best.is_none_or(|old| depth < old.0) {
+                        best = Some((depth, 0.0, stroke.id));
+                    }
+                }
+            }
+            continue;
+        }
         let extent = crate::geometry::stroke_extent(stroke);
         let consider = |point: Vec3| -> Option<(Pos2, f32, f32)> {
             let (p, z) = project(camera, rect, point)?;
@@ -300,6 +311,7 @@ mod tests {
         camera.align(Plane::Front);
         let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
         let stroke = |id, z| Stroke {
+            fill: None,
             group_id: None,
             layer_id: 1,
             id,
@@ -351,6 +363,7 @@ mod layer_picking_tests {
         camera.align(Plane::Front);
         let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
         let mark = |id, layer_id, z| Stroke {
+            fill: None,
             group_id: None,
             id,
             layer_id,

@@ -26,6 +26,34 @@ pub struct EncodedGlb {
     pub bytes: Vec<u8>,
     pub summary: ExportSummary,
 }
+#[cfg(test)]
+mod fill_tests {
+    use super::*;
+    #[test]
+    fn selected_fill_exports_double_sided_offset_geometry_and_rejects_invalid_contours() {
+        let mut doc = crate::polygon::study();
+        let selected = HashSet::from([doc.strokes[0].id]);
+        let encoded = encode(&doc, Some(&selected)).unwrap();
+        assert_eq!(encoded.summary.strokes, 1);
+        let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
+        let primitive = parsed.meshes().next().unwrap().primitives().next().unwrap();
+        assert!(primitive.material().double_sided());
+        let positions: Vec<_> = primitive
+            .reader(|_| parsed.blob.as_deref())
+            .read_positions()
+            .unwrap()
+            .collect();
+        assert!(positions.iter().all(|p| (p[2] - 0.897).abs() < 1e-6));
+        let len = u32::from_le_bytes(encoded.bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value = serde_json::from_slice(&encoded.bytes[20..20 + len]).unwrap();
+        assert_eq!(
+            json["nodes"][0]["extras"]["spatialSketchGeometry"],
+            "planar_fill"
+        );
+        doc.strokes[0].points[2].position.z += 0.2;
+        assert!(encode(&doc, Some(&selected)).is_err());
+    }
+}
 struct Mesh {
     vertices: Vec<[f32; 8]>,
     indices: Vec<u32>,
@@ -68,6 +96,9 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
             "Stroke {} is too large to export in one piece",
             stroke.id
         ));
+    }
+    if stroke.fill.is_some() {
+        crate::polygon::triangulate(stroke)?;
     }
     let source = geometry::stroke_mesh(stroke);
     if source.len() > MAX_TRIANGLE_VERTICES_PER_STROKE {
@@ -131,7 +162,7 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
     Ok(mesh)
 }
 pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=6) {
+    if !matches!(doc.version, 1..=7) {
         return Err("Unsupported source document version".into());
     }
     let mut layer_ids = HashSet::new();
@@ -230,7 +261,7 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         views.push(json!({"buffer":0,"byteOffset":index_offset,"byteLength":mesh.indices.len()*4,"target":34963}));
         let indices = accessors.len();
         accessors.push(json!({"bufferView":index_view,"componentType":5125,"count":mesh.indices.len(),"type":"SCALAR"}));
-        let double_sided = stroke.brush.kind == BrushKind::Ribbon;
+        let double_sided = stroke.fill.is_some() || stroke.brush.kind == BrushKind::Ribbon;
         let settings = stroke.brush.texture;
         let texture_key = (settings.kind != TextureKind::Solid).then(|| texture::key(settings));
         let key = (stroke.color.map(f32::to_bits), double_sided, texture_key);
@@ -278,6 +309,10 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         let name = format!("Stroke_{}", stroke.id);
         meshes.push(json!({"name":name,"primitives":[{"attributes":{"POSITION":position,"NORMAL":normal,"TEXCOORD_0":uv},"indices":indices,"material":material,"mode":4}]}));
         let mut node = json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":doc.layers.iter().find(|l|l.id==stroke.layer_id).unwrap().name}});
+        if let Some(fill) = stroke.fill {
+            node["extras"]["spatialSketchGeometry"] = json!("planar_fill");
+            node["extras"]["spatialSketchFillOffset"] = json!(fill.offset);
+        }
         if let Some(group) = stroke.group_id {
             node["extras"]["spatialSketchGroupId"] = json!(group.to_string());
         }
@@ -367,6 +402,7 @@ mod tests {
     fn stroke(id: u64, color: [f32; 3]) -> Stroke {
         Stroke {
             id,
+            fill: None,
             group_id: None,
             layer_id: 1,
             color,
@@ -514,7 +550,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 6);
+        assert_eq!(loaded.version, 7);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -789,7 +825,7 @@ mod group_export_tests {
     fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
         let doc = crate::export_check::grouped_fixture();
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-        assert_eq!(loaded.version, 6);
+        assert_eq!(loaded.version, 7);
         assert_eq!(loaded.strokes, doc.strokes);
         let encoded = encode(&doc, None).unwrap();
         let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();

@@ -17,6 +17,7 @@ pub fn run() -> Result<(), String> {
         ] {
             let mut stroke = Stroke {
                 id: 1,
+                fill: None,
                 group_id: None,
                 layer_id: 1,
                 color: [0.2, 0.8, 0.6],

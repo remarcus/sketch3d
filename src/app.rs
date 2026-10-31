@@ -19,6 +19,10 @@ mod brushes;
 mod cylinders;
 #[path = "export_ui.rs"]
 mod export_ui;
+#[path = "fills_checks.rs"]
+mod fills_checks;
+#[path = "fills_ui.rs"]
+mod fills_ui;
 #[path = "groups_ui.rs"]
 mod groups_ui;
 #[path = "layers_ui.rs"]
@@ -46,6 +50,7 @@ use std::{
 
 #[derive(Clone, Copy)]
 enum Pending {
+    FilledStudy,
     TutorialStart,
     TutorialEnd,
     TutorialClose,
@@ -62,6 +67,7 @@ enum Pending {
 }
 
 pub struct SketchApp {
+    fills: fills_ui::FillUi,
     show_scene: bool,
     lighting_verification_frame: Option<u32>,
     tutorial: tutorial_ui::TutorialUi,
@@ -184,6 +190,7 @@ impl SketchApp {
         };
         let recovery = crate::recovery::Recovery::new(recovery_path, cc.egui_ctx.clone());
         let mut app = Self {
+            fills: Default::default(),
             show_scene: false,
             lighting_verification_frame: None,
             tutorial: tutorial_ui::TutorialUi::new(),
@@ -264,7 +271,11 @@ impl SketchApp {
             last_export_result: None,
             export_snapshot: None,
         };
-        if std::env::args().any(|a| a == "--verify-lighting") {
+        if std::env::args().any(|a| a == "--verify-fills") {
+            app.verification_frame = None;
+            app.fills.verification_frame = Some(0);
+            app.load_fill_study();
+        } else if std::env::args().any(|a| a == "--verify-lighting") {
             app.verification_frame = None;
             app.lighting_verification_frame = Some(0);
             app.load_house();
@@ -435,6 +446,7 @@ impl SketchApp {
                 Surface::Plane
             });
             self.doc.strokes.push(Stroke {
+                fill: None,
                 group_id: None,
                 layer_id: self.doc.active_layer,
                 id,
@@ -507,6 +519,10 @@ impl SketchApp {
         }
     }
     fn undo(&mut self) {
+        if self.fills.draft.is_some() {
+            self.remove_fill_corner();
+            return;
+        }
         self.finish();
         if let Some(edit) = self.undo.pop() {
             edit.apply(&mut self.doc, false);
@@ -518,6 +534,10 @@ impl SketchApp {
         }
     }
     fn redo(&mut self) {
+        if self.fills.draft.is_some() {
+            self.status = "Finish or cancel the fill contour before redoing document edits.".into();
+            return;
+        }
         self.finish();
         if let Some(edit) = self.redo.pop() {
             edit.apply(&mut self.doc, true);
@@ -529,6 +549,10 @@ impl SketchApp {
         }
     }
     fn save(&mut self, save_as: bool) -> bool {
+        if self.fills.draft.is_some() {
+            self.status = "Close or cancel the draft contour before saving.".into();
+            return false;
+        }
         self.finish();
         let path = if save_as || self.file.is_none() {
             rfd::FileDialog::new()
@@ -575,6 +599,12 @@ impl SketchApp {
         }
     }
     fn request(&mut self, mut pending: Pending) {
+        if self.fills.draft.is_some() {
+            self.status =
+                "Close or cancel the draft contour before switching drawings or leaving practice."
+                    .into();
+            return;
+        }
         self.finish();
         if self.tutorial.practice.is_some()
             && !matches!(
@@ -598,6 +628,7 @@ impl SketchApp {
     fn execute_pending(&mut self) {
         self.confirm = false;
         match self.pending.take() {
+            Some(Pending::FilledStudy) => self.load_fill_study(),
             Some(Pending::TutorialStart) => self.start_practice(),
             Some(Pending::TutorialEnd) => self.end_practice(),
             Some(Pending::TutorialClose) => {
@@ -685,6 +716,7 @@ impl SketchApp {
                 });
             }
             self.doc.strokes.push(Stroke {
+                fill: None,
                 group_id: None,
                 layer_id: self.doc.active_layer,
                 id: self.next_id,
@@ -707,10 +739,14 @@ impl SketchApp {
         ui.heading("Draw in space");
         ui.horizontal_wrapped(|ui| {
             if ui
-                .selectable_label(!self.eraser && !self.select_mode, "Brush [B]")
+                .selectable_label(
+                    !self.eraser && !self.select_mode && !self.fills.enabled,
+                    "Brush [B]",
+                )
                 .clicked()
             {
                 self.finish();
+                self.cancel_fill_tool();
                 self.eraser = false;
                 self.select_mode = false;
             }
@@ -719,6 +755,7 @@ impl SketchApp {
                 .clicked()
             {
                 self.finish();
+                self.cancel_fill_tool();
                 self.eraser = true;
                 self.select_mode = false;
             }
@@ -727,10 +764,21 @@ impl SketchApp {
                 .clicked()
             {
                 self.finish();
+                self.cancel_fill_tool();
                 self.eraser = false;
                 self.select_mode = true;
             }
         });
+        if ui
+            .selectable_label(self.fills.enabled && !self.select_mode, "Planar fill [P]")
+            .clicked()
+        {
+            self.finish();
+            self.fills.enabled = true;
+            self.eraser = false;
+            self.select_mode = false;
+        }
+        self.fill_controls(ui);
         ui.add_space(6.0);
         if self.select_mode {
             self.group_controls(ui);
@@ -738,16 +786,20 @@ impl SketchApp {
         self.tutorial_hint(ui, "Drawing layers");
         self.layer_controls(ui);
         self.tutorial_hint(ui, "Brush library");
-        self.preset_controls(ui);
+        if !self.fills.enabled {
+            self.preset_controls(ui);
+        }
         if self.select_mode {
             self.tutorial_hint(ui, "Select");
             self.selection_panel(ui);
-        } else {
+        } else if !self.fills.enabled {
             if self.eraser {
                 ui.label("Eraser removes whole strokes.");
             }
             self.tutorial_hint(ui, "Brush");
-            self.brush_controls(ui);
+            if !self.fills.enabled {
+                self.brush_controls(ui);
+            }
             ui.label("INK COLOR");
             ui.color_edit_button_rgb(&mut self.color);
             ui.horizontal_wrapped(|ui| {
@@ -937,6 +989,10 @@ impl SketchApp {
             self.select_pointer(pos, rect, begin, shift);
         } else if self.eraser {
             self.erase(pos, rect);
+        } else if self.fills.enabled {
+            if begin {
+                self.fill_corner(pos, rect);
+            }
         } else {
             self.add_point_with_tilt(pos, pressure, rect, begin, tilt);
         }
@@ -963,6 +1019,7 @@ impl SketchApp {
             && self.group_verification_frame.is_none()
             && self.tutorial.verification_frame.is_none()
             && self.lighting_verification_frame.is_none()
+            && self.fills.verification_frame.is_none()
         {
             self.cancel();
             return;
@@ -1143,6 +1200,7 @@ impl eframe::App for SketchApp {
             && !self.close_after_recovery
             && !ctx.wants_keyboard_input()
         {
+            self.fill_shortcuts(ctx);
             self.group_shortcuts(ctx);
             self.selection_shortcuts(ctx);
             let (mods, b, e, f, z, y, s, o, n) = ctx.input(|i| {
@@ -1180,11 +1238,13 @@ impl eframe::App for SketchApp {
                 }
             } else {
                 if b {
+                    self.cancel_fill_tool();
                     self.finish();
                     self.eraser = false;
                     self.select_mode = false;
                 }
                 if e {
+                    self.cancel_fill_tool();
                     self.finish();
                     self.eraser = true;
                     self.select_mode = false;
@@ -1376,6 +1436,7 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.verify_fills(ctx, rect);
                 self.verify_lighting(ctx, rect);
                 self.verify_tutorial(ctx, rect);
                 self.verify_groups(ctx, rect);
@@ -1411,6 +1472,7 @@ impl eframe::App for SketchApp {
                     Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
+                self.fill_overlay(ui, rect);
                 self.selection_overlay(ui, rect);
                 self.plane_overlay(ui, rect);
                 let badge =
@@ -1508,7 +1570,7 @@ impl eframe::App for SketchApp {
         self.show_lighting(ctx);
         self.show_tutorial(ctx);
         if self.show_help {
-            egui::Window::new("Drawing with a tablet").default_width(540.0).max_height((ctx.screen_rect().height()-80.0).max(200.0)).vscroll(true).show(ctx,|ui|{self.tutorial_help(ui);ui.separator();if ui.button("Close help").clicked(){self.show_help=false;}ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-stroke eraser   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
+            egui::Window::new("Drawing with a tablet").default_width(540.0).max_height((ctx.screen_rect().height()-80.0).max(200.0)).vscroll(true).show(ctx,|ui|{self.tutorial_help(ui);ui.separator();if ui.button("Close help").clicked(){self.show_help=false;}ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-mark eraser   P: planar fill   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
         }
         self.show_recovery(ctx);
         self.tick_recovery(ctx);
@@ -1528,6 +1590,7 @@ impl eframe::App for SketchApp {
             || self.group_verification_frame.is_some()
             || self.tutorial.verification_frame.is_some()
             || self.lighting_verification_frame.is_some()
+            || self.fills.verification_frame.is_some()
             || self.close_after_recovery
             || self.recovery.busy()
         {
@@ -1697,15 +1760,15 @@ impl SketchApp {
             } else if self.layer_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["layer drawing and locking","visibility picking and erasing","layer reassignment undo redo","nonempty deletion protection","version 5 persistence","GPU layers"],"gpu":self.renderer.adapter})
             } else if self.recovery_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["forced process termination","startup recovery offer","exact pressure tilt dynamics texture restoration","recovered copy is untitled and dirty","native source unchanged","new session snapshot durable before old retirement","Save New and close cleanup ordering","corrupt and unsupported issue visibility","GPU recovery workflow"],"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["forced process termination","startup recovery offer","exact fill contour offset pressure tilt dynamics texture restoration","recovered copy is untitled and dirty","native source unchanged","new session snapshot durable before old retirement","Save New and close cleanup ordering","corrupt and unsupported issue visibility","GPU recovery workflow"],"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.preset_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["preset application captures resolved settings","create duplicate rename update delete and defaults","restart persistence","live GPU previews","library edits preserve existing ink and export","corrupt library fallback and explicit repair backup"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.texture_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 6 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 7 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.dynamics_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pen-up preserves last contact pressure and tilt","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 6 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pen-up preserves last contact pressure and tilt","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 7 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 6 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 7 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {
