@@ -1,6 +1,6 @@
 # Tessellation optimization comparison
 
-Recorded on the same Windows x86_64 machine, with the release profile and the same deterministic benchmark workloads. Each row is the median of seven timed iterations after one warmup. Values are CPU wall-clock milliseconds; they are not GPU timings or pen latency.
+Recorded on the same Windows, x86_64 machine, with the release profile and the same deterministic benchmark workloads. The host reports test CPU and an test GPU. Each row is the median of seven timed iterations after one warmup. Values are CPU wall-clock milliseconds; they are not GPU timings or pen latency.
 
 | Workload | Before | After | Change |
 | --- | ---: | ---: | ---: |
