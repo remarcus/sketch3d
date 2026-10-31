@@ -16,7 +16,8 @@ pub(super) struct ExportSnapshot {
 }
 impl SketchApp {
     pub(super) fn can_export(&self, selected: bool) -> bool {
-        self.export_job.is_none()
+        !self.liquify_active()
+            && self.export_job.is_none()
             && self.active.is_none()
             && self.drag.is_none()
             && !self.confirm
@@ -86,6 +87,12 @@ impl SketchApp {
             layers: self.doc.layers.clone(),
             active_layer: self.doc.active_layer,
             version: self.doc.version,
+            image_planes: self.doc.image_planes.clone(),
+            active_image_plane: self.doc.active_image_plane,
+            guide_resources: Vec::new(),
+            active_guide: None,
+            model_references: Vec::new(),
+            active_model_reference: None,
             strokes: self
                 .doc
                 .strokes

@@ -41,6 +41,31 @@ struct Mesh {
     bounds: Option<(Vec3, Vec3)>,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ImagePlaneVertex {
+    position: [f32; 3],
+    uv: [f32; 2],
+    opacity: f32,
+}
+
+struct ImagePlaneMesh {
+    plane: crate::image_planes::ImagePlane,
+    buffer: wgpu::Buffer,
+}
+
+struct ImagePlaneTexture {
+    // The bind group references the texture view, so retain the texture owner.
+    _texture: wgpu::Texture,
+    bind: wgpu::BindGroup,
+}
+
+#[derive(Default)]
+struct ObjReferenceMeshes {
+    opaque: Option<Mesh>,
+    translucent: Option<Mesh>,
+}
+
 fn canvas_sample_count(adapter: &wgpu::Adapter) -> u32 {
     let color = adapter
         .get_texture_format_features(wgpu::TextureFormat::Rgba8UnormSrgb)
@@ -88,11 +113,16 @@ pub struct SceneRenderer {
     triangles: wgpu::RenderPipeline,
     transparent_triangles: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
+    image_planes_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
     texture_layout: wgpu::BindGroupLayout,
+    image_plane_layout: wgpu::BindGroupLayout,
     textures: HashMap<(TextureKind, u32, u32), wgpu::BindGroup>,
     meshes: HashMap<u64, Mesh>,
+    image_plane_meshes: HashMap<u64, ImagePlaneMesh>,
+    image_plane_textures: HashMap<u64, ImagePlaneTexture>,
+    obj_reference_meshes: HashMap<u64, ObjReferenceMeshes>,
     repeat_preview: Vec<(crate::document::Stroke, Mesh)>,
     selected: HashSet<u64>,
     grid: Option<(GuidePreview, Mesh)>,
@@ -259,6 +289,77 @@ impl SceneRenderer {
         let triangles = create(wgpu::PrimitiveTopology::TriangleList, false);
         let transparent_triangles = create(wgpu::PrimitiveTopology::TriangleList, true);
         let lines = create(wgpu::PrimitiveTopology::LineList, false);
+        let image_plane_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Image plane texture layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let image_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Image plane shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("image_plane.wgsl").into()),
+        });
+        let image_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Image plane pipeline layout"),
+                bind_group_layouts: &[&layout, &image_plane_layout],
+                push_constant_ranges: &[],
+            });
+        let image_planes_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Textured image planes"),
+            layout: Some(&image_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &image_shader,
+                entry_point: Some("vs_image"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<ImagePlaneVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &image_shader,
+                entry_point: Some("fs_image"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState { count: sample_count, mask: !0, alpha_to_coverage_enabled: false },
+            multiview: None,
+            cache: None,
+        });
         let info = state.adapter.get_info();
         let adapter = format!("{} / {:?}", info.name, info.backend);
         Self {
@@ -266,11 +367,16 @@ impl SceneRenderer {
             triangles,
             transparent_triangles,
             lines,
+            image_planes_pipeline,
             uniform,
             bind,
             texture_layout,
+            image_plane_layout,
             textures: HashMap::new(),
             meshes: HashMap::new(),
+            image_plane_meshes: HashMap::new(),
+            image_plane_textures: HashMap::new(),
+            obj_reference_meshes: HashMap::new(),
             repeat_preview: Vec::new(),
             selected: HashSet::new(),
             grid: None,
@@ -345,6 +451,195 @@ impl SceneRenderer {
     }
     pub fn invalidate(&mut self) {
         self.meshes.clear();
+    }
+    /// Upload decoded RGBA pixels for a document image plane. The asset is kept
+    /// by plane ID and can be replaced after an edit or document reload.
+    pub fn set_image_plane_asset(
+        &mut self,
+        id: u64,
+        asset: &crate::image_planes::ImageAsset,
+    ) -> Result<(), String> {
+        let [width, height] = asset.size;
+        let byte_len = (width as u64)
+            .checked_mul(height as u64)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or("Image-plane dimensions overflow")?;
+        if id == 0
+            || width == 0
+            || height == 0
+            || width > self.state.device.limits().max_texture_dimension_2d
+            || height > self.state.device.limits().max_texture_dimension_2d
+            || byte_len != asset.pixels.len() as u64
+            || byte_len > crate::image_planes::MAX_IMAGE_PIXELS * 4
+        {
+            return Err("Image-plane asset has invalid dimensions or RGBA data".into());
+        }
+        let texture = self.state.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Image plane asset"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.state.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &asset.pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&Default::default());
+        let sampler = self.state.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Image plane sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let bind = self
+            .state
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Image plane asset bind group"),
+                layout: &self.image_plane_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            });
+        self.image_plane_textures.insert(
+            id,
+            ImagePlaneTexture {
+                _texture: texture,
+                bind,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn remove_image_plane_asset(&mut self, id: u64) {
+        self.image_plane_textures.remove(&id);
+        self.image_plane_meshes.remove(&id);
+    }
+
+    pub fn clear_image_plane_assets(&mut self) {
+        self.image_plane_textures.clear();
+        self.image_plane_meshes.clear();
+    }
+
+    pub fn set_obj_reference_model(
+        &mut self,
+        id: u64,
+        model: &crate::obj_reference::ObjModel,
+        center: Vec3,
+        rotation: glam::Quat,
+        scale: f32,
+    ) -> Result<(), String> {
+        if id == 0
+            || !center.is_finite()
+            || !rotation.is_finite()
+            || (rotation.length_squared() - 1.0).abs() > 0.001
+            || !scale.is_finite()
+            || !(0.001..=10_000.0).contains(&scale)
+        {
+            return Err("OBJ reference transform is invalid".into());
+        }
+        let mut opaque = Vec::new();
+        let mut translucent = Vec::new();
+        for triangle in &model.triangles {
+            let material = model.material(triangle);
+            let color = material.map_or([1.0; 3], |material| material.diffuse);
+            let opacity = material.map_or(1.0, |material| material.opacity);
+            let target = if opacity < 0.999_999 {
+                &mut translucent
+            } else {
+                &mut opaque
+            };
+            for source in model.render_vertices(triangle)? {
+                let position = center + rotation * (source.position * scale);
+                if !position.is_finite() || position.abs().max_element() > 10_000.0 {
+                    return Err("Transformed OBJ geometry exceeds document bounds".into());
+                }
+                target.push(Vertex {
+                    position: position.to_array(),
+                    normal: (rotation * source.normal).normalize_or_zero().to_array(),
+                    uv: source.texcoord.map_or([0.0; 2], |uv| uv.to_array()),
+                    color,
+                    opacity,
+                });
+            }
+        }
+        self.obj_reference_meshes.insert(
+            id,
+            ObjReferenceMeshes {
+                opaque: (!opaque.is_empty()).then(|| self.mesh(&opaque, 0)),
+                translucent: (!translucent.is_empty()).then(|| self.mesh(&translucent, 0)),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn clear_obj_reference_models(&mut self) {
+        self.obj_reference_meshes.clear();
+    }
+
+    fn image_plane_mesh(&self, plane: &crate::image_planes::ImagePlane) -> ImagePlaneMesh {
+        let half = plane.size * 0.5;
+        let corners = [
+            (glam::Vec3::new(-half.x, half.y, 0.0), [0.0, 0.0]),
+            (glam::Vec3::new(-half.x, -half.y, 0.0), [0.0, 1.0]),
+            (glam::Vec3::new(half.x, -half.y, 0.0), [1.0, 1.0]),
+            (glam::Vec3::new(-half.x, half.y, 0.0), [0.0, 0.0]),
+            (glam::Vec3::new(half.x, -half.y, 0.0), [1.0, 1.0]),
+            (glam::Vec3::new(half.x, half.y, 0.0), [1.0, 0.0]),
+        ];
+        let vertices: Vec<_> = corners
+            .into_iter()
+            .map(|(local, uv)| ImagePlaneVertex {
+                position: (plane.origin + plane.rotation * local).to_array(),
+                uv,
+                opacity: plane.opacity,
+            })
+            .collect();
+        let buffer = self
+            .state
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Image plane quad"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        ImagePlaneMesh {
+            plane: plane.clone(),
+            buffer,
+        }
     }
     pub fn invalidate_ids(&mut self, ids: &HashSet<u64>) {
         for id in ids {
@@ -534,6 +829,29 @@ impl SceneRenderer {
                 self.meshes.insert(stroke.id, mesh);
             }
         }
+        let image_ids: HashSet<u64> = doc.image_planes.iter().map(|plane| plane.id).collect();
+        self.image_plane_textures
+            .retain(|id, _| image_ids.contains(id));
+        self.image_plane_meshes
+            .retain(|id, _| image_ids.contains(id));
+        for image_plane in doc.image_planes.iter().filter(|plane| plane.visible) {
+            if !self.image_plane_textures.contains_key(&image_plane.id) {
+                continue;
+            }
+            if self
+                .image_plane_meshes
+                .get(&image_plane.id)
+                .is_some_and(|mesh| mesh.plane == *image_plane)
+            {
+                continue;
+            }
+            let mesh = self.image_plane_mesh(image_plane);
+            self.image_plane_meshes.insert(image_plane.id, mesh);
+        }
+        let reference_ids: HashSet<u64> =
+            doc.model_references.iter().map(|model| model.id).collect();
+        self.obj_reference_meshes
+            .retain(|id, _| reference_ids.contains(id));
         if self.grid.as_ref().is_none_or(|g| g.0 != plane) {
             let mesh = self.mesh(&plane.vertices(), 0);
             self.grid = Some((plane, mesh));
@@ -680,6 +998,24 @@ impl SceneRenderer {
                 pass.draw(0..mesh.count, 0..1);
             }
             pass.set_pipeline(&self.triangles);
+            for model in doc.model_references.iter().filter(|model| model.visible) {
+                if let Some(meshes) = self.obj_reference_meshes.get(&model.id) {
+                    if let Some(mesh) = &meshes.opaque {
+                        pass.set_vertex_buffer(0, mesh.buffer.slice(..));
+                        pass.draw(0..mesh.count, 0..1);
+                    }
+                }
+            }
+            pass.set_pipeline(&self.transparent_triangles);
+            for model in doc.model_references.iter().filter(|model| model.visible) {
+                if let Some(meshes) = self.obj_reference_meshes.get(&model.id) {
+                    if let Some(mesh) = &meshes.translucent {
+                        pass.set_vertex_buffer(0, mesh.buffer.slice(..));
+                        pass.draw(0..mesh.count, 0..1);
+                    }
+                }
+            }
+            pass.set_pipeline(&self.triangles);
             for stroke in doc
                 .strokes
                 .iter()
@@ -712,6 +1048,28 @@ impl SceneRenderer {
                 pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
+            }
+            pass.set_pipeline(&self.image_planes_pipeline);
+            let mut image_planes: Vec<_> = doc
+                .image_planes
+                .iter()
+                .filter(|plane| plane.visible && self.image_plane_textures.contains_key(&plane.id))
+                .filter_map(|plane| {
+                    self.image_plane_meshes
+                        .get(&plane.id)
+                        .map(|mesh| (plane, mesh))
+                })
+                .collect();
+            image_planes.sort_by(|(a, _), (b, _)| {
+                (a.origin - camera.target)
+                    .dot(camera.basis().2)
+                    .total_cmp(&(b.origin - camera.target).dot(camera.basis().2))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            for (plane, mesh) in image_planes {
+                pass.set_bind_group(1, &self.image_plane_textures[&plane.id].bind, &[]);
+                pass.set_vertex_buffer(0, mesh.buffer.slice(..));
+                pass.draw(0..6, 0..1);
             }
         }
         self.state.queue.submit(Some(encoder.finish()));
@@ -813,6 +1171,12 @@ impl SceneRenderer {
                 let vertices = geometry::stroke_mesh(stroke);
                 (stroke, self.mesh(&vertices, stroke.points.len()))
             })
+            .collect();
+        let image_plane_meshes: Vec<_> = doc
+            .image_planes
+            .iter()
+            .filter(|plane| plane.visible && self.image_plane_textures.contains_key(&plane.id))
+            .map(|plane| (plane, self.image_plane_mesh(plane)))
             .collect();
         let bounds = meshes
             .iter()
@@ -933,6 +1297,19 @@ impl SceneRenderer {
                 pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
+            }
+            pass.set_pipeline(&self.image_planes_pipeline);
+            let mut image_planes: Vec<_> = image_plane_meshes.iter().collect();
+            image_planes.sort_by(|(a, _), (b, _)| {
+                (a.origin - camera.target)
+                    .dot(camera.basis().2)
+                    .total_cmp(&(b.origin - camera.target).dot(camera.basis().2))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            for (plane, mesh) in image_planes {
+                pass.set_bind_group(1, &self.image_plane_textures[&plane.id].bind, &[]);
+                pass.set_vertex_buffer(0, mesh.buffer.slice(..));
+                pass.draw(0..6, 0..1);
             }
         }
         let row = (size[0] * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)

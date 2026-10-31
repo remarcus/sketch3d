@@ -1,6 +1,9 @@
 #![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]
 
 mod app;
+mod brush_selection;
+mod camera_bookmarks;
+mod curve_geometry;
 mod document;
 mod dynamics;
 mod editing;
@@ -8,9 +11,18 @@ mod export;
 mod export_check;
 mod geometry;
 mod gizmo;
+mod image_plane_storage;
+mod image_planes;
 mod input;
 mod lighting;
+mod liquify;
+mod mirror;
+#[allow(dead_code)]
+mod obj_reference;
+#[allow(dead_code)]
+mod obj_reference_storage;
 mod palette;
+mod partial_eraser;
 mod performance_benchmark;
 mod placement;
 mod polygon;
@@ -22,6 +34,7 @@ mod recovery_store;
 mod renderer;
 mod revolved;
 mod scenes;
+mod shape_geometry;
 mod stabilizer;
 mod surface;
 mod texture;

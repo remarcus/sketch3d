@@ -1,7 +1,7 @@
 //! Ordered background recovery writes, coalesced at committed-edit boundaries.
 use crate::{
     document::Document,
-    recovery_store::{self, RecoverySnapshot, Scan},
+    recovery_store::{self, RecoveryAsset, RecoverySnapshot, Scan},
 };
 use eframe::egui;
 use std::{
@@ -233,6 +233,7 @@ impl Recovery {
             self.notice = "Unsaved edits pending recovery.".into();
         }
     }
+    #[allow(dead_code)] // Compatibility helper for documents without sidecar resources.
     pub fn tick(
         &mut self,
         document: &Document,
@@ -240,34 +241,66 @@ impl Recovery {
         active: bool,
         now: Instant,
     ) -> bool {
+        self.tick_with_assets(document, original, Vec::new(), active, now)
+    }
+
+    /// Like `tick`, while capturing the current drawing-local image bytes.
+    /// The worker validates filename references and the combined 256 MiB cap
+    /// before writing the recovery envelope.
+    pub fn tick_with_assets(
+        &mut self,
+        document: &Document,
+        original: Option<PathBuf>,
+        assets: Vec<RecoveryAsset>,
+        active: bool,
+        now: Instant,
+    ) -> bool {
+        if !self.snapshot_due(active, now) {
+            return false;
+        }
+        self.submit(document, original, assets)
+    }
+
+    /// Lets callers defer expensive sidecar reads until a recovery write is due.
+    pub fn snapshot_due(&self, active: bool, now: Instant) -> bool {
         if active
             || self.revision == 0
             || self.revision <= self.protected_revision
             || self.saving.is_some()
             || self.retry_after.is_some_and(|at| now < at)
+            || !self.enabled()
         {
             return false;
         }
-        let quiet = self
-            .last_edit
-            .is_some_and(|at| now.saturating_duration_since(at) >= QUIET_INTERVAL);
-        let overdue = self
-            .first_unsaved
-            .is_some_and(|at| now.saturating_duration_since(at) >= MAX_INTERVAL);
-        if !quiet && !overdue {
-            return false;
-        }
-        self.submit(document, original)
+        self.last_edit
+            .is_some_and(|at| now.saturating_duration_since(at) >= QUIET_INTERVAL)
+            || self
+                .first_unsaved
+                .is_some_and(|at| now.saturating_duration_since(at) >= MAX_INTERVAL)
     }
     /// Explicit software-verification/foreground lifecycle snapshot request.
     /// A clean starter or blank session remains excluded even when forced.
     pub fn force_snapshot(&mut self, document: &Document, original: Option<PathBuf>) -> bool {
+        self.force_snapshot_with_assets(document, original, Vec::new())
+    }
+
+    pub fn force_snapshot_with_assets(
+        &mut self,
+        document: &Document,
+        original: Option<PathBuf>,
+        assets: Vec<RecoveryAsset>,
+    ) -> bool {
         if self.revision == 0 || self.revision <= self.protected_revision || self.saving.is_some() {
             return false;
         }
-        self.submit(document, original)
+        self.submit(document, original, assets)
     }
-    fn submit(&mut self, document: &Document, original: Option<PathBuf>) -> bool {
+    fn submit(
+        &mut self,
+        document: &Document,
+        original: Option<PathBuf>,
+        assets: Vec<RecoveryAsset>,
+    ) -> bool {
         if !self.enabled() {
             return false;
         }
@@ -275,7 +308,12 @@ impl Recovery {
         let command = Command::Save {
             epoch: self.epoch,
             revision,
-            snapshot: RecoverySnapshot::new(self.session.clone(), original, document.clone()),
+            snapshot: RecoverySnapshot::new_with_assets(
+                self.session.clone(),
+                original,
+                document.clone(),
+                assets,
+            ),
         };
         if self.send(command) {
             self.saving = Some((self.epoch, revision));

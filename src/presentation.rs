@@ -23,6 +23,8 @@ pub enum InspectorTab {
     #[default]
     Properties,
     Layers,
+    References,
+    ImagePlanes,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -1,3 +1,4 @@
+use super::guide_resource_ui::rotation_degrees;
 use super::ui_style;
 use super::*;
 use crate::{editing, gizmo, scenes};
@@ -6,6 +7,8 @@ impl SketchApp {
     pub(super) fn guide_preview(&self) -> GuidePreview {
         if !self.guide_visible {
             GuidePreview::Hidden
+        } else if let Some(preview) = self.saved_guide_preview() {
+            preview
         } else if self.use_revolved {
             GuidePreview::Revolved(self.revolved)
         } else if self.use_cylinder {
@@ -14,17 +17,26 @@ impl SketchApp {
             GuidePreview::Plane(self.guide)
         }
     }
-    pub(super) fn active_guide_label(&self) -> &'static str {
-        if self.use_revolved {
-            "Revolved profile guide"
+    pub(super) fn active_guide_label(&self) -> String {
+        if let Some(guide) = self
+            .doc
+            .guide_resources
+            .iter()
+            .find(|guide| Some(guide.id) == self.doc.active_guide)
+        {
+            guide.name.clone()
+        } else if self.use_revolved {
+            "Revolved profile guide".into()
         } else if self.use_cylinder {
-            "Cylinder guide"
+            "Cylinder guide".into()
         } else {
-            self.guide.label()
+            self.guide.label().into()
         }
     }
     pub(super) fn active_guide_u(&self) -> Vec3 {
-        if self.use_revolved {
+        if let Some((_, rotation, _)) = self.saved_guide_camera_frame() {
+            rotation * Vec3::X
+        } else if self.use_revolved {
             self.revolved.rotation() * Vec3::X
         } else if self.use_cylinder {
             self.cylinder.rotation() * Vec3::X
@@ -35,6 +47,8 @@ impl SketchApp {
     pub(super) fn guide_badge(&self) -> String {
         if !self.guide_visible {
             format!("{} / hidden", self.active_guide_label())
+        } else if self.doc.active_guide.is_some() {
+            format!("Saved / {}", self.active_guide_label())
         } else if self.use_revolved {
             format!("Revolved / {} profile points", self.revolved.count)
         } else if self.use_cylinder {
@@ -48,7 +62,15 @@ impl SketchApp {
     }
     pub(super) fn align_active_guide(&mut self) {
         self.finish();
-        if self.use_revolved {
+        if let Some((center, rotation, size)) = self.saved_guide_camera_frame() {
+            self.camera.distance = self.camera.distance.max(size).clamp(0.3, 150.0);
+            self.camera.align_guide(DrawingPlane {
+                anchor: center,
+                rotation_degrees: rotation_degrees(rotation),
+                depth: 0.0,
+            });
+            return;
+        } else if self.use_revolved {
             self.camera.distance = self
                 .camera
                 .distance

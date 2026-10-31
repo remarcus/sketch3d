@@ -1,6 +1,7 @@
 //! Side-surface guides and pressure-preserving stabilization in surface coordinates.
 use crate::revolved::Revolved;
 use crate::{
+    document::guide_resources::{FreeformSurface, LoftSurface},
     document::Point,
     geometry::{self, DrawingPlane, Vertex},
     stabilizer::Stabilizer,
@@ -141,11 +142,167 @@ impl Cylinder {
         vertices
     }
 }
+
+/// Finite smooth sphere used by persistent guide resources.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SphereSurface {
+    pub center: Vec3,
+    pub rotation: Quat,
+    pub radius: f32,
+}
+
+impl SphereSurface {
+    pub fn point(self, longitude: f32, latitude: f32) -> Vec3 {
+        let c = latitude.cos();
+        self.center
+            + self.rotation
+                * Vec3::new(
+                    self.radius * c * longitude.sin(),
+                    self.radius * latitude.sin(),
+                    self.radius * c * longitude.cos(),
+                )
+    }
+
+    fn parameter(self, world: Vec3, previous: Option<Vec3>) -> Vec3 {
+        let local = self.rotation.inverse() * (world - self.center);
+        let unit = local.normalize_or_zero();
+        let horizontal = unit.x.hypot(unit.z);
+        let mut longitude = if horizontal < 1e-5 {
+            previous.map_or(0.0, |p| p.x / self.radius)
+        } else {
+            unit.x.atan2(unit.z)
+        };
+        if let Some(previous) = previous {
+            longitude = unwrap_angle(longitude, previous.x / self.radius);
+        }
+        Vec3::new(
+            longitude * self.radius,
+            unit.y.clamp(-1.0, 1.0).asin() * self.radius,
+            0.0,
+        )
+    }
+
+    fn decode(self, parameter: Vec3) -> Vec3 {
+        self.point(parameter.x / self.radius, parameter.y / self.radius)
+    }
+
+    pub fn wireframe(self) -> Vec<Vertex> {
+        let mut vertices = Vec::new();
+        let color = [0.12, 0.38, 0.39];
+        let mut segment = |a: Vec3, b: Vec3| {
+            for position in [a, b] {
+                vertices.push(Vertex {
+                    position: position.to_array(),
+                    normal: [0.0; 3],
+                    uv: [0.0; 2],
+                    color,
+                    opacity: 1.0,
+                });
+            }
+        };
+        for latitude_index in 1..8 {
+            let latitude = -PI * 0.5 + PI * latitude_index as f32 / 8.0;
+            for i in 0..64 {
+                let a = i as f32 / 64.0 * TAU;
+                let b = (i + 1) as f32 / 64.0 * TAU;
+                segment(self.point(a, latitude), self.point(b, latitude));
+            }
+        }
+        for longitude_index in 0..12 {
+            let longitude = longitude_index as f32 / 12.0 * TAU;
+            for i in 0..32 {
+                let a = -PI * 0.5 + PI * i as f32 / 32.0;
+                let b = -PI * 0.5 + PI * (i + 1) as f32 / 32.0;
+                segment(self.point(longitude, a), self.point(longitude, b));
+            }
+        }
+        vertices
+    }
+}
+
+/// Finite cone side with a circular base at local Y=0 and a tip at Y=height.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConeSurface {
+    pub center: Vec3,
+    pub rotation: Quat,
+    pub radius: f32,
+    pub height: f32,
+}
+
+impl ConeSurface {
+    pub fn point(self, longitude: f32, y: f32) -> Vec3 {
+        let y = y.clamp(0.0, self.height);
+        let radius = self.radius * (1.0 - y / self.height);
+        self.center
+            + self.rotation * Vec3::new(radius * longitude.sin(), y, radius * longitude.cos())
+    }
+
+    fn parameter(self, world: Vec3, previous: Option<Vec3>) -> Vec3 {
+        let local = self.rotation.inverse() * (world - self.center);
+        let ring_radius = self.radius * (1.0 - local.y / self.height).max(0.0);
+        let mut longitude = if ring_radius < 1e-5 {
+            previous.map_or(0.0, |p| p.x / self.radius)
+        } else {
+            local.x.atan2(local.z)
+        };
+        if let Some(previous) = previous {
+            longitude = unwrap_angle(longitude, previous.x / self.radius);
+        }
+        let slant_scale = (1.0 + (self.radius / self.height).powi(2)).sqrt();
+        Vec3::new(longitude * self.radius, local.y * slant_scale, 0.0)
+    }
+
+    fn decode(self, parameter: Vec3) -> Vec3 {
+        let slant_scale = (1.0 + (self.radius / self.height).powi(2)).sqrt();
+        self.point(parameter.x / self.radius, parameter.y / slant_scale)
+    }
+
+    pub fn wireframe(self) -> Vec<Vertex> {
+        let mut vertices = Vec::new();
+        let color = [0.12, 0.38, 0.39];
+        let mut segment = |a: Vec3, b: Vec3| {
+            for position in [a, b] {
+                vertices.push(Vertex {
+                    position: position.to_array(),
+                    normal: [0.0; 3],
+                    uv: [0.0; 2],
+                    color,
+                    opacity: 1.0,
+                });
+            }
+        };
+        for ring_index in 0..=4 {
+            let y = self.height * ring_index as f32 / 5.0;
+            for i in 0..64 {
+                let a = i as f32 / 64.0 * TAU;
+                let b = (i + 1) as f32 / 64.0 * TAU;
+                segment(self.point(a, y), self.point(b, y));
+            }
+        }
+        for i in 0..12 {
+            let longitude = i as f32 / 12.0 * TAU;
+            segment(
+                self.point(longitude, 0.0),
+                self.point(longitude, self.height),
+            );
+        }
+        vertices
+    }
+}
+
+fn unwrap_angle(angle: f32, previous: f32) -> f32 {
+    previous + (angle - previous + PI).rem_euclid(TAU) - PI
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum GuidePreview {
     Plane(DrawingPlane),
     Cylinder(Cylinder),
     Revolved(Revolved),
+    Sphere(SphereSurface),
+    Cone(ConeSurface),
+    Freeform(FreeformSurface),
+    Loft(LoftSurface),
     Hidden,
 }
 impl GuidePreview {
@@ -154,6 +311,75 @@ impl GuidePreview {
             Self::Plane(plane) => geometry::grid(plane),
             Self::Cylinder(cylinder) => cylinder.wireframe(),
             Self::Revolved(r) => r.wireframe(),
+            Self::Sphere(sphere) => sphere.wireframe(),
+            Self::Cone(cone) => cone.wireframe(),
+            Self::Freeform(surface) => {
+                let mut vertices = Vec::new();
+                let color = [0.12, 0.38, 0.39];
+                let mut segment = |a: Vec3, b: Vec3| {
+                    for position in [a, b] {
+                        vertices.push(Vertex {
+                            position: position.to_array(),
+                            normal: [0.0; 3],
+                            uv: [0.0; 2],
+                            color,
+                            opacity: 1.0,
+                        });
+                    }
+                };
+                for row in 0..=8 {
+                    let v = row as f32 / 8.0;
+                    for column in 0..32 {
+                        let u0 = column as f32 / 32.0;
+                        let u1 = (column + 1) as f32 / 32.0;
+                        segment(surface.point(u0, v), surface.point(u1, v));
+                    }
+                }
+                for column in 0..=16 {
+                    let u = column as f32 / 16.0;
+                    for row in 0..8 {
+                        let v0 = row as f32 / 8.0;
+                        let v1 = (row + 1) as f32 / 8.0;
+                        segment(surface.point(u, v0), surface.point(u, v1));
+                    }
+                }
+                vertices
+            }
+            Self::Loft(surface) => {
+                let mut vertices = Vec::new();
+                let color = [0.12, 0.38, 0.39];
+                let mut segment = |a: Vec3, b: Vec3| {
+                    for position in [a, b] {
+                        vertices.push(Vertex {
+                            position: position.to_array(),
+                            normal: [0.0; 3],
+                            uv: [0.0; 2],
+                            color,
+                            opacity: 1.0,
+                        });
+                    }
+                };
+                let v_steps = (surface.sections.len() - 1) * 8;
+                for row in 0..=v_steps {
+                    let v = row as f32 / v_steps as f32;
+                    for column in 0..32 {
+                        segment(
+                            surface.point(column as f32 / 32.0, v),
+                            surface.point((column + 1) as f32 / 32.0, v),
+                        );
+                    }
+                }
+                for column in 0..=16 {
+                    let u = column as f32 / 16.0;
+                    for row in 0..v_steps {
+                        segment(
+                            surface.point(u, row as f32 / v_steps as f32),
+                            surface.point(u, (row + 1) as f32 / v_steps as f32),
+                        );
+                    }
+                }
+                vertices
+            }
             Self::Hidden => Vec::new(),
         }
     }
@@ -164,6 +390,10 @@ pub enum Surface {
     Plane,
     Cylinder(Cylinder),
     Revolved(Revolved),
+    Sphere(SphereSurface),
+    Cone(ConeSurface),
+    Freeform(FreeformSurface),
+    Loft(LoftSurface),
 }
 impl Surface {
     fn encode(self, world: Vec3, previous: Option<Vec3>) -> Vec3 {
@@ -171,6 +401,14 @@ impl Surface {
             Self::Plane => world,
             Self::Cylinder(c) => c.parameter(world, previous),
             Self::Revolved(r) => r.parameter(world, previous),
+            Self::Sphere(sphere) => sphere.parameter(world, previous),
+            Self::Cone(cone) => cone.parameter(world, previous),
+            Self::Freeform(surface) => surface
+                .coordinates(world)
+                .map_or(Vec3::ZERO, |(u, v)| Vec3::new(u, v, 0.0)),
+            Self::Loft(surface) => surface
+                .coordinates(world)
+                .map_or(Vec3::ZERO, |(u, v)| Vec3::new(u, v, 0.0)),
         }
     }
     fn decode(self, point: Point) -> Point {
@@ -180,6 +418,10 @@ impl Surface {
                 Self::Plane => point.position,
                 Self::Cylinder(c) => c.decode(point.position),
                 Self::Revolved(r) => r.decode(point.position),
+                Self::Sphere(sphere) => sphere.decode(point.position),
+                Self::Cone(cone) => cone.decode(point.position),
+                Self::Freeform(surface) => surface.point(point.position.x, point.position.y),
+                Self::Loft(surface) => surface.point(point.position.x, point.position.y),
             },
             pressure: point.pressure,
         }
@@ -193,6 +435,14 @@ impl Surface {
             Self::Cylinder(c) => {
                 (((end.x - start.x).abs() / c.radius / 0.035).ceil() as usize).clamp(1, 128)
             }
+            Self::Sphere(sphere) => {
+                (((end - start).length() / sphere.radius / 0.035).ceil() as usize).clamp(1, 128)
+            }
+            Self::Cone(cone) => {
+                (((end - start).length() / cone.radius / 0.035).ceil() as usize).clamp(1, 128)
+            }
+            Self::Freeform(_) => (((end - start).length() / 0.02).ceil() as usize).clamp(1, 128),
+            Self::Loft(_) => (((end - start).length() / 0.02).ceil() as usize).clamp(1, 128),
         }
     }
 }
@@ -221,6 +471,24 @@ impl SurfaceStabilizer {
             (Surface::Cylinder(c), Some(previous)) => {
                 (c.parameter(world, Some(previous)).x - previous.x).abs() / c.radius
                     > std::f32::consts::FRAC_PI_2
+            }
+            (Surface::Sphere(sphere), Some(previous)) => {
+                let current = sphere.parameter(world, Some(previous));
+                (current.x - previous.x).abs() / sphere.radius > PI * 0.5
+                    || (current.y - previous.y).abs() / sphere.radius > PI * 0.5
+            }
+            (Surface::Cone(cone), Some(previous)) => {
+                let current = cone.parameter(world, Some(previous));
+                (current.x - previous.x).abs() / cone.radius > PI * 0.5
+                    || (current.y - previous.y).abs() > cone.height * 0.5
+            }
+            (Surface::Freeform(_), Some(previous)) => {
+                let current = self.surface.encode(world, Some(previous));
+                (current - previous).length() > 0.25
+            }
+            (Surface::Loft(_), Some(previous)) => {
+                let current = self.surface.encode(world, Some(previous));
+                (current - previous).length() > 0.25
             }
             _ => false,
         }

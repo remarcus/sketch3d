@@ -3,6 +3,11 @@ use crate::texture::TextureSettings;
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
+#[path = "guide_resources.rs"]
+pub mod guide_resources;
+#[path = "model_references.rs"]
+pub mod model_references;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrushKind {
@@ -130,14 +135,32 @@ pub struct Document {
     pub active_layer: u64,
     pub version: u32,
     pub strokes: Vec<Stroke>,
+    #[serde(default)]
+    pub image_planes: Vec<crate::image_planes::ImagePlane>,
+    #[serde(default)]
+    pub active_image_plane: Option<u64>,
+    #[serde(default)]
+    pub guide_resources: Vec<guide_resources::GuideResource>,
+    #[serde(default)]
+    pub active_guide: Option<u64>,
+    #[serde(default)]
+    pub model_references: Vec<model_references::ObjReferenceResource>,
+    #[serde(default)]
+    pub active_model_reference: Option<u64>,
 }
 impl Default for Document {
     fn default() -> Self {
         Self {
             layers: layers_default(),
             active_layer: 1,
-            version: 8,
+            version: 11,
             strokes: Vec::new(),
+            image_planes: Vec::new(),
+            active_image_plane: None,
+            guide_resources: Vec::new(),
+            active_guide: None,
+            model_references: Vec::new(),
+            active_model_reference: None,
         }
     }
 }
@@ -185,7 +208,7 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=8)) {
+        if !matches!(version, Some(1..=11)) {
             return Err("Unsupported document version".into());
         }
         if matches!(version, Some(1..=6)) {
@@ -255,7 +278,7 @@ impl Document {
             }
         }
         let mut doc: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
-        doc.version = 8;
+        doc.version = 11;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
         }
@@ -280,6 +303,33 @@ impl Document {
         if !layer_ids.contains(&doc.active_layer) {
             return Err("Active layer does not exist".into());
         }
+        crate::image_planes::validate_catalog(&doc.image_planes)?;
+        if doc.active_image_plane.is_some_and(|id| {
+            !doc.image_planes
+                .iter()
+                .any(|plane| plane.id == id && plane.visible && !plane.locked && plane.drawable)
+        }) {
+            return Err(
+                "Active image plane must refer to a visible, unlocked drawable plane".into(),
+            );
+        }
+        if [
+            doc.active_image_plane.is_some(),
+            doc.active_guide.is_some(),
+            doc.active_model_reference.is_some(),
+        ]
+        .into_iter()
+        .filter(|active| *active)
+        .count()
+            > 1
+        {
+            return Err(
+                "Only one image plane, saved guide, or OBJ model can be the active drawing target"
+                    .into(),
+            );
+        }
+        guide_resources::validate_catalog(&doc.guide_resources, doc.active_guide)?;
+        model_references::validate_catalog(&doc.model_references, doc.active_model_reference)?;
         let mut ids = std::collections::HashSet::new();
         let mut total = 0;
         let mut groups = std::collections::HashMap::new();
@@ -371,9 +421,15 @@ mod tests {
                 active_layer: 1,
                 version: 8,
                 strokes: vec![s],
+                image_planes: Vec::new(),
+                active_image_plane: None,
+                guide_resources: Vec::new(),
+                active_guide: None,
+                model_references: Vec::new(),
+                active_model_reference: None,
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-            assert_eq!(loaded.version, 8);
+            assert_eq!(loaded.version, 11);
             assert_eq!(loaded.strokes, doc.strokes);
         }
     }
@@ -385,13 +441,19 @@ mod tests {
             active_layer: 1,
             version: 1,
             strokes: vec![original.clone()],
+            image_planes: Vec::new(),
+            active_image_plane: None,
+            guide_resources: Vec::new(),
+            active_guide: None,
+            model_references: Vec::new(),
+            active_model_reference: None,
         })
         .unwrap();
         // Even an unrecognized extension must not opt a version-1 stroke into
         // a new shape, or prevent an otherwise valid legacy file from opening.
         old["strokes"][0]["brush"] = serde_json::json!({"kind": "future_brush"});
         let loaded = Document::from_json(&old.to_string()).unwrap();
-        assert_eq!(loaded.version, 8);
+        assert_eq!(loaded.version, 11);
         assert_eq!(loaded.strokes, vec![original]);
         old["strokes"][0].as_object_mut().unwrap().remove("brush");
         let without_extension = Document::from_json(&old.to_string()).unwrap();
@@ -419,7 +481,7 @@ mod tests {
             .remove("opacity");
 
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 8);
+        assert_eq!(loaded.version, 11);
         assert_eq!(loaded.strokes[0].brush.opacity, 1.0);
         assert_eq!(loaded.strokes[0].brush.softness, 0.0);
         assert_eq!(
@@ -429,7 +491,7 @@ mod tests {
 
         let saved = serde_json::to_string(&loaded).unwrap();
         let reopened = Document::from_json(&saved).unwrap();
-        assert_eq!(reopened.version, 8);
+        assert_eq!(reopened.version, 11);
         assert_eq!(reopened.strokes, loaded.strokes);
     }
     #[test]
@@ -495,6 +557,12 @@ mod tests {
                 active_layer: 1,
                 version: 7,
                 strokes: vec![s],
+                image_planes: Vec::new(),
+                active_image_plane: None,
+                guide_resources: Vec::new(),
+                active_guide: None,
+                model_references: Vec::new(),
+                active_model_reference: None,
             };
             assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
         }
@@ -522,6 +590,12 @@ mod tests {
             active_layer: 1,
             version: 7,
             strokes: vec![stroke(), stroke()],
+            image_planes: Vec::new(),
+            active_image_plane: None,
+            guide_resources: Vec::new(),
+            active_guide: None,
+            model_references: Vec::new(),
+            active_model_reference: None,
         };
         assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
         doc.strokes.pop();
@@ -539,12 +613,18 @@ mod tests {
             active_layer: 1,
             version: 2,
             strokes: vec![original.clone()],
+            image_planes: Vec::new(),
+            active_image_plane: None,
+            guide_resources: Vec::new(),
+            active_guide: None,
+            model_references: Vec::new(),
+            active_model_reference: None,
         })
         .unwrap();
         value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
         value["strokes"][0]["points"][0]["tilt"] = serde_json::json!("unknown extension");
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 8);
+        assert_eq!(loaded.version, 11);
         assert_eq!(loaded.strokes, vec![original]);
     }
     #[test]
@@ -554,6 +634,12 @@ mod tests {
             active_layer: 1,
             version: 7,
             strokes: vec![stroke()],
+            image_planes: Vec::new(),
+            active_image_plane: None,
+            guide_resources: Vec::new(),
+            active_guide: None,
+            model_references: Vec::new(),
+            active_model_reference: None,
         };
         for dynamics in [
             Dynamics {
@@ -620,6 +706,12 @@ mod tests {
             active_layer: 1,
             version: 7,
             strokes: vec![mark.clone()],
+            image_planes: Vec::new(),
+            active_image_plane: None,
+            guide_resources: Vec::new(),
+            active_guide: None,
+            model_references: Vec::new(),
+            active_model_reference: None,
         };
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
         assert_eq!(loaded.strokes, doc.strokes);
@@ -628,7 +720,7 @@ mod tests {
         legacy["strokes"][0]["brush"]["texture"] = serde_json::json!({"kind":"future_pattern"});
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
         mark.brush.texture = TextureSettings::default();
-        assert_eq!(loaded.version, 8);
+        assert_eq!(loaded.version, 11);
         assert_eq!(loaded.strokes, vec![mark]);
     }
     #[test]
@@ -644,6 +736,12 @@ mod tests {
                 active_layer: 1,
                 version: 7,
                 strokes: vec![stroke()],
+                image_planes: Vec::new(),
+                active_image_plane: None,
+                guide_resources: Vec::new(),
+                active_guide: None,
+                model_references: Vec::new(),
+                active_model_reference: None,
             })
             .unwrap();
             doc["strokes"][0]["brush"]["texture"][field] = serde_json::json!(value);
@@ -686,7 +784,7 @@ mod layer_tests {
         value["active_layer"] = serde_json::json!(99);
         value["strokes"][0]["layer_id"] = serde_json::json!("unknown");
         let migrated = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(migrated.version, 8);
+        assert_eq!(migrated.version, 11);
         assert_eq!(migrated.strokes, vec![original]);
         assert_eq!(migrated.layers, layers_default());
         assert_eq!(migrated.active_layer, 1);
@@ -815,7 +913,7 @@ mod group_tests {
             s.group_id = None;
         }
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 8);
+        assert_eq!(loaded.version, 11);
         assert_eq!(loaded.strokes, doc.strokes);
         assert_eq!(loaded.layers, doc.layers);
     }

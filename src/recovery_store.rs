@@ -8,8 +8,11 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
-const MAX_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_FILES: usize = 128;
+// Drawing-local assets are encoded as base64 in the recovery JSON. Their
+// decoded payload remains capped at 256 MiB; allow the encoding overhead here.
+const MAX_BYTES: u64 = 384 * 1024 * 1024;
+pub const MAX_ASSET_BYTES: usize = 256 * 1024 * 1024;
+const MAX_FILES: usize = 8192;
 const STALE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -20,15 +23,131 @@ pub struct RecoverySnapshot {
     pub saved_at_unix_ms: u64,
     pub original_path: Option<PathBuf>,
     pub document: Document,
+    /// Drawing-local image files captured with the document so a recovered
+    /// copy can be restored even if the original drawing folder moved.
+    #[serde(default)]
+    pub assets: Vec<RecoveryAsset>,
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecoveryAsset {
+    /// A generated image filename or a path inside a referenced OBJ bundle.
+    pub asset_file: String,
+    #[serde(with = "base64_bytes")]
+    pub bytes: Vec<u8>,
+}
+
 impl RecoverySnapshot {
+    #[allow(dead_code)] // Keeps the resource-free constructor available for callers.
     pub fn new(session_id: String, original_path: Option<PathBuf>, document: Document) -> Self {
+        Self::new_with_assets(session_id, original_path, document, Vec::new())
+    }
+
+    pub fn new_with_assets(
+        session_id: String,
+        original_path: Option<PathBuf>,
+        document: Document,
+        assets: Vec<RecoveryAsset>,
+    ) -> Self {
         Self {
             version: 1,
             session_id,
             saved_at_unix_ms: now_ms(),
             original_path,
             document,
+            assets,
+        }
+    }
+}
+
+/// Small local base64 codec avoids turning every image byte into a JSON number
+/// (which would make snapshots several times larger). Input size is bounded by
+/// the recovery envelope before deserialization.
+mod base64_bytes {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut encoded = String::with_capacity(bytes.len().saturating_add(2) / 3 * 4);
+        for chunk in bytes.chunks(3) {
+            let a = chunk[0];
+            let b = *chunk.get(1).unwrap_or(&0);
+            let c = *chunk.get(2).unwrap_or(&0);
+            encoded.push(TABLE[(a >> 2) as usize] as char);
+            encoded.push(TABLE[(((a & 3) << 4) | (b >> 4)) as usize] as char);
+            encoded.push(if chunk.len() > 1 {
+                TABLE[(((b & 15) << 2) | (c >> 6)) as usize] as char
+            } else {
+                '='
+            });
+            encoded.push(if chunk.len() > 2 {
+                TABLE[(c & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+        serializer.serialize_str(&encoded)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        if encoded.len() % 4 != 0 {
+            return Err(serde::de::Error::custom("invalid base64 image payload"));
+        }
+        let estimated = encoded.len() / 4 * 3;
+        if estimated > crate::image_planes::MAX_IMAGE_BYTES as usize + 2 {
+            return Err(serde::de::Error::custom("image payload exceeds 32 MiB"));
+        }
+        let mut decoded = Vec::with_capacity(estimated);
+        for (index, chunk) in encoded.as_bytes().chunks_exact(4).enumerate() {
+            let last = index + 1 == encoded.len() / 4;
+            let a = sextet(chunk[0])
+                .ok_or_else(|| serde::de::Error::custom("invalid base64 image payload"))?;
+            let b = sextet(chunk[1])
+                .ok_or_else(|| serde::de::Error::custom("invalid base64 image payload"))?;
+            let c = if chunk[2] == b'=' {
+                0
+            } else {
+                sextet(chunk[2])
+                    .ok_or_else(|| serde::de::Error::custom("invalid base64 image payload"))?
+            };
+            let d = if chunk[3] == b'=' {
+                0
+            } else {
+                sextet(chunk[3])
+                    .ok_or_else(|| serde::de::Error::custom("invalid base64 image payload"))?
+            };
+            if (!last && (chunk[2] == b'=' || chunk[3] == b'='))
+                || (chunk[2] == b'=' && chunk[3] != b'=')
+            {
+                return Err(serde::de::Error::custom("invalid base64 image padding"));
+            }
+            decoded.push((a << 2) | (b >> 4));
+            if chunk[2] != b'=' {
+                decoded.push((b << 4) | (c >> 2));
+            }
+            if chunk[3] != b'=' {
+                decoded.push((c << 6) | d);
+            }
+        }
+        Ok(decoded)
+    }
+
+    fn sextet(value: u8) -> Option<u8> {
+        match value {
+            b'A'..=b'Z' => Some(value - b'A'),
+            b'a'..=b'z' => Some(value - b'a' + 26),
+            b'0'..=b'9' => Some(value - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
         }
     }
 }
@@ -130,7 +249,87 @@ fn validate_metadata(snapshot: &RecoverySnapshot) -> Result<(), String> {
     {
         return Err("Invalid original drawing path".into());
     }
+    let mut total = 0usize;
+    let mut seen = std::collections::HashSet::new();
+    for asset in &snapshot.assets {
+        let image_reference = snapshot
+            .document
+            .image_planes
+            .iter()
+            .any(|plane| plane.asset_file == asset.asset_file);
+        let model_reference = model_recovery_asset_referenced(snapshot, &asset.asset_file);
+        if (!image_reference && !model_reference)
+            || (!valid_asset_file(&asset.asset_file) && !valid_model_asset_file(&asset.asset_file))
+            || !seen.insert(&asset.asset_file)
+        {
+            return Err("Invalid or duplicate recovery asset reference".into());
+        }
+        let per_file_limit = if image_reference {
+            crate::image_planes::MAX_IMAGE_BYTES as usize
+        } else if asset.asset_file.ends_with(".obj") {
+            crate::obj_reference_storage::MAX_MODEL_OBJ_BYTES as usize
+        } else {
+            crate::obj_reference_storage::MAX_MODEL_MTL_BYTES as usize
+        };
+        if asset.bytes.is_empty() || asset.bytes.len() > per_file_limit {
+            return Err("Recovery asset exceeds its per-file limit".into());
+        }
+        total = total.saturating_add(asset.bytes.len());
+        if total > MAX_ASSET_BYTES {
+            return Err("Recovery assets exceed the 256 MiB total limit".into());
+        }
+    }
     Ok(())
+}
+
+fn valid_asset_file(value: &str) -> bool {
+    let Some(stem) = value.strip_prefix("image-") else {
+        return false;
+    };
+    let Some((id, ext)) = stem.rsplit_once('.') else {
+        return false;
+    };
+    id.parse::<u64>().is_ok_and(|id| id != 0 && id != u64::MAX) && matches!(ext, "png" | "jpg")
+}
+fn valid_model_asset_file(value: &str) -> bool {
+    let parts: Vec<_> = value.split('/').collect();
+    if parts.len() != 3 || parts[0] != "models" {
+        return false;
+    }
+    if !parts[1]
+        .parse::<u64>()
+        .is_ok_and(|id| id != 0 && id != u64::MAX)
+    {
+        return false;
+    }
+    if parts[2] == "model.obj" {
+        return true;
+    }
+    let Some(number) = parts[2]
+        .strip_prefix("material-")
+        .and_then(|name| name.strip_suffix(".mtl"))
+    else {
+        return false;
+    };
+    number.parse::<u8>().is_ok_and(|index| index < 64)
+        && number.len() == 3
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+}
+fn model_recovery_asset_referenced(snapshot: &RecoverySnapshot, path: &str) -> bool {
+    let mut parts = path.split('/');
+    let (Some("models"), Some(id), Some(_file), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let Ok(id) = id.parse::<u64>() else {
+        return false;
+    };
+    snapshot
+        .document
+        .model_references
+        .iter()
+        .any(|resource| resource.id == id && resource.asset.bundle_dir == format!("models/{id}"))
 }
 fn normalized(snapshot: &RecoverySnapshot) -> Result<RecoverySnapshot, String> {
     validate_metadata(snapshot)?;
@@ -195,7 +394,7 @@ pub fn write(dir: &Path, snapshot: &RecoverySnapshot) -> Result<PathBuf, String>
     }
     let bytes = serde_json::to_vec(&snapshot).map_err(|e| e.to_string())?;
     if bytes.len() as u64 > MAX_BYTES {
-        return Err("Recovery snapshot exceeds 256 MiB".into());
+        return Err("Recovery snapshot exceeds 384 MiB".into());
     }
     let mut temporary = tempfile::NamedTempFile::new_in(&dir).map_err(|e| e.to_string())?;
     temporary
@@ -266,7 +465,7 @@ fn read(file: &Path) -> Result<RecoverySnapshot, String> {
         return Err("Recovery entry is not a regular file".into());
     }
     if metadata.len() > MAX_BYTES {
-        return Err("Recovery file exceeds 256 MiB".into());
+        return Err("Recovery file exceeds 384 MiB".into());
     }
     let mut bytes = Vec::new();
     fs::File::open(file)
@@ -275,7 +474,7 @@ fn read(file: &Path) -> Result<RecoverySnapshot, String> {
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     if bytes.len() as u64 > MAX_BYTES {
-        return Err("Recovery file grew beyond 256 MiB".into());
+        return Err("Recovery file grew beyond 384 MiB".into());
     }
     let mut value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|e| format!("Incomplete or corrupt recovery file: {e}"))?;

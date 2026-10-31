@@ -78,15 +78,17 @@ impl SketchApp {
         }
     }
     pub(super) fn tick_recovery(&mut self, ctx: &egui::Context) {
+        let now = Instant::now();
         if let Some(practice) = &self.tutorial.practice {
-            self.recovery.tick(
+            self.recovery.tick_with_assets(
                 &practice.doc,
                 practice
                     .file
                     .clone()
                     .or_else(|| self.recovered_source.clone()),
+                Vec::new(),
                 !practice.dirty,
-                Instant::now(),
+                now,
             );
             if practice.dirty && self.recovery.revision > self.recovery.protected_revision {
                 ctx.request_repaint_after(Duration::from_millis(500));
@@ -100,11 +102,21 @@ impl SketchApp {
             || self.close_cleanup_failed
             || self.recovery_prompt
             || self.confirm;
-        self.recovery.tick(
+        let assets = if self.recovery.snapshot_due(blocked, now) {
+            let mut assets = self.image_recovery_assets();
+            if !self.append_obj_recovery_assets(&mut assets) {
+                assets.clear();
+            }
+            assets
+        } else {
+            Vec::new()
+        };
+        self.recovery.tick_with_assets(
             &self.doc,
             self.file.clone().or_else(|| self.recovered_source.clone()),
+            assets,
             blocked,
-            Instant::now(),
+            now,
         );
         if self.recovery.enabled()
             && self.dirty
@@ -131,8 +143,25 @@ impl SketchApp {
         };
         self.reset_recovery_document();
         self.cancel();
+        self.image_asset_root = std::env::temp_dir().join(format!(
+            "3dsketch-image-planes-recovered-{}",
+            crate::recovery_store::session_id()
+        ));
+        let mut candidate = candidate;
+        let recovered_assets = std::mem::take(&mut candidate.snapshot.assets);
         self.doc = candidate.snapshot.document;
-        self.next_id = self.doc.strokes.iter().map(|s| s.id).max().unwrap_or(0) + 1;
+        self.obj_reference_models.clear();
+        self.next_id = self
+            .doc
+            .strokes
+            .iter()
+            .map(|s| s.id)
+            .chain(self.doc.image_planes.iter().map(|plane| plane.id))
+            .chain(self.doc.guide_resources.iter().map(|guide| guide.id))
+            .chain(self.doc.model_references.iter().map(|model| model.id))
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
         self.file = None;
         self.recovered_source = candidate.snapshot.original_path;
         self.recovery_retire = Some(candidate.path);
@@ -149,8 +178,15 @@ impl SketchApp {
         self.starter_scene = false;
         self.cylinder_example = false;
         self.renderer.invalidate();
-        self.recovery
-            .force_snapshot(&self.doc, self.recovered_source.clone());
+        self.image_plane_assets.clear();
+        self.renderer.clear_image_plane_assets();
+        self.renderer.clear_obj_reference_models();
+        self.install_recovery_image_assets(&recovered_assets);
+        self.recovery.force_snapshot_with_assets(
+            &self.doc,
+            self.recovered_source.clone(),
+            recovered_assets,
+        );
         self.status = "Recovered an unsaved copy. Save as to choose a native drawing file.".into();
     }
     pub(super) fn show_recovery(&mut self, ctx: &egui::Context) {

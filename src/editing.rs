@@ -1,9 +1,113 @@
 //! Reversible edits and transforms, independent of the interface and GPU.
-use crate::document::{Document, Layer, Stroke};
+use crate::document::{BrushKind, Document, Layer, Stroke};
 use glam::{Quat, Vec3};
 use std::collections::HashSet;
 
 pub type Snapshot = Vec<(usize, Stroke)>;
+
+/// A partial appearance update. `None` means leave that property exactly as-is,
+/// including when the selected strokes have mixed values.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AppearancePatch {
+    pub color: Option<[f32; 3]>,
+    pub radius: Option<f32>,
+    pub opacity: Option<f32>,
+    pub brush_kind: Option<BrushKind>,
+}
+
+impl AppearancePatch {
+    fn is_empty(self) -> bool {
+        self.color.is_none()
+            && self.radius.is_none()
+            && self.opacity.is_none()
+            && self.brush_kind.is_none()
+    }
+}
+
+/// Builds the preview snapshot for an appearance edit without mutating the
+/// document. Passing the original snapshot on each preview keeps untouched
+/// values exact and prevents cumulative rounding/drift.
+///
+/// Filled strokes keep their captured contour. Color and opacity may be
+/// changed, but radius and brush kind are rejected for a selection containing
+/// fills because those surface-brush properties do not alter fill geometry.
+pub fn appearance_preview(before: &Snapshot, patch: AppearancePatch) -> Result<Snapshot, String> {
+    if before.is_empty() {
+        return Err("Select at least one editable stroke".into());
+    }
+    if patch.is_empty() {
+        return Err("Change at least one appearance property".into());
+    }
+    if patch.color.is_some_and(|color| {
+        color
+            .iter()
+            .any(|component| !component.is_finite() || !(0.0..=1.0).contains(component))
+    }) {
+        return Err("Color components must be finite values from 0 to 1".into());
+    }
+    if patch
+        .radius
+        .is_some_and(|radius| !radius.is_finite() || !(0.001..=1.0).contains(&radius))
+    {
+        return Err("Radius must be a finite value from 0.001 to 1".into());
+    }
+    if patch
+        .opacity
+        .is_some_and(|opacity| !opacity.is_finite() || !(0.0..=1.0).contains(&opacity))
+    {
+        return Err("Opacity must be a finite value from 0 to 1".into());
+    }
+    if before.iter().any(|(_, stroke)| stroke.fill.is_some())
+        && (patch.radius.is_some() || patch.brush_kind.is_some())
+    {
+        return Err("Filled strokes keep their contour; radius and brush changes apply only to non-filled strokes".into());
+    }
+
+    let mut after = before.clone();
+    for (_, stroke) in &mut after {
+        if let Some(color) = patch.color {
+            stroke.color = color;
+        }
+        if let Some(radius) = patch.radius {
+            stroke.radius = radius;
+        }
+        if let Some(opacity) = patch.opacity {
+            stroke.brush.opacity = opacity;
+        }
+        if let Some(kind) = patch.brush_kind {
+            stroke.brush.kind = kind;
+        }
+        if !stroke.brush.is_valid() {
+            return Err("Appearance change would make brush settings invalid".into());
+        }
+        if !stroke.radius.is_finite() || !(0.001..=1.0).contains(&stroke.radius) {
+            return Err("Appearance change would exceed the valid radius range".into());
+        }
+    }
+    Ok(after)
+}
+
+/// Stages a reversible appearance edit for the complete editable selection.
+/// The returned `Edit::Change` can be applied for preview, committed as one
+/// undo step, or reversed to cancel. Hidden/locked/missing selected strokes
+/// reject the whole operation, so callers cannot accidentally partially edit
+/// protected content. See [`appearance_preview`] for fill compatibility.
+pub fn appearance_edit(
+    doc: &Document,
+    selected: &HashSet<u64>,
+    patch: AppearancePatch,
+) -> Result<Edit, String> {
+    if selected.is_empty() {
+        return Err("Select at least one editable stroke".into());
+    }
+    let before = snapshot(doc, selected);
+    if before.len() != selected.len() {
+        return Err("Hidden, locked, or missing strokes cannot be edited".into());
+    }
+    let after = appearance_preview(&before, patch)?;
+    Ok(Edit::Change { before, after })
+}
+
 #[derive(Clone)]
 pub enum Edit {
     Add(Stroke),
@@ -15,6 +119,36 @@ pub enum Edit {
     Layers {
         before: LayerState,
         after: LayerState,
+    },
+    ImagePlanes {
+        before: (
+            Vec<crate::image_planes::ImagePlane>,
+            Option<u64>,
+            Option<u64>,
+        ),
+        after: (
+            Vec<crate::image_planes::ImagePlane>,
+            Option<u64>,
+            Option<u64>,
+        ),
+    },
+    Guides {
+        before: (
+            Vec<crate::document::guide_resources::GuideResource>,
+            Option<u64>,
+            Vec<crate::image_planes::ImagePlane>,
+            Option<u64>,
+        ),
+        after: (
+            Vec<crate::document::guide_resources::GuideResource>,
+            Option<u64>,
+            Vec<crate::image_planes::ImagePlane>,
+            Option<u64>,
+        ),
+    },
+    ModelReferences {
+        before: Vec<crate::document::model_references::ObjReferenceResource>,
+        after: Vec<crate::document::model_references::ObjReferenceResource>,
     },
 }
 impl Edit {
@@ -47,6 +181,27 @@ impl Edit {
                         stroke.layer_id = *layer;
                     }
                 }
+            }
+            Self::ImagePlanes { before, after } => {
+                let (planes, active, active_guide) = if forward { after } else { before };
+                doc.image_planes = planes.clone();
+                doc.active_image_plane = *active;
+                doc.active_guide = *active_guide;
+            }
+            Self::Guides { before, after } => {
+                let (guides, active_guide, planes, active_image_plane) =
+                    if forward { after } else { before };
+                doc.guide_resources = guides.clone();
+                doc.active_guide = *active_guide;
+                doc.image_planes = planes.clone();
+                doc.active_image_plane = *active_image_plane;
+            }
+            Self::ModelReferences { before, after } => {
+                doc.model_references = if forward {
+                    after.clone()
+                } else {
+                    before.clone()
+                };
             }
         }
     }

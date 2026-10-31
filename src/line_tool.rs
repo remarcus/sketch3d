@@ -68,6 +68,10 @@ impl SketchApp {
         self.line.enabled = false;
     }
     pub(super) fn start_line_tool(&mut self) {
+        if self.resource_target_active() {
+            self.status = "Line tool currently uses the temporary plane guide. Switch to it before drawing a line.".into();
+            return;
+        }
         self.finish();
         self.cancel_fill_tool();
         self.line.enabled = true;
@@ -223,14 +227,7 @@ impl SketchApp {
         }
         mark.id = self.next_id;
         self.next_id += 1;
-        let edit = Edit::Add(mark);
-        edit.apply(&mut self.doc, true);
-        self.undo.push(edit);
-        self.redo.clear();
-        self.dirty = true;
-        self.record_recovery_edit();
-        self.renderer.invalidate();
-        self.status = "Straight line created as editable ink.".into();
+        self.commit_drawn_stroke(mark, false);
     }
     pub(super) fn line_shortcuts(&mut self, ctx: &egui::Context) {
         let (l, escape, mods) = ctx.input(|i| {
@@ -262,6 +259,7 @@ impl SketchApp {
             for p in [a, b] {
                 painter.circle_stroke(p, 5.0, egui::Stroke::new(1.5_f32, color));
             }
+            self.mirror_preview_overlay(ui, rect, &draft.mark);
         }
     }
 }

@@ -13,6 +13,10 @@ impl SketchApp {
     }
     pub(super) fn plane_controls(&mut self, ui: &mut egui::Ui) {
         ui_style::section(ui, "Drawing guide");
+        self.saved_guide_controls(ui);
+        if self.doc.active_guide.is_some() {
+            return;
+        }
         if ui.button("Place plane on artwork [K]").clicked() {
             self.begin_placement();
         }

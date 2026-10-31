@@ -15,6 +15,66 @@ pub(super) struct Drag {
     translation: Vec3,
 }
 
+pub(super) struct BrushSelectionDrag {
+    starting_selection: HashSet<u64>,
+    path: Vec<Pos2>,
+}
+
+pub(super) struct AppearanceDraft {
+    before: Snapshot,
+    after: Snapshot,
+    color: [f32; 3],
+    radius: f32,
+    opacity: f32,
+    brush_kind: crate::document::BrushKind,
+    set_color: bool,
+    set_radius: bool,
+    set_opacity: bool,
+    set_brush_kind: bool,
+    mixed_color: bool,
+    mixed_radius: bool,
+    mixed_opacity: bool,
+    mixed_brush_kind: bool,
+    has_preview: bool,
+}
+
+impl AppearanceDraft {
+    fn new(before: Snapshot) -> Option<Self> {
+        let first = before.first()?.1.clone();
+        Some(Self {
+            mixed_color: before.iter().any(|(_, stroke)| stroke.color != first.color),
+            mixed_radius: before
+                .iter()
+                .any(|(_, stroke)| stroke.radius != first.radius),
+            mixed_opacity: before
+                .iter()
+                .any(|(_, stroke)| stroke.brush.opacity != first.brush.opacity),
+            mixed_brush_kind: before
+                .iter()
+                .any(|(_, stroke)| stroke.brush.kind != first.brush.kind),
+            after: before.clone(),
+            color: first.color,
+            radius: first.radius,
+            opacity: first.brush.opacity,
+            brush_kind: first.brush.kind,
+            before,
+            set_color: false,
+            set_radius: false,
+            set_opacity: false,
+            set_brush_kind: false,
+            has_preview: false,
+        })
+    }
+    fn patch(&self) -> editing::AppearancePatch {
+        editing::AppearancePatch {
+            color: self.set_color.then_some(self.color),
+            radius: self.set_radius.then_some(self.radius),
+            opacity: self.set_opacity.then_some(self.opacity),
+            brush_kind: self.set_brush_kind.then_some(self.brush_kind),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RepeatSpace {
     World,
@@ -34,6 +94,133 @@ const MAX_DOCUMENT_STROKES: usize = 100_000;
 const MAX_DOCUMENT_POINTS: usize = 2_000_000;
 
 impl SketchApp {
+    fn begin_appearance_edit(&mut self) {
+        let before = editing::snapshot(&self.doc, &self.selected);
+        if before.is_empty() || before.len() != self.selected.len() {
+            self.status = "Appearance editing requires a complete editable selection.".into();
+            return;
+        }
+        self.appearance_draft = AppearanceDraft::new(before);
+    }
+
+    fn refresh_appearance_preview(&mut self) {
+        let Some(draft) = self.appearance_draft.as_mut() else {
+            return;
+        };
+        let ids: HashSet<_> = draft.before.iter().map(|(_, stroke)| stroke.id).collect();
+        if draft.has_preview {
+            editing::replace(&mut self.doc, &draft.after, &Vec::new(), false);
+        }
+        match editing::appearance_preview(&draft.before, draft.patch()) {
+            Ok(after) => {
+                if after != draft.before {
+                    editing::replace(&mut self.doc, &draft.before, &after, true);
+                    draft.after = after;
+                    draft.has_preview = true;
+                } else {
+                    draft.after = draft.before.clone();
+                    draft.has_preview = false;
+                }
+                self.renderer.invalidate_ids(&ids);
+                self.status =
+                    "Appearance preview only. Apply to keep it or Cancel to restore.".into();
+            }
+            Err(error) => {
+                draft.after = draft.before.clone();
+                draft.has_preview = false;
+                self.renderer.invalidate_ids(&ids);
+                self.status = error.into();
+            }
+        }
+    }
+
+    pub(super) fn finish_appearance_edit(&mut self, apply: bool) {
+        let Some(draft) = self.appearance_draft.take() else {
+            return;
+        };
+        let ids: HashSet<_> = draft.before.iter().map(|(_, stroke)| stroke.id).collect();
+        if draft.has_preview && apply {
+            editing::replace(&mut self.doc, &draft.after, &Vec::new(), false);
+            match editing::appearance_edit(&self.doc, &self.selected, draft.patch()) {
+                Ok(edit) => {
+                    edit.apply(&mut self.doc, true);
+                    self.undo.push(edit);
+                    self.redo.clear();
+                    self.dirty = true;
+                    self.record_recovery_edit();
+                    self.status =
+                        "Selected stroke appearance updated. One undo restores the originals."
+                            .into();
+                }
+                Err(error) => self.status = error,
+            }
+            self.renderer.invalidate_ids(&ids);
+        } else {
+            if draft.has_preview {
+                editing::replace(&mut self.doc, &draft.after, &Vec::new(), false);
+                self.renderer.invalidate_ids(&ids);
+            }
+            self.status = if apply {
+                "No appearance properties were changed.".into()
+            } else {
+                "Appearance edit cancelled.".into()
+            };
+        }
+    }
+
+    pub(super) fn update_brush_selection(&mut self, pos: Pos2, rect: Rect) {
+        let Some(drag) = self.brush_select_drag.as_mut() else {
+            return;
+        };
+        if drag
+            .path
+            .last()
+            .is_none_or(|last| last.distance(pos) >= 1.0)
+            && drag.path.len() < 4096
+        {
+            drag.path.push(pos);
+        }
+        let result = crate::brush_selection::hit_ids(
+            &self.doc,
+            &self.camera,
+            rect,
+            &drag.path,
+            self.brush_select_radius,
+            self.brush_select_through,
+            self.individual_selection,
+        );
+        match result {
+            Ok(hits) => {
+                self.selected = crate::brush_selection::apply_brush_selection(
+                    &drag.starting_selection,
+                    &hits,
+                    if self.brush_select_deselect {
+                        crate::brush_selection::BrushSelectionOperation::Deselect
+                    } else {
+                        crate::brush_selection::BrushSelectionOperation::Select
+                    },
+                );
+            }
+            Err(error) => self.status = error.into(),
+        }
+    }
+
+    pub(super) fn commit_brush_selection(&mut self) {
+        if self.brush_select_drag.take().is_some() {
+            self.status = format!(
+                "Brush selection finished: {} stroke(s) selected.",
+                self.selected.len()
+            );
+        }
+    }
+
+    pub(super) fn cancel_brush_selection(&mut self) {
+        if let Some(drag) = self.brush_select_drag.take() {
+            self.selected = drag.starting_selection;
+            self.status = "Brush selection cancelled.".into();
+        }
+    }
+
     pub(super) fn sync_selection(&mut self) {
         if self.selected.is_empty() {
             return;
@@ -84,6 +271,22 @@ impl SketchApp {
         Layout::new(&self.camera, rect, pivot, self.transform_mode)
     }
     pub(super) fn select_pointer(&mut self, pos: Pos2, rect: Rect, begin: bool, shift: bool) {
+        if self.appearance_draft.is_some() {
+            return;
+        }
+        if begin && self.brush_select_enabled {
+            self.finish();
+            self.brush_select_drag = Some(BrushSelectionDrag {
+                starting_selection: self.selected.clone(),
+                path: vec![pos],
+            });
+            self.update_brush_selection(pos, rect);
+            return;
+        }
+        if self.brush_select_drag.is_some() {
+            self.update_brush_selection(pos, rect);
+            return;
+        }
         if begin {
             self.finish();
             if !shift {
@@ -734,6 +937,12 @@ impl SketchApp {
                 i.key_pressed(Key::Escape),
             )
         });
+        if self.appearance_draft.is_some() {
+            if escape {
+                self.finish_appearance_edit(false);
+            }
+            return;
+        }
         if mods.command {
             if a {
                 self.cancel_line_tool();
@@ -778,7 +987,9 @@ impl SketchApp {
                     self.delete_selected();
                 }
                 if escape {
-                    if self.drag.is_some() {
+                    if self.brush_select_drag.is_some() {
+                        self.cancel_brush_selection();
+                    } else if self.drag.is_some() {
                         self.cancel_transform();
                     } else {
                         self.selected.clear();
@@ -789,6 +1000,83 @@ impl SketchApp {
     }
     pub(super) fn selection_panel(&mut self, ui: &mut egui::Ui) {
         ui.label(format!("{} stroke(s) selected", self.selected.len()));
+        self.liquify_controls(ui);
+        if self.liquify_active() {
+            return;
+        }
+        if self.appearance_draft.is_none() {
+            if ui
+                .add_enabled(
+                    !self.selected.is_empty(),
+                    egui::Button::new("Edit appearance…"),
+                )
+                .clicked()
+            {
+                self.begin_appearance_edit();
+            }
+        } else {
+            let mut changed = false;
+            let mut apply = false;
+            let mut cancel = false;
+            ui.group(|ui| {
+                ui.strong("EDIT APPEARANCE");
+                if let Some(draft) = self.appearance_draft.as_mut() {
+                    let contains_fill = draft.before.iter().any(|(_, stroke)| stroke.fill.is_some());
+                    ui.horizontal(|ui| {
+                        changed |= ui.checkbox(&mut draft.set_color, "Color").changed();
+                        ui.small(if draft.mixed_color { "Mixed; unchanged" } else { "Same" });
+                    });
+                    if draft.set_color {
+                        let mut display_color = draft.color.map(crate::presentation::linear_to_srgb);
+                        if ui.color_edit_button_rgb(&mut display_color).changed() {
+                            draft.color = display_color.map(crate::presentation::srgb_to_linear);
+                            changed = true;
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                        changed |= ui.add_enabled(!contains_fill, egui::Checkbox::new(&mut draft.set_radius, "Radius")).changed();
+                        ui.small(if draft.mixed_radius { "Mixed; unchanged" } else { "Same" });
+                    });
+                    if draft.set_radius && !contains_fill { changed |= ui.add(egui::Slider::new(&mut draft.radius, 0.001..=1.0).text("wu")).changed(); }
+                    ui.horizontal(|ui| {
+                        changed |= ui.checkbox(&mut draft.set_opacity, "Opacity").changed();
+                        ui.small(if draft.mixed_opacity { "Mixed; unchanged" } else { "Same" });
+                    });
+                    if draft.set_opacity { changed |= ui.add(egui::Slider::new(&mut draft.opacity, 0.0..=1.0).text("Opacity")).changed(); }
+                    ui.horizontal(|ui| {
+                        changed |= ui.add_enabled(!contains_fill, egui::Checkbox::new(&mut draft.set_brush_kind, "Brush type")).changed();
+                        ui.small(if draft.mixed_brush_kind { "Mixed; unchanged" } else { "Same" });
+                    });
+                    if draft.set_brush_kind && !contains_fill {
+                        egui::ComboBox::from_id_salt("appearance-brush-kind")
+                            .selected_text(format!("{:?}", draft.brush_kind))
+                            .show_ui(ui, |ui| {
+                                for kind in [crate::document::BrushKind::Round, crate::document::BrushKind::Ribbon, crate::document::BrushKind::Chisel] {
+                                    changed |= ui.selectable_value(&mut draft.brush_kind, kind, format!("{:?}", kind)).changed();
+                                }
+                            });
+                    }
+                    if contains_fill {
+                        ui.small("Filled marks keep their contour; radius and brush type cannot change while any fill is selected.");
+                    }
+                }
+                ui.horizontal(|ui| {
+                    apply = ui.button("Apply").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+            if changed {
+                self.refresh_appearance_preview();
+            }
+            if apply {
+                self.finish_appearance_edit(true);
+            }
+            if cancel {
+                self.finish_appearance_edit(false);
+            }
+            ui.small("Mixed or untouched values stay exact until you enable that property.");
+            return;
+        }
         ui.label("Click a stroke. Shift-click adds or removes one. Empty space clears.");
         ui.horizontal(|ui| {
             if ui.button("Select all").clicked() {
@@ -806,6 +1094,21 @@ impl SketchApp {
                 self.selected.clear();
             }
         });
+        ui.separator();
+        ui.checkbox(&mut self.brush_select_enabled, "Drag brush selection");
+        if self.brush_select_enabled {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.brush_select_deselect, false, "Select");
+                ui.selectable_value(&mut self.brush_select_deselect, true, "Deselect");
+            });
+            ui.add(
+                egui::Slider::new(&mut self.brush_select_radius, 1.0..=120.0).text("Radius (px)"),
+            );
+            ui.checkbox(&mut self.brush_select_through, "Select through occlusion");
+            ui.small(
+                "Hidden and locked layers are always skipped. Escape cancels an active sweep.",
+            );
+        }
         ui.add_space(6.0);
         ui.separator();
         ui.add_enabled_ui(!self.selected.is_empty(),|ui|{
@@ -836,10 +1139,25 @@ if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete
         if !self.select_mode {
             return;
         }
+        let painter = ui.painter().with_clip_rect(rect);
+        if let Some(brush) = &self.brush_select_drag {
+            for pair in brush.path.windows(2) {
+                painter.line_segment(
+                    [pair[0], pair[1]],
+                    egui::Stroke::new(2.0_f32, Color32::from_rgba_unmultiplied(87, 224, 195, 220)),
+                );
+            }
+            if let Some(last) = brush.path.last() {
+                painter.circle_stroke(
+                    *last,
+                    self.brush_select_radius,
+                    egui::Stroke::new(1.5_f32, Color32::from_rgb(87, 224, 195)),
+                );
+            }
+        }
         let Some((min, max)) = editing::bounds(&self.doc, &self.selected) else {
             return;
         };
-        let painter = ui.painter().with_clip_rect(rect);
         let corners: [Vec3; 8] = std::array::from_fn(|i| {
             Vec3::new(
                 if i & 1 == 0 { min.x } else { max.x },

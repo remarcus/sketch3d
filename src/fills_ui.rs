@@ -197,7 +197,13 @@ impl SketchApp {
                 i.key_pressed(Key::Escape),
             )
         });
-        if p && !ctx.input(|i| i.modifiers.command || i.modifiers.alt) {
+        if p && !ctx.input(|i| i.modifiers.command || i.modifiers.alt)
+            && self.resource_target_active()
+        {
+            self.status =
+                "Fill currently uses the temporary plane guide. Switch to it before filling."
+                    .into();
+        } else if p && !ctx.input(|i| i.modifiers.command || i.modifiers.alt) {
             self.cancel_line_tool();
             self.finish();
             self.fills.enabled = true;

@@ -216,6 +216,7 @@ pub fn intersect_plane(origin: Vec3, direction: Vec3, plane: DrawingPlane) -> Op
 }
 pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
     let point_count = stroke.points.len();
+    let closed = is_closed_stroke(stroke);
     let mut out = Vec::with_capacity(if point_count <= 1 {
         36
     } else {
@@ -231,8 +232,12 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
     let distances = crate::dynamics::arc_lengths(&stroke.points);
     let total = distances.last().copied().unwrap_or(0.0);
     for (i, p) in stroke.points.iter().enumerate() {
-        let prev = stroke.points[i.saturating_sub(1)].position;
-        let next = stroke.points[(i + 1).min(stroke.points.len() - 1)].position;
+        let prev = if closed && i == 0 {
+            stroke.points[point_count - 2].position
+        } else {
+            stroke.points[i.saturating_sub(1)].position
+        };
+        let next = stroke.points[(i + 1).min(point_count - 1)].position;
         let tangent = (next - prev).try_normalize().unwrap_or(Vec3::Y);
         let helper = if tangent.dot(Vec3::Y).abs() < 0.9 {
             Vec3::Y
@@ -267,7 +272,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
                 stroke.brush.dynamics.taper_start,
                 stroke.brush.dynamics.taper_end,
             );
-        let ring = std::array::from_fn(|j| {
+        let mut ring = std::array::from_fn(|j| {
             let angle = j as f32 * std::f32::consts::TAU / 8.0;
             let normal = a * angle.cos() + b * angle.sin();
             Vertex {
@@ -278,6 +283,12 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
                 opacity: vertex_opacity(stroke, p.pressure, normal, stroke.brush.normal),
             }
         });
+        if closed && i + 1 == point_count {
+            ring = rings[0];
+            for vertex in &mut ring {
+                vertex.uv[0] = distances[i] / stroke.brush.texture.scale;
+            }
+        }
         rings.push(ring);
     }
     if rings.len() == 1 {
@@ -328,31 +339,33 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
             out.extend_from_slice(&[pair[0][j], pair[1][j], next1, pair[0][j], next1, next0]);
         }
     }
-    for (index, ring) in [(0, &rings[0]), (rings.len() - 1, rings.last().unwrap())] {
-        let center = Vertex {
-            position: stroke.points[index].position.to_array(),
-            normal: [0.0, 0.0, 1.0],
-            color: stroke.color,
-            uv: [0.5, 0.5],
-            opacity: vertex_opacity(
-                stroke,
-                stroke.points[index].pressure,
-                Vec3::Z,
-                stroke.brush.normal,
-            ),
-        };
-        let radius = Vec3::from(ring[0].position).distance(stroke.points[index].position);
-        let cap_vertex = |j: usize| {
-            let mut vertex = ring[j % 8];
-            let angle = j as f32 * std::f32::consts::TAU / 8.0;
-            vertex.uv = [
-                0.5 + angle.cos() * radius / stroke.brush.texture.scale,
-                0.5 + angle.sin() * radius / stroke.brush.texture.scale,
-            ];
-            vertex
-        };
-        for j in 0..8 {
-            out.extend_from_slice(&[center, cap_vertex(j), cap_vertex(j + 1)]);
+    if !closed {
+        for (index, ring) in [(0, &rings[0]), (rings.len() - 1, rings.last().unwrap())] {
+            let center = Vertex {
+                position: stroke.points[index].position.to_array(),
+                normal: [0.0, 0.0, 1.0],
+                color: stroke.color,
+                uv: [0.5, 0.5],
+                opacity: vertex_opacity(
+                    stroke,
+                    stroke.points[index].pressure,
+                    Vec3::Z,
+                    stroke.brush.normal,
+                ),
+            };
+            let radius = Vec3::from(ring[0].position).distance(stroke.points[index].position);
+            let cap_vertex = |j: usize| {
+                let mut vertex = ring[j % 8];
+                let angle = j as f32 * std::f32::consts::TAU / 8.0;
+                vertex.uv = [
+                    0.5 + angle.cos() * radius / stroke.brush.texture.scale,
+                    0.5 + angle.sin() * radius / stroke.brush.texture.scale,
+                ];
+                vertex
+            };
+            for j in 0..8 {
+                out.extend_from_slice(&[center, cap_vertex(j), cap_vertex(j + 1)]);
+            }
         }
     }
     out
@@ -435,7 +448,7 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
     // Retain the original round brush's positions and pressure profile. Give caps
     // their true axial normals and fix the legacy inward side winding here.
     let mut mesh = tube(stroke);
-    if stroke.points.len() > 1 {
+    if stroke.points.len() > 1 && !is_closed_stroke(stroke) {
         let sides = (stroke.points.len() - 1) * 48;
         let first = (stroke.points[1].position - stroke.points[0].position)
             .try_normalize()
@@ -458,6 +471,15 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
         }
     }
     mesh
+}
+
+fn is_closed_stroke(stroke: &Stroke) -> bool {
+    stroke.points.len() >= 4
+        && stroke
+            .points
+            .first()
+            .zip(stroke.points.last())
+            .is_some_and(|(first, last)| first.position.distance_squared(last.position) <= 1e-12)
 }
 
 #[derive(Clone, Copy)]
@@ -525,14 +547,39 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
         }
         points.push(*point);
     }
+    let closed = is_closed_stroke(stroke)
+        && points.len() >= 4
+        && points
+            .first()
+            .zip(points.last())
+            .is_some_and(|(first, last)| first.position.distance_squared(last.position) <= 1e-12);
+    if closed {
+        points.pop();
+    }
     let distances = crate::dynamics::arc_lengths(&points);
-    let total = distances.last().copied().unwrap_or(0.0);
+    let closing_length = if closed {
+        points
+            .first()
+            .zip(points.last())
+            .map_or(0.0, |(first, last)| first.position.distance(last.position))
+    } else {
+        0.0
+    };
+    let total = distances.last().copied().unwrap_or(0.0) + closing_length;
     let reference = stroke.brush.normal.try_normalize().unwrap_or(Vec3::Z);
     let mut previous_manual: Option<(Vec3, Vec3)> = None;
     let mut frames: Vec<BrushFrame> = Vec::with_capacity(points.len());
     for (i, point) in points.iter().enumerate() {
-        let before = points[i.saturating_sub(1)].position;
-        let after = points[(i + 1).min(points.len() - 1)].position;
+        let before = if closed {
+            points[(i + points.len() - 1) % points.len()].position
+        } else {
+            points[i.saturating_sub(1)].position
+        };
+        let after = if closed {
+            points[(i + 1) % points.len()].position
+        } else {
+            points[(i + 1).min(points.len() - 1)].position
+        };
         let tangent = (after - before)
             .try_normalize()
             .or_else(|| (point.position - before).try_normalize())
@@ -585,12 +632,16 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
         {
             width = -width;
         }
-        let taper = crate::dynamics::taper_factor(
-            distances[i],
-            total,
-            stroke.brush.dynamics.taper_start,
-            stroke.brush.dynamics.taper_end,
-        );
+        let taper = if closed {
+            1.0
+        } else {
+            crate::dynamics::taper_factor(
+                distances[i],
+                total,
+                stroke.brush.dynamics.taper_start,
+                stroke.brush.dynamics.taper_end,
+            )
+        };
         frames.push(BrushFrame {
             center: point.position,
             u: distances[i] / stroke.brush.texture.scale,
@@ -608,6 +659,11 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
                 * crate::dynamics::opacity_scale(stroke.brush.dynamics.opacity, point.pressure),
             softness: stroke.brush.softness,
         });
+    }
+    if closed && !frames.is_empty() {
+        let mut seam = frames[0];
+        seam.u = total / stroke.brush.texture.scale;
+        frames.push(seam);
     }
     frames
 }
@@ -826,25 +882,27 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                 [0.5 + width, 0.5 - height],
             ]
         };
-        flat_quad(
-            &mut out,
-            ring(*first),
-            cap_uv(first),
-            -first.tangent,
-            stroke.color,
-            [first.opacity; 4],
-            first.softness,
-        );
-        let last = frames.last().unwrap();
-        flat_quad(
-            &mut out,
-            ring(*last),
-            cap_uv(last),
-            last.tangent,
-            stroke.color,
-            [last.opacity; 4],
-            last.softness,
-        );
+        if !is_closed_stroke(stroke) {
+            flat_quad(
+                &mut out,
+                ring(*first),
+                cap_uv(first),
+                -first.tangent,
+                stroke.color,
+                [first.opacity; 4],
+                first.softness,
+            );
+            let last = frames.last().unwrap();
+            flat_quad(
+                &mut out,
+                ring(*last),
+                cap_uv(last),
+                last.tangent,
+                stroke.color,
+                [last.opacity; 4],
+                last.softness,
+            );
+        }
     }
     out
 }
