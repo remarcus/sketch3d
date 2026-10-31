@@ -256,6 +256,8 @@ mod tests {
             s.brush = Brush {
                 kind,
                 thickness: 0.3,
+                opacity: 1.0,
+                softness: 0.0,
                 angle_degrees: 35.0,
                 normal: Vec3::Z,
                 tangent: Vec3::Y,
@@ -313,6 +315,8 @@ mod tests {
                 dot.brush = Brush {
                     kind,
                     thickness: 1.0,
+                    opacity: 1.0,
+                    softness: 0.0,
                     angle_degrees: 37.0,
                     normal: rotation * Vec3::Z,
                     tangent: rotation * Vec3::X,

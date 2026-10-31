@@ -14,6 +14,9 @@ impl SketchApp {
                 ui.selectable_value(&mut self.brush.kind, kind, label);
             }
         });
+        if self.brush.kind == BrushKind::Chisel && before.kind != BrushKind::Chisel {
+            self.brush.softness = 0.0;
+        }
         if self.brush.kind != BrushKind::Round {
             ui.add(
                 egui::Slider::new(&mut self.brush.angle_degrees, -180.0..=180.0).text("Angle °"),
@@ -178,7 +181,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 7);
+                assert_eq!(loaded.version, 8);
                 assert_eq!(loaded.strokes, original);
                 self.load_brushes();
                 self.brush = Brush {

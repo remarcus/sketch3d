@@ -186,6 +186,11 @@ pub fn mesh(stroke: &Stroke) -> Vec<crate::geometry::Vertex> {
             normal: stroke.brush.normal.to_array(),
             color: stroke.color,
             uv: [0.0; 2],
+            opacity: stroke.brush.opacity
+                * crate::dynamics::opacity_scale(
+                    stroke.brush.dynamics.opacity,
+                    stroke.points[i].pressure,
+                ),
         })
         .collect()
 }

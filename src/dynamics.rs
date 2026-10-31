@@ -30,6 +30,8 @@ impl PressureMapping {
 pub struct Dynamics {
     pub width: PressureMapping,
     pub thickness: PressureMapping,
+    #[serde(default = "default_opacity_mapping")]
+    pub opacity: PressureMapping,
     pub tilt_orientation: bool,
     pub taper_start: f32,
     pub taper_end: f32,
@@ -39,6 +41,7 @@ impl Default for Dynamics {
         Self {
             width: PressureMapping::default(),
             thickness: PressureMapping::default(),
+            opacity: default_opacity_mapping(),
             tilt_orientation: false,
             taper_start: 0.0,
             taper_end: 0.0,
@@ -49,10 +52,19 @@ impl Dynamics {
     pub fn is_valid(self) -> bool {
         self.width.is_valid()
             && self.thickness.is_valid()
+            && self.opacity.is_valid()
             && self.taper_start.is_finite()
             && (0.0..=10.0).contains(&self.taper_start)
             && self.taper_end.is_finite()
             && (0.0..=10.0).contains(&self.taper_end)
+    }
+}
+
+fn default_opacity_mapping() -> PressureMapping {
+    PressureMapping {
+        enabled: false,
+        minimum: 1.0,
+        curve: 1.0,
     }
 }
 
@@ -66,6 +78,11 @@ pub fn pressure_scale(mapping: PressureMapping, pressure: f32) -> f32 {
         1.0
     };
     mapping.minimum + (1.0 - mapping.minimum) * pressure.powf(mapping.curve)
+}
+
+/// Map pen pressure to material opacity; disabled mappings preserve the base opacity.
+pub fn opacity_scale(mapping: PressureMapping, pressure: f32) -> f32 {
+    pressure_scale(mapping, pressure)
 }
 
 /// The envelope depends on path distance, not sample index or input frequency.
@@ -175,6 +192,27 @@ mod tests {
         .is_valid());
         assert!(!PressureMapping {
             curve: 0.0,
+            ..mapping
+        }
+        .is_valid());
+    }
+    #[test]
+    fn opacity_mapping_defaults_to_identity_and_uses_pressure_response_when_enabled() {
+        let mapping = Dynamics::default().opacity;
+        assert!(!mapping.enabled);
+        assert_eq!(opacity_scale(mapping, 0.0), 1.0);
+        assert_eq!(opacity_scale(mapping, 0.5), 1.0);
+        let mapping = PressureMapping {
+            enabled: true,
+            minimum: 0.2,
+            curve: 2.0,
+        };
+        assert_eq!(opacity_scale(mapping, 0.0), 0.2);
+        assert!((opacity_scale(mapping, 0.5) - 0.4).abs() < 1e-6);
+        assert_eq!(opacity_scale(mapping, 1.0), 1.0);
+        assert!(mapping.is_valid());
+        assert!(!PressureMapping {
+            minimum: 1.1,
             ..mapping
         }
         .is_valid());

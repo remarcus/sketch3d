@@ -8,6 +8,8 @@ pub struct Vertex {
     pub normal: [f32; 3],
     pub color: [f32; 3],
     pub uv: [f32; 2],
+    /// Final per-vertex alpha, including base opacity, pressure, and soft coverage.
+    pub opacity: f32,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Plane {
@@ -267,6 +269,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
                     normal: normal.to_array(),
                     color: stroke.color,
                     uv: [distances[i] / stroke.brush.texture.scale, j as f32 / 8.0],
+                    opacity: vertex_opacity(stroke, p.pressure, normal, stroke.brush.normal),
                 }
             })
             .collect();
@@ -299,6 +302,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
                             0.5 + local.x * r / stroke.brush.texture.scale,
                             0.5 + local.y * r / stroke.brush.texture.scale,
                         ],
+                        opacity: vertex_opacity(stroke, p.pressure, normal, stroke.brush.normal),
                     });
                 }
             }
@@ -325,6 +329,12 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
             normal: [0.0, 0.0, 1.0],
             color: stroke.color,
             uv: [0.5, 0.5],
+            opacity: vertex_opacity(
+                stroke,
+                stroke.points[index].pressure,
+                Vec3::Z,
+                stroke.brush.normal,
+            ),
         };
         let radius = Vec3::from(ring[0].position).distance(stroke.points[index].position);
         let cap_vertex = |j: usize| {
@@ -454,6 +464,8 @@ struct BrushFrame {
     radius: f32,
     half_thickness: f32,
     u: f32,
+    opacity: f32,
+    softness: f32,
 }
 
 fn perpendicular(normal: Vec3) -> Vec3 {
@@ -469,6 +481,31 @@ fn frame_direction(vector: Vec3) -> Option<Vec3> {
     // Round-off after a rigid transform must not turn an almost-zero
     // projection into a new, arbitrary frame direction.
     (vector.length_squared() > 1e-8).then(|| vector.normalize())
+}
+
+fn vertex_opacity(stroke: &Stroke, pressure: f32, normal: Vec3, reference: Vec3) -> f32 {
+    stroke.brush.opacity
+        * crate::dynamics::opacity_scale(stroke.brush.dynamics.opacity, pressure)
+        * soft_coverage(normal, reference, stroke.brush.softness)
+}
+
+fn soft_coverage(normal: Vec3, reference: Vec3, softness: f32) -> f32 {
+    let alignment = normal
+        .try_normalize()
+        .zip(reference.try_normalize())
+        .map_or(1.0, |(a, b)| a.dot(b).abs().clamp(0.0, 1.0));
+    let t = (alignment / 0.85).clamp(0.0, 1.0);
+    let edge = t * t * (3.0 - 2.0 * t);
+    1.0 - softness * (1.0 - edge)
+}
+
+fn ribbon_edge_coverage(across: f32, softness: f32) -> f32 {
+    if softness <= 0.0 {
+        return 1.0;
+    }
+    let distance = across.min(1.0 - across).clamp(0.0, 1.0);
+    let t = (distance / (softness * 0.5)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
@@ -562,6 +599,9 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
                 * stroke.brush.thickness
                 * crate::dynamics::pressure_scale(stroke.brush.dynamics.thickness, point.pressure)
                 * taper,
+            opacity: stroke.brush.opacity
+                * crate::dynamics::opacity_scale(stroke.brush.dynamics.opacity, point.pressure),
+            softness: stroke.brush.softness,
         });
     }
     frames
@@ -573,6 +613,8 @@ fn flat_triangle(
     mut uv: [[f32; 2]; 3],
     outward: Vec3,
     color: [f32; 3],
+    opacity: [f32; 3],
+    softness: f32,
 ) {
     let cross = (positions[1] - positions[0]).cross(positions[2] - positions[0]);
     let Some(mut normal) = cross.try_normalize() else {
@@ -583,12 +625,20 @@ fn flat_triangle(
         uv.swap(1, 2);
         normal = -normal;
     }
-    out.extend(positions.into_iter().zip(uv).map(|(position, uv)| Vertex {
-        position: position.to_array(),
-        normal: normal.to_array(),
-        color,
-        uv,
-    }));
+    let coverage = soft_coverage(normal, outward, softness);
+    out.extend(
+        positions
+            .into_iter()
+            .zip(uv)
+            .zip(opacity)
+            .map(|((position, uv), opacity)| Vertex {
+                position: position.to_array(),
+                normal: normal.to_array(),
+                color,
+                uv,
+                opacity: opacity * coverage,
+            }),
+    );
 }
 
 fn flat_quad(
@@ -597,6 +647,8 @@ fn flat_quad(
     uv: [[f32; 2]; 4],
     outward: Vec3,
     color: [f32; 3],
+    opacity: [f32; 4],
+    softness: f32,
 ) {
     flat_triangle(
         out,
@@ -604,6 +656,8 @@ fn flat_quad(
         [uv[0], uv[1], uv[2]],
         outward,
         color,
+        [opacity[0], opacity[1], opacity[2]],
+        softness,
     );
     flat_triangle(
         out,
@@ -611,6 +665,8 @@ fn flat_quad(
         [uv[0], uv[2], uv[3]],
         outward,
         color,
+        [opacity[0], opacity[2], opacity[3]],
+        softness,
     );
 }
 
@@ -644,7 +700,15 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
             [0.5 - r, 0.0],
             [0.5 - r, 1.0],
         ];
-        flat_quad(&mut out, corners.map(|p| p + h), uv, f.normal, stroke.color);
+        flat_quad(
+            &mut out,
+            corners.map(|p| p + h),
+            uv,
+            f.normal,
+            stroke.color,
+            [f.opacity; 4],
+            f.softness,
+        );
         if stroke.brush.kind == BrushKind::Chisel {
             flat_quad(
                 &mut out,
@@ -652,6 +716,8 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                 uv,
                 -f.normal,
                 stroke.color,
+                [f.opacity; 4],
+                f.softness,
             );
             for j in 0..4 {
                 let k = (j + 1) % 4;
@@ -667,6 +733,8 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                     [uv[j], uv[k], uv[k], uv[j]],
                     outward,
                     stroke.color,
+                    [f.opacity; 4],
+                    f.softness,
                 );
             }
         }
@@ -675,18 +743,41 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
     if stroke.brush.kind == BrushKind::Ribbon {
         for pair in frames.windows(2) {
             let [a, b] = [pair[0], pair[1]];
-            flat_quad(
-                &mut out,
-                [
-                    a.center - a.width * a.radius,
-                    a.center + a.width * a.radius,
-                    b.center + b.width * b.radius,
-                    b.center - b.width * b.radius,
-                ],
-                [[a.u, 0.0], [a.u, 1.0], [b.u, 1.0], [b.u, 0.0]],
-                a.normal + b.normal,
-                stroke.color,
-            );
+            let left_a = a.center - a.width * a.radius;
+            let right_a = a.center + a.width * a.radius;
+            let left_b = b.center - b.width * b.radius;
+            let right_b = b.center + b.width * b.radius;
+            let softness = (a.softness + b.softness) * 0.5;
+            let bands = if softness > 0.0 { 4 } else { 1 };
+            for index in 0..bands {
+                let t0 = index as f32 / bands as f32;
+                let t1 = (index + 1) as f32 / bands as f32;
+                let coverage = [
+                    ribbon_edge_coverage(t0, softness),
+                    ribbon_edge_coverage(t1, softness),
+                    ribbon_edge_coverage(t1, softness),
+                    ribbon_edge_coverage(t0, softness),
+                ];
+                flat_quad(
+                    &mut out,
+                    [
+                        left_a.lerp(right_a, t0),
+                        left_a.lerp(right_a, t1),
+                        left_b.lerp(right_b, t1),
+                        left_b.lerp(right_b, t0),
+                    ],
+                    [[a.u, t0], [a.u, t1], [b.u, t1], [b.u, t0]],
+                    a.normal + b.normal,
+                    stroke.color,
+                    [
+                        a.opacity * coverage[0],
+                        a.opacity * coverage[1],
+                        b.opacity * coverage[2],
+                        b.opacity * coverage[3],
+                    ],
+                    softness,
+                );
+            }
         }
     } else {
         let ring = |f: BrushFrame| {
@@ -715,6 +806,8 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                     [[a.u, v], [b.u, v], [b.u, next], [a.u, next]],
                     outward,
                     stroke.color,
+                    [a.opacity, b.opacity, b.opacity, a.opacity],
+                    (a.softness + b.softness) * 0.5,
                 );
             }
         }
@@ -734,6 +827,8 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
             cap_uv(first),
             -first.tangent,
             stroke.color,
+            [first.opacity; 4],
+            first.softness,
         );
         let last = frames.last().unwrap();
         flat_quad(
@@ -742,6 +837,8 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
             cap_uv(last),
             last.tangent,
             stroke.color,
+            [last.opacity; 4],
+            last.softness,
         );
     }
     out
@@ -764,6 +861,7 @@ pub fn grid(plane: DrawingPlane) -> Vec<Vertex> {
                     normal: [0.0; 3],
                     uv: [0.0; 2],
                     color,
+                    opacity: 1.0,
                 });
             }
         }
@@ -1394,6 +1492,45 @@ mod texture_uv_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn opacity_mapping_and_soft_edges_are_baked_into_stroke_mesh_alpha() {
+        let mut stroke = mark(BrushKind::Round, vec![Vec3::ZERO, Vec3::X]);
+        stroke.brush.opacity = 0.4;
+        stroke.brush.dynamics.opacity = crate::document::PressureMapping {
+            enabled: true,
+            minimum: 0.2,
+            curve: 1.0,
+        };
+        stroke.points[0].pressure = 0.0;
+        stroke.points[1].pressure = 1.0;
+        let mesh = stroke_mesh(&stroke);
+        assert!(mesh
+            .iter()
+            .any(|vertex| (vertex.opacity - 0.08).abs() < 1e-5));
+        assert!(mesh
+            .iter()
+            .any(|vertex| (vertex.opacity - 0.4).abs() < 1e-5));
+
+        stroke.brush.dynamics.opacity.enabled = false;
+        stroke.brush.softness = 1.0;
+        let mesh = stroke_mesh(&stroke);
+        assert!(mesh.iter().any(|vertex| vertex.opacity < 0.05));
+        assert!(mesh
+            .iter()
+            .any(|vertex| (vertex.opacity - 0.4).abs() < 1e-5));
+
+        let mut ribbon = mark(BrushKind::Ribbon, vec![Vec3::ZERO, Vec3::X]);
+        ribbon.brush.softness = 1.0;
+        let mesh = stroke_mesh(&ribbon);
+        assert_eq!(
+            mesh.len(),
+            24,
+            "soft ribbon subdivides its width into four bands"
+        );
+        assert!(mesh.iter().any(|vertex| vertex.opacity < 0.1));
+        assert!(mesh.iter().any(|vertex| vertex.opacity > 0.9));
     }
 
     #[test]

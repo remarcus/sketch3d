@@ -18,6 +18,10 @@ pub enum BrushKind {
 pub struct Brush {
     pub kind: BrushKind,
     pub thickness: f32,
+    #[serde(default = "default_opacity")]
+    pub opacity: f32,
+    #[serde(default)]
+    pub softness: f32,
     pub angle_degrees: f32,
     pub normal: Vec3,
     pub tangent: Vec3,
@@ -31,6 +35,8 @@ impl Default for Brush {
         Self {
             kind: BrushKind::Round,
             thickness: 0.2,
+            opacity: 1.0,
+            softness: 0.0,
             angle_degrees: 0.0,
             normal: Vec3::Z,
             tangent: Vec3::X,
@@ -39,10 +45,17 @@ impl Default for Brush {
         }
     }
 }
+fn default_opacity() -> f32 {
+    1.0
+}
 impl Brush {
     pub fn is_valid(&self) -> bool {
         self.dynamics.is_valid()
             && self.texture.is_valid()
+            && self.opacity.is_finite()
+            && (0.0..=1.0).contains(&self.opacity)
+            && self.softness.is_finite()
+            && (0.0..=1.0).contains(&self.softness)
             && self.thickness.is_finite()
             && (0.02..=1.0).contains(&self.thickness)
             && self.angle_degrees.is_finite()
@@ -123,7 +136,7 @@ impl Default for Document {
         Self {
             layers: layers_default(),
             active_layer: 1,
-            version: 7,
+            version: 8,
             strokes: Vec::new(),
         }
     }
@@ -172,7 +185,7 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=7)) {
+        if !matches!(version, Some(1..=8)) {
             return Err("Unsupported document version".into());
         }
         if matches!(version, Some(1..=6)) {
@@ -242,7 +255,7 @@ impl Document {
             }
         }
         let mut doc: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
-        doc.version = 7;
+        doc.version = 8;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
         }
@@ -333,6 +346,8 @@ mod tests {
             s.brush = Brush {
                 kind,
                 thickness: 0.35,
+                opacity: 0.64,
+                softness: 0.35,
                 angle_degrees: -42.0,
                 normal: Vec3::new(1.0, 2.0, 3.0).normalize(),
                 tangent: Vec3::new(2.0, -1.0, 0.0).normalize(),
@@ -342,6 +357,11 @@ mod tests {
             s.brush.dynamics.width.minimum = 0.05;
             s.brush.dynamics.width.curve = 2.0;
             s.brush.dynamics.thickness.enabled = false;
+            s.brush.dynamics.opacity = PressureMapping {
+                enabled: true,
+                minimum: 0.18,
+                curve: 1.7,
+            };
             s.brush.dynamics.taper_start = 0.4;
             s.brush.dynamics.taper_end = 0.7;
             s.brush.dynamics.tilt_orientation = true;
@@ -349,11 +369,11 @@ mod tests {
             let doc = Document {
                 layers: layers_default(),
                 active_layer: 1,
-                version: 7,
+                version: 8,
                 strokes: vec![s],
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-            assert_eq!(loaded.version, 7);
+            assert_eq!(loaded.version, 8);
             assert_eq!(loaded.strokes, doc.strokes);
         }
     }
@@ -371,11 +391,46 @@ mod tests {
         // a new shape, or prevent an otherwise valid legacy file from opening.
         old["strokes"][0]["brush"] = serde_json::json!({"kind": "future_brush"});
         let loaded = Document::from_json(&old.to_string()).unwrap();
-        assert_eq!(loaded.version, 7);
+        assert_eq!(loaded.version, 8);
         assert_eq!(loaded.strokes, vec![original]);
         old["strokes"][0].as_object_mut().unwrap().remove("brush");
         let without_extension = Document::from_json(&old.to_string()).unwrap();
         assert_eq!(without_extension.strokes, loaded.strokes);
+    }
+    #[test]
+    fn version_seven_migration_defaults_missing_opacity_to_opaque() {
+        let mut value = serde_json::to_value(Document {
+            strokes: vec![stroke()],
+            ..Default::default()
+        })
+        .unwrap();
+        value["version"] = serde_json::json!(7);
+        value["strokes"][0]["brush"]
+            .as_object_mut()
+            .unwrap()
+            .remove("opacity");
+        value["strokes"][0]["brush"]
+            .as_object_mut()
+            .unwrap()
+            .remove("softness");
+        value["strokes"][0]["brush"]["dynamics"]
+            .as_object_mut()
+            .unwrap()
+            .remove("opacity");
+
+        let loaded = Document::from_json(&value.to_string()).unwrap();
+        assert_eq!(loaded.version, 8);
+        assert_eq!(loaded.strokes[0].brush.opacity, 1.0);
+        assert_eq!(loaded.strokes[0].brush.softness, 0.0);
+        assert_eq!(
+            loaded.strokes[0].brush.dynamics.opacity,
+            Dynamics::default().opacity
+        );
+
+        let saved = serde_json::to_string(&loaded).unwrap();
+        let reopened = Document::from_json(&saved).unwrap();
+        assert_eq!(reopened.version, 8);
+        assert_eq!(reopened.strokes, loaded.strokes);
     }
     #[test]
     fn rejects_invalid_brush_metadata() {
@@ -386,6 +441,30 @@ mod tests {
             },
             Brush {
                 thickness: 1.1,
+                ..Brush::default()
+            },
+            Brush {
+                opacity: -0.1,
+                ..Brush::default()
+            },
+            Brush {
+                opacity: 1.1,
+                ..Brush::default()
+            },
+            Brush {
+                opacity: f32::NAN,
+                ..Brush::default()
+            },
+            Brush {
+                softness: -0.1,
+                ..Brush::default()
+            },
+            Brush {
+                softness: 1.1,
+                ..Brush::default()
+            },
+            Brush {
+                softness: f32::INFINITY,
                 ..Brush::default()
             },
             Brush {
@@ -465,7 +544,7 @@ mod tests {
         value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
         value["strokes"][0]["points"][0]["tilt"] = serde_json::json!("unknown extension");
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 7);
+        assert_eq!(loaded.version, 8);
         assert_eq!(loaded.strokes, vec![original]);
     }
     #[test]
@@ -488,6 +567,13 @@ mod tests {
                 thickness: PressureMapping {
                     curve: 4.0,
                     ..PressureMapping::default()
+                },
+                ..Dynamics::default()
+            },
+            Dynamics {
+                opacity: PressureMapping {
+                    minimum: 1.1,
+                    ..Dynamics::default().opacity
                 },
                 ..Dynamics::default()
             },
@@ -542,7 +628,7 @@ mod tests {
         legacy["strokes"][0]["brush"]["texture"] = serde_json::json!({"kind":"future_pattern"});
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
         mark.brush.texture = TextureSettings::default();
-        assert_eq!(loaded.version, 7);
+        assert_eq!(loaded.version, 8);
         assert_eq!(loaded.strokes, vec![mark]);
     }
     #[test]
@@ -600,7 +686,7 @@ mod layer_tests {
         value["active_layer"] = serde_json::json!(99);
         value["strokes"][0]["layer_id"] = serde_json::json!("unknown");
         let migrated = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(migrated.version, 7);
+        assert_eq!(migrated.version, 8);
         assert_eq!(migrated.strokes, vec![original]);
         assert_eq!(migrated.layers, layers_default());
         assert_eq!(migrated.active_layer, 1);
@@ -729,7 +815,7 @@ mod group_tests {
             s.group_id = None;
         }
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 7);
+        assert_eq!(loaded.version, 8);
         assert_eq!(loaded.strokes, doc.strokes);
         assert_eq!(loaded.layers, doc.layers);
     }

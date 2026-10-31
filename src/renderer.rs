@@ -2,7 +2,7 @@ use crate::lighting::{self, Lighting, SHADOW_SIZE};
 use crate::surface::GuidePreview;
 use crate::texture::{self, TextureKind, TextureSettings};
 use crate::{
-    document::Document,
+    document::{Document, Stroke},
     geometry::{self, Camera, Vertex},
 };
 use eframe::{
@@ -21,6 +21,7 @@ struct SceneUniform {
     light: [f32; 4],
     settings: [f32; 4],
     shadow: [f32; 4],
+    camera: [f32; 4],
 }
 struct CanvasTarget {
     color: wgpu::Texture,
@@ -56,9 +57,36 @@ fn canvas_sample_count(adapter: &wgpu::Adapter) -> u32 {
     }
 }
 
+fn is_translucent(stroke: &Stroke) -> bool {
+    stroke.brush.opacity < 0.999_999
+        || (stroke.brush.dynamics.opacity.enabled
+            && stroke.brush.dynamics.opacity.minimum < 0.999_999)
+        || (stroke.fill.is_none() && stroke.brush.softness > 0.0)
+}
+
+fn back_to_front<'a>(
+    mut strokes: Vec<(&'a Stroke, &'a Mesh)>,
+    camera: &Camera,
+) -> Vec<(&'a Stroke, &'a Mesh)> {
+    let axis = camera.basis().2;
+    strokes.sort_by(|(stroke_a, a), (stroke_b, b)| {
+        let center = |mesh: &Mesh| {
+            mesh.bounds
+                .map(|(min, max)| (min + max) * 0.5)
+                .unwrap_or(camera.target)
+        };
+        (center(a) - camera.target)
+            .dot(axis)
+            .total_cmp(&(center(b) - camera.target).dot(axis))
+            .then_with(|| stroke_a.id.cmp(&stroke_b.id))
+    });
+    strokes
+}
+
 pub struct SceneRenderer {
     state: egui_wgpu::RenderState,
     triangles: wgpu::RenderPipeline,
+    transparent_triangles: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
@@ -92,6 +120,7 @@ impl SceneRenderer {
                 light: [0.0; 4],
                 settings: [0.0; 4],
                 shadow: [0.0; 4],
+                camera: [0.0; 4],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -217,23 +246,25 @@ impl SceneRenderer {
             push_constant_ranges: &[],
         });
         let sample_count = canvas_sample_count(&state.adapter);
-        let create = |topology| {
+        let create = |topology, transparent: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:Some("3D strokes"),layout:Some(&pipeline_layout),
-            vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2]}]},
-            fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some("fs_main"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),
+            vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32]}]},
+            fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some(if transparent {"fs_transparent"} else {"fs_main"}),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:transparent.then_some(wgpu::BlendState::ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})]}),
             primitive:wgpu::PrimitiveState {topology,cull_mode:None,..Default::default()},
-            depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:topology != wgpu::PrimitiveTopology::LineList,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
-            multisample:wgpu::MultisampleState {count:sample_count,mask:!0,alpha_to_coverage_enabled:sample_count > 1},multiview:None,cache:None,
+            depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:!transparent && topology != wgpu::PrimitiveTopology::LineList,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
+            multisample:wgpu::MultisampleState {count:sample_count,mask:!0,alpha_to_coverage_enabled:sample_count > 1 && !transparent},multiview:None,cache:None,
         })
         };
-        let triangles = create(wgpu::PrimitiveTopology::TriangleList);
-        let lines = create(wgpu::PrimitiveTopology::LineList);
+        let triangles = create(wgpu::PrimitiveTopology::TriangleList, false);
+        let transparent_triangles = create(wgpu::PrimitiveTopology::TriangleList, true);
+        let lines = create(wgpu::PrimitiveTopology::LineList, false);
         let info = state.adapter.get_info();
         let adapter = format!("{} / {:?}", info.name, info.backend);
         Self {
             state,
             triangles,
+            transparent_triangles,
             lines,
             uniform,
             bind,
@@ -526,6 +557,7 @@ impl SceneRenderer {
                 normal: [0.0, 1.0, 0.0],
                 color: settings.ground_color,
                 uv: [0.0; 2],
+                opacity: 1.0,
             })
             .collect();
             self.ground = Some((settings, self.mesh(&vertices, 0)));
@@ -560,6 +592,7 @@ impl SceneRenderer {
                 f32::from(self.sample_count() > 1),
                 0.0,
             ],
+            camera: camera.eye().extend(1.0).to_array(),
         };
         self.state
             .queue
@@ -588,7 +621,11 @@ impl SceneRenderer {
             });
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.bind, &[]);
-            for stroke in doc.strokes.iter().filter(|s| doc.visible(s)) {
+            for stroke in doc
+                .strokes
+                .iter()
+                .filter(|s| doc.visible(s) && !is_translucent(s))
+            {
                 if let Some(mesh) = self.meshes.get(&stroke.id) {
                     pass.set_bind_group(
                         1,
@@ -643,7 +680,11 @@ impl SceneRenderer {
                 pass.draw(0..mesh.count, 0..1);
             }
             pass.set_pipeline(&self.triangles);
-            for stroke in doc.strokes.iter().filter(|s| doc.visible(s)) {
+            for stroke in doc
+                .strokes
+                .iter()
+                .filter(|s| doc.visible(s) && !is_translucent(s))
+            {
                 if let Some(mesh) = self.meshes.get(&stroke.id) {
                     pass.set_bind_group(
                         1,
@@ -653,6 +694,19 @@ impl SceneRenderer {
                     pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                     pass.draw(0..mesh.count, 0..1);
                 }
+            }
+            pass.set_pipeline(&self.transparent_triangles);
+            for (stroke, mesh) in back_to_front(
+                doc.strokes
+                    .iter()
+                    .filter(|s| doc.visible(s) && is_translucent(s))
+                    .filter_map(|s| self.meshes.get(&s.id).map(|m| (s, m)))
+                    .collect(),
+                camera,
+            ) {
+                pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
+                pass.set_vertex_buffer(0, mesh.buffer.slice(..));
+                pass.draw(0..mesh.count, 0..1);
             }
             for (stroke, mesh) in &self.repeat_preview {
                 pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
@@ -788,6 +842,7 @@ impl SceneRenderer {
                 f32::from(sample_count > 1),
                 0.0,
             ],
+            camera: camera.eye().extend(1.0).to_array(),
         };
         self.state
             .queue
@@ -815,7 +870,7 @@ impl SceneRenderer {
             });
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.bind, &[]);
-            for (stroke, mesh) in &meshes {
+            for (stroke, mesh) in meshes.iter().filter(|(stroke, _)| !is_translucent(stroke)) {
                 pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
@@ -861,7 +916,20 @@ impl SceneRenderer {
                 }
             }
             pass.set_pipeline(&self.triangles);
-            for (stroke, mesh) in &meshes {
+            for (stroke, mesh) in meshes.iter().filter(|(stroke, _)| !is_translucent(stroke)) {
+                pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
+                pass.set_vertex_buffer(0, mesh.buffer.slice(..));
+                pass.draw(0..mesh.count, 0..1);
+            }
+            pass.set_pipeline(&self.transparent_triangles);
+            for (stroke, mesh) in back_to_front(
+                meshes
+                    .iter()
+                    .filter(|(stroke, _)| is_translucent(stroke))
+                    .map(|(stroke, mesh)| (*stroke, mesh))
+                    .collect(),
+                camera,
+            ) {
                 pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);

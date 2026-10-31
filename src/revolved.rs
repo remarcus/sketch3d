@@ -224,6 +224,7 @@ impl Revolved {
                     normal: [0.0; 3],
                     color,
                     uv: [0.0; 2],
+                    opacity: 1.0,
                 });
             }
         };

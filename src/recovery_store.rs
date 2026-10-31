@@ -619,7 +619,7 @@ mod tests {
             .remove("texture");
         fs::write(dir.path().join("recovery-legacy.json"), old.to_string()).unwrap();
         let result = scan(dir.path(), "other").unwrap();
-        assert_eq!(result.candidates[0].snapshot.document.version, 7);
+        assert_eq!(result.candidates[0].snapshot.document.version, 8);
         assert_eq!(
             result.candidates[0].snapshot.document.strokes[0]
                 .brush

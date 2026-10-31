@@ -21,6 +21,9 @@ impl SketchApp {
     fn apply_preset(&mut self, preset: Preset) {
         self.finish();
         self.brush = preset.brush;
+        if self.brush.kind == crate::document::BrushKind::Chisel {
+            self.brush.softness = 0.0;
+        }
         self.radius = preset.radius;
         self.color = preset.color;
         self.stabilization = preset.stabilization;

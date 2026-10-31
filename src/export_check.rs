@@ -87,6 +87,8 @@ pub fn brush_fixture() -> Document {
         let brush = Brush {
             kind,
             thickness: 0.25,
+            opacity: 1.0,
+            softness: 0.0,
             angle_degrees: if kind == BrushKind::Chisel { 35.0 } else { 0.0 },
             normal: Vec3::Z,
             tangent: Vec3::X,

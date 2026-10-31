@@ -110,6 +110,7 @@ impl Cylinder {
                     normal: [0.0; 3],
                     uv: [0.0; 2],
                     color,
+                    opacity: 1.0,
                 });
             }
         };
