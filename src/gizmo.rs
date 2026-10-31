@@ -93,9 +93,31 @@ fn distance(pos: Pos2, a: Pos2, b: Pos2) -> (f32, f32) {
     (pos.distance(a + ab * t), t)
 }
 pub fn pick(doc: &Document, camera: &Camera, rect: Rect, pos: Pos2) -> Option<u64> {
+    pick_filtered(doc, camera, rect, pos, true)
+}
+
+/// Pick visible artwork without requiring its layer to be editable.
+/// Read-only tools such as color sampling can inspect locked layers.
+pub fn pick_visible(doc: &Document, camera: &Camera, rect: Rect, pos: Pos2) -> Option<u64> {
+    pick_filtered(doc, camera, rect, pos, false)
+}
+
+fn pick_filtered(
+    doc: &Document,
+    camera: &Camera,
+    rect: Rect,
+    pos: Pos2,
+    editable_only: bool,
+) -> Option<u64> {
     let mut best: Option<(f32, f32, u64)> = None;
     let (origin, direction) = ray(camera, rect, pos);
-    for stroke in doc.strokes.iter().filter(|s| doc.editable(s)) {
+    for stroke in doc.strokes.iter().filter(|stroke| {
+        if editable_only {
+            doc.editable(stroke)
+        } else {
+            doc.visible(stroke)
+        }
+    }) {
         if stroke.fill.is_some() {
             if let Some(hit) = crate::polygon::ray_hit(stroke, origin, direction) {
                 if let Some((_, depth)) = project(camera, rect, hit) {
@@ -391,11 +413,15 @@ mod layer_picking_tests {
             locked: false,
         });
         assert_eq!(pick(&doc, &camera, rect, rect.center()), Some(1));
+        assert_eq!(pick_visible(&doc, &camera, rect, rect.center()), Some(1));
         doc.layers[0].locked = true;
         assert_eq!(pick(&doc, &camera, rect, rect.center()), Some(2));
+        assert_eq!(pick_visible(&doc, &camera, rect, rect.center()), Some(1));
         doc.layers[0].visible = false;
         assert_eq!(pick(&doc, &camera, rect, rect.center()), Some(2));
+        assert_eq!(pick_visible(&doc, &camera, rect, rect.center()), Some(2));
         doc.layers[1].locked = true;
         assert_eq!(pick(&doc, &camera, rect, rect.center()), None);
+        assert_eq!(pick_visible(&doc, &camera, rect, rect.center()), Some(2));
     }
 }

@@ -33,6 +33,8 @@ mod lighting_ui;
 mod line_checks;
 #[path = "line_tool.rs"]
 mod line_tool;
+#[path = "palette_ui.rs"]
+mod palette_ui;
 #[path = "placement_checks.rs"]
 mod placement_checks;
 #[path = "placement_ui.rs"]
@@ -91,6 +93,8 @@ pub struct SketchApp {
     lighting_verification_frame: Option<u32>,
     tutorial: tutorial_ui::TutorialUi,
     renderer: SceneRenderer,
+    palette_ui: palette_ui::PaletteUi,
+    sampling_contact: bool,
     preset_ui: crate::presets_ui::PresetUi,
     recovery: crate::recovery::Recovery,
     recovery_prompt: bool,
@@ -221,6 +225,8 @@ impl SketchApp {
             lighting_verification_frame: None,
             tutorial: tutorial_ui::TutorialUi::new(),
             renderer,
+            palette_ui: palette_ui::PaletteUi::new(),
+            sampling_contact: false,
             preset_ui,
             recovery,
             recovery_prompt: false,
@@ -333,6 +339,9 @@ impl SketchApp {
             app.verification_frame = None;
             app.repeat_verification_frame = Some(0);
             app.load_fill_study();
+        } else if std::env::args().any(|a| a == "--verify-palette") {
+            app.verification_frame = None;
+            app.load_fill_study();
         } else if std::env::args().any(|a| a == "--verify-vase") {
             app.verification_frame = None;
             app.vase_verification_frame = Some(0);
@@ -425,6 +434,8 @@ impl SketchApp {
     }
     fn cancel(&mut self) {
         self.cancel_line();
+        self.palette_ui.sampling = false;
+        self.sampling_contact = false;
         self.resume_ink = false;
         self.cancel_transform();
         self.stabilizer.reset();
@@ -857,6 +868,11 @@ impl SketchApp {
         }
         self.tutorial_hint(ui, "Drawing layers");
         self.layer_controls(ui);
+        match self.palette_ui.controls(ui, &mut self.color) {
+            palette_ui::PaletteAction::StartSampling => self.start_color_sampling(),
+            palette_ui::PaletteAction::CancelSampling => self.cancel_color_sampling(),
+            palette_ui::PaletteAction::None => {}
+        }
         self.tutorial_hint(ui, "Brush library");
         if !self.fills.enabled {
             self.preset_controls(ui);
@@ -1048,6 +1064,27 @@ impl SketchApp {
     fn pointer_action(&mut self, pos: Pos2, pressure: f32, rect: Rect, begin: bool, shift: bool) {
         self.pointer_action_with_tilt(pos, pressure, rect, begin, shift, None);
     }
+
+    fn start_color_sampling(&mut self) {
+        self.finish();
+        self.cancel_placement();
+        self.cancel_line_tool();
+        self.cancel_fill_tool();
+        self.select_mode = false;
+        self.eraser = false;
+        self.sampling_contact = false;
+        self.palette_ui.sampling = true;
+        self.status = "Color sample active. Click visible artwork or Escape to cancel.".into();
+    }
+
+    fn cancel_color_sampling(&mut self) {
+        self.palette_ui.sampling = false;
+        self.select_mode = false;
+        self.eraser = false;
+        self.line.enabled = false;
+        self.fills.enabled = false;
+        self.status = "Color sampling cancelled. Brush ready.".into();
+    }
     fn pointer_action_with_tilt(
         &mut self,
         pos: Pos2,
@@ -1058,6 +1095,26 @@ impl SketchApp {
         tilt: Option<Vec3>,
     ) {
         if self.presentation.artwork {
+            return;
+        }
+        if self.sampling_contact {
+            return;
+        }
+        if self.palette_ui.sampling {
+            if begin {
+                self.sampling_contact = true;
+                let sampled = crate::gizmo::pick_visible(&self.doc, &self.camera, rect, pos)
+                    .and_then(|id| self.doc.strokes.iter().find(|stroke| stroke.id == id))
+                    .map(|stroke| stroke.color);
+                if let Some(color) = sampled {
+                    self.color = color;
+                    self.palette_ui.sampling = false;
+                    self.status = "Artwork color sampled. Ready to draw with it.".into();
+                } else {
+                    self.status =
+                        "No visible artwork at that point. Click a stroke or fill.".into();
+                }
+            }
             return;
         }
         if self.placement.active {
@@ -1148,6 +1205,7 @@ impl SketchApp {
                 continue;
             }
             if sample.phase == Phase::Up {
+                self.sampling_contact = false;
                 if self.line.draft.is_some() {
                     if inside {
                         self.release_line(sample.position, rect);
@@ -1240,6 +1298,7 @@ impl SketchApp {
                             pressed: false,
                             ..
                         } => {
+                            self.sampling_contact = false;
                             if self.drag.is_some() {
                                 self.select_pointer(pos, rect, false, shift);
                             }
@@ -1255,6 +1314,7 @@ impl SketchApp {
                         }
                         egui::Event::PointerGone => {
                             self.mouse_down = false;
+                            self.sampling_contact = false;
                             self.finish();
                         }
                         _ => {}
@@ -1280,6 +1340,9 @@ impl eframe::App for SketchApp {
         if ctx.input(|i| i.viewport().close_requested()) {
             self.leave_artwork();
         }
+        if self.palette_ui.sampling && ctx.input(|input| input.key_pressed(Key::Escape)) {
+            self.cancel_color_sampling();
+        }
         if ctx.input(|i| i.viewport().close_requested())
             && !self.allow_close
             && self.export_job.is_some()
@@ -1303,6 +1366,7 @@ impl eframe::App for SketchApp {
             && !self.tutorial.offer
             && !self.close_after_recovery
             && self.repeat.is_none()
+            && !self.palette_ui.sampling
             && !ctx.wants_keyboard_input()
         {
             self.view_shortcuts(ctx);
@@ -1315,6 +1379,7 @@ impl eframe::App for SketchApp {
             && !self.tutorial.offer
             && !self.close_after_recovery
             && self.repeat.is_none()
+            && !self.palette_ui.sampling
             && !ctx.wants_keyboard_input()
             && !self.presentation.artwork
             && !was_artwork
@@ -1331,18 +1396,20 @@ impl eframe::App for SketchApp {
             && !self.recovery_prompt
             && !self.close_after_recovery
             && self.repeat.is_none()
+            && !self.palette_ui.sampling
             && !ctx.wants_keyboard_input()
         {
             self.line_shortcuts(ctx);
             self.fill_shortcuts(ctx);
             self.group_shortcuts(ctx);
             self.selection_shortcuts(ctx);
-            let (mods, b, e, f, z, y, s, o, n) = ctx.input(|i| {
+            let (mods, b, e, f, i_key, z, y, s, o, n) = ctx.input(|i| {
                 (
                     i.modifiers,
                     i.key_pressed(Key::B),
                     i.key_pressed(Key::E),
                     i.key_pressed(Key::F),
+                    i.key_pressed(Key::I),
                     i.key_pressed(Key::Z),
                     i.key_pressed(Key::Y),
                     i.key_pressed(Key::S),
@@ -1371,6 +1438,9 @@ impl eframe::App for SketchApp {
                     self.request(Pending::New)
                 }
             } else {
+                if i_key {
+                    self.start_color_sampling();
+                }
                 if b {
                     self.cancel_line_tool();
                     self.cancel_fill_tool();
@@ -1607,6 +1677,7 @@ impl eframe::App for SketchApp {
                 self.verify_tutorial(ctx, rect);
                 self.verify_groups(ctx, rect);
                 self.verify_repeat(ctx);
+                self.verify_palette(ctx, rect);
                 self.verify_vase(ctx, rect);
                 self.verify_layers(ctx, rect);
                 self.verify_recovery(ctx, rect);
@@ -1752,7 +1823,7 @@ impl eframe::App for SketchApp {
         self.show_lighting(ctx);
         self.show_tutorial(ctx);
         if self.show_help {
-            egui::Window::new("Drawing with a tablet").default_width(540.0).max_height((ctx.screen_rect().height()-80.0).max(200.0)).vscroll(true).show(ctx,|ui|{self.tutorial_help(ui);ui.separator();if ui.button("Close help").clicked(){self.show_help=false;}ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-mark eraser   P: planar fill   K: pick plane   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
+            egui::Window::new("Drawing with a tablet").default_width(540.0).max_height((ctx.screen_rect().height()-80.0).max(200.0)).vscroll(true).show(ctx,|ui|{self.tutorial_help(ui);ui.separator();if ui.button("Close help").clicked(){self.show_help=false;}ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-mark eraser   P: planar fill   I: sample artwork color (Escape cancels)\nK: pick plane   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
         }
         self.show_recovery(ctx);
         self.tick_recovery(ctx);

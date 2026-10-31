@@ -10,6 +10,7 @@ mod geometry;
 mod gizmo;
 mod input;
 mod lighting;
+mod palette;
 mod placement;
 mod polygon;
 mod presentation;
