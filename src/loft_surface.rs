@@ -1,0 +1,337 @@
+//! Bounded lofted sheet through ordered cubic Bézier section curves.
+//!
+//! Section control points are stored in a shared local frame. Sections must
+//! progress monotonically along local Z and preserve their left-to-right
+//! parameter direction. These constraints intentionally reject twisted and
+//! folding lofts instead of guessing how to repair their topology.
+
+use glam::{Quat, Vec3};
+use serde::{Deserialize, Serialize};
+
+pub const MIN_SECTION_SPACING: f32 = 0.02;
+pub const MAX_COORDINATE: f32 = 10_000.0;
+pub const MIN_TENSION: f32 = -1.0;
+pub const MAX_TENSION: f32 = 1.0;
+const HIT_U_STEPS: usize = 64;
+const HIT_V_STEPS_PER_SPAN: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LoftSection {
+    /// Cubic Bézier controls for one cross-section, in loft-local coordinates.
+    pub controls: [Vec3; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LoftSurface {
+    pub center: Vec3,
+    pub rotation: Quat,
+    /// Ordered along local +Z. Each section uses the same left-to-right `u` direction.
+    pub sections: [LoftSection; 8],
+    pub section_count: u8,
+    /// Bounded ease amount between adjacent sections. Zero is linear interpolation.
+    pub tension: f32,
+}
+
+impl LoftSurface {
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.center.is_finite()
+            || self.center.abs().max_element() > MAX_COORDINATE
+            || !self.rotation.is_finite()
+            || (self.rotation.length_squared() - 1.0).abs() > 0.001
+        {
+            return Err("Loft transform is invalid or outside document bounds".into());
+        }
+        let section_count = self.section_count as usize;
+        if !(2..=8).contains(&section_count) {
+            return Err("A loft requires 2–8 ordered section curves".into());
+        }
+        if !self.tension.is_finite() || !(MIN_TENSION..=MAX_TENSION).contains(&self.tension) {
+            return Err(format!(
+                "Loft tension must be between {MIN_TENSION} and {MAX_TENSION}"
+            ));
+        }
+
+        let mut previous_z = [0.0; 4];
+        let mut previous_direction = None;
+        let mut reference_tangents = [Vec3::ZERO; 5];
+        for (section_index, section) in self.sections.iter().take(section_count).enumerate() {
+            if section
+                .controls
+                .iter()
+                .any(|point| !point.is_finite() || point.abs().max_element() > MAX_COORDINATE)
+            {
+                return Err(
+                    "Loft section controls must be finite and within document bounds".into(),
+                );
+            }
+
+            let chord = section.controls[3] - section.controls[0];
+            let chord_length = chord.length();
+            if chord_length < MIN_SECTION_SPACING {
+                return Err("Loft section curves must have non-zero width".into());
+            }
+            let direction = chord / chord_length;
+            if previous_direction.is_some_and(|old: Vec3| old.dot(direction) < 0.5) {
+                return Err(
+                    "Loft sections change direction too sharply; align their endpoints before applying".into(),
+                );
+            }
+
+            for control_index in 0..4 {
+                let z = section.controls[control_index].z;
+                if section_index > 0 && z - previous_z[control_index] < MIN_SECTION_SPACING {
+                    return Err(
+                        "Loft sections must progress along local +Z without crossing or folding"
+                            .into(),
+                    );
+                }
+                previous_z[control_index] = z;
+            }
+
+            for (sample_index, u) in [0.0_f32, 0.25, 0.5, 0.75, 1.0].into_iter().enumerate() {
+                let tangent = cubic_derivative(section.controls, u);
+                let tangent_length = tangent.length();
+                if tangent_length < 1e-5 || tangent.dot(direction) <= chord_length * 1e-5 {
+                    return Err(
+                        "Loft section curves must be non-degenerate and must not loop back".into(),
+                    );
+                }
+                let tangent = tangent / tangent_length;
+                if section_index == 0 {
+                    reference_tangents[sample_index] = tangent;
+                } else if tangent.dot(reference_tangents[sample_index]) < 0.25 {
+                    return Err(
+                        "Loft section parameter directions diverge and could twist the surface"
+                            .into(),
+                    );
+                }
+            }
+            previous_direction = Some(direction);
+        }
+        Ok(())
+    }
+
+    /// Evaluate a surface point. `u` follows each cubic section; `v` spans the
+    /// ordered sections from zero to one.
+    pub fn point(&self, u: f32, v: f32) -> Vec3 {
+        let (index, fraction) = self.span(v);
+        let first = cubic(self.sections[index].controls, u.clamp(0.0, 1.0));
+        let second = cubic(self.sections[index + 1].controls, u.clamp(0.0, 1.0));
+        let eased = ease(fraction, self.tension);
+        self.center + self.rotation * first.lerp(second, eased)
+    }
+
+    /// Return the world-space section tangent and surface normal at `(u, v)`.
+    pub fn frame(&self, u: f32, v: f32) -> (Vec3, Vec3) {
+        let u = u.clamp(0.0, 1.0);
+        let v = v.clamp(0.0, 1.0);
+        let h = 1.0e-3;
+        let u0 = (u - h).max(0.0);
+        let u1 = (u + h).min(1.0);
+        let v0 = (v - h).max(0.0);
+        let v1 = (v + h).min(1.0);
+        let tangent = (self.point(u1, v) - self.point(u0, v)).normalize_or_zero();
+        let across = (self.point(u, v1) - self.point(u, v0)).normalize_or_zero();
+        let normal = tangent.cross(across).normalize_or_zero();
+        (tangent, normal)
+    }
+
+    /// Find the nearest tessellated surface coordinates for a world-space point.
+    /// Returns `None` when the point is farther than a scale-aware picking tolerance.
+    pub fn coordinates(&self, world: Vec3) -> Option<(f32, f32)> {
+        if !world.is_finite() || self.validate().is_err() {
+            return None;
+        }
+        let local = self.rotation.inverse() * (world - self.center);
+        let spans = self.section_count as usize - 1;
+        let section_z = |index: usize| {
+            self.sections[index]
+                .controls
+                .iter()
+                .map(|point| point.z)
+                .sum::<f32>()
+                * 0.25
+        };
+        let mut span = 0;
+        while span + 1 < spans && local.z > section_z(span + 1) {
+            span += 1;
+        }
+        let z0 = section_z(span);
+        let z1 = section_z(span + 1);
+        let fraction = ((local.z - z0) / (z1 - z0)).clamp(0.0, 1.0);
+        let v_guess = (span as f32 + fraction) / spans as f32;
+        let u_steps = 64;
+        let v_steps = spans * 8;
+        let mut best = (f32::INFINITY, 0.0_f32, 0.0_f32);
+        for iu in 0..=u_steps {
+            let u = iu as f32 / u_steps as f32;
+            let candidate = self.local_point(u, v_guess);
+            let distance = candidate.distance_squared(local);
+            if distance < best.0 {
+                best = (distance, u, v_guess);
+            }
+        }
+        let du = 1.0 / u_steps as f32;
+        let dv = 1.0 / v_steps as f32;
+        for _ in 0..5 {
+            let (distance, u, v) = best;
+            for iu in -2..=2 {
+                let candidate_u = (u + iu as f32 * du * 0.5).clamp(0.0, 1.0);
+                for iv in -2..=2 {
+                    let candidate_v = (v + iv as f32 * dv * 0.5).clamp(0.0, 1.0);
+                    let candidate_distance = self
+                        .local_point(candidate_u, candidate_v)
+                        .distance_squared(local);
+                    if candidate_distance < best.0 {
+                        best = (candidate_distance, candidate_u, candidate_v);
+                    }
+                }
+            }
+            if best.0 >= distance {
+                break;
+            }
+        }
+        let scale = self.local_bounds_extent().length().max(1.0);
+        (best.0.sqrt() <= scale * 0.01).then_some((best.1, best.2))
+    }
+
+    /// Nearest positive ray hit against a deterministic triangle tessellation.
+    pub fn hit(&self, origin: Vec3, direction: Vec3) -> Option<Vec3> {
+        if !origin.is_finite()
+            || !direction.is_finite()
+            || direction.length_squared() < 1.0e-12
+            || self.validate().is_err()
+        {
+            return None;
+        }
+        let local_origin = self.rotation.inverse() * (origin - self.center);
+        let local_direction = self.rotation.inverse() * direction;
+        let triangles = self.triangles(
+            HIT_U_STEPS,
+            (self.section_count as usize - 1) * HIT_V_STEPS_PER_SPAN,
+        )?;
+        let mut nearest: Option<f32> = None;
+        for [a, b, c] in triangles {
+            let a = self.rotation.inverse() * (a - self.center);
+            let b = self.rotation.inverse() * (b - self.center);
+            let c = self.rotation.inverse() * (c - self.center);
+            if let Some(t) = ray_triangle(local_origin, local_direction, a, b, c) {
+                if nearest.is_none_or(|previous| t < previous) {
+                    nearest = Some(t);
+                }
+            }
+        }
+        nearest.map(|t| origin + direction * t)
+    }
+
+    /// Return world-space triangle vertices for a bounded preview/picking mesh.
+    pub fn triangles(&self, u_steps: usize, v_steps: usize) -> Option<Vec<[Vec3; 3]>> {
+        if self.validate().is_err()
+            || u_steps == 0
+            || v_steps == 0
+            || u_steps.saturating_mul(v_steps) > 4096
+        {
+            return None;
+        }
+        let mut triangles = Vec::with_capacity(u_steps * v_steps * 2);
+        for iu in 0..u_steps {
+            let u0 = iu as f32 / u_steps as f32;
+            let u1 = (iu + 1) as f32 / u_steps as f32;
+            for iv in 0..v_steps {
+                let v0 = iv as f32 / v_steps as f32;
+                let v1 = (iv + 1) as f32 / v_steps as f32;
+                let p00 = self.point(u0, v0);
+                let p10 = self.point(u1, v0);
+                let p11 = self.point(u1, v1);
+                let p01 = self.point(u0, v1);
+                triangles.push([p00, p10, p11]);
+                triangles.push([p00, p11, p01]);
+            }
+        }
+        Some(triangles)
+    }
+
+    /// Local-space control-hull bounds, useful for resource inspection.
+    pub fn bounds(&self) -> Option<[Vec3; 2]> {
+        if self.validate().is_err() {
+            return None;
+        }
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for section in self.sections.iter().take(self.section_count as usize) {
+            for point in section.controls {
+                min = min.min(point);
+                max = max.max(point);
+            }
+        }
+        Some([min, max])
+    }
+
+    fn span(&self, v: f32) -> (usize, f32) {
+        let scaled = v.clamp(0.0, 1.0) * (self.section_count as usize - 1) as f32;
+        let index = (scaled.floor() as usize).min(self.section_count as usize - 2);
+        (index, if v >= 1.0 { 1.0 } else { scaled - index as f32 })
+    }
+
+    fn local_point(&self, u: f32, v: f32) -> Vec3 {
+        let (index, fraction) = self.span(v);
+        let first = cubic(self.sections[index].controls, u);
+        let second = cubic(self.sections[index + 1].controls, u);
+        first.lerp(second, ease(fraction, self.tension))
+    }
+
+    fn local_bounds_extent(&self) -> Vec3 {
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for section in self.sections.iter().take(self.section_count as usize) {
+            for point in section.controls {
+                min = min.min(point);
+                max = max.max(point);
+            }
+        }
+        max - min
+    }
+}
+
+fn ease(t: f32, tension: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t + tension * 0.5 * t * (1.0 - t) * (2.0 * t - 1.0)
+}
+
+fn cubic(control: [Vec3; 4], t: f32) -> Vec3 {
+    let s = 1.0 - t;
+    control[0] * (s * s * s)
+        + control[1] * (3.0 * s * s * t)
+        + control[2] * (3.0 * s * t * t)
+        + control[3] * (t * t * t)
+}
+
+fn cubic_derivative(control: [Vec3; 4], t: f32) -> Vec3 {
+    let s = 1.0 - t;
+    (control[1] - control[0]) * (3.0 * s * s)
+        + (control[2] - control[1]) * (6.0 * s * t)
+        + (control[3] - control[2]) * (3.0 * t * t)
+}
+
+fn ray_triangle(origin: Vec3, direction: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
+    let edge1 = b - a;
+    let edge2 = c - a;
+    let p = direction.cross(edge2);
+    let determinant = edge1.dot(p);
+    if determinant.abs() <= 1.0e-9 {
+        return None;
+    }
+    let inverse = determinant.recip();
+    let offset = origin - a;
+    let u = offset.dot(p) * inverse;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = offset.cross(edge1);
+    let v = direction.dot(q) * inverse;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = edge2.dot(q) * inverse;
+    (t > 1.0e-6 && t.is_finite()).then_some(t)
+}
