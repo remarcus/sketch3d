@@ -121,6 +121,8 @@ pub struct SketchApp {
     drawing_library: crate::drawing_library::DrawingLibrary,
     show_drawing_library: bool,
     drawing_library_filter: String,
+    library_folder_filter: String,
+    new_library_folder: String,
     library_open_path: Option<PathBuf>,
     show_view: bool,
     view_verification_frame: Option<u32>,
@@ -297,6 +299,8 @@ impl SketchApp {
             drawing_library: crate::drawing_library::DrawingLibrary::new(),
             show_drawing_library: false,
             drawing_library_filter: String::new(),
+            library_folder_filter: "All folders".into(),
+            new_library_folder: String::new(),
             library_open_path: None,
             line: Default::default(),
             curve_tool: Default::default(),
@@ -1644,6 +1648,8 @@ impl SketchApp {
         let mut selected = None;
         let mut copy_source = None;
         let mut browse = false;
+        let mut folder_changes = Vec::new();
+        let mut create_folder = false;
         egui::Window::new("Drawing library")
             .open(&mut self.show_drawing_library)
             .default_width(460.0)
@@ -1652,16 +1658,39 @@ impl SketchApp {
                 ui.horizontal(|ui| {
                     ui.label("Search");
                     ui.text_edit_singleline(&mut self.drawing_library_filter);
+                    egui::ComboBox::from_id_salt("drawing-library-folder-filter")
+                        .selected_text(&self.library_folder_filter)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.library_folder_filter, "All folders".into(), "All folders");
+                            ui.selectable_value(&mut self.library_folder_filter, "Unsorted".into(), "Unsorted");
+                            for folder in self.drawing_library.folders() {
+                                ui.selectable_value(&mut self.library_folder_filter, folder.clone(), folder);
+                            }
+                        });
                     if ui.button("Browse…").clicked() {
                         browse = true;
                     }
                 });
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut self.new_library_folder);
+                    if ui.button("Create folder").clicked() {
+                        create_folder = true;
+                    }
+                });
                 ui.separator();
                 let filter = self.drawing_library_filter.trim().to_lowercase();
+                let folder_filter = self.library_folder_filter.clone();
                 egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
                     for path in self.drawing_library.recent() {
                         let label = path.file_name().and_then(|name| name.to_str()).unwrap_or("Untitled drawing");
                         if !filter.is_empty() && !label.to_lowercase().contains(&filter) {
+                            continue;
+                        }
+                        let current_folder = self.drawing_library.folder_for(path).map(str::to_owned);
+                        if folder_filter != "All folders"
+                            && (folder_filter == "Unsorted" && current_folder.is_some()
+                                || folder_filter != "Unsorted" && current_folder.as_deref() != Some(folder_filter.as_str()))
+                        {
                             continue;
                         }
                         ui.horizontal(|ui| {
@@ -1673,6 +1702,18 @@ impl SketchApp {
                                 }
                             });
                             ui.horizontal(|ui| {
+                                let mut selected_folder = current_folder.clone();
+                                egui::ComboBox::from_id_salt(("drawing-library-folder", path.to_string_lossy().to_string()))
+                                    .selected_text(selected_folder.as_deref().unwrap_or("Unsorted"))
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut selected_folder, None, "Unsorted");
+                                        for folder in self.drawing_library.folders() {
+                                            ui.selectable_value(&mut selected_folder, Some(folder.clone()), folder);
+                                        }
+                                    });
+                                if selected_folder != current_folder {
+                                    folder_changes.push((path.clone(), selected_folder));
+                                }
                                 if ui.add_enabled(path.is_file(), egui::Button::new("Open")).clicked() {
                                     selected = Some(path.clone());
                                 }
@@ -1688,6 +1729,20 @@ impl SketchApp {
                     ui.small(notice);
                 }
             });
+        for (path, folder) in folder_changes {
+            if let Err(error) = self.drawing_library.assign_folder(&path, folder.as_deref()) {
+                self.status = format!("Cannot organize drawing: {error}");
+            }
+        }
+        if create_folder {
+            match self.drawing_library.create_folder(&self.new_library_folder) {
+                Ok(()) => {
+                    self.library_folder_filter = self.new_library_folder.trim().to_owned();
+                    self.new_library_folder.clear();
+                }
+                Err(error) => self.status = error,
+            }
+        }
         if let Some(path) = selected {
             self.library_open_path = Some(path);
             self.show_drawing_library = false;

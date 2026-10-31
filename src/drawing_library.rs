@@ -1,6 +1,7 @@
 //! Rebuildable index of recently saved or opened native drawings.
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -17,11 +18,17 @@ const MAX_ASSET_FILES: usize = 4096;
 struct Index {
     #[serde(default)]
     recent: Vec<PathBuf>,
+    #[serde(default)]
+    folders: Vec<String>,
+    #[serde(default)]
+    assignments: HashMap<String, String>,
 }
 
 pub struct DrawingLibrary {
     path: Option<PathBuf>,
     recent: Vec<PathBuf>,
+    folders: Vec<String>,
+    assignments: HashMap<String, String>,
     pub notice: Option<String>,
 }
 
@@ -33,6 +40,8 @@ impl DrawingLibrary {
                 return Self {
                     path: None,
                     recent: Vec::new(),
+                    folders: Vec::new(),
+                    assignments: HashMap::new(),
                     notice: Some(format!("Drawing library: {error}")),
                 };
             }
@@ -40,19 +49,27 @@ impl DrawingLibrary {
         let mut library = Self {
             path: Some(path),
             recent: Vec::new(),
+            folders: Vec::new(),
+            assignments: HashMap::new(),
             notice: None,
         };
         match Self::load(library.path.as_deref().unwrap()) {
-            Ok(recent) => library.recent = recent,
+            Ok(index) => {
+                library.recent = index.recent;
+                library.folders = index.folders;
+                library.assignments = index.assignments;
+            }
             Err(error) => library.notice = Some(format!("Drawing library: {error}")),
         }
         library
     }
 
-    fn load(path: &Path) -> Result<Vec<PathBuf>, String> {
+    fn load(path: &Path) -> Result<Index, String> {
         let file = match std::fs::File::open(path) {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Index::default())
+            }
             Err(error) => return Err(error.to_string()),
         };
         if file.metadata().map_err(|error| error.to_string())?.len() > MAX_INDEX_BYTES {
@@ -61,20 +78,89 @@ impl DrawingLibrary {
         let index: Index = serde_json::from_reader(file).map_err(|error| error.to_string())?;
         if index.recent.len() > MAX_RECENT
             || index.recent.iter().any(|path| path.as_os_str().is_empty())
+            || index.folders.len() > 100
+            || index.folders.iter().any(|folder| !valid_folder(folder))
+            || index.assignments.len() > MAX_RECENT
+            || index
+                .assignments
+                .values()
+                .any(|folder| !valid_folder(folder))
         {
-            return Err("index contains invalid recent drawing paths".into());
+            return Err("index contains invalid paths or folder metadata".into());
         }
         let mut unique = Vec::new();
-        for path in index.recent {
-            if !unique.contains(&path) {
-                unique.push(path);
+        for path in &index.recent {
+            if !unique.contains(path) {
+                unique.push(path.clone());
             }
         }
-        Ok(unique)
+        let known_folders: HashSet<_> = index.folders.iter().collect();
+        let mut unique_folders = HashSet::new();
+        if index
+            .folders
+            .iter()
+            .any(|folder| !unique_folders.insert(folder.to_lowercase()))
+        {
+            return Err("index contains duplicate folder names".into());
+        }
+        if index
+            .assignments
+            .values()
+            .any(|folder| !known_folders.contains(folder))
+        {
+            return Err("index assigns a drawing to an unknown folder".into());
+        }
+        Ok(Index {
+            recent: unique,
+            ..index
+        })
     }
 
     pub fn recent(&self) -> &[PathBuf] {
         &self.recent
+    }
+
+    pub fn folders(&self) -> &[String] {
+        &self.folders
+    }
+
+    pub fn folder_for(&self, path: &Path) -> Option<&str> {
+        self.assignments.get(&path_key(path)).map(String::as_str)
+    }
+
+    pub fn create_folder(&mut self, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if !valid_folder(name) {
+            return Err("Folder names must be 1–40 characters and cannot contain slashes or control characters".into());
+        }
+        if self
+            .folders
+            .iter()
+            .any(|folder| folder.eq_ignore_ascii_case(name))
+        {
+            return Err("A folder with that name already exists".into());
+        }
+        if self.folders.len() >= 100 {
+            return Err("The library supports at most 100 folders".into());
+        }
+        self.folders.push(name.to_owned());
+        self.save_index();
+        Ok(())
+    }
+
+    pub fn assign_folder(&mut self, path: &Path, folder: Option<&str>) -> Result<(), String> {
+        let key = path_key(path);
+        match folder {
+            Some(folder) if self.folders.iter().any(|known| known == folder) => {
+                self.assignments.insert(key, folder.to_owned());
+            }
+            Some(_) => return Err("Choose a folder that exists in this library".into()),
+            None => {
+                self.assignments.remove(&key);
+            }
+        }
+        self.save_index();
+        Ok(())
     }
 
     pub fn record(&mut self, path: &Path) {
@@ -82,6 +168,12 @@ impl DrawingLibrary {
         self.recent.retain(|recent| recent != &path);
         self.recent.insert(0, path);
         self.recent.truncate(MAX_RECENT);
+        let known: HashSet<_> = self.recent.iter().map(|path| path_key(path)).collect();
+        self.assignments.retain(|key, _| known.contains(key));
+        self.save_index();
+    }
+
+    fn save_index(&mut self) {
         if let Some(index_path) = &self.path {
             let result = (|| -> Result<(), String> {
                 let parent = index_path
@@ -94,6 +186,8 @@ impl DrawingLibrary {
                     &mut temp,
                     &Index {
                         recent: self.recent.clone(),
+                        folders: self.folders.clone(),
+                        assignments: self.assignments.clone(),
                     },
                 )
                 .map_err(|error| error.to_string())?;
@@ -109,6 +203,23 @@ impl DrawingLibrary {
                 .map(|error| format!("Cannot save drawing library: {error}"));
         }
     }
+}
+
+fn path_key(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn valid_folder(name: &str) -> bool {
+    !name.trim().is_empty()
+        && name.chars().count() <= 40
+        && !name.eq_ignore_ascii_case("all folders")
+        && !name.eq_ignore_ascii_case("unsorted")
+        && name
+            .chars()
+            .all(|character| !character.is_control() && character != '/' && character != '\\')
 }
 
 /// Copy a validated native drawing and its complete managed resource folder.
