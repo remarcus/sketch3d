@@ -74,6 +74,8 @@ pub struct Preferences {
     pub version: u32,
     pub background: [f32; 3],
     #[serde(default)]
+    pub grain: f32,
+    #[serde(default)]
     pub background_image: Option<BackgroundImageSettings>,
     #[serde(default)]
     pub layout: LayoutPreferences,
@@ -81,8 +83,9 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            version: 3,
+            version: 4,
             background: [0.018, 0.029, 0.046].map(linear_to_srgb),
+            grain: 0.0,
             background_image: None,
             layout: LayoutPreferences::default(),
         }
@@ -90,11 +93,13 @@ impl Default for Preferences {
 }
 impl Preferences {
     fn valid(&self) -> bool {
-        (1..=3).contains(&self.version)
+        (1..=4).contains(&self.version)
             && self
                 .background
                 .iter()
                 .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+            && self.grain.is_finite()
+            && (0.0..=0.12).contains(&self.grain)
             && self.layout.valid()
             && self.background_image.is_none_or(|image| {
                 image.reference_id != 0
@@ -120,9 +125,8 @@ impl Preferences {
         if !prefs.valid() {
             return Err("Unsupported or invalid presentation preferences".into());
         }
-        // Older versions stored only the fallback background and layout. The
-        // new screen image preference defaults to None during migration.
-        prefs.version = 3;
+        // Older versions stored no grain amount, which defaults to zero.
+        prefs.version = 4;
         Ok(prefs)
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -189,7 +193,7 @@ mod tests {
         let path = dir.path().join("presentation.json");
         std::fs::write(&path, br#"{"version":1,"background":[0.1,0.2,0.3]}"#).unwrap();
         let prefs = Preferences::load(&path).unwrap();
-        assert_eq!(prefs.version, 3);
+        assert_eq!(prefs.version, 4);
         assert_eq!(prefs.background, [0.1, 0.2, 0.3]);
         assert_eq!(prefs.layout, LayoutPreferences::default());
     }

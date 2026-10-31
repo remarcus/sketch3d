@@ -248,6 +248,7 @@ pub struct SceneRenderer {
     target: Option<CanvasTarget>,
     pub lighting: Lighting,
     pub background: [f32; 3],
+    pub grain: f32,
     pub adapter: String,
 }
 impl SceneRenderer {
@@ -554,6 +555,7 @@ impl SceneRenderer {
             shadow_bind,
             target: None,
             background: crate::presentation::Preferences::default().background,
+            grain: 0.0,
             adapter,
         }
     }
@@ -1196,7 +1198,7 @@ impl SceneRenderer {
                 f32::from(self.sample_count() > 1),
                 0.0,
             ],
-            camera: camera.eye().extend(1.0).to_array(),
+            camera: camera.eye().extend(self.grain.clamp(0.0, 0.12)).to_array(),
         };
         self.state
             .queue
@@ -1541,7 +1543,7 @@ impl SceneRenderer {
                 f32::from(sample_count > 1),
                 0.0,
             ],
-            camera: camera.eye().extend(1.0).to_array(),
+            camera: camera.eye().extend(self.grain.clamp(0.0, 0.12)).to_array(),
         };
         self.state
             .queue

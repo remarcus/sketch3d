@@ -511,6 +511,7 @@ impl SketchApp {
                 app.load_house();
             }
         }
+        app.renderer.grain = app.presentation.preferences.grain;
         app.recovery.request_scan();
         app.sync_presentation_background();
         app

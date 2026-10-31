@@ -7,6 +7,13 @@ struct Scene {
 @group(1) @binding(1) var brush_sampler: sampler;
 @group(2) @binding(0) var shadow_depth: texture_depth_2d;
 @group(2) @binding(1) var shadow_sampler: sampler_comparison;
+fn apply_grain(color: vec3<f32>, position: vec2<f32>) -> vec3<f32> {
+    let amount = scene.camera.w;
+    if amount <= 0.0 { return color; }
+    let pixel = floor(position);
+    let random = fract(sin(dot(pixel, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+    return clamp(color + vec3<f32>((random * 2.0 - 1.0) * amount), vec3<f32>(0.0), vec3<f32>(1.0));
+}
 struct Output {
     @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32>,
     @location(1) color: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) world: vec3<f32>,
@@ -33,7 +40,7 @@ fn visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     return mix(1.0,sum/9.0,scene.settings.z);
 }
 @fragment fn fs_main(in: Output) -> @location(0) vec4<f32> {
-    if length(in.normal)<0.1 { return vec4<f32>(in.color,1.0); }
+    if length(in.normal)<0.1 { return vec4<f32>(apply_grain(in.color, in.position.xy),1.0); }
     let mask_alpha=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a;
     var coverage=mask_alpha;
     if scene.shadow.z<0.5 {
@@ -42,7 +49,7 @@ fn visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     }
     let normal=normalize(in.normal);
     let shade=scene.light.w+scene.settings.x*abs(dot(normal,scene.light.xyz))*visibility(in.world,normal);
-    return vec4<f32>(in.color*shade,coverage);
+    return vec4<f32>(apply_grain(in.color*shade, in.position.xy),coverage);
 }
 @fragment fn fs_transparent(in: Output) -> @location(0) vec4<f32> {
     let mask_alpha=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a;
@@ -52,5 +59,5 @@ fn visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
         let normal=normalize(in.normal);
         shade=scene.light.w+scene.settings.x*abs(dot(normal,scene.light.xyz))*visibility(in.world,normal);
     }
-    return vec4<f32>(in.color*shade,in.opacity*mask_alpha);
+    return vec4<f32>(apply_grain(in.color*shade, in.position.xy),in.opacity*mask_alpha);
 }
