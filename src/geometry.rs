@@ -748,6 +748,7 @@ mod tests {
     fn pressure_geometry() {
         let make = |pressure| Stroke {
             id: 1,
+            group_id: None,
             layer_id: 1,
             color: [0.5; 3],
             radius: 0.1,
@@ -791,6 +792,7 @@ mod curve_regression {
             .collect();
         let stroke = Stroke {
             id: 1,
+            group_id: None,
             layer_id: 1,
             color: [0.5; 3],
             radius: 0.03,
@@ -878,6 +880,7 @@ mod brush_tests {
     fn mark(kind: BrushKind, positions: &[Vec3]) -> Stroke {
         Stroke {
             id: 7,
+            group_id: None,
             layer_id: 1,
             color: [0.3, 0.6, 0.9],
             radius: 0.1,
@@ -1027,6 +1030,7 @@ mod dynamics_tests {
     fn line(kind: BrushKind, xs: &[f32]) -> Stroke {
         Stroke {
             id: 100,
+            group_id: None,
             layer_id: 1,
             color: [0.5; 3],
             radius: 0.1,
@@ -1153,6 +1157,7 @@ mod dynamics_boundary_tests {
         for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
             let mut stroke = Stroke {
                 id: 101,
+                group_id: None,
                 layer_id: 1,
                 color: [0.5; 3],
                 radius: 0.1,
@@ -1238,6 +1243,7 @@ mod seam_dynamics_tests {
             }));
             let mut stroke = Stroke {
                 id: 1,
+                group_id: None,
                 layer_id: 1,
                 color: [0.5; 3],
                 radius: 0.1,
@@ -1285,6 +1291,7 @@ mod texture_uv_tests {
         brush.texture.scale = 0.2;
         Stroke {
             id: 1,
+            group_id: None,
             layer_id: 1,
             color: [0.5; 3],
             radius: 0.1,

@@ -86,11 +86,8 @@ impl SketchApp {
                 self.selected.clear();
             }
             if let Some(id) = hit {
-                if shift && !self.selected.insert(id) {
-                    self.selected.remove(&id);
-                } else {
-                    self.selected.insert(id);
-                }
+                let ids = self.doc.selection_for_stroke(id, self.individual_selection);
+                editing::toggle_selection(&mut self.selected, &ids, shift);
             }
             self.status = format!(
                 "{} stroke(s) selected. Shift-click toggles selection.",
@@ -200,6 +197,10 @@ impl SketchApp {
             self.status = "Cannot duplicate beyond document bounds".into();
             return;
         };
+        if let Err(error) = editing::remap_duplicate_groups(&self.doc, &before, &mut after) {
+            self.status = error;
+            return;
+        }
         self.selected.clear();
         for (index, (position, stroke)) in after.iter_mut().enumerate() {
             *position = self.doc.strokes.len() + index;
@@ -237,7 +238,7 @@ impl SketchApp {
         self.record_recovery_edit();
         self.status = "Deleted selection".into();
     }
-    fn numeric_transform(&mut self) {
+    pub(super) fn numeric_transform(&mut self) {
         self.finish();
         let before = editing::snapshot(&self.doc, &self.selected);
         let Some((min, max)) = editing::bounds(&self.doc, &self.selected) else {

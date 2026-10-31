@@ -77,7 +77,7 @@ Brush radius is in world units, so its visible size changes with camera distance
 
 ## Documents
 
-Documents use a versioned `.sketch.json` format with positions in world space. Version 5 adds named layers, visibility, locking, and stroke membership. Version-1–4 drawings upgrade into one visible, unlocked layer while preserving their brush appearance. Older application versions cannot open version-5 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. Recovery snapshots protect completed edits automatically; use Save for your deliberate native drawing file.
+Documents use a versioned `.sketch.json` format with positions in world space. Version 6 adds flat stroke groups alongside named layers, visibility, and locking. Versions 1–5 migrate without changing resolved brush appearance; versions 1–4 receive one visible, unlocked layer. Older application versions cannot open version-6 files. Open validates version, IDs, positions, pressure, color, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. Recovery snapshots protect completed edits automatically; use Save for your deliberate native drawing file.
 
 ## Development
 
@@ -98,7 +98,7 @@ The immediate hardware test is pressure and tilt on the Wacom, followed by the K
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
-Next planned work is stroke groups (SKETCH-005). Soft/transparent brushes follow separately; brush-library importing remains deferred.
+Next planned work is the optional startup tutorial (SKETCH-015). Soft/transparent brushes follow separately; brush-library importing remains deferred.
 
 ## License
 
@@ -304,3 +304,11 @@ Position and rotate the guide, use **Profile from view**, or press **F** to alig
 Guide changes finish active ink first. Existing strokes remain fixed when changing/hiding the guide, and support selection, duplication, undo, saving, recovery, and GLB export. The custom guide/profile itself is temporary workspace state, like existing plane/cylinder controls; native files retain the resulting world-space ink rather than the profile editor configuration. This feature does not deform existing artwork or create a solid-model baking tool.
 
 **Vase** opens an original painted study made from 73 editable strokes: brown body marks, blue bands, cream diamond inlays, and gold rims. Start with `cargo run --release -- --vase`. Run `cargo run --release -- --verify-vase` for rotated-guide drawing, captured tails, pressure/tilt, duplication/undo, guide independence, native persistence, and GPU rendering. Outputs are `verification/vase-report.json` and `verification/vase-preview.png`. `--verify-export` includes `vase.glb`; it contains the ink meshes, without the guide wireframe or a hidden solid vase.
+
+### Stroke groups
+
+In selection mode (V), select strokes on one editable layer, then choose **Group** (Ctrl/Cmd+G). Clicking a member selects its whole group; Shift-click toggles the group. **Select individual strokes** allows member editing; turning it off expands the selection to complete groups. **Ungroup** (Ctrl/Cmd+Shift+G) removes membership from the selected groups.
+
+Groups share the selection transform pivot. Duplicating a complete group creates an independent group; copying only some members creates ungrouped strokes. Groups stay on one layer, so moving them between layers requires selecting every member. Layer visibility and locking protect all members consistently. Grouping, duplication, transforms, and ungrouping support undo, native saving, and recovery. GLB exports preserve separate meshes with group metadata.
+
+Delete removes the selected strokes: normally a whole group, or individual members in individual mode. The whole-stroke eraser still removes one stroke at a time. A group may retain a single member; empty groups disappear automatically. Nested groups and brush import remain future work.

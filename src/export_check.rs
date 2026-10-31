@@ -10,10 +10,11 @@ use std::collections::HashSet;
 
 pub fn pressure_fixture() -> Document {
     Document {
-        version: 5,
+        version: 6,
         strokes: vec![
             Stroke {
                 id: 1001,
+                group_id: None,
                 layer_id: 1,
                 color: [0.17, 0.82, 0.74],
                 radius: 0.12,
@@ -38,6 +39,7 @@ pub fn pressure_fixture() -> Document {
             },
             Stroke {
                 id: 1002,
+                group_id: None,
                 layer_id: 1,
                 color: [0.94, 0.35, 0.14],
                 radius: 0.08,
@@ -50,6 +52,7 @@ pub fn pressure_fixture() -> Document {
             },
             Stroke {
                 id: 1003,
+                group_id: None,
                 layer_id: 1,
                 color: [0.35, 0.45, 0.9],
                 radius: 0.045,
@@ -91,6 +94,7 @@ pub fn brush_fixture() -> Document {
         let y = 1.2 - row as f32 * 1.2;
         doc.strokes.push(Stroke {
             id: 2001 + row as u64 * 2,
+            group_id: None,
             layer_id: 1,
             color,
             radius: 0.16,
@@ -114,6 +118,7 @@ pub fn brush_fixture() -> Document {
             glam::Quat::from_rotation_arc(Vec3::Z, Vec3::new(0.3, 0.2, 1.0).normalize());
         doc.strokes.push(Stroke {
             id: 2002 + row as u64 * 2,
+            group_id: None,
             layer_id: 1,
             color,
             radius: 0.16,
@@ -175,6 +180,7 @@ pub fn dynamics_fixture() -> Document {
         let y = 1.8 - row as f32 * 1.2;
         doc.strokes.push(Stroke {
             id: 3001 + row as u64 * 2,
+            group_id: None,
             layer_id: 1,
             color,
             radius: 0.18,
@@ -197,6 +203,7 @@ pub fn dynamics_fixture() -> Document {
         });
         doc.strokes.push(Stroke {
             id: 3002 + row as u64 * 2,
+            group_id: None,
             layer_id: 1,
             color,
             radius: 0.18,
@@ -246,6 +253,7 @@ pub fn textured_fixture() -> Document {
         let y = 1.8 - row as f32 * 1.2;
         doc.strokes.push(Stroke {
             id: 4001 + row as u64 * 3,
+            group_id: None,
             layer_id: 1,
             color,
             radius: 0.18,
@@ -267,6 +275,7 @@ pub fn textured_fixture() -> Document {
         });
         doc.strokes.push(Stroke {
             id: 4002 + row as u64 * 3,
+            group_id: None,
             layer_id: 1,
             color,
             radius: 0.18,
@@ -280,6 +289,7 @@ pub fn textured_fixture() -> Document {
         // A short depth-oriented round companion exercises circumference UV seams.
         doc.strokes.push(Stroke {
             id: 4003 + row as u64 * 3,
+            group_id: None,
             layer_id: 1,
             color,
             radius: 0.11,
@@ -342,6 +352,7 @@ pub fn vase_fixture() -> Document {
             .collect();
         doc.strokes.push(Stroke {
             id: 6001 + doc.strokes.len() as u64,
+            group_id: None,
             layer_id: 1,
             color,
             radius,
@@ -410,6 +421,13 @@ pub fn vase_fixture() -> Document {
     }
     doc
 }
+/// Two pressure-shaped marks share a flat group; the third remains independent.
+pub fn grouped_fixture() -> Document {
+    let mut doc = pressure_fixture();
+    doc.strokes[0].group_id = Some(999);
+    doc.strokes[1].group_id = Some(999);
+    doc
+}
 pub fn run() -> Result<(), String> {
     let directory = std::env::current_dir()
         .map_err(|e| e.to_string())?
@@ -425,6 +443,7 @@ pub fn run() -> Result<(), String> {
         ("textures", textured_fixture(), None),
         ("layers", layered_fixture(), None),
         ("vase", vase_fixture(), None),
+        ("groups", grouped_fixture(), None),
         ("selection", pressure, Some(HashSet::from([1002]))),
     ];
     let mut cases = Vec::new();
@@ -467,7 +486,7 @@ pub fn run() -> Result<(), String> {
             } else {
                 0
             };
-            strokes.push(json!({"name":format!("Stroke_{}",stroke.id),"id":stroke.id.to_string(),"layerId":stroke.layer_id.to_string(),"layerName":doc.layers.iter().find(|l|l.id==stroke.layer_id).unwrap().name,"color":stroke.color,"doubleSided":stroke.brush.kind == BrushKind::Ribbon,"masked":masked,"opaquePixels":opaque_pixels,"uvMin":uv_min,"uvMax":uv_max,"min":min.to_array(),"max":max.to_array()}));
+            strokes.push(json!({"name":format!("Stroke_{}",stroke.id),"id":stroke.id.to_string(),"groupId":stroke.group_id.map(|id|id.to_string()),"layerId":stroke.layer_id.to_string(),"layerName":doc.layers.iter().find(|l|l.id==stroke.layer_id).unwrap().name,"color":stroke.color,"doubleSided":stroke.brush.kind == BrushKind::Ribbon,"masked":masked,"opaquePixels":opaque_pixels,"uvMin":uv_min,"uvMax":uv_max,"min":min.to_array(),"max":max.to_array()}));
         }
         cases.push(json!({"name":name,"file":file,"summary":summary,"strokes":strokes}));
     }

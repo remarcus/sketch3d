@@ -127,10 +127,18 @@ Document layers have stable IDs, names, visibility, and locking; each stroke sto
 
 Layer edits store before/after metadata and ID assignments rather than duplicate point arrays. The app finishes active strokes/transforms before applying layer changes and records them in normal edit/recovery history. Shared visible/editable helpers govern drawing, picking, selection snapshots, bounds, and export. Rendering skips hidden strokes; export retains locked visible ink and node layer metadata. Background export snapshots clone layer metadata alongside selected strokes. Empty-only deletion keeps membership valid and prevents implicit artwork loss.
 
-Layer order does not override depth testing. Groups and nested hierarchy are separate future work. Software verification supplements migration, protection, undo, and exporter parser tests with a graphical layer workflow.
+Layer order does not override depth testing. Nested hierarchy remains future work. Software verification supplements migration, protection, undo, and exporter parser tests with a graphical layer workflow.
 
 ## Revolved-profile guides
 
 `revolved.rs` models a fixed-capacity ordered radius/height profile and its world transform. Each segment is a conical frustum (including cylindrical/linear degeneracies); double-precision quadratic roots are clipped by segment height and the nearest positive side hit is selected. Captured normal/circumferential tangent frames support existing brush orientation. Guides are workspace values and do not change the native document schema.
 
 Surface stabilization unwraps angle scaled by a fixed reference radius and maps height to meridian arc distance. It decodes filtered samples back onto the captured profile. Emission adds exact profile-knot crossings as well as angular subdivisions, so strokes and release tails cannot shortcut a bulge through a long chord. Existing plane/cylinder behavior is retained. `revolved_ui.rs` provides draggable/numeric editing, guide switching, the editable vase sample, and graphical checks; export reuses ordinary document strokes and the shared mesh dispatcher.
+
+## Flat stroke groups and version 6
+
+Each stroke stores an optional stable group ID; membership is implicit rather than a separate container. Native version 6 validates nonzero group IDs and requires all members to share a layer. Versions 1–5 migrate with ungrouped strokes. Singleton groups are valid and empty groups need no cleanup.
+
+Group edits use ordinary before/after stroke snapshots, preserving undo and recovery. Selection expands a clicked member to its editable group unless individual mode is active. Leaving individual mode expands selected groups in linear passes. Regrouping and cross-layer moves reject partial group selections. Duplication remaps complete groups to fresh IDs and detaches partial copies; membership checks use linear scans and count maps. Transforms use existing selection bounds and pivots. Erasing remains per stroke.
+
+GLB keeps separate stroke meshes and writes optional spatialSketchGroupId string extras. Grouping changes metadata without changing mesh geometry. Model/editing tests include migration, invalid membership, locking, history, independent copies, and a 10,000-stroke operation fixture; the graphical workflow checks the integrated selection/edit/export path.

@@ -136,7 +136,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 5);
+                assert_eq!(loaded.version, 6);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.load_dynamics();
                 self.brush.dynamics = Default::default();

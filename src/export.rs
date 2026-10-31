@@ -131,7 +131,7 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
     Ok(mesh)
 }
 pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=5) {
+    if !matches!(doc.version, 1..=6) {
         return Err("Unsupported source document version".into());
     }
     let mut layer_ids = HashSet::new();
@@ -152,6 +152,19 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         || doc.strokes.iter().any(|s| !layer_ids.contains(&s.layer_id))
     {
         return Err("Invalid source layer references".into());
+    }
+    let mut group_layers = HashMap::new();
+    for stroke in &doc.strokes {
+        if let Some(group) = stroke.group_id {
+            if group == 0
+                || group == u64::MAX
+                || group_layers
+                    .insert(group, stroke.layer_id)
+                    .is_some_and(|layer| layer != stroke.layer_id)
+            {
+                return Err("Invalid source group membership".into());
+            }
+        }
     }
     let mut binary = Vec::new();
     let mut views = Vec::new();
@@ -264,7 +277,11 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         let mesh_index = meshes.len();
         let name = format!("Stroke_{}", stroke.id);
         meshes.push(json!({"name":name,"primitives":[{"attributes":{"POSITION":position,"NORMAL":normal,"TEXCOORD_0":uv},"indices":indices,"material":material,"mode":4}]}));
-        nodes.push(json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":doc.layers.iter().find(|l|l.id==stroke.layer_id).unwrap().name}}));
+        let mut node = json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":doc.layers.iter().find(|l|l.id==stroke.layer_id).unwrap().name}});
+        if let Some(group) = stroke.group_id {
+            node["extras"]["spatialSketchGroupId"] = json!(group.to_string());
+        }
+        nodes.push(node);
         summary.strokes += 1;
         summary.vertices += mesh.vertices.len();
         summary.triangles += mesh.indices.len() / 3;
@@ -350,6 +367,7 @@ mod tests {
     fn stroke(id: u64, color: [f32; 3]) -> Stroke {
         Stroke {
             id,
+            group_id: None,
             layer_id: 1,
             color,
             radius: 0.1,
@@ -496,7 +514,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 5);
+        assert_eq!(loaded.version, 6);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -761,5 +779,51 @@ mod tests {
         assert!(encoded.summary.triangles > 10000);
         assert_eq!(encode(&source, None).unwrap().bytes, encoded.bytes);
         assert_eq!(serde_json::to_string(&source).unwrap(), native);
+    }
+}
+
+#[cfg(test)]
+mod group_export_tests {
+    use super::*;
+    #[test]
+    fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
+        let doc = crate::export_check::grouped_fixture();
+        let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(loaded.version, 6);
+        assert_eq!(loaded.strokes, doc.strokes);
+        let encoded = encode(&doc, None).unwrap();
+        let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
+        assert_eq!(parsed.meshes().count(), 3);
+        let length = u32::from_le_bytes(encoded.bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value =
+            serde_json::from_slice(&encoded.bytes[20..20 + length]).unwrap();
+        assert_eq!(json["nodes"][0]["extras"]["spatialSketchGroupId"], "999");
+        assert_eq!(json["nodes"][1]["extras"]["spatialSketchGroupId"], "999");
+        assert!(json["nodes"][2]["extras"]
+            .get("spatialSketchGroupId")
+            .is_none());
+        let selected = encode(&doc, Some(&HashSet::from([doc.strokes[0].id]))).unwrap();
+        assert_eq!(selected.summary.strokes, 1);
+        let mut independent = doc.clone();
+        for stroke in &mut independent.strokes {
+            stroke.group_id = None;
+        }
+        let base = encode(&independent, None).unwrap();
+        assert_eq!(encoded.summary.vertices, base.summary.vertices);
+        assert_eq!(encoded.summary.triangles, base.summary.triangles);
+        assert_eq!(loaded.strokes, doc.strokes);
+    }
+    #[test]
+    fn invalid_group_links_are_rejected_even_when_outside_export_selection() {
+        let mut doc = crate::export_check::grouped_fixture();
+        let mut layer = doc.layers[0].clone();
+        layer.id = 2;
+        layer.name = "Other".into();
+        doc.layers.push(layer);
+        doc.strokes[1].layer_id = 2;
+        assert!(encode(&doc, Some(&HashSet::from([doc.strokes[2].id]))).is_err());
+        doc.strokes[1].layer_id = 1;
+        doc.strokes[0].group_id = Some(0);
+        assert!(encode(&doc, None).is_err());
     }
 }

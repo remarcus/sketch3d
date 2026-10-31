@@ -145,6 +145,7 @@ mod tests {
     use crate::document::{Brush, BrushKind, Point};
     fn stroke(id: u64, x: f32) -> Stroke {
         Stroke {
+            group_id: None,
             layer_id: 1,
             id,
             color: [0.4, 0.5, 0.6],
@@ -251,7 +252,7 @@ mod tests {
                 texture: Default::default(),
             };
             let mut doc = Document {
-                version: 5,
+                version: 6,
                 strokes: vec![s],
                 ..Document::default()
             };
@@ -281,7 +282,7 @@ mod tests {
         s.brush.kind = BrushKind::Chisel;
         s.brush.thickness = 1.0;
         let doc = Document {
-            version: 5,
+            version: 6,
             strokes: vec![s],
             ..Document::default()
         };
@@ -308,7 +309,7 @@ mod tests {
                     texture: Default::default(),
                 };
                 let sample = Document {
-                    version: 5,
+                    version: 6,
                     strokes: vec![dot],
                     ..Document::default()
                 };
@@ -329,7 +330,7 @@ mod tests {
         s.brush.dynamics.taper_start = 0.4;
         s.brush.dynamics.taper_end = 0.7;
         let mut doc = Document {
-            version: 5,
+            version: 6,
             strokes: vec![s],
             ..Document::default()
         };
@@ -456,15 +457,28 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
             if ids.is_empty() {
                 return Err("Select strokes to move".into());
             }
-            for id in &ids {
-                let stroke = doc
-                    .strokes
-                    .iter()
-                    .find(|s| s.id == *id)
-                    .ok_or("Selected stroke not found")?;
+            let mut touched = HashSet::new();
+            let mut found = 0;
+            for stroke in doc.strokes.iter().filter(|s| ids.contains(&s.id)) {
+                found += 1;
                 if !doc.editable(stroke) {
                     return Err("Hidden or locked strokes cannot be moved".into());
                 }
+                if stroke.layer_id != target {
+                    if let Some(group) = stroke.group_id {
+                        touched.insert(group);
+                    }
+                }
+            }
+            if found != ids.len() {
+                return Err("Selected stroke not found".into());
+            }
+            if doc
+                .strokes
+                .iter()
+                .any(|s| !ids.contains(&s.id) && s.group_id.is_some_and(|g| touched.contains(&g)))
+            {
+                return Err("Move the whole group, or ungroup it before changing layers".into());
             }
             for (id, layer) in &mut after.assignments {
                 if ids.contains(id) {
@@ -511,6 +525,7 @@ mod layer_tests {
         Document {
             strokes: vec![Stroke {
                 id: 1,
+                group_id: None,
                 layer_id: 1,
                 color: [0.3; 3],
                 radius: 0.03,
@@ -578,5 +593,266 @@ mod layer_tests {
             .unwrap()
             .apply(&mut doc, true);
         assert_eq!(doc.active_layer, 1);
+    }
+}
+
+/// Shift toggles the entire hit unit, including a partially selected group.
+pub fn toggle_selection(selected: &mut HashSet<u64>, ids: &HashSet<u64>, shift: bool) {
+    if shift && ids.is_subset(selected) {
+        selected.retain(|id| !ids.contains(id));
+    } else {
+        selected.extend(ids);
+    }
+}
+pub fn group_selected(doc: &Document, ids: &HashSet<u64>) -> Result<Edit, String> {
+    if ids.len() < 2 {
+        return Err("Select at least two editable strokes to group".into());
+    }
+    let before = snapshot(doc, ids);
+    if before.len() != ids.len() {
+        return Err("Hidden or locked strokes cannot be grouped".into());
+    }
+    let layer = before[0].1.layer_id;
+    if before.iter().any(|(_, s)| s.layer_id != layer) {
+        return Err("A group must stay on one layer".into());
+    }
+    let touched: HashSet<_> = before.iter().filter_map(|(_, s)| s.group_id).collect();
+    if doc
+        .strokes
+        .iter()
+        .any(|s| !ids.contains(&s.id) && s.group_id.is_some_and(|g| touched.contains(&g)))
+    {
+        return Err("Select the whole existing group before regrouping".into());
+    }
+    let group = doc
+        .strokes
+        .iter()
+        .filter_map(|s| s.group_id)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .filter(|id| *id != u64::MAX)
+        .ok_or("No group IDs available")?;
+    let mut after = before.clone();
+    for (_, stroke) in &mut after {
+        stroke.group_id = Some(group);
+    }
+    Ok(Edit::Change { before, after })
+}
+pub fn ungroup_selected(doc: &Document, ids: &HashSet<u64>) -> Result<Edit, String> {
+    let groups: HashSet<_> = doc
+        .strokes
+        .iter()
+        .filter(|s| ids.contains(&s.id))
+        .filter_map(|s| s.group_id)
+        .collect();
+    if groups.is_empty() {
+        return Err("Select a group to ungroup".into());
+    }
+    let members: HashSet<_> = doc
+        .strokes
+        .iter()
+        .filter(|s| s.group_id.is_some_and(|g| groups.contains(&g)))
+        .map(|s| s.id)
+        .collect();
+    let before = snapshot(doc, &members);
+    if before.len() != members.len() {
+        return Err("Hidden or locked groups cannot be changed".into());
+    }
+    let mut after = before.clone();
+    for (_, stroke) in &mut after {
+        stroke.group_id = None;
+    }
+    Ok(Edit::Change { before, after })
+}
+/// Whole copied groups receive a new identity; individual copies are detached.
+pub fn remap_duplicate_groups(
+    doc: &Document,
+    before: &Snapshot,
+    after: &mut Snapshot,
+) -> Result<(), String> {
+    let copied: HashSet<_> = before.iter().map(|(_, s)| s.id).collect();
+    let mut next = 0;
+    let mut counts = std::collections::HashMap::<u64, (usize, usize)>::new();
+    for stroke in &doc.strokes {
+        if let Some(group) = stroke.group_id {
+            next = next.max(group);
+            let count = counts.entry(group).or_default();
+            count.0 += 1;
+            if copied.contains(&stroke.id) {
+                count.1 += 1;
+            }
+        }
+    }
+    let mut groups = std::collections::HashMap::new();
+    for (_, stroke) in after {
+        if let Some(group) = stroke.group_id {
+            if counts
+                .get(&group)
+                .is_none_or(|(total, selected)| total != selected)
+            {
+                stroke.group_id = None;
+                continue;
+            }
+            let new = if let Some(id) = groups.get(&group) {
+                *id
+            } else {
+                next = next
+                    .checked_add(1)
+                    .filter(|id| *id != u64::MAX)
+                    .ok_or("No group IDs available")?;
+                groups.insert(group, next);
+                next
+            };
+            stroke.group_id = Some(new);
+        }
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+    use crate::document::{Brush, Point};
+    fn sample() -> Document {
+        Document {
+            strokes: (1..=3)
+                .map(|id| Stroke {
+                    id,
+                    group_id: None,
+                    layer_id: 1,
+                    color: [0.5; 3],
+                    radius: 0.02,
+                    brush: Brush::default(),
+                    points: vec![Point {
+                        position: Vec3::X * id as f32,
+                        pressure: 0.7,
+                        tilt: None,
+                    }],
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn grouping_transform_and_undo_preserve_exact_ink_and_order() {
+        let mut doc = sample();
+        let original = doc.strokes.clone();
+        let ids = HashSet::from([1, 2]);
+        let edit = group_selected(&doc, &ids).unwrap();
+        edit.apply(&mut doc, true);
+        let grouped = doc.strokes.clone();
+        assert_eq!(doc.group_members(doc.strokes[0].group_id.unwrap()), ids);
+        let before = snapshot(&doc, &ids);
+        let after = transformed(
+            &before,
+            Vec3::ZERO,
+            Vec3::Y,
+            Quat::from_rotation_x(0.4),
+            1.3,
+        )
+        .unwrap();
+        let transform = Edit::Change { before, after };
+        transform.apply(&mut doc, true);
+        transform.apply(&mut doc, false);
+        assert_eq!(doc.strokes, grouped);
+        let ungroup = ungroup_selected(&doc, &HashSet::from([1])).unwrap();
+        ungroup.apply(&mut doc, true);
+        assert!(doc.strokes.iter().all(|s| s.group_id.is_none()));
+        ungroup.apply(&mut doc, false);
+        assert_eq!(doc.strokes, grouped);
+        let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(loaded.strokes, grouped);
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes, original);
+    }
+    #[test]
+    fn copied_groups_are_independent_and_partial_copies_detach() {
+        let mut doc = sample();
+        group_selected(&doc, &HashSet::from([1, 2]))
+            .unwrap()
+            .apply(&mut doc, true);
+        let original = doc.strokes[0].group_id;
+        let before = snapshot(&doc, &HashSet::from([1, 2]));
+        let mut after = before.clone();
+        remap_duplicate_groups(&doc, &before, &mut after).unwrap();
+        assert_ne!(after[0].1.group_id, original);
+        assert_eq!(after[0].1.group_id, after[1].1.group_id);
+        let before = snapshot(&doc, &HashSet::from([1]));
+        let mut after = before.clone();
+        remap_duplicate_groups(&doc, &before, &mut after).unwrap();
+        assert_eq!(after[0].1.group_id, None);
+        assert_eq!(doc.strokes[0].group_id, original);
+    }
+    #[test]
+    fn shift_selection_and_layer_guards_keep_groups_coherent() {
+        let mut doc = sample();
+        let ids = HashSet::from([1, 2]);
+        group_selected(&doc, &ids).unwrap().apply(&mut doc, true);
+        let mut selected = HashSet::from([1]);
+        toggle_selection(&mut selected, &ids, true);
+        assert_eq!(selected, ids);
+        toggle_selection(&mut selected, &ids, true);
+        assert!(selected.is_empty());
+        assert!(group_selected(&doc, &HashSet::from([1, 3])).is_err());
+        layer_edit(&doc, LayerAction::Add("Other".into()))
+            .unwrap()
+            .apply(&mut doc, true);
+        assert!(layer_edit(&doc, LayerAction::MoveSelection(HashSet::from([1]), 2)).is_err());
+        layer_edit(&doc, LayerAction::MoveSelection(ids.clone(), 2))
+            .unwrap()
+            .apply(&mut doc, true);
+        assert_eq!(doc.strokes[0].layer_id, 2);
+        assert_eq!(doc.strokes[1].layer_id, 2);
+        doc.layers[1].locked = true;
+        assert!(ungroup_selected(&doc, &ids).is_err());
+        assert!(group_selected(&doc, &ids).is_err());
+    }
+}
+
+#[cfg(test)]
+mod large_group_tests {
+    use super::*;
+    use crate::document::{Brush, Point};
+    #[test]
+    fn large_group_regroup_copy_and_move_preserve_membership() {
+        let mut doc = Document {
+            strokes: (1..=10000)
+                .map(|id| Stroke {
+                    id,
+                    group_id: Some(1 + (id - 1) / 10),
+                    layer_id: 1,
+                    color: [0.5; 3],
+                    radius: 0.02,
+                    brush: Brush::default(),
+                    points: vec![Point {
+                        position: Vec3::X,
+                        pressure: 0.8,
+                        tilt: None,
+                    }],
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let ids: HashSet<_> = doc.strokes.iter().map(|s| s.id).collect();
+        group_selected(&doc, &ids).unwrap().apply(&mut doc, true);
+        let original = doc.strokes[0].group_id.unwrap();
+        assert!(doc.strokes.iter().all(|s| s.group_id == Some(original)));
+        let before = snapshot(&doc, &ids);
+        let mut after = before.clone();
+        remap_duplicate_groups(&doc, &before, &mut after).unwrap();
+        let copied = after[0].1.group_id;
+        assert_ne!(copied, Some(original));
+        assert!(after.iter().all(|(_, s)| s.group_id == copied));
+        layer_edit(&doc, LayerAction::Add("Target".into()))
+            .unwrap()
+            .apply(&mut doc, true);
+        layer_edit(&doc, LayerAction::MoveSelection(ids, 2))
+            .unwrap()
+            .apply(&mut doc, true);
+        assert_eq!(doc.strokes.len(), 10000);
+        assert!(doc
+            .strokes
+            .iter()
+            .all(|s| s.layer_id == 2 && s.group_id == Some(original)));
     }
 }
