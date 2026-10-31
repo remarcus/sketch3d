@@ -17,27 +17,69 @@ pub fn srgb_to_linear(c: f32) -> f32 {
         ((c + 0.055) / 1.055).powf(2.4)
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectorTab {
+    Properties,
+    Layers,
+}
+
+impl Default for InspectorTab {
+    fn default() -> Self {
+        Self::Properties
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayoutPreferences {
+    pub inspector_open: bool,
+    pub inspector_width: f32,
+    #[serde(default)]
+    pub inspector_tab: InspectorTab,
+}
+
+impl Default for LayoutPreferences {
+    fn default() -> Self {
+        Self {
+            inspector_open: true,
+            inspector_width: 320.0,
+            inspector_tab: InspectorTab::Properties,
+        }
+    }
+}
+
+impl LayoutPreferences {
+    fn valid(&self) -> bool {
+        self.inspector_width.is_finite() && (260.0..=720.0).contains(&self.inspector_width)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Preferences {
     pub version: u32,
     pub background: [f32; 3],
+    #[serde(default)]
+    pub layout: LayoutPreferences,
 }
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             background: [0.018, 0.029, 0.046].map(linear_to_srgb),
+            layout: LayoutPreferences::default(),
         }
     }
 }
 impl Preferences {
     fn valid(&self) -> bool {
-        self.version == 1
+        (self.version == 1 || self.version == 2)
             && self
                 .background
                 .iter()
                 .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+            && self.layout.valid()
     }
     pub fn load(path: &Path) -> Result<Self, String> {
         let file = match std::fs::File::open(path) {
@@ -48,10 +90,13 @@ impl Preferences {
         if file.metadata().map_err(|e| e.to_string())?.len() > 16_384 {
             return Err("Presentation preferences exceed the size limit".into());
         }
-        let prefs: Self = serde_json::from_reader(file).map_err(|e| e.to_string())?;
+        let mut prefs: Self = serde_json::from_reader(file).map_err(|e| e.to_string())?;
         if !prefs.valid() {
             return Err("Unsupported or invalid presentation preferences".into());
         }
+        // Version 1 stored only the background; missing layout fields use the
+        // new defaults and are written as version 2 on the next preference change.
+        prefs.version = 2;
         Ok(prefs)
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -110,6 +155,48 @@ mod tests {
         }
         .save(&path)
         .is_err());
+    }
+
+    #[test]
+    fn version_one_preferences_migrate_to_default_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presentation.json");
+        std::fs::write(&path, br#"{"version":1,"background":[0.1,0.2,0.3]}"#).unwrap();
+        let prefs = Preferences::load(&path).unwrap();
+        assert_eq!(prefs.version, 2);
+        assert_eq!(prefs.background, [0.1, 0.2, 0.3]);
+        assert_eq!(prefs.layout, LayoutPreferences::default());
+    }
+
+    #[test]
+    fn workspace_layout_roundtrips_open_width_and_inspector_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presentation.json");
+        let prefs = Preferences {
+            layout: LayoutPreferences {
+                inspector_open: false,
+                inspector_width: 410.0,
+                inspector_tab: InspectorTab::Layers,
+            },
+            ..Default::default()
+        };
+        prefs.save(&path).unwrap();
+        assert_eq!(Preferences::load(&path).unwrap(), prefs);
+    }
+
+    #[test]
+    fn invalid_layout_preferences_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presentation.json");
+        let mut prefs = Preferences::default();
+        prefs.layout.inspector_width = f32::NAN;
+        assert!(prefs.save(&path).is_err());
+        std::fs::write(
+            &path,
+            br#"{"version":2,"background":[0.1,0.2,0.3],"layout":{"inspector_open":true,"inspector_width":80.0,"inspector_tab":"properties"}}"#,
+        )
+        .unwrap();
+        assert!(Preferences::load(&path).is_err());
     }
     #[test]
     fn srgb_conversion_preserves_picker_values_and_original_clear_color() {

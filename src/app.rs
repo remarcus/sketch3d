@@ -163,6 +163,7 @@ pub struct SketchApp {
     pending: Option<Pending>,
     confirm: bool,
     show_help: bool,
+    show_diagnostics: bool,
     frame_ms: f32,
     verification_frame: Option<u32>,
     brush_verification_frame: Option<u32>,
@@ -289,6 +290,7 @@ impl SketchApp {
             pending: None,
             confirm: false,
             show_help: false,
+            show_diagnostics: false,
             frame_ms: 0.0,
             verification_frame: std::env::args().any(|a| a == "--verify").then_some(0),
             brush_verification_frame: None,
@@ -805,73 +807,138 @@ impl SketchApp {
         }
         self.status = "Demo scene. New starts a blank drawing.".into();
     }
-    fn tools(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-        ui.label(
-            RichText::new("WORKSPACE")
-                .small()
-                .color(Color32::from_gray(140)),
-        );
-        ui.heading("Draw in space");
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .selectable_label(
-                    !self.eraser && !self.select_mode && !self.fills.enabled && !self.line.enabled,
-                    "Brush [B]",
-                )
-                .clicked()
-            {
+    fn choose_tool(&mut self, tool: &str) {
+        match tool {
+            "Brush" => {
                 self.finish();
                 self.cancel_line_tool();
                 self.cancel_fill_tool();
                 self.eraser = false;
                 self.select_mode = false;
             }
-            if ui
-                .selectable_label(self.eraser && !self.select_mode, "Erase [E]")
-                .clicked()
-            {
+            "Erase" => {
                 self.finish();
                 self.cancel_line_tool();
                 self.cancel_fill_tool();
                 self.eraser = true;
                 self.select_mode = false;
             }
-            if ui
-                .selectable_label(self.select_mode, "Select [V]")
-                .clicked()
-            {
+            "Select" => {
                 self.finish();
                 self.cancel_line_tool();
                 self.cancel_fill_tool();
                 self.eraser = false;
                 self.select_mode = true;
             }
+            "Fill" => {
+                self.finish();
+                self.cancel_line_tool();
+                self.fills.enabled = true;
+                self.eraser = false;
+                self.select_mode = false;
+            }
+            "Line" => self.start_line_tool(),
+            _ => {}
+        }
+    }
+
+    fn tool_rail(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new("TOOLS")
+                .small()
+                .color(Color32::from_gray(140)),
+        );
+        for (tool, label, selected) in [
+            (
+                "Brush",
+                "Brush [B]",
+                !self.eraser && !self.select_mode && !self.fills.enabled && !self.line.enabled,
+            ),
+            ("Line", "Line [L]", self.line.enabled && !self.select_mode),
+            ("Fill", "Fill [P]", self.fills.enabled && !self.select_mode),
+            ("Erase", "Erase [E]", self.eraser && !self.select_mode),
+            ("Select", "Select [V]", self.select_mode),
+        ] {
+            if ui
+                .add_sized(
+                    [ui.available_width(), 38.0],
+                    egui::Button::new(label).selected(selected),
+                )
+                .clicked()
+            {
+                self.choose_tool(tool);
+            }
+        }
+        ui.add_space(8.0);
+        if ui.button("Artwork [Tab]").clicked() {
+            self.toggle_artwork();
+        }
+    }
+
+    fn contextual_options(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if self.select_mode {
+                ui.label(RichText::new("Select").strong());
+                for (mode, label) in [
+                    (Mode::Move, "Move"),
+                    (Mode::Rotate, "Rotate"),
+                    (Mode::Scale, "Scale"),
+                ] {
+                    if ui
+                        .selectable_value(&mut self.transform_mode, mode, label)
+                        .changed()
+                    {
+                        self.finish();
+                    }
+                }
+                ui.separator();
+                ui.label(format!("{} selected", self.selected.len()));
+            } else if self.fills.enabled {
+                ui.label(RichText::new("Planar fill").strong());
+                ui.label("Click enclosed regions on the active plane");
+            } else if self.line.enabled {
+                ui.label(RichText::new("Straight line").strong());
+                ui.label("Drag from start to end; release to commit");
+            } else {
+                ui.label(RichText::new(if self.eraser { "Eraser" } else { "Brush" }).strong());
+                if !self.eraser {
+                    ui_style::slider_row(
+                        ui,
+                        "Radius",
+                        "workspace-radius",
+                        &mut self.radius,
+                        0.001..=1.0,
+                        1.0,
+                        "wu",
+                    );
+                    ui_style::slider_row(
+                        ui,
+                        "Stabilize",
+                        "workspace-stabilization",
+                        &mut self.stabilization,
+                        0.0..=1.0,
+                        100.0,
+                        "%",
+                    );
+                    ui_style::field_row(ui, "Color", |ui| {
+                        ui.color_edit_button_rgb(&mut self.color)
+                            .on_hover_text("Brush color")
+                    });
+                } else {
+                    ui.label("Erase whole strokes");
+                }
+            }
         });
-        if ui
-            .selectable_label(self.fills.enabled && !self.select_mode, "Planar fill [P]")
-            .clicked()
-        {
-            self.finish();
-            self.cancel_line_tool();
-            self.fills.enabled = true;
-            self.eraser = false;
-            self.select_mode = false;
-        }
-        if ui
-            .selectable_label(self.line.enabled && !self.select_mode, "Straight line [L]")
-            .clicked()
-        {
-            self.start_line_tool();
-        }
+    }
+
+    fn properties(&mut self, ui: &mut egui::Ui) {
         self.line_controls(ui);
         self.fill_controls(ui);
         ui.add_space(6.0);
         if self.select_mode {
             self.group_controls(ui);
         }
-        self.tutorial_hint(ui, "Drawing layers");
-        self.layer_controls(ui);
         match self.palette_ui.controls(ui, &mut self.color) {
             palette_ui::PaletteAction::StartSampling => self.start_color_sampling(),
             palette_ui::PaletteAction::CancelSampling => self.cancel_color_sampling(),
@@ -1053,6 +1120,247 @@ impl SketchApp {
         ui.label("RECOVERY");
         ui.label(&self.recovery.notice);
     }
+
+    fn menu_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.menu_button("File", |ui| {
+            if ui.button("New drawing…   Ctrl+N").clicked() {
+                ui.close_menu();
+                self.request(Pending::New);
+            }
+            if ui.button("Open…   Ctrl+O").clicked() {
+                ui.close_menu();
+                self.request(Pending::Open);
+            }
+            ui.separator();
+            if ui.button("Save   Ctrl+S").clicked() {
+                ui.close_menu();
+                self.save(false);
+            }
+            if ui.button("Save as…   Ctrl+Shift+S").clicked() {
+                ui.close_menu();
+                self.save(true);
+            }
+            ui.menu_button("Export", |ui| {
+                if ui.button("Whole drawing (.glb)").clicked() {
+                    ui.close_menu();
+                    self.export_dialog(false, ctx);
+                }
+                if ui
+                    .add_enabled(
+                        self.can_export(true),
+                        egui::Button::new("Selected strokes (.glb)"),
+                    )
+                    .clicked()
+                {
+                    ui.close_menu();
+                    self.export_dialog(true, ctx);
+                }
+                if ui
+                    .add_enabled(
+                        self.can_export_png(),
+                        egui::Button::new("Artwork image (.png)…"),
+                    )
+                    .clicked()
+                {
+                    ui.close_menu();
+                    self.png_export.begin();
+                }
+            });
+            ui.menu_button("Examples", |ui| {
+                for (label, pending) in [
+                    ("Japanese garden house", Pending::House),
+                    ("Cylindrical lantern", Pending::Lantern),
+                    ("Brush sampler", Pending::Brushes),
+                    ("Pressure and dynamics", Pending::Dynamics),
+                    ("Textured brush study", Pending::Textures),
+                    ("Revolved vase", Pending::Vase),
+                ] {
+                    if ui.button(label).clicked() {
+                        ui.close_menu();
+                        self.request(pending);
+                    }
+                }
+            });
+        });
+
+        ui.menu_button("Edit", |ui| {
+            if ui
+                .add_enabled(
+                    !self.undo.is_empty() || self.active.is_some() || self.drag.is_some(),
+                    egui::Button::new("Undo   Ctrl+Z"),
+                )
+                .clicked()
+            {
+                ui.close_menu();
+                self.undo();
+            }
+            if ui
+                .add_enabled(
+                    !self.redo.is_empty(),
+                    egui::Button::new("Redo   Ctrl+Shift+Z"),
+                )
+                .clicked()
+            {
+                ui.close_menu();
+                self.redo();
+            }
+        });
+
+        ui.menu_button("View", |ui| {
+            if ui.button("Camera and guide controls").clicked() {
+                ui.close_menu();
+                self.finish();
+                self.show_view = !self.show_view;
+            }
+            if ui.button("Artwork-only view   Tab").clicked() {
+                ui.close_menu();
+                self.toggle_artwork();
+            }
+            if ui.button("Pick a drawing plane   K").clicked() {
+                ui.close_menu();
+                self.begin_placement();
+            }
+            if ui.button("Scene lighting and ground").clicked() {
+                ui.close_menu();
+                self.finish();
+                self.show_scene = !self.show_scene;
+            }
+            ui.separator();
+            if ui
+                .button(if self.presentation.preferences.layout.inspector_open {
+                    "Hide inspector"
+                } else {
+                    "Show inspector"
+                })
+                .clicked()
+            {
+                ui.close_menu();
+                let open = !self.presentation.preferences.layout.inspector_open;
+                self.set_inspector_open(open);
+            }
+            if ui.button("Reset workspace layout").clicked() {
+                ui.close_menu();
+                self.presentation.reset_layout();
+            }
+            if ui.button("Reset camera").clicked() {
+                ui.close_menu();
+                self.finish();
+                self.camera = Camera::default();
+            }
+        });
+
+        ui.menu_button("Help", |ui| {
+            if ui.button("Drawing guide and shortcuts").clicked() {
+                ui.close_menu();
+                self.finish();
+                self.show_help = true;
+            }
+            if ui.button("Start guided practice").clicked() {
+                ui.close_menu();
+                self.request(Pending::TutorialStart);
+            }
+            if ui.button("Pen diagnostics").clicked() {
+                ui.close_menu();
+                self.show_diagnostics = true;
+            }
+        });
+
+        ui.separator();
+        ui.label(
+            RichText::new("SPATIAL / SKETCH")
+                .strong()
+                .color(Color32::from_rgb(99, 229, 207)),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(if self.dirty {
+                "Unsaved changes"
+            } else {
+                "Saved / blank"
+            });
+            if self.export_job.is_some() || self.png_export.is_running() {
+                ui.spinner();
+            }
+        });
+    }
+
+    fn inspector(&mut self, ctx: &egui::Context, enabled: bool) {
+        if !self.presentation.preferences.layout.inspector_open || self.presentation.artwork {
+            return;
+        }
+        let width = self.presentation.preferences.layout.inspector_width;
+        let panel = egui::SidePanel::right("inspector")
+            .resizable(true)
+            .default_width(width)
+            .min_width(260.0)
+            .max_width(650.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let properties_changed = ui
+                        .selectable_value(
+                            &mut self.presentation.preferences.layout.inspector_tab,
+                            crate::presentation::InspectorTab::Properties,
+                            "Properties",
+                        )
+                        .changed();
+                    let layers_changed = ui
+                        .selectable_value(
+                            &mut self.presentation.preferences.layout.inspector_tab,
+                            crate::presentation::InspectorTab::Layers,
+                            "Layers",
+                        )
+                        .changed();
+                    if properties_changed || layers_changed {
+                        self.presentation.schedule_layout_save();
+                    }
+                    if ui.button("Hide").on_hover_text("Hide inspector").clicked() {
+                        self.set_inspector_open(false);
+                    }
+                });
+                ui.separator();
+                if let Some(notice) = &self.presentation.notice {
+                    ui.colored_label(Color32::YELLOW, notice);
+                    ui.add_space(4.0);
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.add_enabled_ui(enabled, |ui| {
+                        match self.presentation.preferences.layout.inspector_tab {
+                            crate::presentation::InspectorTab::Properties => self.properties(ui),
+                            crate::presentation::InspectorTab::Layers => self.layer_controls(ui),
+                        }
+                    });
+                });
+            });
+        let new_width = panel.response.rect.width().clamp(260.0, 650.0);
+        if (new_width - width).abs() > 0.5 {
+            self.presentation.preferences.layout.inspector_width = new_width;
+            self.presentation.schedule_layout_save();
+        }
+    }
+
+    fn set_inspector_open(&mut self, open: bool) {
+        if !open {
+            self.finish();
+            self.cancel_line_tool();
+            self.cancel_fill_tool();
+            self.cancel_transform();
+        }
+        self.presentation.preferences.layout.inspector_open = open;
+        self.presentation.schedule_layout_save();
+    }
+
+    fn show_diagnostics_window(&mut self, ctx: &egui::Context) {
+        if self.show_diagnostics && !self.presentation.artwork {
+            let mut open = self.show_diagnostics;
+            egui::Window::new("Pen diagnostics")
+                .open(&mut open)
+                .default_width(300.0)
+                .max_height((ctx.screen_rect().height() - 80.0).max(200.0))
+                .vscroll(true)
+                .show(ctx, |ui| self.diagnostics(ui));
+            self.show_diagnostics = open;
+        }
+    }
+
     fn navigate(&mut self, delta: Vec2, pan: bool, zoom: bool, rect: Rect) {
         self.finish();
         if zoom {
@@ -1206,6 +1514,9 @@ impl SketchApp {
             let previous = self.pen_previous.replace(sample.position);
             if blocked {
                 self.finish();
+                self.mouse_down = false;
+                self.pen_previous = None;
+                self.cancel_transform();
                 continue;
             }
             if sample.phase == Phase::Up {
@@ -1255,6 +1566,9 @@ impl SketchApp {
             }
         }
         if blocked {
+            self.mouse_down = false;
+            self.pen_previous = None;
+            self.cancel_transform();
             return;
         }
         let native_recent = self
@@ -1337,6 +1651,7 @@ impl SketchApp {
 impl eframe::App for SketchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let start = Instant::now();
+        self.presentation.poll_layout_save();
         self.poll_recovery(ctx);
         self.ensure_workspace();
         self.poll_export(ctx);
@@ -1474,167 +1789,18 @@ impl eframe::App for SketchApp {
         }
         self.ensure_workspace();
         if !self.presentation.artwork {
-            egui::TopBottomPanel::top("header").show(ctx, |ui| {
-                ui.add_space(7.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("SPATIAL / SKETCH")
-                            .strong()
-                            .size(20.0)
-                            .color(Color32::from_rgb(99, 229, 207)),
-                    );
-                    ui.label(
-                        RichText::new("0.1  /  RUST PROTOTYPE")
-                            .small()
-                            .color(Color32::from_gray(140)),
-                    );
-                    ui.separator();
-                    let enabled = !self.confirm
-                        && !self.recovery_prompt
-                        && !self.close_after_recovery
-                        && !self.tutorial.offer
-                        && !self.placement.active;
-                    if ui.add_enabled(enabled, egui::Button::new("View")).clicked() {
-                        self.finish();
-                        self.show_view = !self.show_view;
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Artwork [Tab]"))
-                        .clicked()
-                    {
-                        self.toggle_artwork();
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Pick plane [K]"))
-                        .clicked()
-                    {
-                        self.begin_placement();
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Scene"))
-                        .clicked()
-                    {
-                        self.finish();
-                        self.show_scene = !self.show_scene;
-                    }
-                    if ui.add_enabled(enabled, egui::Button::new("Help")).clicked() {
-                        self.finish();
-                        self.show_help = true;
-                    }
-                    if ui.add_enabled(enabled, egui::Button::new("New")).clicked() {
-                        self.request(Pending::New);
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("House"))
-                        .on_hover_text("Open the editable Japanese garden house sample")
-                        .clicked()
-                    {
-                        self.request(Pending::House);
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Lantern"))
-                        .on_hover_text("Open the editable cylindrical drawing-guide example")
-                        .clicked()
-                    {
-                        self.request(Pending::Lantern);
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Brushes"))
-                        .on_hover_text("Open the editable brush sampler")
-                        .clicked()
-                    {
-                        self.request(Pending::Brushes);
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Dynamics"))
-                        .on_hover_text("Open the editable pressure, tilt, and taper study")
-                        .clicked()
-                    {
-                        self.request(Pending::Dynamics);
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Textures"))
-                        .on_hover_text("Open the editable texture study")
-                        .clicked()
-                    {
-                        self.request(Pending::Textures);
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Vase"))
-                        .on_hover_text("Editable revolved-surface painting study")
-                        .clicked()
-                    {
-                        self.request(Pending::Vase);
-                    }
-                    if ui.add_enabled(enabled, egui::Button::new("Open")).clicked() {
-                        self.request(Pending::Open);
-                    }
-                    if ui.add_enabled(enabled, egui::Button::new("Save")).clicked() {
-                        self.save(false);
-                    }
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Save as"))
-                        .clicked()
-                    {
-                        self.save(true);
-                    }
-                    ui.add_enabled_ui(self.can_export(false) || self.can_export_png(), |ui| {
-                        ui.menu_button("Export", |ui| {
-                            if ui.button("Whole drawing (.glb)").clicked() {
-                                ui.close_menu();
-                                self.export_dialog(false, ctx);
-                            }
-                            if ui
-                                .add_enabled(
-                                    self.can_export(true),
-                                    egui::Button::new("Selected strokes (.glb)"),
-                                )
-                                .clicked()
-                            {
-                                ui.close_menu();
-                                self.export_dialog(true, ctx);
-                            }
-                            if ui
-                                .add_enabled(
-                                    self.can_export_png(),
-                                    egui::Button::new("Artwork image (.png)…"),
-                                )
-                                .clicked()
-                            {
-                                ui.close_menu();
-                                self.png_export.begin();
-                            }
-                        });
-                    });
-                    if self.export_job.is_some() || self.png_export.is_running() {
-                        ui.spinner();
-                    }
-                    ui.separator();
-                    if ui
-                        .add_enabled(
-                            enabled
-                                && (!self.undo.is_empty()
-                                    || self.active.is_some()
-                                    || self.drag.is_some()),
-                            egui::Button::new("Undo"),
-                        )
-                        .clicked()
-                    {
-                        self.undo();
-                    }
-                    if ui
-                        .add_enabled(enabled && !self.redo.is_empty(), egui::Button::new("Redo"))
-                        .clicked()
-                    {
-                        self.redo();
-                    }
-                    ui.label(if self.dirty {
-                        "Unsaved changes"
-                    } else {
-                        "Saved / blank"
-                    });
+            let enabled = !self.confirm
+                && !self.recovery_prompt
+                && !self.close_after_recovery
+                && !self.tutorial.offer
+                && !self.placement.active;
+            egui::TopBottomPanel::top("menu-bar").show(ctx, |ui| {
+                ui.add_enabled_ui(enabled, |ui| {
+                    egui::menu::bar(ui, |ui| self.menu_bar(ui, ctx));
                 });
-                ui.add_space(7.0);
+            });
+            egui::TopBottomPanel::top("context-options").show(ctx, |ui| {
+                ui.add_enabled_ui(enabled, |ui| self.contextual_options(ui));
             });
             egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -1652,29 +1818,19 @@ impl eframe::App for SketchApp {
                     }
                     ui.label(&self.status);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Pen diagnostics").clicked() {
+                            self.show_diagnostics = true;
+                        }
                         ui.label(self.active_guide_label());
                     });
                 });
             });
-            egui::SidePanel::left("tools")
-                .exact_width(240.0)
+            egui::SidePanel::left("tool-rail")
+                .exact_width(116.0)
                 .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.add_enabled_ui(
-                            !self.confirm
-                                && !self.recovery_prompt
-                                && !self.close_after_recovery
-                                && !self.tutorial.offer
-                                && !self.placement.active,
-                            |ui| self.tools(ui),
-                        );
-                    });
+                    ui.add_enabled_ui(enabled, |ui| self.tool_rail(ui));
                 });
-            egui::SidePanel::right("diagnostics")
-                .exact_width(245.0)
-                .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.diagnostics(ui));
-                });
+            self.inspector(ctx, enabled);
         } else {
             self.artwork_bar(ctx);
         }
@@ -1841,6 +1997,7 @@ impl eframe::App for SketchApp {
                 });
         }
         self.show_view(ctx);
+        self.show_diagnostics_window(ctx);
         self.show_placement(ctx);
         self.show_lighting(ctx);
         self.show_tutorial(ctx);

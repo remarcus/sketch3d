@@ -1,11 +1,14 @@
 use super::*;
 use crate::presentation::{self, Preferences};
+use std::time::{Duration, Instant};
 pub(super) struct PresentationUi {
     pub preferences: Preferences,
     pub artwork: bool,
     path: Result<PathBuf, String>,
     pub notice: Option<String>,
     pub verification_frame: Option<u32>,
+    layout_save_due: Option<Instant>,
+    remembered_background: [f32; 3],
 }
 impl PresentationUi {
     pub fn new() -> Self {
@@ -29,15 +32,21 @@ impl PresentationUi {
             .as_ref()
             .err()
             .map(|e| format!("Presentation preferences: {e}"));
+        let preferences = loaded.unwrap_or_default();
+        let remembered_background = preferences.background;
         Self {
-            preferences: loaded.unwrap_or_default(),
+            preferences,
             artwork: false,
             path,
             notice,
             verification_frame: own_verify.then_some(0),
+            layout_save_due: None,
+            remembered_background,
         }
     }
     pub fn remember(&mut self) {
+        self.preferences.version = 2;
+        self.remembered_background = self.preferences.background;
         self.notice = Some(
             match self
                 .path
@@ -46,11 +55,40 @@ impl PresentationUi {
                 .and_then(|p| self.preferences.save(p))
             {
                 Ok(()) => {
-                    "Startup background remembered. Artwork-only mode always starts off.".into()
+                    "Workspace preferences saved. Artwork-only mode always starts off.".into()
                 }
                 Err(e) => format!("Cannot save background preference: {e}"),
             },
         );
+    }
+    pub fn schedule_layout_save(&mut self) {
+        self.layout_save_due = Some(Instant::now() + Duration::from_millis(350));
+    }
+    pub fn poll_layout_save(&mut self) {
+        if self
+            .layout_save_due
+            .is_some_and(|due| Instant::now() >= due)
+        {
+            self.layout_save_due = None;
+            self.preferences.version = 2;
+            let mut persisted = self.preferences.clone();
+            persisted.background = self.remembered_background;
+            self.notice = Some(
+                match self
+                    .path
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|path| persisted.save(path))
+                {
+                    Ok(()) => "Workspace layout saved.".into(),
+                    Err(error) => format!("Cannot save workspace layout: {error}"),
+                },
+            );
+        }
+    }
+    pub fn reset_layout(&mut self) {
+        self.preferences.layout = crate::presentation::LayoutPreferences::default();
+        self.schedule_layout_save();
     }
     pub fn controls(&mut self, ui: &mut egui::Ui) -> bool {
         let before = self.preferences.background;
