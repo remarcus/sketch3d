@@ -1,38 +1,43 @@
+use super::ui_style;
 use super::*;
 use crate::{editing, export_check, geometry, gizmo};
 
 impl SketchApp {
     pub(super) fn brush_controls(&mut self, ui: &mut egui::Ui) {
-        ui.label("BRUSH SHAPE");
         let before = self.brush;
-        ui.horizontal_wrapped(|ui| {
-            for (kind, label) in [
-                (BrushKind::Round, "Round"),
-                (BrushKind::Ribbon, "Ribbon"),
-                (BrushKind::Chisel, "Flat / chisel"),
-            ] {
-                ui.selectable_value(&mut self.brush.kind, kind, label);
-            }
+        ui_style::section(ui, "Brush shape");
+        ui_style::field_row(ui, "Shape", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (kind, label) in [
+                    (BrushKind::Round, "Round"),
+                    (BrushKind::Ribbon, "Ribbon"),
+                    (BrushKind::Chisel, "Flat / chisel"),
+                ] {
+                    ui.selectable_value(&mut self.brush.kind, kind, label);
+                }
+            });
         });
         if self.brush.kind == BrushKind::Chisel && before.kind != BrushKind::Chisel {
             self.brush.softness = 0.0;
         }
         if self.brush.kind != BrushKind::Round {
-            ui.add(
-                egui::Slider::new(&mut self.brush.angle_degrees, -180.0..=180.0).text("Angle °"),
-            );
+            ui_style::field_row(ui, "Angle", |ui| {
+                ui.add(egui::Slider::new(&mut self.brush.angle_degrees, -180.0..=180.0).suffix("°"))
+            });
             if self.brush.kind == BrushKind::Chisel {
-                ui.add(
-                    egui::Slider::new(&mut self.brush.thickness, 0.02..=1.0)
-                        .text("Thickness")
-                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                )
+                ui_style::field_row(ui, "Thickness", |ui| {
+                    ui.add(
+                        egui::Slider::new(&mut self.brush.thickness, 0.02..=1.0)
+                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                    )
+                })
                 .on_hover_text("Thickness as a percentage of brush width.");
             }
             ui.small("Orientation starts from the guide, then follows the stroke. Orbit to view it from either side.");
         }
         self.texture_controls(ui);
         self.dynamics_controls(ui);
+        ui_style::component_showcase(ui);
         if self.brush != before {
             self.finish();
         }

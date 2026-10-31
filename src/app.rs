@@ -59,6 +59,8 @@ mod selection;
 mod starter;
 #[path = "tutorial_ui.rs"]
 mod tutorial_ui;
+#[path = "ui_style.rs"]
+mod ui_style;
 #[path = "views.rs"]
 mod views;
 use std::{
@@ -179,15 +181,7 @@ pub struct SketchApp {
 }
 impl SketchApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        cc.egui_ctx.set_theme(egui::Theme::Dark);
-        let mut style = (*cc.egui_ctx.style()).clone();
-        style.visuals = egui::Visuals::dark();
-        style.visuals.panel_fill = Color32::from_rgb(20, 27, 37);
-        style.visuals.window_fill = Color32::from_rgb(25, 34, 46);
-        style.visuals.selection.bg_fill = Color32::from_rgb(27, 105, 111);
-        style.visuals.widgets.active.bg_fill = Color32::from_rgb(32, 124, 132);
-        style.spacing.item_spacing = egui::vec2(10.0, 10.0);
-        cc.egui_ctx.set_style(style);
+        ui_style::apply(&cc.egui_ctx);
         let (pen, input_status) = match PenInput::install(cc) {
             Ok(p) => (Some(p), "Windows Ink listener ready".into()),
             Err(e) => (None, e),
