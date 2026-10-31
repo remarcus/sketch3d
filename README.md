@@ -98,7 +98,7 @@ The immediate hardware test is pressure and tilt on the Wacom, followed by the K
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
-Next planned work is scene lighting and ground shadows (SKETCH-017). Standalone benchmarks and hardware validation follow feature work. Soft/transparent brushes follow separately; brush-library importing remains deferred.
+Next planned work is filled planar shapes and outline layering (SKETCH-018). Standalone benchmarks and hardware validation follow feature work. Soft/transparent brushes follow separately; brush-library importing remains deferred.
 
 ## License
 
@@ -318,10 +318,21 @@ On first launch, a welcome panel offers **Start practice** or **Skip**. Nine opt
 
 The offer normally appears once after starting or skipping. **Offer tutorial on every startup** remembers a recurring offer. **Help → Start / replay tutorial** opens it again, and Help also provides the startup preference and shortcuts. Startup recovery decisions appear before the tutorial.
 
-Practice uses a separate blank drawing and edit history. Your original document, native path, dirty state, selection, history, camera, guides, and brush settings stay in memory and return on exit. The normal unsaved-change prompt appears before entering, leaving unsaved practice, or closing. Closing from practice first handles practice, then any unsaved original drawing. New/Open/sample and recovery switches require leaving practice first.
+Practice uses a separate blank drawing and edit history. Your original document, native path, dirty state, selection, history, camera, guides, lighting, and brush settings stay in memory and return on exit. The normal unsaved-change prompt appears before entering, leaving unsaved practice, or closing. Closing from practice first handles practice, then any unsaved original drawing. New/Open/sample and recovery switches require leaving practice first.
 
 Autosave continues protecting the suspended original. **Practice itself has no automatic recovery**; use Save as to keep it deliberately, or GLB Export for practice meshes. Saving practice does not clear the original's recovery protection or change its file. Personal brush-library edits remain real library edits, as stated in the lesson.
 
 Preferences are stored separately from native drawings in `%LOCALAPPDATA%/SpatialSketch/onboarding.json` on Windows (beside the brush library on other platforms). Missing preferences offer first-launch onboarding; invalid, oversized, or newer-version preferences are left intact on load and reported in Help. An explicit preference change/start/skip can replace them with current settings. Preference save errors stay visible.
 
 Developer check: `cargo run --release -- --verify-tutorial` uses isolated workspace preferences and recovery storage. It verifies entry/exit cancellation, optional navigation, practice saving, exact original/history restoration, original recovery snapshots, close guards, and the lesson UI. Output: `verification/tutorial-preview.png` and `verification/tutorial-report.json`. Physical tablet validation remains deferred.
+## Scene lighting and ground shadows
+
+Open **Scene** in the top toolbar to adjust directional light azimuth/elevation, intensity, and ambient contribution. **Cast shadows** enables shadows on visible artwork and the optional ground. **Show ground** provides a finite XZ receiver with height, center, size, and color controls. **Fit ground & enable shadows** places it just below visible artwork, sizes it for the current light, and enables shadows. Fit again after changing the drawing or using a much lower light angle. **Reset scene lighting** restores the original lighting and disables ground/shadows.
+
+The ground is a presentation surface, not ink or a drawing guide: it cannot be picked, painted, grouped, or exported. Use the normal plane/curved guides for drawing. Hidden strokes neither receive nor cast visible shadows; locked visible strokes still do. Selection gold affects display color only, and textured brush holes also let light through.
+
+Lighting and ground are **temporary workspace settings** retained while switching drawings in the same session and reset on restart. They do not mark the document dirty, have no edit-history commands, and are excluded from native Save, recovery snapshots, and GLB export. Native document version remains 6. Tutorial practice starts with default lighting and restores the suspended original's lighting on exit. Exported meshes keep their original colors/materials; downstream applications supply their own lights and floor.
+
+The renderer uses one fixed 2048×2048 directional depth map with filtered comparisons. Its world-space fit is independent of the camera. **Bias** is in world units: raise it slightly for speckles on surfaces, lower it for detached shadows. Very thin marks in large drawings can exceed the map's resolution; changing artwork bounds or light direction can also change sampling. There are no cascaded maps, physical area-light penumbras, or guaranteed subpixel shadow detail in this pass. Shadows are off by default, preserving the existing presentation until enabled. Standalone GPU benchmarks remain deferred to SKETCH-007.
+
+Developer check: `cargo run --release -- --verify-lighting` verifies actual GPU pixels for ground darkening, masked shadow holes, selection invariance, hidden/locked rules, orbit/angle handling, and unchanged native/GLB ink. It writes `verification/lighting-report.json`, a UI preview, and house/planar/building images. Readback synchronization is used only by verification, never by normal frames.

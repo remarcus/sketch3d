@@ -9,6 +9,7 @@ mod export_check;
 mod geometry;
 mod gizmo;
 mod input;
+mod lighting;
 mod presets;
 mod presets_ui;
 mod recovery;

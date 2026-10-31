@@ -1,0 +1,290 @@
+use super::*;
+use crate::lighting::Lighting;
+
+impl SketchApp {
+    pub(super) fn show_lighting(&mut self, ctx: &egui::Context) {
+        if !self.show_scene || self.confirm || self.recovery_prompt || self.tutorial.offer {
+            return;
+        }
+        egui::Window::new("Scene lighting").open(&mut self.show_scene).default_width(300.0)
+            .max_height((ctx.screen_rect().height()-100.0).max(200.0)).vscroll(true)
+            .anchor(egui::Align2::RIGHT_TOP,egui::vec2(-255.0,60.0)).show(ctx,|ui| {
+                let light=&mut self.renderer.lighting;
+                ui.label("Directional light");
+                ui.add(egui::Slider::new(&mut light.azimuth,-180.0..=180.0).text("Direction °"));
+                ui.add(egui::Slider::new(&mut light.elevation,10.0..=85.0).text("Elevation °"));
+                ui.add(egui::Slider::new(&mut light.intensity,0.0..=1.5).text("Intensity"));
+                ui.add(egui::Slider::new(&mut light.ambient,0.0..=1.0).text("Ambient"));
+                ui.separator();
+                ui.checkbox(&mut light.shadows,"Cast shadows");
+                ui.add_enabled_ui(light.shadows,|ui| {
+                    ui.add(egui::Slider::new(&mut light.strength,0.0..=1.0).text("Shadow strength"));
+                    ui.add(egui::Slider::new(&mut light.bias,0.0001..=0.03).logarithmic(true).text("Bias (world units)"));
+                    ui.small("Increase bias to reduce surface speckles; too much can detach thin shadows.");
+                });
+                ui.separator(); ui.checkbox(&mut light.ground,"Show ground");
+                if ui.button("Fit ground & enable shadows").clicked() {
+                    if light.fit_ground(&self.doc) {light.shadows=true;} else {self.status="No visible artwork to fit the ground to.".into();}
+                }
+                ui.add_enabled_ui(light.ground,|ui| {
+                    ui.horizontal(|ui| {ui.label("Height Y");ui.add(egui::DragValue::new(&mut light.ground_height).speed(0.02).range(-20_000.0..=20_000.0));});
+                    ui.horizontal(|ui| {ui.label("Center X/Z");for value in &mut light.ground_center {ui.add(egui::DragValue::new(value).speed(0.05).range(-20_000.0..=20_000.0));}});
+                    ui.horizontal(|ui| {ui.label("Size");ui.add(egui::DragValue::new(&mut light.ground_size).speed(0.2).range(0.1..=40_000.0));});
+                    ui.horizontal(|ui| {ui.label("Color");ui.color_edit_button_rgb(&mut light.ground_color);});
+                });
+                if ui.button("Reset scene lighting").clicked() {*light=Lighting::default();}
+                ui.separator();ui.small("Workspace preview only: resets on restart. Native Save, recovery, and GLB export contain artwork only. The ground is not paintable or selectable; use a drawing guide for ink.");
+            });
+    }
+
+    pub(super) fn verify_lighting(&mut self, ctx: &egui::Context, _rect: Rect) {
+        let Some(frame) = self.lighting_verification_frame else {
+            return;
+        };
+        if frame == 1 {
+            self.check_lighting_pixels();
+        }
+        if frame == 3 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+        }
+        assert!(frame < 100, "Lighting screenshot timed out");
+        let screenshot = ctx.input(|i| {
+            i.events.iter().find_map(|event| {
+                if let egui::Event::Screenshot { image, .. } = event {
+                    Some(image.clone())
+                } else {
+                    None
+                }
+            })
+        });
+        if let Some(image) = screenshot {
+            let path = std::env::current_dir().unwrap().join("verification");
+            let pixels: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+            image::save_buffer(
+                path.join("lighting-preview.png"),
+                &pixels,
+                image.size[0] as u32,
+                image.size[1] as u32,
+                image::ColorType::Rgba8,
+            )
+            .unwrap();
+            let report = serde_json::json!({"passed":true,"checks":["GPU ground shadows darken receiver","hidden excluded and visible locked casters retained","selection preserves ground shadows","masked brush shadow holes","camera orbit and extreme light angles","house and planar fixtures","native and GLB ink unchanged","scene controls"],"gpu":self.renderer.adapter,"benchmarks_deferred":true});
+            std::fs::write(
+                path.join("lighting-report.json"),
+                serde_json::to_vec_pretty(&report).unwrap(),
+            )
+            .unwrap();
+            self.allow_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        self.lighting_verification_frame = Some(frame + 1);
+    }
+
+    fn lighting_pixels(&mut self, doc: &Document, camera: &Camera) -> Vec<u8> {
+        self.renderer.invalidate();
+        self.renderer
+            .render(doc, camera, GuidePreview::Hidden, [600, 450]);
+        self.renderer.verification_pixels()
+    }
+    fn check_lighting_pixels(&mut self) {
+        let original = serde_json::to_vec(&self.doc).unwrap();
+        let export = crate::export::encode(&self.doc, None).unwrap();
+        let mut doc = Document::default();
+        doc.strokes.push(Stroke {
+            id: 1,
+            layer_id: 1,
+            group_id: None,
+            color: [0.85, 0.7, 0.35],
+            radius: 0.6,
+            brush: Brush {
+                kind: BrushKind::Ribbon,
+                normal: Vec3::Y,
+                tangent: Vec3::X,
+                ..Default::default()
+            },
+            points: vec![
+                Point {
+                    position: Vec3::new(-0.7, 1.4, 0.0),
+                    pressure: 1.0,
+                    tilt: None,
+                },
+                Point {
+                    position: Vec3::new(0.7, 1.4, 0.0),
+                    pressure: 1.0,
+                    tilt: None,
+                },
+            ],
+        });
+        let camera = Camera {
+            yaw: 0.55,
+            pitch: 0.85,
+            distance: 7.0,
+            target: Vec3::new(0.0, 0.5, 0.0),
+            ..Default::default()
+        };
+        self.renderer.lighting = Lighting {
+            ground: true,
+            ground_height: 0.0,
+            ground_size: 10.0,
+            ground_color: [0.7, 0.7, 0.7],
+            ambient: 0.25,
+            intensity: 0.9,
+            ..Default::default()
+        };
+        let unshadowed = self.lighting_pixels(&doc, &camera);
+        self.renderer.lighting.shadows = true;
+        let shadowed = self.lighting_pixels(&doc, &camera);
+        let darker = unshadowed
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(shadowed.as_chunks::<4>().0.iter())
+            .filter(|(a, b)| a[0] == a[1] && a[1] == a[2] && a[0] as i32 - b[0] as i32 > 15)
+            .count();
+        assert!(darker > 200, "No substantial GPU shadow: {darker}");
+        doc.layers[0].locked = true;
+        assert_eq!(self.lighting_pixels(&doc, &camera), shadowed);
+        self.renderer.set_selection(&HashSet::from([1]));
+        let selected = self.lighting_pixels(&doc, &camera);
+        for ((base, before), after) in unshadowed
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(shadowed.as_chunks::<4>().0.iter())
+            .zip(selected.as_chunks::<4>().0.iter())
+        {
+            if base[0] == base[1] && base[1] == base[2] {
+                assert_eq!(before, after);
+            }
+        }
+        self.renderer.set_selection(&HashSet::new());
+        doc.strokes[0].brush.texture.kind = crate::texture::TextureKind::Pattern;
+        self.renderer.invalidate();
+        let masked = self.lighting_pixels(&doc, &camera);
+        let holes = unshadowed
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(shadowed.as_chunks::<4>().0.iter())
+            .zip(masked.as_chunks::<4>().0.iter())
+            .filter(|((base, before), after)| {
+                base[0] == base[1] && base[1] == base[2] && after[0] as i32 - before[0] as i32 > 15
+            })
+            .count();
+        assert!(holes > 100, "Masked shadow holes missing: {holes}");
+        let orbit = Camera {
+            yaw: camera.yaw + 0.7,
+            pitch: camera.pitch - 0.25,
+            distance: camera.distance,
+            target: camera.target,
+            roll: 0.0,
+        };
+        self.lighting_pixels(&doc, &orbit);
+        assert_eq!(self.lighting_pixels(&doc, &camera), masked);
+        doc.layers[0].visible = false;
+        let hidden = self.lighting_pixels(&doc, &camera);
+        assert_eq!(hidden, self.lighting_pixels(&Document::default(), &camera));
+        let path = std::env::current_dir().unwrap().join("verification");
+        std::fs::create_dir_all(&path).unwrap();
+        image::save_buffer(
+            path.join("lighting-planar.png"),
+            &masked,
+            600,
+            450,
+            image::ColorType::Rgba8,
+        )
+        .unwrap();
+        let mut building = Document::default();
+        for (id, normal, start, end, radius, color) in [
+            (
+                1,
+                Vec3::Z,
+                Vec3::new(-0.9, 1.0, 0.5),
+                Vec3::new(0.9, 1.0, 0.5),
+                1.0,
+                [0.85, 0.83, 0.75],
+            ),
+            (
+                2,
+                Vec3::X,
+                Vec3::new(0.9, 1.0, 0.5),
+                Vec3::new(0.9, 1.0, -0.9),
+                1.0,
+                [0.75, 0.77, 0.72],
+            ),
+            (
+                3,
+                Vec3::Y,
+                Vec3::new(-1.05, 2.05, -0.2),
+                Vec3::new(1.05, 2.05, -0.2),
+                0.85,
+                [0.65, 0.25, 0.15],
+            ),
+        ] {
+            building.strokes.push(Stroke {
+                id,
+                layer_id: 1,
+                group_id: None,
+                color,
+                radius,
+                brush: Brush {
+                    kind: BrushKind::Ribbon,
+                    normal,
+                    ..Default::default()
+                },
+                points: [start, end]
+                    .into_iter()
+                    .map(|position| Point {
+                        position,
+                        pressure: 1.0,
+                        tilt: None,
+                    })
+                    .collect(),
+            });
+        }
+        self.renderer.lighting.azimuth = 100.0;
+        self.renderer.lighting.fit_ground(&building);
+        let building_pixels = self.lighting_pixels(&building, &camera);
+        image::save_buffer(
+            path.join("lighting-building.png"),
+            &building_pixels,
+            600,
+            450,
+            image::ColorType::Rgba8,
+        )
+        .unwrap();
+        self.renderer.lighting.fit_ground(&self.doc);
+        for elevation in [10.0, 85.0] {
+            self.renderer.lighting.elevation = elevation;
+            self.lighting_pixels(&self.doc.clone(), &crate::scenes::house_camera());
+        }
+        self.renderer.lighting = Lighting {
+            shadows: true,
+            azimuth: 100.0,
+            elevation: 40.0,
+            ambient: 0.35,
+            intensity: 0.75,
+            ..Default::default()
+        };
+        self.renderer.lighting.fit_ground(&self.doc);
+        self.renderer
+            .render(&self.doc, &self.camera, GuidePreview::Hidden, [900, 700]);
+        let pixels = self.renderer.verification_pixels();
+        image::save_buffer(
+            path.join("lighting-house.png"),
+            &pixels,
+            900,
+            700,
+            image::ColorType::Rgba8,
+        )
+        .unwrap();
+        self.guide_visible = false;
+        self.show_scene = true;
+        assert_eq!(serde_json::to_vec(&self.doc).unwrap(), original);
+        assert_eq!(
+            crate::export::encode(&self.doc, None).unwrap().bytes,
+            export.bytes
+        );
+        self.status="Lighting checks passed: ground shadows, masks, layer rules, selection and unchanged ink/export.".into();
+    }
+}

@@ -12,6 +12,7 @@ pub(super) struct TutorialUi {
     pub verification_frame: Option<u32>,
 }
 pub(super) struct Practice {
+    lighting: crate::lighting::Lighting,
     pub doc: Document,
     camera: Camera,
     undo: Vec<Edit>,
@@ -109,6 +110,7 @@ impl SketchApp {
             );
         }
         self.tutorial.practice = Some(Practice {
+            lighting: self.renderer.lighting,
             doc: std::mem::take(&mut self.doc),
             camera: std::mem::take(&mut self.camera),
             undo: std::mem::take(&mut self.undo),
@@ -138,6 +140,7 @@ impl SketchApp {
             layer_target: self.layer_target,
             layer_name: std::mem::take(&mut self.layer_name),
         });
+        self.renderer.lighting = Default::default();
         self.guide = DrawingPlane::from_preset(Plane::Front);
         self.camera.align(Plane::Front);
         self.use_cylinder = false;
@@ -170,6 +173,7 @@ impl SketchApp {
         let Some(p) = self.tutorial.practice.take() else {
             return;
         };
+        self.renderer.lighting = p.lighting;
         self.doc = p.doc;
         self.camera = p.camera;
         self.undo = p.undo;
@@ -323,6 +327,11 @@ impl SketchApp {
                 assert!(self.tutorial.offer);
                 self.tutorial.offer = false;
                 self.dirty = true;
+                self.renderer.lighting = crate::lighting::Lighting {
+                    azimuth: -85.0,
+                    ground: true,
+                    ..Default::default()
+                };
                 self.record_recovery_edit();
                 self.selected = self.doc.strokes.iter().take(2).map(|s| s.id).collect();
                 self.duplicate_selected();
@@ -403,6 +412,7 @@ impl SketchApp {
                 assert_eq!(serde_json::to_string(&snapshot.document).unwrap(), original);
                 let selected = p.selected.clone();
                 let history = (p.undo.len(), p.redo.len());
+                let lighting = p.lighting;
                 let file = p.file.clone();
                 self.request(Pending::TutorialEnd);
                 self.execute_pending();
@@ -410,6 +420,7 @@ impl SketchApp {
                 assert_eq!(self.selected, selected);
                 assert_eq!((self.undo.len(), self.redo.len()), history);
                 assert_eq!(self.file, file);
+                assert_eq!(self.renderer.lighting, lighting);
                 assert!(self.dirty && self.tutorial.practice.is_none());
                 self.request(Pending::TutorialStart);
                 self.execute_pending();
