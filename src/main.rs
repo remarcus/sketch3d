@@ -5,6 +5,7 @@ mod brush_selection;
 mod camera_bookmarks;
 mod curve_geometry;
 mod document;
+mod drawing_library;
 mod dynamics;
 mod editing;
 mod export;

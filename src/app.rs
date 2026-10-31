@@ -118,6 +118,10 @@ pub struct SketchApp {
     curve_tool: curve_tool::CurveUi,
     shape_tool: shape_tool::ShapeTool,
     mirror_ui: mirror_ui::MirrorUi,
+    drawing_library: crate::drawing_library::DrawingLibrary,
+    show_drawing_library: bool,
+    drawing_library_filter: String,
+    library_open_path: Option<PathBuf>,
     show_view: bool,
     view_verification_frame: Option<u32>,
     presentation: presentation_ui::PresentationUi,
@@ -290,6 +294,10 @@ impl SketchApp {
             crate::recovery_store::session_id()
         ));
         let mut app = Self {
+            drawing_library: crate::drawing_library::DrawingLibrary::new(),
+            show_drawing_library: false,
+            drawing_library_filter: String::new(),
+            library_open_path: None,
             line: Default::default(),
             curve_tool: Default::default(),
             shape_tool: Default::default(),
@@ -1064,6 +1072,7 @@ impl SketchApp {
                     self.recovered_source = None;
                 }
                 self.status = format!("Saved {}", path.display());
+                self.drawing_library.record(&path);
                 self.file = Some(path);
                 self.image_asset_root =
                     crate::image_plane_storage::asset_root(self.file.as_deref().unwrap())
@@ -1171,10 +1180,12 @@ impl SketchApp {
                 self.status = "New drawing".into();
             }
             Some(Pending::Open) => {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Spatial Sketch", &["json"])
-                    .pick_file()
-                {
+                let selected_path = self.library_open_path.take().or_else(|| {
+                    rfd::FileDialog::new()
+                        .add_filter("Spatial Sketch", &["json"])
+                        .pick_file()
+                });
+                if let Some(path) = selected_path {
                     let result = (|| -> Result<(Document, std::collections::HashMap<u64, crate::image_planes::ImageAsset>, std::collections::HashMap<u64, crate::obj_reference::ObjModel>), String> {
                         let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
                         if file.metadata().map_err(|e| e.to_string())?.len() > 64 * 1024 * 1024 {
@@ -1221,6 +1232,9 @@ impl SketchApp {
                             self.starter_scene = false;
                             self.cylinder_example = false;
                             self.file = Some(path);
+                            if let Some(saved_path) = &self.file {
+                                self.drawing_library.record(saved_path);
+                            }
                             self.dirty = false;
                             self.undo.clear();
                             self.redo.clear();
@@ -1622,6 +1636,61 @@ impl SketchApp {
         ui.label(&self.recovery.notice);
     }
 
+    fn show_drawing_library(&mut self, ctx: &egui::Context) {
+        if !self.show_drawing_library || self.presentation.artwork {
+            return;
+        }
+        let mut selected = None;
+        let mut browse = false;
+        egui::Window::new("Drawing library")
+            .open(&mut self.show_drawing_library)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                ui.label("Recently saved or opened drawings. Files and their resource folders stay in their current locations.");
+                ui.horizontal(|ui| {
+                    ui.label("Search");
+                    ui.text_edit_singleline(&mut self.drawing_library_filter);
+                    if ui.button("Browse…").clicked() {
+                        browse = true;
+                    }
+                });
+                ui.separator();
+                let filter = self.drawing_library_filter.trim().to_lowercase();
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    for path in self.drawing_library.recent() {
+                        let label = path.file_name().and_then(|name| name.to_str()).unwrap_or("Untitled drawing");
+                        if !filter.is_empty() && !label.to_lowercase().contains(&filter) {
+                            continue;
+                        }
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(label);
+                                ui.small(path.display().to_string());
+                                if !path.is_file() {
+                                    ui.colored_label(Color32::YELLOW, "File is missing");
+                                }
+                            });
+                            if ui.add_enabled(path.is_file(), egui::Button::new("Open")).clicked() {
+                                selected = Some(path.clone());
+                            }
+                        });
+                        ui.separator();
+                    }
+                });
+                if let Some(notice) = &self.drawing_library.notice {
+                    ui.small(notice);
+                }
+            });
+        if let Some(path) = selected {
+            self.library_open_path = Some(path);
+            self.show_drawing_library = false;
+            self.request(Pending::Open);
+        } else if browse {
+            self.show_drawing_library = false;
+            self.request(Pending::Open);
+        }
+    }
+
     fn menu_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.menu_button("File", |ui| {
             if ui.button("New drawing…   Ctrl+N").clicked() {
@@ -1631,6 +1700,11 @@ impl SketchApp {
             if ui.button("Open…   Ctrl+O").clicked() {
                 ui.close_menu();
                 self.request(Pending::Open);
+            }
+            if ui.button("Drawing library…").clicked() {
+                ui.close_menu();
+                self.finish();
+                self.show_drawing_library = true;
             }
             ui.separator();
             if ui.button("Save   Ctrl+S").clicked() {
@@ -2800,6 +2874,7 @@ impl eframe::App for SketchApp {
                         }
                         if ui.button("Cancel").clicked() {
                             self.pending = None;
+                            self.library_open_path = None;
                             self.recovery_to_restore = None;
                             self.confirm = false;
                         }
@@ -2810,6 +2885,7 @@ impl eframe::App for SketchApp {
         self.show_diagnostics_window(ctx);
         self.show_placement(ctx);
         self.show_lighting(ctx);
+        self.show_drawing_library(ctx);
         self.show_tutorial(ctx);
         if self.show_help {
             egui::Window::new("Drawing with a tablet").default_width(540.0).max_height((ctx.screen_rect().height()-80.0).max(200.0)).vscroll(true).show(ctx,|ui|{self.tutorial_help(ui);ui.separator();if ui.button("Close help").clicked(){self.show_help=false;}ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-mark eraser   P: planar fill   I: sample artwork color (Escape cancels)\nK: pick plane   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
