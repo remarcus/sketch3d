@@ -27,6 +27,22 @@ pub enum InspectorTab {
     ImagePlanes,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundImageFit {
+    #[default]
+    Fit,
+    Fill,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BackgroundImageSettings {
+    pub reference_id: u64,
+    pub fit: BackgroundImageFit,
+    pub alignment: [f32; 2],
+    pub opacity: f32,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LayoutPreferences {
@@ -58,25 +74,38 @@ pub struct Preferences {
     pub version: u32,
     pub background: [f32; 3],
     #[serde(default)]
+    pub background_image: Option<BackgroundImageSettings>,
+    #[serde(default)]
     pub layout: LayoutPreferences,
 }
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             background: [0.018, 0.029, 0.046].map(linear_to_srgb),
+            background_image: None,
             layout: LayoutPreferences::default(),
         }
     }
 }
 impl Preferences {
     fn valid(&self) -> bool {
-        (self.version == 1 || self.version == 2)
+        (1..=3).contains(&self.version)
             && self
                 .background
                 .iter()
                 .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
             && self.layout.valid()
+            && self.background_image.is_none_or(|image| {
+                image.reference_id != 0
+                    && image.reference_id != u64::MAX
+                    && image
+                        .alignment
+                        .into_iter()
+                        .all(|value| value.is_finite() && (0.0..=1.0).contains(&value))
+                    && image.opacity.is_finite()
+                    && (0.0..=1.0).contains(&image.opacity)
+            })
     }
     pub fn load(path: &Path) -> Result<Self, String> {
         let file = match std::fs::File::open(path) {
@@ -91,9 +120,9 @@ impl Preferences {
         if !prefs.valid() {
             return Err("Unsupported or invalid presentation preferences".into());
         }
-        // Version 1 stored only the background; missing layout fields use the
-        // new defaults and are written as version 2 on the next preference change.
-        prefs.version = 2;
+        // Older versions stored only the fallback background and layout. The
+        // new screen image preference defaults to None during migration.
+        prefs.version = 3;
         Ok(prefs)
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -160,7 +189,7 @@ mod tests {
         let path = dir.path().join("presentation.json");
         std::fs::write(&path, br#"{"version":1,"background":[0.1,0.2,0.3]}"#).unwrap();
         let prefs = Preferences::load(&path).unwrap();
-        assert_eq!(prefs.version, 2);
+        assert_eq!(prefs.version, 3);
         assert_eq!(prefs.background, [0.1, 0.2, 0.3]);
         assert_eq!(prefs.layout, LayoutPreferences::default());
     }

@@ -272,9 +272,15 @@ impl ReferenceBoard {
         });
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) -> (Option<[f32; 3]>, bool) {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        background: &mut Option<crate::presentation::BackgroundImageSettings>,
+    ) -> (Option<[f32; 3]>, bool, bool) {
         let mut sampled = None;
         let mut close = false;
+        let mut background_changed = false;
         ui.horizontal(|ui| {
             ui.strong("REFERENCE BOARD");
             if ui.button("Import…").clicked() {
@@ -323,6 +329,59 @@ impl ReferenceBoard {
                 self.pan = Vec2::ZERO;
                 self.zoom = 1.0;
             }
+            if let Some(id) = self.selected {
+                let mut use_as_background =
+                    background.is_some_and(|settings| settings.reference_id == id);
+                if ui
+                    .checkbox(&mut use_as_background, "Use as presentation background")
+                    .changed()
+                {
+                    if use_as_background {
+                        *background = Some(crate::presentation::BackgroundImageSettings {
+                            reference_id: id,
+                            fit: crate::presentation::BackgroundImageFit::Fit,
+                            alignment: [0.5, 0.5],
+                            opacity: 1.0,
+                        });
+                    } else if background.is_some_and(|settings| settings.reference_id == id) {
+                        *background = None;
+                    }
+                    background_changed = true;
+                }
+                if let Some(mut settings) =
+                    background.filter(|settings| settings.reference_id == id)
+                {
+                    ui.horizontal(|ui| {
+                        ui.label("Display");
+                        background_changed |= ui
+                            .selectable_value(
+                                &mut settings.fit,
+                                crate::presentation::BackgroundImageFit::Fit,
+                                "Fit",
+                            )
+                            .changed();
+                        background_changed |= ui
+                            .selectable_value(
+                                &mut settings.fit,
+                                crate::presentation::BackgroundImageFit::Fill,
+                                "Fill",
+                            )
+                            .changed();
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Alignment");
+                        background_changed |= ui
+                            .add(egui::Slider::new(&mut settings.alignment[0], 0.0..=1.0).text("X"))
+                            .changed();
+                        background_changed |= ui
+                            .add(egui::Slider::new(&mut settings.alignment[1], 0.0..=1.0).text("Y"))
+                            .changed();
+                    });
+                    background_changed |= ui
+                        .add(egui::Slider::new(&mut settings.opacity, 0.0..=1.0).text("Opacity"))
+                        .changed();
+                }
+            }
             let mut move_up = false;
             let mut move_down = false;
             let mut remove = false;
@@ -350,7 +409,14 @@ impl ReferenceBoard {
                 }
             }
             if remove {
+                let removed_id = self.selected;
                 self.remove_selected();
+                if removed_id.is_some_and(|id| {
+                    background.is_some_and(|settings| settings.reference_id == id)
+                }) {
+                    *background = None;
+                    background_changed = true;
+                }
             }
 
             let available = ui.available_size_before_wrap();
@@ -425,7 +491,12 @@ impl ReferenceBoard {
         close |= ctx.input(|input| {
             input.key_pressed(Key::Escape) || (input.modifiers.command && input.key_pressed(Key::W))
         });
-        (sampled, close)
+        (sampled, close, background_changed)
+    }
+
+    pub fn background_image(&self, id: u64) -> Option<(&[u8], [u32; 2])> {
+        let image = self.images.iter().find(|image| image.record.id == id)?;
+        Some((&image.pixels, [image.size[0] as u32, image.size[1] as u32]))
     }
 
     fn selected_index(&self) -> Option<usize> {

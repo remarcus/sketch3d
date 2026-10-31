@@ -49,6 +49,14 @@ struct ImagePlaneVertex {
     opacity: f32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ScreenBackgroundVertex {
+    position: [f32; 2],
+    uv: [f32; 2],
+    opacity: f32,
+}
+
 struct ImagePlaneMesh {
     plane: crate::image_planes::ImagePlane,
     buffer: wgpu::Buffer,
@@ -58,6 +66,22 @@ struct ImagePlaneTexture {
     // The bind group references the texture view, so retain the texture owner.
     _texture: wgpu::Texture,
     bind: wgpu::BindGroup,
+}
+
+struct ScreenBackgroundTexture {
+    id: u64,
+    _texture: wgpu::Texture,
+    bind: wgpu::BindGroup,
+    size: [u32; 2],
+    fit: BackgroundImageFit,
+    alignment: [f32; 2],
+    opacity: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackgroundImageFit {
+    Fit,
+    Fill,
 }
 
 #[derive(Default)]
@@ -106,6 +130,77 @@ fn unpremultiply_rgba(pixels: &mut [u8]) {
     }
 }
 
+fn screen_background_vertices(
+    target: [u32; 2],
+    image: [u32; 2],
+    fit: BackgroundImageFit,
+    alignment: [f32; 2],
+    opacity: f32,
+) -> [ScreenBackgroundVertex; 6] {
+    let target_aspect = target[0] as f32 / target[1].max(1) as f32;
+    let image_aspect = image[0] as f32 / image[1].max(1) as f32;
+    let (half_width, half_height, offset_x, offset_y, u0, u1, v0, v1) = match fit {
+        BackgroundImageFit::Fit => {
+            let (half_width, half_height, offset_x, offset_y) = if image_aspect >= target_aspect {
+                let half_height = target_aspect / image_aspect;
+                (
+                    1.0,
+                    half_height,
+                    0.0,
+                    (0.5 - alignment[1]) * 2.0 * (1.0 - half_height),
+                )
+            } else {
+                let half_width = image_aspect / target_aspect;
+                (
+                    half_width,
+                    1.0,
+                    (alignment[0] - 0.5) * 2.0 * (1.0 - half_width),
+                    0.0,
+                )
+            };
+            (
+                half_width,
+                half_height,
+                offset_x,
+                offset_y,
+                0.0,
+                1.0,
+                0.0,
+                1.0,
+            )
+        }
+        BackgroundImageFit::Fill => {
+            let (u0, u1, v0, v1) = if image_aspect >= target_aspect {
+                let visible = (target_aspect / image_aspect).clamp(0.0, 1.0);
+                let start = (1.0 - visible) * alignment[0];
+                (start, start + visible, 0.0, 1.0)
+            } else {
+                let visible = (image_aspect / target_aspect).clamp(0.0, 1.0);
+                let start = (1.0 - visible) * alignment[1];
+                (0.0, 1.0, start, start + visible)
+            };
+            (1.0, 1.0, 0.0, 0.0, u0, u1, v0, v1)
+        }
+    };
+    let left = -half_width + offset_x;
+    let right = half_width + offset_x;
+    let top = half_height + offset_y;
+    let bottom = -half_height + offset_y;
+    let vertex = |position, uv| ScreenBackgroundVertex {
+        position,
+        uv,
+        opacity,
+    };
+    [
+        vertex([left, top], [u0, v0]),
+        vertex([right, top], [u1, v0]),
+        vertex([right, bottom], [u1, v1]),
+        vertex([left, top], [u0, v0]),
+        vertex([right, bottom], [u1, v1]),
+        vertex([left, bottom], [u0, v1]),
+    ]
+}
+
 fn back_to_front<'a>(
     mut strokes: Vec<(&'a Stroke, &'a Mesh)>,
     camera: &Camera,
@@ -131,6 +226,7 @@ pub struct SceneRenderer {
     coverage_triangles: wgpu::RenderPipeline,
     transparent_triangles: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
+    screen_background_pipeline: wgpu::RenderPipeline,
     image_planes_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
@@ -140,6 +236,7 @@ pub struct SceneRenderer {
     meshes: HashMap<u64, Mesh>,
     image_plane_meshes: HashMap<u64, ImagePlaneMesh>,
     image_plane_textures: HashMap<u64, ImagePlaneTexture>,
+    screen_background: Option<ScreenBackgroundTexture>,
     obj_reference_meshes: HashMap<u64, ObjReferenceMeshes>,
     repeat_preview: Vec<(crate::document::Stroke, Mesh)>,
     selected: HashSet<u64>,
@@ -334,6 +431,54 @@ impl SceneRenderer {
             label: Some("Image plane shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("image_plane.wgsl").into()),
         });
+        let screen_background_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Screen background image shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("screen_background.wgsl").into()),
+        });
+        let screen_background_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Screen background image layout"),
+                bind_group_layouts: &[&image_plane_layout],
+                push_constant_ranges: &[],
+            });
+        let screen_background_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Screen-aligned background image"),
+                layout: Some(&screen_background_layout),
+                vertex: wgpu::VertexState {
+                    module: &screen_background_shader,
+                    entry_point: Some("vs_background"),
+                    compilation_options: Default::default(),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<ScreenBackgroundVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32],
+                    }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &screen_background_shader,
+                    entry_point: Some("fs_background"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: sample_count,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview: None,
+                cache: None,
+            });
         let image_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Image plane pipeline layout"),
@@ -387,6 +532,7 @@ impl SceneRenderer {
             coverage_triangles,
             transparent_triangles,
             lines,
+            screen_background_pipeline,
             image_planes_pipeline,
             uniform,
             bind,
@@ -396,6 +542,7 @@ impl SceneRenderer {
             meshes: HashMap::new(),
             image_plane_meshes: HashMap::new(),
             image_plane_textures: HashMap::new(),
+            screen_background: None,
             obj_reference_meshes: HashMap::new(),
             repeat_preview: Vec::new(),
             selected: HashSet::new(),
@@ -472,6 +619,125 @@ impl SceneRenderer {
     pub fn invalidate(&mut self) {
         self.meshes.clear();
     }
+
+    /// Configure a screen-aligned image behind artwork. Source pixels are RGBA8
+    /// in top-to-bottom row order. This asset is independent of camera rays and
+    /// is only drawn in opaque-background canvas/image renders.
+    pub fn set_screen_background_image(
+        &mut self,
+        id: u64,
+        rgba: &[u8],
+        size: [u32; 2],
+        fit: BackgroundImageFit,
+        alignment: [f32; 2],
+        opacity: f32,
+    ) -> Result<(), String> {
+        let [width, height] = size;
+        let byte_len = u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or("Background image dimensions overflow")?;
+        if id == 0
+            || width == 0
+            || height == 0
+            || width > self.state.device.limits().max_texture_dimension_2d
+            || height > self.state.device.limits().max_texture_dimension_2d
+            || byte_len > 12_000_000 * 4
+            || byte_len != rgba.len() as u64
+            || alignment
+                .iter()
+                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+            || !opacity.is_finite()
+            || !(0.0..=1.0).contains(&opacity)
+        {
+            return Err("Background image has invalid dimensions, alignment, or opacity".into());
+        }
+
+        if self
+            .screen_background
+            .as_ref()
+            .is_none_or(|background| background.id != id || background.size != size)
+        {
+            let texture = self.state.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Presentation background image"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            self.state.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            let view = texture.create_view(&Default::default());
+            let sampler = self.state.device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Presentation background image sampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            });
+            let bind = self
+                .state
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Presentation background image"),
+                    layout: &self.image_plane_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&sampler),
+                        },
+                    ],
+                });
+            self.screen_background = Some(ScreenBackgroundTexture {
+                id,
+                _texture: texture,
+                bind,
+                size,
+                fit,
+                alignment,
+                opacity,
+            });
+        } else if let Some(background) = &mut self.screen_background {
+            background.fit = fit;
+            background.alignment = alignment;
+            background.opacity = opacity;
+        }
+        Ok(())
+    }
+
+    pub fn clear_screen_background_image(&mut self) {
+        self.screen_background = None;
+    }
+
     /// Upload decoded RGBA pixels for a document image plane. The asset is kept
     /// by plane ID and can be replaced after an edit or document reload.
     pub fn set_image_plane_asset(
@@ -936,6 +1202,22 @@ impl SceneRenderer {
             .queue
             .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
         let target = self.target.as_ref().unwrap();
+        let screen_background = self.screen_background.as_ref().map(|background| {
+            let vertices = screen_background_vertices(
+                target.size,
+                background.size,
+                background.fit,
+                background.alignment,
+                background.opacity,
+            );
+            self.state
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Screen background image quad"),
+                    contents: bytemuck::cast_slice(&vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+        });
         let mut encoder =
             self.state
                 .device
@@ -1002,6 +1284,13 @@ impl SceneRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            if let (Some(background), Some(buffer)) = (&self.screen_background, &screen_background)
+            {
+                pass.set_pipeline(&self.screen_background_pipeline);
+                pass.set_bind_group(0, &background.bind, &[]);
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw(0..6, 0..1);
+            }
             pass.set_bind_group(0, &self.bind, &[]);
             pass.set_bind_group(1, &self.textures[&texture::key(solid)], &[]);
             pass.set_bind_group(2, &self.shadow_bind, &[]);
@@ -1257,6 +1546,24 @@ impl SceneRenderer {
         self.state
             .queue
             .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
+        let screen_background = background
+            .and(self.screen_background.as_ref())
+            .map(|image| {
+                let vertices = screen_background_vertices(
+                    size,
+                    image.size,
+                    image.fit,
+                    image.alignment,
+                    image.opacity,
+                );
+                self.state
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Artwork screen background image quad"),
+                        contents: bytemuck::cast_slice(&vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    })
+            });
         let mut encoder =
             self.state
                 .device
@@ -1316,6 +1623,12 @@ impl SceneRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            if let (Some(image), Some(buffer)) = (&self.screen_background, &screen_background) {
+                pass.set_pipeline(&self.screen_background_pipeline);
+                pass.set_bind_group(0, &image.bind, &[]);
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw(0..6, 0..1);
+            }
             pass.set_bind_group(0, &self.bind, &[]);
             pass.set_bind_group(1, &self.textures[&texture::key(solid)], &[]);
             pass.set_bind_group(2, &self.shadow_bind, &[]);

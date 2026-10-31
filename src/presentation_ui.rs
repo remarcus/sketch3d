@@ -45,7 +45,7 @@ impl PresentationUi {
         }
     }
     pub fn remember(&mut self) {
-        self.preferences.version = 2;
+        self.preferences.version = 3;
         self.remembered_background = self.preferences.background;
         self.notice = Some(
             match self
@@ -70,7 +70,7 @@ impl PresentationUi {
             .is_some_and(|due| Instant::now() >= due)
         {
             self.layout_save_due = None;
-            self.preferences.version = 2;
+            self.preferences.version = 3;
             let mut persisted = self.preferences.clone();
             persisted.background = self.remembered_background;
             self.notice = Some(

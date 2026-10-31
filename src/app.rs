@@ -512,7 +512,43 @@ impl SketchApp {
             }
         }
         app.recovery.request_scan();
+        app.sync_presentation_background();
         app
+    }
+
+    fn sync_presentation_background(&mut self) {
+        let Some(settings) = self.presentation.preferences.background_image else {
+            self.renderer.clear_screen_background_image();
+            return;
+        };
+        let Some((rgba, size)) = self.reference_board.background_image(settings.reference_id)
+        else {
+            self.renderer.clear_screen_background_image();
+            self.presentation.preferences.background_image = None;
+            self.presentation.remember();
+            self.status =
+                "Presentation background image is missing; cleared the saved reference.".into();
+            return;
+        };
+        let fit = match settings.fit {
+            crate::presentation::BackgroundImageFit::Fit => {
+                crate::renderer::BackgroundImageFit::Fit
+            }
+            crate::presentation::BackgroundImageFit::Fill => {
+                crate::renderer::BackgroundImageFit::Fill
+            }
+        };
+        if let Err(error) = self.renderer.set_screen_background_image(
+            settings.reference_id,
+            rgba,
+            size,
+            fit,
+            settings.alignment,
+            settings.opacity,
+        ) {
+            self.renderer.clear_screen_background_image();
+            self.status = format!("Cannot use presentation background image: {error}");
+        }
     }
     fn finish(&mut self) {
         let model_surface_stroke = self.model_stroke_contact.is_some();
@@ -1846,7 +1882,16 @@ impl SketchApp {
                             crate::presentation::InspectorTab::Properties => self.properties(ui),
                             crate::presentation::InspectorTab::Layers => self.layer_controls(ui),
                             crate::presentation::InspectorTab::References => {
-                                let (sampled, close) = self.reference_board.show(ui, ctx);
+                                let (sampled, close, background_changed) =
+                                    self.reference_board.show(
+                                        ui,
+                                        ctx,
+                                        &mut self.presentation.preferences.background_image,
+                                    );
+                                if background_changed {
+                                    self.presentation.remember();
+                                    self.sync_presentation_background();
+                                }
                                 close_references = close;
                                 if let Some(color) = sampled {
                                     self.color = color;
