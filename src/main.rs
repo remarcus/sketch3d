@@ -17,6 +17,7 @@ mod input;
 mod lighting;
 mod liquify;
 mod mirror;
+mod obj_export;
 mod obj_mesh_index;
 #[allow(dead_code)]
 mod obj_reference;

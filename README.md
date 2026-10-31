@@ -26,6 +26,7 @@ An open-source, native 3D sketching prototype inspired by the idea of drawing in
 - Saved camera bookmarks and timed view sequences in separate local workspace settings.
 - Animated GIF export for camera turntables and saved sequences.
 - PNG and JPEG artwork still exports; JPEG lets you choose canvas, white, or black background.
+- OBJ exports for the whole drawing or selected strokes, with MTL material and mask companions.
 - Live plane-guide mirroring for brush and straight-line strokes, committed as one undoable pair.
 - Background GLB export for the whole drawing or selected strokes, preserving original colors and pressure-shaped geometry.
 - Round, ribbon, and flat/chisel brushes with pressure-shaped width, frozen orientation, and an editable brush sampler.
@@ -424,6 +425,8 @@ Choose **Export → Animated GIF (.gif)…** for a fixed-focus full turntable or
 The **Reconstructed reveal** mode is a synthetic preview from the current visible strokes in saved document order. It spreads those strokes evenly across the chosen duration; it does not claim to reproduce when they were drawn. Deleted strokes are absent, while imports and mirrored copies appear in their current list order. Native document saves already preserve this order, so no recording log or additional storage is needed.
 
 Artwork still export supports PNG and JPEG through **Export → Artwork image**. JPEG flattens to the selected Canvas, White, or Black background at quality 92; dimensions share the 8-megapixel limit. PNG remains the default format. Its optional transparent mode preserves stroke lighting and shadows, unpremultiplies anti-aliased edges in linear color, and excludes the ground and 3D image planes.
+
+Choose **Export → Whole drawing (.obj)** or **Selected strokes (.obj)** to export visible ink in document world units (+X right, +Y up, +Z front). The OBJ uses indexed positions, UVs, normals, and faces; its MTL companion stores stroke diffuse colors, brush opacity, and generated PNG coverage masks for procedural brush textures. Companion names are unique and referenced relatively by the OBJ. Classic MTL cannot carry per-vertex pressure/softness opacity, so that variation is approximated by the fixed brush opacity; OBJ exports do not include imported reference models. Independent-viewer compatibility remains to be checked.
 
 Developer check: `cargo run --release -- --verify-presentation` uses isolated preferences and writes `verification/presentation-report.json` and `presentation-preview.png`. GPU readback checks blue/light/dark sRGB values. Lifecycle checks cover explicit preference restart, mode entry guards, read-only contact, workspace restoration, save-failure visibility, recovery/unsaved prompts, and unchanged JSON/GLB ink. Dedicated benchmarks remain deferred.
 ## Orthographic camera views

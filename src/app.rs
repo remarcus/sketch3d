@@ -48,6 +48,8 @@ mod line_tool;
 mod liquify_ui;
 #[path = "mirror_ui.rs"]
 mod mirror_ui;
+#[path = "obj_export_ui.rs"]
+mod obj_export_ui;
 #[path = "obj_reference_ui.rs"]
 mod obj_reference_ui;
 #[path = "palette_ui.rs"]
@@ -229,6 +231,7 @@ pub struct SketchApp {
     export_snapshot: Option<export_ui::ExportSnapshot>,
     png_export: png_export_ui::PngExportUi,
     video_export: video_export_ui::VideoExportUi,
+    obj_export: obj_export_ui::ObjExportUi,
     png_verification_frame: Option<u32>,
 }
 impl SketchApp {
@@ -404,6 +407,7 @@ impl SketchApp {
             export_snapshot: None,
             png_export: Default::default(),
             video_export: Default::default(),
+            obj_export: Default::default(),
             png_verification_frame: None,
         };
         if std::env::args().any(|a| a == "--verify-lines") {
@@ -1635,6 +1639,26 @@ impl SketchApp {
                     ui.close_menu();
                     self.video_export.begin();
                 }
+                if ui
+                    .add_enabled(
+                        self.can_export(false),
+                        egui::Button::new("Whole drawing (.obj)…"),
+                    )
+                    .clicked()
+                {
+                    ui.close_menu();
+                    self.obj_export.begin(false);
+                }
+                if ui
+                    .add_enabled(
+                        self.can_export(true),
+                        egui::Button::new("Selected strokes (.obj)…"),
+                    )
+                    .clicked()
+                {
+                    ui.close_menu();
+                    self.obj_export.begin(true);
+                }
             });
             ui.menu_button("Examples", |ui| {
                 for (label, pending) in [
@@ -2295,6 +2319,9 @@ impl eframe::App for SketchApp {
         if let Some(status) = self.video_export.render_next(&mut self.renderer, ctx) {
             self.status = status;
         }
+        if let Some(status) = self.obj_export.poll(ctx) {
+            self.status = status;
+        }
         if let Some(status) = self.png_export.poll(ctx) {
             self.status = status;
         }
@@ -2327,7 +2354,8 @@ impl eframe::App for SketchApp {
             && !self.allow_close
             && (self.export_job.is_some()
                 || self.png_export.is_running()
-                || self.video_export.is_running())
+                || self.video_export.is_running()
+                || self.obj_export.is_running())
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.status = "An export is running. Finish or cancel it, then close again.".into();
@@ -2516,6 +2544,7 @@ impl eframe::App for SketchApp {
         self.png_export.show(ctx);
         self.video_export
             .show(ctx, &self.camera_bookmarks.sequences);
+        self.obj_export.show(ctx);
         let pen = self.pen.as_ref().map(|p| p.drain()).unwrap_or_default();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -2605,6 +2634,25 @@ impl eframe::App for SketchApp {
                         self.renderer.lighting,
                     ) {
                         self.status = format!("Could not start animated export: {error}");
+                    }
+                }
+                if let Some((destination, selected, replace)) = self.obj_export.take_request() {
+                    if self
+                        .file
+                        .as_ref()
+                        .is_some_and(|source| crate::export::same_destination(source, &destination))
+                    {
+                        self.status =
+                            "Choose an OBJ destination different from the native drawing.".into();
+                    } else if let Err(error) = self.obj_export.start(
+                        destination,
+                        selected,
+                        replace,
+                        &self.doc,
+                        &self.selected,
+                        ctx,
+                    ) {
+                        self.status = format!("Could not start OBJ export: {error}");
                     }
                 }
                 self.verify_png_export(ctx);

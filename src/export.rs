@@ -13,8 +13,8 @@ use std::{
     path::Path,
 };
 
-const MAX_BINARY_BYTES: usize = 128 * 1024 * 1024;
-const MAX_TRIANGLE_VERTICES_PER_STROKE: usize = 2_000_000;
+pub(crate) const MAX_BINARY_BYTES: usize = 128 * 1024 * 1024;
+pub(crate) const MAX_TRIANGLE_VERTICES_PER_STROKE: usize = 2_000_000;
 #[derive(Clone, Debug, Serialize)]
 pub struct ExportSummary {
     pub strokes: usize,
@@ -54,14 +54,14 @@ mod fill_tests {
         assert!(encode(&doc, Some(&selected)).is_err());
     }
 }
-struct Mesh {
-    vertices: Vec<[f32; 12]>,
-    indices: Vec<u32>,
-    min: Vec3,
-    max: Vec3,
+pub(crate) struct Mesh {
+    pub(crate) vertices: Vec<[f32; 12]>,
+    pub(crate) indices: Vec<u32>,
+    pub(crate) min: Vec3,
+    pub(crate) max: Vec3,
 }
 
-fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
+pub(crate) fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
     if !stroke.brush.is_valid()
         || !stroke.radius.is_finite()
         || !(0.001..=1.0).contains(&stroke.radius)
@@ -177,7 +177,7 @@ fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
     Ok(mesh)
 }
 pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=8) {
+    if !matches!(doc.version, 1..=11) {
         return Err("Unsupported source document version".into());
     }
     let mut layer_ids = HashSet::new();
