@@ -2571,8 +2571,14 @@ impl eframe::App for SketchApp {
                     Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
-                if let Some((destination, size, allow_overwrite, format, jpeg_background)) =
-                    self.png_export.take_request()
+                if let Some((
+                    destination,
+                    size,
+                    allow_overwrite,
+                    format,
+                    jpeg_background,
+                    transparent_png,
+                )) = self.png_export.take_request()
                 {
                     self.start_png_export(
                         destination,
@@ -2580,6 +2586,7 @@ impl eframe::App for SketchApp {
                         allow_overwrite,
                         format,
                         jpeg_background,
+                        transparent_png,
                         ctx,
                     );
                 }

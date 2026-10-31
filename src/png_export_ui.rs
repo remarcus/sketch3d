@@ -27,10 +27,11 @@ pub(super) struct PngExportUi {
     dialog_open: bool,
     format: StillFormat,
     jpeg_background: JpegBackground,
+    transparent_png: bool,
     width: u32,
     height: u32,
     overwrite: Option<(PathBuf, [u32; 2], StillFormat)>,
-    request: Option<(PathBuf, [u32; 2], bool, StillFormat, JpegBackground)>,
+    request: Option<(PathBuf, [u32; 2], bool, StillFormat, JpegBackground, bool)>,
     job: Option<PngJob>,
 }
 
@@ -40,6 +41,7 @@ impl Default for PngExportUi {
             dialog_open: false,
             format: StillFormat::Png,
             jpeg_background: JpegBackground::Canvas,
+            transparent_png: false,
             width: 1920,
             height: 1080,
             overwrite: None,
@@ -91,7 +93,14 @@ impl PngExportUi {
         if path.exists() {
             self.overwrite = Some((path, size, self.format));
         } else {
-            self.request = Some((path, size, false, self.format, self.jpeg_background));
+            self.request = Some((
+                path,
+                size,
+                false,
+                self.format,
+                self.jpeg_background,
+                self.transparent_png,
+            ));
         }
     }
 
@@ -121,6 +130,9 @@ impl PngExportUi {
                                 ui.selectable_value(&mut self.jpeg_background, JpegBackground::Black, "Black");
                             });
                     });
+                } else {
+                    ui.checkbox(&mut self.transparent_png, "Transparent background");
+                    ui.small("Keeps stroke lighting and shadows; excludes ground and image planes.");
                 }
                 ui.horizontal(|ui| {
                     ui.add(egui::DragValue::new(&mut self.width).range(1..=8192).prefix("Width "));
@@ -170,7 +182,14 @@ impl PngExportUi {
             });
             if confirm {
                 self.overwrite = None;
-                self.request = Some((path, size, true, format, self.jpeg_background));
+                self.request = Some((
+                    path,
+                    size,
+                    true,
+                    format,
+                    self.jpeg_background,
+                    self.transparent_png,
+                ));
             } else if cancel {
                 self.overwrite = None;
             }
@@ -179,7 +198,7 @@ impl PngExportUi {
 
     pub fn take_request(
         &mut self,
-    ) -> Option<(PathBuf, [u32; 2], bool, StillFormat, JpegBackground)> {
+    ) -> Option<(PathBuf, [u32; 2], bool, StillFormat, JpegBackground, bool)> {
         self.request.take()
     }
 
@@ -279,6 +298,7 @@ impl SketchApp {
         allow_overwrite: bool,
         format: StillFormat,
         jpeg_background: JpegBackground,
+        transparent_png: bool,
         ctx: &egui::Context,
     ) {
         if !self.can_export_png() {
@@ -304,10 +324,14 @@ impl SketchApp {
             _ => self.presentation.preferences.background,
         };
         let lighting = self.renderer.lighting;
-        let pixels = match self
-            .renderer
-            .render_png_pixels(&self.doc, &camera, size, background, lighting)
-        {
+        let rendered = if format == StillFormat::Png && transparent_png {
+            self.renderer
+                .render_transparent_png_pixels(&self.doc, &camera, size, lighting)
+        } else {
+            self.renderer
+                .render_png_pixels(&self.doc, &camera, size, background, lighting)
+        };
+        let pixels = match rendered {
             Ok(pixels) => pixels,
             Err(error) => {
                 self.status = format!("PNG render failed: {error}");

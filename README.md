@@ -423,7 +423,7 @@ Choose **Export → Animated GIF (.gif)…** for a fixed-focus full turntable or
 
 The **Reconstructed reveal** mode is a synthetic preview from the current visible strokes in saved document order. It spreads those strokes evenly across the chosen duration; it does not claim to reproduce when they were drawn. Deleted strokes are absent, while imports and mirrored copies appear in their current list order. Native document saves already preserve this order, so no recording log or additional storage is needed.
 
-Artwork still export supports PNG and JPEG through **Export → Artwork image**. JPEG flattens to the selected Canvas, White, or Black background at quality 92; dimensions share the 8-megapixel limit. PNG remains the default format.
+Artwork still export supports PNG and JPEG through **Export → Artwork image**. JPEG flattens to the selected Canvas, White, or Black background at quality 92; dimensions share the 8-megapixel limit. PNG remains the default format. Its optional transparent mode preserves stroke lighting and shadows, unpremultiplies anti-aliased edges in linear color, and excludes the ground and 3D image planes.
 
 Developer check: `cargo run --release -- --verify-presentation` uses isolated preferences and writes `verification/presentation-report.json` and `presentation-preview.png`. GPU readback checks blue/light/dark sRGB values. Lifecycle checks cover explicit preference restart, mode entry guards, read-only contact, workspace restoration, save-failure visibility, recovery/unsaved prompts, and unchanged JSON/GLB ink. Dedicated benchmarks remain deferred.
 ## Orthographic camera views

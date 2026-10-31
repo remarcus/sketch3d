@@ -89,6 +89,23 @@ fn is_translucent(stroke: &Stroke) -> bool {
         || (stroke.fill.is_none() && stroke.brush.softness > 0.0)
 }
 
+fn unpremultiply_rgba(pixels: &mut [u8]) {
+    for pixel in pixels.chunks_exact_mut(4) {
+        let alpha = f32::from(pixel[3]) / 255.0;
+        if alpha <= 0.0 {
+            pixel[..3].fill(0);
+            continue;
+        }
+        for channel in &mut pixel[..3] {
+            let encoded = f32::from(*channel) / 255.0;
+            let straight = crate::presentation::linear_to_srgb(
+                (crate::presentation::srgb_to_linear(encoded) / alpha).clamp(0.0, 1.0),
+            );
+            *channel = (straight * 255.0).round() as u8;
+        }
+    }
+}
+
 fn back_to_front<'a>(
     mut strokes: Vec<(&'a Stroke, &'a Mesh)>,
     camera: &Camera,
@@ -111,6 +128,7 @@ fn back_to_front<'a>(
 pub struct SceneRenderer {
     state: egui_wgpu::RenderState,
     triangles: wgpu::RenderPipeline,
+    coverage_triangles: wgpu::RenderPipeline,
     transparent_triangles: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
     image_planes_pipeline: wgpu::RenderPipeline,
@@ -276,19 +294,20 @@ impl SceneRenderer {
             push_constant_ranges: &[],
         });
         let sample_count = canvas_sample_count(&state.adapter);
-        let create = |topology, transparent: bool| {
+        let create = |topology, transparent: bool, alpha_blend: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:Some("3D strokes"),layout:Some(&pipeline_layout),
             vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32]}]},
-            fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some(if transparent {"fs_transparent"} else {"fs_main"}),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:transparent.then_some(wgpu::BlendState::ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})]}),
+            fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some(if transparent {"fs_transparent"} else {"fs_main"}),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:alpha_blend.then_some(wgpu::BlendState::ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})]}),
             primitive:wgpu::PrimitiveState {topology,cull_mode:None,..Default::default()},
             depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:!transparent && topology != wgpu::PrimitiveTopology::LineList,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
-            multisample:wgpu::MultisampleState {count:sample_count,mask:!0,alpha_to_coverage_enabled:sample_count > 1 && !transparent},multiview:None,cache:None,
+            multisample:wgpu::MultisampleState {count:sample_count,mask:!0,alpha_to_coverage_enabled:sample_count > 1 && !transparent && !alpha_blend},multiview:None,cache:None,
         })
         };
-        let triangles = create(wgpu::PrimitiveTopology::TriangleList, false);
-        let transparent_triangles = create(wgpu::PrimitiveTopology::TriangleList, true);
-        let lines = create(wgpu::PrimitiveTopology::LineList, false);
+        let triangles = create(wgpu::PrimitiveTopology::TriangleList, false, false);
+        let coverage_triangles = create(wgpu::PrimitiveTopology::TriangleList, false, true);
+        let transparent_triangles = create(wgpu::PrimitiveTopology::TriangleList, true, true);
+        let lines = create(wgpu::PrimitiveTopology::LineList, false, false);
         let image_plane_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Image plane texture layout"),
@@ -365,6 +384,7 @@ impl SceneRenderer {
         Self {
             state,
             triangles,
+            coverage_triangles,
             transparent_triangles,
             lines,
             image_planes_pipeline,
@@ -1085,6 +1105,28 @@ impl SceneRenderer {
         background: [f32; 3],
         settings: Lighting,
     ) -> Result<Vec<u8>, String> {
+        self.render_artwork_pixels(doc, camera, size, Some(background), settings)
+    }
+
+    /// Render artwork over transparency, excluding image planes and the ground.
+    pub fn render_transparent_png_pixels(
+        &mut self,
+        doc: &Document,
+        camera: &Camera,
+        size: [u32; 2],
+        settings: Lighting,
+    ) -> Result<Vec<u8>, String> {
+        self.render_artwork_pixels(doc, camera, size, None, settings)
+    }
+
+    fn render_artwork_pixels(
+        &mut self,
+        doc: &Document,
+        camera: &Camera,
+        size: [u32; 2],
+        background: Option<[f32; 3]>,
+        settings: Lighting,
+    ) -> Result<Vec<u8>, String> {
         let limit = self.state.device.limits().max_texture_dimension_2d;
         let pixel_count = (size[0] as u64)
             .checked_mul(size[1] as u64)
@@ -1099,10 +1141,11 @@ impl SceneRenderer {
                 "Image dimensions exceed the 8192-pixel or 8-megapixel export limit".into(),
             );
         }
-        if !background
-            .iter()
-            .all(|channel| channel.is_finite() && (0.0..=1.0).contains(channel))
-        {
+        if background.is_some_and(|color| {
+            !color
+                .iter()
+                .all(|channel| channel.is_finite() && (0.0..=1.0).contains(channel))
+        }) {
             return Err("Canvas background must contain finite RGB values from 0 to 1".into());
         }
 
@@ -1172,12 +1215,15 @@ impl SceneRenderer {
                 (stroke, self.mesh(&vertices, stroke.points.len()))
             })
             .collect();
-        let image_plane_meshes: Vec<_> = doc
-            .image_planes
-            .iter()
-            .filter(|plane| plane.visible && self.image_plane_textures.contains_key(&plane.id))
-            .map(|plane| (plane, self.image_plane_mesh(plane)))
-            .collect();
+        let image_plane_meshes: Vec<_> = if background.is_some() {
+            doc.image_planes
+                .iter()
+                .filter(|plane| plane.visible && self.image_plane_textures.contains_key(&plane.id))
+                .map(|plane| (plane, self.image_plane_mesh(plane)))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let bounds = meshes
             .iter()
             .filter_map(|(_, mesh)| mesh.bounds)
@@ -1247,12 +1293,15 @@ impl SceneRenderer {
                     view: multisample_color.as_ref().unwrap_or(&color_view),
                     resolve_target: multisample_color.as_ref().map(|_| &color_view),
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: crate::presentation::srgb_to_linear(background[0]) as f64,
-                            g: crate::presentation::srgb_to_linear(background[1]) as f64,
-                            b: crate::presentation::srgb_to_linear(background[2]) as f64,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(background.map_or(
+                            wgpu::Color::TRANSPARENT,
+                            |background| wgpu::Color {
+                                r: crate::presentation::srgb_to_linear(background[0]) as f64,
+                                g: crate::presentation::srgb_to_linear(background[1]) as f64,
+                                b: crate::presentation::srgb_to_linear(background[2]) as f64,
+                                a: 1.0,
+                            },
+                        )),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -1270,7 +1319,7 @@ impl SceneRenderer {
             pass.set_bind_group(0, &self.bind, &[]);
             pass.set_bind_group(1, &self.textures[&texture::key(solid)], &[]);
             pass.set_bind_group(2, &self.shadow_bind, &[]);
-            if settings.ground {
+            if background.is_some() && settings.ground {
                 pass.set_pipeline(&self.triangles);
                 if let Some((cached_settings, ground)) = &self.ground {
                     if *cached_settings == settings {
@@ -1279,7 +1328,11 @@ impl SceneRenderer {
                     }
                 }
             }
-            pass.set_pipeline(&self.triangles);
+            pass.set_pipeline(if background.is_none() {
+                &self.coverage_triangles
+            } else {
+                &self.triangles
+            });
             for (stroke, mesh) in meshes.iter().filter(|(stroke, _)| !is_translucent(stroke)) {
                 pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
@@ -1350,12 +1403,15 @@ impl SceneRenderer {
             .map_err(|error| error.to_string())?
             .map_err(|error| error.to_string())?;
         let mapped = buffer.slice(..).get_mapped_range();
-        let pixels = mapped
+        let mut pixels: Vec<u8> = mapped
             .chunks(row as usize)
             .flat_map(|bytes| bytes[..size[0] as usize * 4].iter().copied())
             .collect();
         drop(mapped);
         buffer.unmap();
+        if background.is_none() {
+            unpremultiply_rgba(&mut pixels);
+        }
         Ok(pixels)
     }
 
