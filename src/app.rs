@@ -29,6 +29,10 @@ mod groups_ui;
 mod layers_ui;
 #[path = "lighting_ui.rs"]
 mod lighting_ui;
+#[path = "placement_checks.rs"]
+mod placement_checks;
+#[path = "placement_ui.rs"]
+mod placement_ui;
 #[path = "planes.rs"]
 mod planes;
 #[path = "preset_checks.rs"]
@@ -67,6 +71,7 @@ enum Pending {
 }
 
 pub struct SketchApp {
+    placement: placement_ui::PlacementUi,
     fills: fills_ui::FillUi,
     show_scene: bool,
     lighting_verification_frame: Option<u32>,
@@ -190,6 +195,7 @@ impl SketchApp {
         };
         let recovery = crate::recovery::Recovery::new(recovery_path, cc.egui_ctx.clone());
         let mut app = Self {
+            placement: Default::default(),
             fills: Default::default(),
             show_scene: false,
             lighting_verification_frame: None,
@@ -271,7 +277,11 @@ impl SketchApp {
             last_export_result: None,
             export_snapshot: None,
         };
-        if std::env::args().any(|a| a == "--verify-fills") {
+        if std::env::args().any(|a| a == "--verify-placement") {
+            app.verification_frame = None;
+            app.placement.verification_frame = Some(0);
+            app.load_fill_study();
+        } else if std::env::args().any(|a| a == "--verify-fills") {
             app.verification_frame = None;
             app.fills.verification_frame = Some(0);
             app.load_fill_study();
@@ -549,6 +559,7 @@ impl SketchApp {
         }
     }
     fn save(&mut self, save_as: bool) -> bool {
+        self.cancel_placement();
         if self.fills.draft.is_some() {
             self.status = "Close or cancel the draft contour before saving.".into();
             return false;
@@ -599,6 +610,7 @@ impl SketchApp {
         }
     }
     fn request(&mut self, mut pending: Pending) {
+        self.cancel_placement();
         if self.fills.draft.is_some() {
             self.status =
                 "Close or cancel the draft contour before switching drawings or leaving practice."
@@ -985,7 +997,11 @@ impl SketchApp {
         shift: bool,
         tilt: Option<Vec3>,
     ) {
-        if self.select_mode {
+        if self.placement.active {
+            if begin {
+                self.pick_placement(pos, rect);
+            }
+        } else if self.select_mode {
             self.select_pointer(pos, rect, begin, shift);
         } else if self.eraser {
             self.erase(pos, rect);
@@ -1020,6 +1036,7 @@ impl SketchApp {
             && self.tutorial.verification_frame.is_none()
             && self.lighting_verification_frame.is_none()
             && self.fills.verification_frame.is_none()
+            && self.placement.verification_frame.is_none()
         {
             self.cancel();
             return;
@@ -1082,7 +1099,7 @@ impl SketchApp {
                 continue;
             }
             if sample.contact {
-                if sample.eraser {
+                if sample.eraser && !self.placement.active {
                     self.erase(sample.position, rect);
                 } else {
                     self.pointer_action_with_tilt(
@@ -1193,7 +1210,19 @@ impl eframe::App for SketchApp {
             self.finish();
             self.request(Pending::Close);
         }
+        let was_placing = self.placement.active;
         if !self.confirm
+            && !self.show_help
+            && !self.recovery_prompt
+            && !self.tutorial.offer
+            && !self.close_after_recovery
+            && !ctx.wants_keyboard_input()
+        {
+            self.placement_shortcuts(ctx);
+        }
+        if !self.confirm
+            && !self.placement.active
+            && !was_placing
             && !self.show_help
             && !self.tutorial.offer
             && !self.recovery_prompt
@@ -1277,7 +1306,14 @@ impl eframe::App for SketchApp {
                 let enabled = !self.confirm
                     && !self.recovery_prompt
                     && !self.close_after_recovery
-                    && !self.tutorial.offer;
+                    && !self.tutorial.offer
+                    && !self.placement.active;
+                if ui
+                    .add_enabled(enabled, egui::Button::new("Pick plane [K]"))
+                    .clicked()
+                {
+                    self.begin_placement();
+                }
                 if ui
                     .add_enabled(enabled, egui::Button::new("Scene"))
                     .clicked()
@@ -1398,7 +1434,9 @@ impl eframe::App for SketchApp {
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(
-                        self.tutorial.practice.is_none() && !self.tutorial.offer,
+                        self.tutorial.practice.is_none()
+                            && !self.tutorial.offer
+                            && !self.placement.active,
                         egui::Button::new("Recovery"),
                     )
                     .clicked()
@@ -1420,7 +1458,8 @@ impl eframe::App for SketchApp {
                         !self.confirm
                             && !self.recovery_prompt
                             && !self.close_after_recovery
-                            && !self.tutorial.offer,
+                            && !self.tutorial.offer
+                            && !self.placement.active,
                         |ui| self.tools(ui),
                     );
                 });
@@ -1436,6 +1475,7 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.verify_placement(ctx, rect);
                 self.verify_fills(ctx, rect);
                 self.verify_lighting(ctx, rect);
                 self.verify_tutorial(ctx, rect);
@@ -1460,7 +1500,9 @@ impl eframe::App for SketchApp {
                 let id = self.renderer.render(
                     &self.doc,
                     &self.camera,
-                    self.guide_preview(),
+                    self.placement_preview()
+                        .map(GuidePreview::Plane)
+                        .unwrap_or_else(|| self.guide_preview()),
                     [
                         (rect.width() * scale).round() as u32,
                         (rect.height() * scale).round() as u32,
@@ -1475,6 +1517,7 @@ impl eframe::App for SketchApp {
                 self.fill_overlay(ui, rect);
                 self.selection_overlay(ui, rect);
                 self.plane_overlay(ui, rect);
+                self.placement_overlay(ui, rect);
                 let badge =
                     Rect::from_min_size(rect.min + egui::vec2(20.0, 20.0), egui::vec2(200.0, 32.0));
                 ui.painter()
@@ -1567,10 +1610,11 @@ impl eframe::App for SketchApp {
                     });
                 });
         }
+        self.show_placement(ctx);
         self.show_lighting(ctx);
         self.show_tutorial(ctx);
         if self.show_help {
-            egui::Window::new("Drawing with a tablet").default_width(540.0).max_height((ctx.screen_rect().height()-80.0).max(200.0)).vscroll(true).show(ctx,|ui|{self.tutorial_help(ui);ui.separator();if ui.button("Close help").clicked(){self.show_help=false;}ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-mark eraser   P: planar fill   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
+            egui::Window::new("Drawing with a tablet").default_width(540.0).max_height((ctx.screen_rect().height()-80.0).max(200.0)).vscroll(true).show(ctx,|ui|{self.tutorial_help(ui);ui.separator();if ui.button("Close help").clicked(){self.show_help=false;}ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-mark eraser   P: planar fill   K: pick plane   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
         }
         self.show_recovery(ctx);
         self.tick_recovery(ctx);
@@ -1591,6 +1635,7 @@ impl eframe::App for SketchApp {
             || self.tutorial.verification_frame.is_some()
             || self.lighting_verification_frame.is_some()
             || self.fills.verification_frame.is_some()
+            || self.placement.verification_frame.is_some()
             || self.close_after_recovery
             || self.recovery.busy()
         {

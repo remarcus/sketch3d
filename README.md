@@ -98,7 +98,7 @@ The immediate hardware test is pressure and tilt on the Wacom, followed by the K
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
-Next planned work is placing drawing planes on existing artwork (SKETCH-019). Standalone benchmarks and hardware validation follow feature work. Soft/transparent brushes follow separately; brush-library importing remains deferred.
+Next planned work is presentation background and artwork-only view (SKETCH-020). Standalone benchmarks and hardware validation follow feature work. Soft/transparent brushes follow separately; brush-library importing remains deferred.
 
 ## License
 
@@ -349,3 +349,16 @@ Use V to select a filled interior; concave cutouts stay unselectable. Fills supp
 **Open painted-house study** in the Fill tool opens an original editable wall/roof/window/porch example, including a concave porch and separate outlines. The original Japanese starter remains available through House. GLB exports fills as double-sided triangle meshes, bakes the offset, and adds optional planar-fill/offset metadata. It contains no UI draft, guides, lights, or presentation ground.
 
 Developer check: `cargo run --release -- --verify-fills` writes `verification/fills-report.json`, `fills-preview.png`, and `filled-house.png`. The export fixture set includes `fills.glb` for Khronos validation and Blender import. Forced-crash recovery verification now includes a planar fill alongside pressure/tilt/textured ink. Native version 7 validation bounds contour complexity and rejects malformed filled geometry; legacy files treat any unknown fill extension as ordinary ink, matching their original rendering.
+## Place a drawing plane on artwork
+
+Press **K**, use **Pick plane [K]** in the toolbar, or **Place plane on artwork** in Drawing guide. Click/tap a visible artwork surface to propose a plane. The grid and pink normal marker preview it; your current guide and artwork remain unchanged until you choose **Apply / Enter** or **Apply & face plane**. Click another surface to repick. **Cancel / Escape** keeps the previous guide, including cylinder/revolved mode and visibility. Space-drag and mouse navigation remain available while picking.
+
+**Flip normal** reverses the proposed front side. **Normal offset** moves the plane along that normal; its default 0.005 world units gives a small clearance for new ink. Zero places the plane at the actual surface point. Applying switches to a visible plane guide; F faces it later if desired. Accepted planes are independent workspace guides: moving or deleting the original artwork does not move the plane. These settings are temporary, with no native/recovery/GLB schema changes (document version stays 7).
+
+Picking uses the nearest visible triangle surface, including two-sided filled faces, ribbon/chisel faces, round surfaces, and caps. It respects the same repeated nearest-sampled mask holes as the renderer, so a hole can expose a reference behind it. Hidden layers, guide wireframes, and the presentation ground are excluded. Locked visible artwork is allowed as a read-only reference; it stays locked, and drawing still requires an editable active layer.
+
+Round strokes produce a local tangent plane using interpolated surface normals; flat faces use their face normal. The initial normal faces the viewing ray, with a stable projected tangent where possible. A cap or sharp edge can have an ambiguous orientation—pick a broad interior area or repick/flip. Very thin marks need an actual surface hit, with no selection halo; zoom in when necessary. This places a plane, rather than fitting an entire building face or continuously wrapping new ink onto arbitrary artwork.
+
+Placement mode pauses ordinary drawing, selection, and edit shortcuts; the preview panel remains interactive. Resolve an unfinished fill contour before starting. Leaving for another document or practice/close action ends placement without applying the preview. Native Save and GLB Export never include a pending preview. Existing manual planes, plane-from-view, presets, and numeric controls remain available after applying/cancelling.
+
+Developer check: `cargo run --release -- --verify-placement` writes `verification/placement-preview.png` and `placement-report.json`. Unit checks cover rotated/locked/hidden references, nearest hits, back faces, round/chisel surfaces and caps, misses without a halo, and masked holes. The graphical workflow verifies cancellation of an existing curved guide, flip/offset, unchanged document/history/GLB bytes, alignment, and new ink constrained to the accepted plane. Physical tablet and performance campaigns remain deferred.

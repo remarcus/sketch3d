@@ -10,6 +10,7 @@ mod geometry;
 mod gizmo;
 mod input;
 mod lighting;
+mod placement;
 mod polygon;
 mod presets;
 mod presets_ui;

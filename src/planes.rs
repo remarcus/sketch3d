@@ -11,6 +11,9 @@ impl SketchApp {
             "Drawing plane placed through the camera focus, facing the current view.".into();
     }
     pub(super) fn plane_controls(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Place plane on artwork [K]").clicked() {
+            self.begin_placement();
+        }
         ui.horizontal(|ui| {
             if ui
                 .selectable_label(!self.use_cylinder && !self.use_revolved, "Plane")
@@ -88,7 +91,7 @@ impl SketchApp {
                     egui::DragValue::new(&mut self.guide.anchor[i])
                         .prefix(*label)
                         .speed(0.02)
-                        .range(-1000.0..=1000.0),
+                        .range(-20000.0..=20000.0),
                 );
             }
         });
@@ -127,7 +130,8 @@ impl SketchApp {
         }
     }
     pub(super) fn plane_overlay(&self, ui: &egui::Ui, rect: Rect) {
-        if self.use_revolved
+        if self.placement.active
+            || self.use_revolved
             || self.use_cylinder
             || !self.guide_visible
             || self.guide.preset().is_some()
