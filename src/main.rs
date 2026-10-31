@@ -11,6 +11,7 @@ mod gizmo;
 mod input;
 mod lighting;
 mod palette;
+mod performance_benchmark;
 mod placement;
 mod polygon;
 mod presentation;
@@ -28,6 +29,13 @@ mod texture_check;
 mod tutorial;
 
 fn main() -> eframe::Result {
+    if std::env::args().any(|a| a == "--benchmark-performance") {
+        if let Err(error) = performance_benchmark::run() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--benchmark-textures") {
         if let Err(error) = texture_check::run() {
             eprintln!("{error}");

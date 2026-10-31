@@ -215,11 +215,18 @@ pub fn intersect_plane(origin: Vec3, direction: Vec3, plane: DrawingPlane) -> Op
     Some(origin + direction * t)
 }
 pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
-    let mut out = Vec::new();
+    let point_count = stroke.points.len();
+    let mut out = Vec::with_capacity(if point_count <= 1 {
+        36
+    } else {
+        (point_count - 1) * 48 + 48
+    });
     if stroke.points.is_empty() {
         return out;
     }
-    let mut rings = Vec::with_capacity(stroke.points.len());
+    // A round brush ring always has eight vertices. Fixed-size arrays avoid
+    // one heap allocation per sample on long strokes.
+    let mut rings: Vec<[Vertex; 8]> = Vec::with_capacity(point_count);
     let mut previous_axis: Option<Vec3> = None;
     let distances = crate::dynamics::arc_lengths(&stroke.points);
     let total = distances.last().copied().unwrap_or(0.0);
@@ -260,19 +267,17 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
                 stroke.brush.dynamics.taper_start,
                 stroke.brush.dynamics.taper_end,
             );
-        let ring: Vec<Vertex> = (0..8)
-            .map(|j| {
-                let angle = j as f32 * std::f32::consts::TAU / 8.0;
-                let normal = a * angle.cos() + b * angle.sin();
-                Vertex {
-                    position: (p.position + normal * radius).to_array(),
-                    normal: normal.to_array(),
-                    color: stroke.color,
-                    uv: [distances[i] / stroke.brush.texture.scale, j as f32 / 8.0],
-                    opacity: vertex_opacity(stroke, p.pressure, normal, stroke.brush.normal),
-                }
-            })
-            .collect();
+        let ring = std::array::from_fn(|j| {
+            let angle = j as f32 * std::f32::consts::TAU / 8.0;
+            let normal = a * angle.cos() + b * angle.sin();
+            Vertex {
+                position: (p.position + normal * radius).to_array(),
+                normal: normal.to_array(),
+                color: stroke.color,
+                uv: [distances[i] / stroke.brush.texture.scale, j as f32 / 8.0],
+                opacity: vertex_opacity(stroke, p.pressure, normal, stroke.brush.normal),
+            }
+        });
         rings.push(ring);
     }
     if rings.len() == 1 {
