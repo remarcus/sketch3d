@@ -222,6 +222,14 @@ impl SketchApp {
                     self.dirty = true;
                     self.record_recovery_edit();
                     self.camera.align_guide(self.guide);
+                    self.start_line_tool();
+                    self.line.constraint = super::line_tool::Constraint::Horizontal;
+                    let a = rect.center() + egui::vec2(-70.0, -65.0);
+                    let b = rect.center() + egui::vec2(70.0, -45.0);
+                    self.line_input(a, 0.3, None, rect, true);
+                    self.line_input(b, 0.8, None, rect, false);
+                    self.release_line(b, rect);
+                    self.cancel_line_tool();
                     self.brush.kind = BrushKind::Chisel;
                     self.brush.texture.kind = crate::texture::TextureKind::Grain;
                     self.brush.texture.seed = 739;

@@ -291,6 +291,7 @@ impl SketchApp {
         });
         if mods.command {
             if a {
+                self.cancel_line_tool();
                 self.cancel_fill_tool();
                 self.finish();
                 self.select_mode = true;
@@ -307,6 +308,7 @@ impl SketchApp {
             }
         } else {
             if v {
+                self.cancel_line_tool();
                 self.cancel_fill_tool();
                 self.finish();
                 self.select_mode = true;

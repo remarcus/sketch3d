@@ -98,7 +98,7 @@ The immediate hardware test is pressure and tilt on the Wacom, followed by the K
 
 See [TASKS.md](TASKS.md) for the local feature backlog, [ARCHITECTURE.md](ARCHITECTURE.md) for implementation notes, and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
-Next planned work is orthographic views and straight-line assistance (SKETCH-021). Standalone benchmarks and hardware validation follow feature work. Soft/transparent brushes follow separately; brush-library importing remains deferred.
+Next planned work is thin-line rendering quality (SKETCH-022). Standalone benchmarks and hardware validation follow feature work. Soft/transparent brushes follow separately; brush-library importing remains deferred.
 
 ## License
 
@@ -381,4 +381,13 @@ Open **View** to switch Perspective/Orthographic and choose Front, Side, Top, or
 
 World views retain the camera focus and do not change the drawing guide; use F to face the active guide or Shift+F to make a guide from the view. Camera settings are temporary, excluded from native Save/recovery/GLB, and most sample/New/reset actions restore perspective defaults. Orthographic depth covers 500 world units either side of the focus plane and does not change while zooming. Very large/deep scenes may need a different focus.
 
-`--verify-views` checks projection framing/rays, pixel scale, orthographic picking/drawing/transforms, and unchanged native/GLB artwork; it writes `verification/views-preview.png` and `views-report.json`. Straight-line assistance follows as a separate part of SKETCH-021.
+`--verify-views` checks projection framing/rays, pixel scale, orthographic picking/drawing/transforms, and unchanged native/GLB artwork; it writes `verification/views-preview.png` and `views-report.json`. Straight-line assistance is described below.
+## Straight-line drawing assistance
+
+Select **Straight line [L]**, press on a plane guide, drag to preview, and release to create one editable ink mark. Choose **Free angle**, plane-local **Horizontal / Vertical**, or **Angle snap** with a 1–90° step. Constraints follow the plane captured at contact, including rotated planes, rather than screen axes. Freehand B remains the default; cylinder/revolved guides use freehand surface drawing and cannot create a straight line through their interior.
+
+The line freezes the current color, radius, brush shape, texture, dynamics, plane, layer, constraint, and angle step at contact. Start/end contact pressure and optional world tilt are retained and interpolated through ordinary brush geometry; pen-up updates position without replacing pressure with a hover/zero value. Mouse input uses fixed pressure. Taper/textures work normally; stabilization is bypassed for exact endpoints.
+
+Escape, cancelled contact, leaving the canvas, releasing over UI, or navigation/guide/view changes cancel an unfinished preview. Zero-length lines create no mark. Resolve a line preview before Save/Export, document switches, plane placement, or artwork-only mode. Completed lines support normal selection, groups, duplication, transforms, deletion, native save/recovery, and GLB export; creation is one undo step. No new document fields or version change are needed (native v7).
+
+`--verify-lines` tests actual mouse event ordering, exact release endpoints, rotated orthographic constraints, pressure/tilt/taper capture, cancellation, protected layers, native reload, and GLB encoding, producing `verification/lines-preview.png` and `lines-report.json`. Export fixtures include `lines.glb`; forced-crash recovery includes a completed constrained line alongside fills and textured pen ink. Physical hardware testing and dedicated benchmarks remain deferred.

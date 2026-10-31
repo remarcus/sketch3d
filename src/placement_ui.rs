@@ -20,7 +20,7 @@ impl Default for PlacementUi {
 }
 impl SketchApp {
     pub(super) fn begin_placement(&mut self) {
-        if self.fills.draft.is_some() {
+        if self.fills.draft.is_some() || self.line.draft.is_some() {
             self.status = "Finish or cancel the fill contour before placing a plane.".into();
             return;
         }

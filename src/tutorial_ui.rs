@@ -12,6 +12,9 @@ pub(super) struct TutorialUi {
     pub verification_frame: Option<u32>,
 }
 pub(super) struct Practice {
+    line_enabled: bool,
+    line_constraint: super::line_tool::Constraint,
+    line_step: f32,
     fill_enabled: bool,
     fill_offset: f32,
     lighting: crate::lighting::Lighting,
@@ -112,6 +115,9 @@ impl SketchApp {
             );
         }
         self.tutorial.practice = Some(Practice {
+            line_enabled: self.line.enabled,
+            line_constraint: self.line.constraint,
+            line_step: self.line.step,
             fill_enabled: self.fills.enabled,
             fill_offset: self.fills.offset,
             lighting: self.renderer.lighting,
@@ -145,6 +151,7 @@ impl SketchApp {
             layer_name: std::mem::take(&mut self.layer_name),
         });
         self.renderer.lighting = Default::default();
+        self.cancel_line_tool();
         self.cancel_fill_tool();
         self.fills.offset = 0.003;
         self.guide = DrawingPlane::from_preset(Plane::Front);
@@ -180,6 +187,10 @@ impl SketchApp {
             return;
         };
         self.renderer.lighting = p.lighting;
+        self.line.enabled = p.line_enabled;
+        self.line.constraint = p.line_constraint;
+        self.line.step = p.line_step;
+        self.line.draft = None;
         self.fills.enabled = p.fill_enabled;
         self.fills.offset = p.fill_offset;
         self.fills.draft = None;

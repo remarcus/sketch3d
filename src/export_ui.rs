@@ -27,7 +27,7 @@ impl SketchApp {
                 .any(|s| !s.points.is_empty() && (!selected || self.selected.contains(&s.id)))
     }
     pub(super) fn export_dialog(&mut self, selected: bool, ctx: &egui::Context) {
-        if self.fills.draft.is_some() {
+        if self.fills.draft.is_some() || self.line.draft.is_some() {
             self.status = "Close or cancel the draft contour before exporting.".into();
             return;
         }

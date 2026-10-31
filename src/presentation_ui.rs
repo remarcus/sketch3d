@@ -103,7 +103,8 @@ impl SketchApp {
             self.leave_artwork();
             return;
         }
-        if self.fills.draft.is_some()
+        if self.line.draft.is_some()
+            || self.fills.draft.is_some()
             || self.placement.active
             || self.tutorial.practice.is_some()
             || self.tutorial.offer

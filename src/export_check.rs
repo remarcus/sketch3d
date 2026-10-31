@@ -445,6 +445,36 @@ pub fn run() -> Result<(), String> {
         .join("verification/exports");
     std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     let pressure = pressure_fixture();
+    let mut lines = pressure_fixture();
+    lines.strokes.truncate(2);
+    lines.strokes[0].points = vec![
+        Point {
+            position: Vec3::new(-2.0, 0.0, 0.0),
+            pressure: 0.2,
+            tilt: None,
+        },
+        Point {
+            position: Vec3::new(2.0, 0.0, 0.0),
+            pressure: 0.9,
+            tilt: None,
+        },
+    ];
+    lines.strokes[0].brush.kind = BrushKind::Ribbon;
+    lines.strokes[0].brush.dynamics.taper_start = 0.2;
+    lines.strokes[0].brush.dynamics.taper_end = 0.3;
+    lines.strokes[1].points = vec![
+        Point {
+            position: Vec3::new(-1.0, 1.0, 0.0),
+            pressure: 1.0,
+            tilt: None,
+        },
+        Point {
+            position: Vec3::new(0.5, 2.5, 0.0),
+            pressure: 1.0,
+            tilt: None,
+        },
+    ];
+    lines.strokes[1].brush.kind = BrushKind::Chisel;
     let fixtures = vec![
         ("house", scenes::japanese_house(), None),
         ("lantern", scenes::cylindrical_lantern(), None),
@@ -456,6 +486,7 @@ pub fn run() -> Result<(), String> {
         ("vase", vase_fixture(), None),
         ("groups", grouped_fixture(), None),
         ("fills", crate::polygon::study(), None),
+        ("lines", lines, None),
         ("selection", pressure, Some(HashSet::from([1002]))),
     ];
     let mut cases = Vec::new();

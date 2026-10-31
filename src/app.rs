@@ -29,6 +29,10 @@ mod groups_ui;
 mod layers_ui;
 #[path = "lighting_ui.rs"]
 mod lighting_ui;
+#[path = "line_checks.rs"]
+mod line_checks;
+#[path = "line_tool.rs"]
+mod line_tool;
 #[path = "placement_checks.rs"]
 mod placement_checks;
 #[path = "placement_ui.rs"]
@@ -77,6 +81,7 @@ enum Pending {
 }
 
 pub struct SketchApp {
+    line: line_tool::LineUi,
     show_view: bool,
     view_verification_frame: Option<u32>,
     presentation: presentation_ui::PresentationUi,
@@ -204,6 +209,7 @@ impl SketchApp {
         };
         let recovery = crate::recovery::Recovery::new(recovery_path, cc.egui_ctx.clone());
         let mut app = Self {
+            line: Default::default(),
             show_view: false,
             view_verification_frame: None,
             presentation: presentation_ui::PresentationUi::new(),
@@ -289,7 +295,11 @@ impl SketchApp {
             last_export_result: None,
             export_snapshot: None,
         };
-        if std::env::args().any(|a| a == "--verify-views") {
+        if std::env::args().any(|a| a == "--verify-lines") {
+            app.verification_frame = None;
+            app.line.verification_frame = Some(0);
+            app.load_house();
+        } else if std::env::args().any(|a| a == "--verify-views") {
             app.verification_frame = None;
             app.view_verification_frame = Some(0);
             app.load_house();
@@ -379,6 +389,7 @@ impl SketchApp {
         app
     }
     fn finish(&mut self) {
+        self.cancel_line();
         self.resume_ink = false;
         self.commit_transform();
         let tail = self.stabilizer.finish();
@@ -405,6 +416,7 @@ impl SketchApp {
         }
     }
     fn cancel(&mut self) {
+        self.cancel_line();
         self.resume_ink = false;
         self.cancel_transform();
         self.stabilizer.reset();
@@ -577,6 +589,10 @@ impl SketchApp {
         }
     }
     fn save(&mut self, save_as: bool) -> bool {
+        if self.line.draft.is_some() {
+            self.status = "Release or cancel the line preview before saving.".into();
+            return false;
+        }
         self.cancel_placement();
         if self.fills.draft.is_some() {
             self.status = "Close or cancel the draft contour before saving.".into();
@@ -630,6 +646,10 @@ impl SketchApp {
         }
     }
     fn request(&mut self, mut pending: Pending) {
+        if self.line.draft.is_some() {
+            self.status = "Release or cancel the line preview before switching drawings.".into();
+            return;
+        }
         self.leave_artwork();
         self.cancel_placement();
         if self.fills.draft.is_some() {
@@ -773,12 +793,13 @@ impl SketchApp {
         ui.horizontal_wrapped(|ui| {
             if ui
                 .selectable_label(
-                    !self.eraser && !self.select_mode && !self.fills.enabled,
+                    !self.eraser && !self.select_mode && !self.fills.enabled && !self.line.enabled,
                     "Brush [B]",
                 )
                 .clicked()
             {
                 self.finish();
+                self.cancel_line_tool();
                 self.cancel_fill_tool();
                 self.eraser = false;
                 self.select_mode = false;
@@ -788,6 +809,7 @@ impl SketchApp {
                 .clicked()
             {
                 self.finish();
+                self.cancel_line_tool();
                 self.cancel_fill_tool();
                 self.eraser = true;
                 self.select_mode = false;
@@ -797,6 +819,7 @@ impl SketchApp {
                 .clicked()
             {
                 self.finish();
+                self.cancel_line_tool();
                 self.cancel_fill_tool();
                 self.eraser = false;
                 self.select_mode = true;
@@ -807,10 +830,18 @@ impl SketchApp {
             .clicked()
         {
             self.finish();
+            self.cancel_line_tool();
             self.fills.enabled = true;
             self.eraser = false;
             self.select_mode = false;
         }
+        if ui
+            .selectable_label(self.line.enabled && !self.select_mode, "Straight line [L]")
+            .clicked()
+        {
+            self.start_line_tool();
+        }
+        self.line_controls(ui);
         self.fill_controls(ui);
         ui.add_space(6.0);
         if self.select_mode {
@@ -1029,6 +1060,8 @@ impl SketchApp {
             self.select_pointer(pos, rect, begin, shift);
         } else if self.eraser {
             self.erase(pos, rect);
+        } else if self.line.enabled {
+            self.line_input(pos, pressure, tilt, rect, begin);
         } else if self.fills.enabled {
             if begin {
                 self.fill_corner(pos, rect);
@@ -1063,6 +1096,7 @@ impl SketchApp {
             && self.placement.verification_frame.is_none()
             && self.presentation.verification_frame.is_none()
             && self.view_verification_frame.is_none()
+            && self.line.verification_frame.is_none()
         {
             self.cancel();
             return;
@@ -1106,6 +1140,13 @@ impl SketchApp {
                 continue;
             }
             if sample.phase == Phase::Up {
+                if self.line.draft.is_some() {
+                    if inside {
+                        self.release_line(sample.position, rect);
+                    } else {
+                        self.cancel_line();
+                    }
+                }
                 if self.drag.is_some() {
                     self.select_pointer(sample.position, rect, false, shift);
                 }
@@ -1195,6 +1236,13 @@ impl SketchApp {
                                 self.select_pointer(pos, rect, false, shift);
                             }
                             self.mouse_down = false;
+                            if self.line.draft.is_some() {
+                                if inside_canvas(pos) {
+                                    self.release_line(pos, rect);
+                                } else {
+                                    self.cancel_line();
+                                }
+                            }
                             self.finish();
                         }
                         egui::Event::PointerGone => {
@@ -1274,6 +1322,7 @@ impl eframe::App for SketchApp {
             && !self.close_after_recovery
             && !ctx.wants_keyboard_input()
         {
+            self.line_shortcuts(ctx);
             self.fill_shortcuts(ctx);
             self.group_shortcuts(ctx);
             self.selection_shortcuts(ctx);
@@ -1312,12 +1361,14 @@ impl eframe::App for SketchApp {
                 }
             } else {
                 if b {
+                    self.cancel_line_tool();
                     self.cancel_fill_tool();
                     self.finish();
                     self.eraser = false;
                     self.select_mode = false;
                 }
                 if e {
+                    self.cancel_line_tool();
                     self.cancel_fill_tool();
                     self.finish();
                     self.eraser = true;
@@ -1535,6 +1586,7 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.verify_lines(ctx, rect);
                 self.verify_views(ctx, rect);
                 self.verify_presentation(ctx, rect);
                 self.verify_placement(ctx, rect);
@@ -1582,6 +1634,7 @@ impl eframe::App for SketchApp {
                     Color32::WHITE,
                 );
                 if !self.presentation.artwork {
+                    self.line_overlay(ui, rect);
                     self.fill_overlay(ui, rect);
                     self.selection_overlay(ui, rect);
                     self.plane_overlay(ui, rect);
@@ -1710,6 +1763,7 @@ impl eframe::App for SketchApp {
             || self.placement.verification_frame.is_some()
             || self.presentation.verification_frame.is_some()
             || self.view_verification_frame.is_some()
+            || self.line.verification_frame.is_some()
             || self.close_after_recovery
             || self.recovery.busy()
         {

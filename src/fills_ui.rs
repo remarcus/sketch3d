@@ -198,6 +198,7 @@ impl SketchApp {
             )
         });
         if p && !ctx.input(|i| i.modifiers.command || i.modifiers.alt) {
+            self.cancel_line_tool();
             self.finish();
             self.fills.enabled = true;
             self.select_mode = false;
@@ -252,6 +253,7 @@ impl SketchApp {
     pub(super) fn load_fill_study(&mut self) {
         self.reset_recovery_document();
         self.cancel();
+        self.cancel_line_tool();
         self.cancel_fill_tool();
         self.doc = polygon::study();
         self.next_id = self.doc.strokes.iter().map(|s| s.id).max().unwrap_or(0) + 1;
