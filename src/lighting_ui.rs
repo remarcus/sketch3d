@@ -16,7 +16,7 @@ impl SketchApp {
         egui::Window::new("Scene lighting").open(&mut self.show_scene).default_width(300.0)
             .max_height((ctx.screen_rect().height()-100.0).max(200.0)).vscroll(true)
             .anchor(egui::Align2::RIGHT_TOP,egui::vec2(-255.0,60.0)).show(ctx,|ui| {
-                artwork_requested = self.presentation.controls(ui);
+                artwork_requested = self.presentation.controls(ui, &mut self.palette_ui);
                 let light=&mut self.renderer.lighting;
                 ui_style::section(ui, "Directional light");
                 ui_style::slider_row(ui, "Direction", "light-azimuth", &mut light.azimuth, -180.0..=180.0, 1.0, "°");
@@ -40,7 +40,10 @@ impl SketchApp {
                         ui_style::numeric_row(ui, &format!("Center {axis}"), ("ground-center", i), &mut light.ground_center[i], Some(-20_000.0..=20_000.0), "wu");
                     }
                     ui_style::numeric_row(ui, "Size", "ground-size", &mut light.ground_size, Some(0.1..=40_000.0), "wu");
-                    ui.horizontal(|ui| {ui.label("Color");ui.color_edit_button_rgb(&mut light.ground_color);});
+                    ui.horizontal(|ui| {
+                        ui.label("Ground color");
+                        self.palette_ui.color_button(ui, super::color_editor::ColorTarget::Ground, &light.ground_color);
+                    });
                 });
                 if ui.button("Reset scene lighting").clicked() {*light=Lighting::default();}
                 ui.separator();ui.small("Lighting and ground reset on restart. Background uses Remember background. Native Save, recovery, and GLB export contain artwork only. The ground is not paintable or selectable; use a drawing guide for ink.");

@@ -6,6 +6,7 @@ use crate::{
     renderer::SceneRenderer,
 };
 use crate::{editing::Edit, gizmo::Mode};
+use color_editor::{ColorAction, ColorTarget};
 use eframe::egui::{self, Color32, Key, PointerButton, Pos2, Rect, RichText, Vec2};
 use glam::Vec3;
 use std::collections::HashSet;
@@ -15,6 +16,8 @@ mod brush_dynamics;
 mod brush_textures;
 #[path = "brushes.rs"]
 mod brushes;
+#[path = "color_editor.rs"]
+mod color_editor;
 #[path = "cylinders.rs"]
 mod cylinders;
 #[path = "export_ui.rs"]
@@ -922,8 +925,8 @@ impl SketchApp {
                         "%",
                     );
                     ui_style::field_row(ui, "Color", |ui| {
-                        ui.color_edit_button_rgb(&mut self.color)
-                            .on_hover_text("Brush color")
+                        self.palette_ui
+                            .color_button(ui, ColorTarget::Brush, &self.color)
                     });
                 } else {
                     ui.label("Erase whole strokes");
@@ -939,11 +942,7 @@ impl SketchApp {
         if self.select_mode {
             self.group_controls(ui);
         }
-        match self.palette_ui.controls(ui, &mut self.color) {
-            palette_ui::PaletteAction::StartSampling => self.start_color_sampling(),
-            palette_ui::PaletteAction::CancelSampling => self.cancel_color_sampling(),
-            palette_ui::PaletteAction::None => {}
-        }
+        self.palette_ui.controls(ui, &mut self.color);
         self.tutorial_hint(ui, "Brush library");
         if !self.fills.enabled {
             self.preset_controls(ui);
@@ -959,26 +958,6 @@ impl SketchApp {
             if !self.fills.enabled {
                 self.brush_controls(ui);
             }
-            ui.label("INK COLOR");
-            ui.color_edit_button_rgb(&mut self.color);
-            ui.horizontal_wrapped(|ui| {
-                for color in [
-                    [0.17, 0.82, 0.74],
-                    [0.96, 0.55, 0.30],
-                    [0.47, 0.58, 0.95],
-                    [0.94, 0.80, 0.39],
-                    [0.92, 0.94, 0.97],
-                ] {
-                    let fill = Color32::from_rgb(
-                        (color[0] * 255.0) as u8,
-                        (color[1] * 255.0) as u8,
-                        (color[2] * 255.0) as u8,
-                    );
-                    if ui.add(egui::Button::new("  ").fill(fill)).clicked() {
-                        self.color = color;
-                    }
-                }
-            });
             ui.add(
                 egui::Slider::new(&mut self.radius, 0.001..=1.0)
                     .text(if self.brush.kind == BrushKind::Round {
@@ -1361,6 +1340,24 @@ impl SketchApp {
         }
     }
 
+    fn show_color_editor(&mut self, ctx: &egui::Context) {
+        match self.palette_ui.show_color_editor(ctx) {
+            ColorAction::None => {}
+            ColorAction::Sample(target) => self.start_color_sampling_for(target),
+            ColorAction::Apply(target, color) => {
+                self.finish();
+                color_editor::apply_target(
+                    target,
+                    color,
+                    &mut self.color,
+                    &mut self.presentation.preferences.background,
+                    &mut self.renderer.lighting.ground_color,
+                );
+                self.status = format!("Applied {}.", target.label());
+            }
+        }
+    }
+
     fn navigate(&mut self, delta: Vec2, pan: bool, zoom: bool, rect: Rect) {
         self.finish();
         if zoom {
@@ -1378,6 +1375,14 @@ impl SketchApp {
     }
 
     fn start_color_sampling(&mut self) {
+        self.start_color_sampling_inner(ColorTarget::Brush, false);
+    }
+
+    fn start_color_sampling_for(&mut self, target: ColorTarget) {
+        self.start_color_sampling_inner(target, true);
+    }
+
+    fn start_color_sampling_inner(&mut self, target: ColorTarget, staged: bool) {
         self.finish();
         self.cancel_placement();
         self.cancel_line_tool();
@@ -1385,17 +1390,31 @@ impl SketchApp {
         self.select_mode = false;
         self.eraser = false;
         self.sampling_contact = false;
-        self.palette_ui.sampling = true;
-        self.status = "Color sample active. Click visible artwork or Escape to cancel.".into();
+        if staged {
+            self.palette_ui.start_sampling(target);
+        } else {
+            self.palette_ui.sampling_target = target;
+            self.palette_ui.staged_sampling = false;
+            self.palette_ui.sampling = true;
+        }
+        self.status = format!(
+            "Sampling {}. Click visible artwork or Escape to cancel.",
+            target.label().to_lowercase()
+        );
     }
 
     fn cancel_color_sampling(&mut self) {
-        self.palette_ui.sampling = false;
+        let staged = self.palette_ui.staged_sampling;
+        self.palette_ui.cancel_editor_sampling();
         self.select_mode = false;
         self.eraser = false;
         self.line.enabled = false;
         self.fills.enabled = false;
-        self.status = "Color sampling cancelled. Brush ready.".into();
+        self.status = if staged {
+            "Color sampling cancelled. The color editor is ready.".into()
+        } else {
+            "Color sampling cancelled. Brush ready.".into()
+        };
     }
     fn pointer_action_with_tilt(
         &mut self,
@@ -1419,9 +1438,21 @@ impl SketchApp {
                     .and_then(|id| self.doc.strokes.iter().find(|stroke| stroke.id == id))
                     .map(|stroke| stroke.color);
                 if let Some(color) = sampled {
-                    self.color = color;
-                    self.palette_ui.sampling = false;
-                    self.status = "Artwork color sampled. Ready to draw with it.".into();
+                    if self.palette_ui.staged_sampling {
+                        self.palette_ui.set_color_from_sample(color);
+                        self.status =
+                            "Artwork color staged. Apply it in the color editor or cancel.".into();
+                    } else {
+                        color_editor::apply_target(
+                            self.palette_ui.sampling_target,
+                            color,
+                            &mut self.color,
+                            &mut self.presentation.preferences.background,
+                            &mut self.renderer.lighting.ground_color,
+                        );
+                        self.palette_ui.sampling = false;
+                        self.status = "Artwork color sampled. Ready to draw with it.".into();
+                    }
                 } else {
                     self.status =
                         "No visible artwork at that point. Click a stroke or fill.".into();
@@ -1482,7 +1513,9 @@ impl SketchApp {
             || self.show_help
             || self.tutorial.offer
             || self.recovery_prompt
-            || self.close_after_recovery;
+            || self.close_after_recovery
+            || self.preset_ui.browser_is_open()
+            || self.palette_ui.color_editor_active();
         let inside_canvas = |p| {
             rect.contains(p)
                 && ctx
@@ -1689,6 +1722,8 @@ impl eframe::App for SketchApp {
             && !self.close_after_recovery
             && self.repeat.is_none()
             && !self.palette_ui.sampling
+            && !self.palette_ui.color_editor_active()
+            && !self.preset_ui.browser_is_open()
             && !ctx.wants_keyboard_input()
         {
             self.view_shortcuts(ctx);
@@ -1702,6 +1737,8 @@ impl eframe::App for SketchApp {
             && !self.close_after_recovery
             && self.repeat.is_none()
             && !self.palette_ui.sampling
+            && !self.palette_ui.color_editor_active()
+            && !self.preset_ui.browser_is_open()
             && !ctx.wants_keyboard_input()
             && !self.presentation.artwork
             && !was_artwork
@@ -1719,6 +1756,8 @@ impl eframe::App for SketchApp {
             && !self.close_after_recovery
             && self.repeat.is_none()
             && !self.palette_ui.sampling
+            && !self.palette_ui.color_editor_active()
+            && !self.preset_ui.browser_is_open()
             && !ctx.wants_keyboard_input()
         {
             self.line_shortcuts(ctx);
@@ -2005,6 +2044,7 @@ impl eframe::App for SketchApp {
             egui::Window::new("Drawing with a tablet").default_width(540.0).max_height((ctx.screen_rect().height()-80.0).max(200.0)).vscroll(true).show(ctx,|ui|{self.tutorial_help(ui);ui.separator();if ui.button("Close help").clicked(){self.show_help=false;}ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-mark eraser   P: planar fill   I: sample artwork color (Escape cancels)\nK: pick plane   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
         }
         self.show_recovery(ctx);
+        self.show_color_editor(ctx);
         self.tick_recovery(ctx);
         self.frame_ms = start.elapsed().as_secs_f32() * 1000.0;
         if self.active.is_some()

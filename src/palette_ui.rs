@@ -1,11 +1,6 @@
+use super::color_editor::{ColorAction, ColorEditor, ColorTarget};
 use super::*;
 use crate::palette::Palette;
-
-pub(super) enum PaletteAction {
-    None,
-    StartSampling,
-    CancelSampling,
-}
 
 pub(super) struct PaletteUi {
     pub palette: Palette,
@@ -16,6 +11,9 @@ pub(super) struct PaletteUi {
     path: Result<PathBuf, String>,
     notice: Option<String>,
     verification_frame: Option<u32>,
+    color_editor: ColorEditor,
+    pub sampling_target: ColorTarget,
+    pub staged_sampling: bool,
 }
 
 impl PaletteUi {
@@ -49,6 +47,9 @@ impl PaletteUi {
             path,
             notice,
             verification_frame: own_verify.then_some(0),
+            color_editor: ColorEditor::default(),
+            sampling_target: ColorTarget::Brush,
+            staged_sampling: false,
         }
     }
 
@@ -116,32 +117,62 @@ impl PaletteUi {
         true
     }
 
-    pub fn controls(&mut self, ui: &mut egui::Ui, color: &mut [f32; 3]) -> PaletteAction {
-        let mut action = PaletteAction::None;
+    pub fn color_button(&mut self, ui: &mut egui::Ui, target: ColorTarget, color: &[f32; 3]) {
+        let editor_color = super::color_editor::target_to_linear(target, *color);
+        let response = ui
+            .add(
+                egui::Button::new(target.label())
+                    .fill(super::color_editor::color32_from_linear(editor_color))
+                    .min_size(egui::vec2(112.0, 34.0)),
+            )
+            .on_hover_text(format!("Edit {}", target.label().to_lowercase()));
+        if response.clicked() {
+            self.color_editor.begin(target, editor_color, response.id);
+        }
+    }
+
+    pub fn show_color_editor(&mut self, ctx: &egui::Context) -> ColorAction {
+        self.color_editor.show(ctx, &self.palette)
+    }
+
+    pub fn start_sampling(&mut self, target: ColorTarget) {
+        self.sampling_target = target;
+        self.sampling = true;
+        self.staged_sampling = true;
+    }
+
+    pub fn color_editor_active(&self) -> bool {
+        self.color_editor.is_open()
+    }
+
+    pub fn set_color_from_sample(&mut self, color: [f32; 3]) {
+        self.color_editor.sampled(color);
+        self.sampling = false;
+        self.staged_sampling = false;
+    }
+
+    pub fn cancel_editor_sampling(&mut self) {
+        self.color_editor.cancel_sampling();
+        self.sampling = false;
+        self.staged_sampling = false;
+    }
+
+    pub fn controls(&mut self, ui: &mut egui::Ui, color: &mut [f32; 3]) {
         ui.collapsing("Scene palette", |ui| {
-            if self.sampling {
-                if ui.button("Cancel sampling [Esc]").clicked() {
-                    action = PaletteAction::CancelSampling;
-                }
-            } else if ui.button("Sample artwork [I]").clicked() {
-                action = PaletteAction::StartSampling;
-            }
-            if self.sampling {
-                ui.label("Click visible artwork to sample its stored color. Escape cancels.");
-            }
+            ui.small("Saved swatches are available in each color editor. Recent colors last for this session only.");
             ui.horizontal_wrapped(|ui| {
                 for (index, swatch) in self.palette.swatches.iter().enumerate() {
-                    let fill = egui::Color32::from_rgb(
-                        (swatch.color[0] * 255.0).round() as u8,
-                        (swatch.color[1] * 255.0).round() as u8,
-                        (swatch.color[2] * 255.0).round() as u8,
-                    );
                     if ui
-                        .add(egui::Button::new("  ").fill(fill))
-                        .on_hover_text(&swatch.name)
+                        .add(
+                            egui::Button::new("  ")
+                                .fill(super::color_editor::color32_from_linear(swatch.color))
+                                .selected(self.selected == Some(index)),
+                        )
+                        .on_hover_text(format!("Select {} for palette management", swatch.name))
                         .clicked()
                     {
-                        self.choose_swatch(index, color);
+                        self.selected = Some(index);
+                        self.rename_name = swatch.name.clone();
                     }
                     if ui
                         .selectable_label(self.selected == Some(index), &swatch.name)
@@ -173,7 +204,6 @@ impl PaletteUi {
                 ui.small(notice);
             }
         });
-        action
     }
 }
 

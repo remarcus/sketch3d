@@ -90,12 +90,20 @@ impl PresentationUi {
         self.preferences.layout = crate::presentation::LayoutPreferences::default();
         self.schedule_layout_save();
     }
-    pub fn controls(&mut self, ui: &mut egui::Ui) -> bool {
+    pub fn controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        palette: &mut super::palette_ui::PaletteUi,
+    ) -> bool {
         let before = self.preferences.background;
         ui.strong("BACKGROUND");
         ui.horizontal(|ui| {
-            ui.label("Canvas color");
-            ui.color_edit_button_rgb(&mut self.preferences.background);
+            ui.label("Canvas background");
+            palette.color_button(
+                ui,
+                super::color_editor::ColorTarget::Background,
+                &self.preferences.background,
+            );
         });
         ui.horizontal(|ui| {
             for (label, color) in [
@@ -108,7 +116,7 @@ impl PresentationUi {
                 }
             }
             if ui.button("Reset background").clicked() {
-                self.preferences = Preferences::default();
+                self.preferences.background = Preferences::default().background;
             }
         });
         if self.preferences.background != before {
