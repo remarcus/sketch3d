@@ -375,3 +375,10 @@ Recovery and unsaved-change prompts return to the workspace. Close requests also
 Background and view mode do not change native document version 7, recovery content, GLB materials, or ink. Invalid, oversized, or newer-version preference files are retained on load; Scene shows the issue and uses defaults until you explicitly remember a valid preference. Reset changes the current session; use Remember afterward to reset the startup default as well.
 
 Developer check: `cargo run --release -- --verify-presentation` uses isolated preferences and writes `verification/presentation-report.json` and `presentation-preview.png`. GPU readback checks blue/light/dark sRGB values. Lifecycle checks cover explicit preference restart, mode entry guards, read-only contact, workspace restoration, save-failure visibility, recovery/unsaved prompts, and unchanged JSON/GLB ink. Dedicated benchmarks remain deferred.
+## Orthographic camera views
+
+Open **View** to switch Perspective/Orthographic and choose Front, Side, Top, or Face active guide. **5** toggles projection; **1 / 3 / 7** face front/side/top when no text field is active. Navigation, artwork view, guide picking, drawing, and transform handles use the chosen projection. Switching preserves framing at the camera focus plane; off-plane objects change apparent size as perspective is removed. Zoom uses the same focus-plane scale in both modes.
+
+World views retain the camera focus and do not change the drawing guide; use F to face the active guide or Shift+F to make a guide from the view. Camera settings are temporary, excluded from native Save/recovery/GLB, and most sample/New/reset actions restore perspective defaults. Orthographic depth covers 500 world units either side of the focus plane and does not change while zooming. Very large/deep scenes may need a different focus.
+
+`--verify-views` checks projection framing/rays, pixel scale, orthographic picking/drawing/transforms, and unchanged native/GLB artwork; it writes `verification/views-preview.png` and `views-report.json`. Straight-line assistance follows as a separate part of SKETCH-021.

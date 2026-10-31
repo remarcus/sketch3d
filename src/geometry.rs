@@ -79,7 +79,15 @@ impl DrawingPlane {
         }
     }
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Projection {
+    #[default]
+    Perspective,
+    Orthographic,
+}
+#[derive(Clone, Copy, Debug)]
 pub struct Camera {
+    pub projection: Projection,
     pub yaw: f32,
     pub pitch: f32,
     pub roll: f32,
@@ -89,6 +97,7 @@ pub struct Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self {
+            projection: Projection::Perspective,
             yaw: 0.35,
             pitch: 0.22,
             roll: 0.0,
@@ -130,10 +139,39 @@ impl Camera {
             ) * self.distance
     }
     pub fn matrix(&self, aspect: f32) -> Mat4 {
-        Mat4::perspective_rh(45f32.to_radians(), aspect.max(0.01), 0.01, 1000.0)
-            * Mat4::look_at_rh(self.eye(), self.target, self.basis().1)
+        let h = self.distance * 22.5f32.to_radians().tan();
+        let aspect = aspect.max(0.01);
+        let projection = match self.projection {
+            Projection::Perspective => {
+                Mat4::perspective_rh(45f32.to_radians(), aspect, 0.01, 1000.0)
+            }
+            Projection::Orthographic => Mat4::orthographic_rh(
+                -h * aspect,
+                h * aspect,
+                -h,
+                h,
+                self.distance - 500.0,
+                self.distance + 500.0,
+            ),
+        };
+        projection * Mat4::look_at_rh(self.eye(), self.target, self.basis().1)
+    }
+    pub fn world_per_pixel(&self, point: Vec3, height: f32) -> f32 {
+        let distance = match self.projection {
+            Projection::Perspective => (self.eye() - point).dot(self.basis().2).max(0.01),
+            Projection::Orthographic => self.distance,
+        };
+        2.0 * distance * 22.5f32.to_radians().tan() / height.max(1.0)
     }
     pub fn ray(&self, ndc: Vec2, aspect: f32) -> (Vec3, Vec3) {
+        if self.projection == Projection::Orthographic {
+            let (u, v, n) = self.basis();
+            let h = self.distance * 22.5f32.to_radians().tan();
+            return (
+                self.target + u * ndc.x * h * aspect.max(0.01) + v * ndc.y * h + n * 500.0,
+                -n,
+            );
+        }
         let inv = self.matrix(aspect).inverse();
         let near = inv.project_point3(ndc.extend(0.0));
         let far = inv.project_point3(ndc.extend(1.0));
@@ -141,8 +179,8 @@ impl Camera {
     }
     pub fn pan(&mut self, delta: Vec2, height: f32) {
         let (right, up, _) = self.basis();
-        self.target += (-right * delta.x + up * delta.y)
-            * (2.0 * self.distance * 22.5f32.to_radians().tan() / height.max(1.0));
+        self.target +=
+            (-right * delta.x + up * delta.y) * self.world_per_pixel(self.target, height);
     }
     pub fn align(&mut self, plane: Plane) {
         self.roll = 0.0;

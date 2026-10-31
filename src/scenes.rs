@@ -104,6 +104,7 @@ pub fn house_camera() -> Camera {
         yaw: 0.62,
         pitch: 0.34,
         roll: 0.0,
+        projection: crate::geometry::Projection::Perspective,
         distance: 15.2,
         target: Vec3::new(0.0, 1.55, 0.6),
     }
@@ -476,6 +477,7 @@ pub fn lantern_cylinder() -> crate::surface::Cylinder {
 }
 pub fn lantern_camera() -> Camera {
     Camera {
+        projection: crate::geometry::Projection::Perspective,
         yaw: 0.45,
         pitch: 0.18,
         roll: 0.0,

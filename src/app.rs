@@ -51,6 +51,8 @@ mod selection;
 mod starter;
 #[path = "tutorial_ui.rs"]
 mod tutorial_ui;
+#[path = "views.rs"]
+mod views;
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -75,6 +77,8 @@ enum Pending {
 }
 
 pub struct SketchApp {
+    show_view: bool,
+    view_verification_frame: Option<u32>,
     presentation: presentation_ui::PresentationUi,
     placement: placement_ui::PlacementUi,
     fills: fills_ui::FillUi,
@@ -200,6 +204,8 @@ impl SketchApp {
         };
         let recovery = crate::recovery::Recovery::new(recovery_path, cc.egui_ctx.clone());
         let mut app = Self {
+            show_view: false,
+            view_verification_frame: None,
             presentation: presentation_ui::PresentationUi::new(),
             placement: Default::default(),
             fills: Default::default(),
@@ -283,7 +289,11 @@ impl SketchApp {
             last_export_result: None,
             export_snapshot: None,
         };
-        if std::env::args().any(|a| a == "--verify-presentation") {
+        if std::env::args().any(|a| a == "--verify-views") {
+            app.verification_frame = None;
+            app.view_verification_frame = Some(0);
+            app.load_house();
+        } else if std::env::args().any(|a| a == "--verify-presentation") {
             app.verification_frame = None;
             app.load_house();
         } else if std::env::args().any(|a| a == "--verify-placement") {
@@ -499,8 +509,7 @@ impl SketchApp {
             return;
         };
         let pressure = pressure.clamp(0.0, 1.0);
-        let clip = self.camera.matrix(rect.aspect_ratio()) * world.extend(1.0);
-        let world_per_pixel = 2.0 * 22.5_f32.to_radians().tan() * clip.w / rect.height();
+        let world_per_pixel = self.camera.world_per_pixel(world, rect.height());
         let points = self.stabilizer.push(
             Point {
                 tilt,
@@ -1053,6 +1062,7 @@ impl SketchApp {
             && self.fills.verification_frame.is_none()
             && self.placement.verification_frame.is_none()
             && self.presentation.verification_frame.is_none()
+            && self.view_verification_frame.is_none()
         {
             self.cancel();
             return;
@@ -1238,6 +1248,7 @@ impl eframe::App for SketchApp {
             && !self.close_after_recovery
             && !ctx.wants_keyboard_input()
         {
+            self.view_shortcuts(ctx);
             self.presentation_shortcuts(ctx);
         }
         let was_placing = self.placement.active;
@@ -1344,6 +1355,10 @@ impl eframe::App for SketchApp {
                         && !self.close_after_recovery
                         && !self.tutorial.offer
                         && !self.placement.active;
+                    if ui.add_enabled(enabled, egui::Button::new("View")).clicked() {
+                        self.finish();
+                        self.show_view = !self.show_view;
+                    }
                     if ui
                         .add_enabled(enabled, egui::Button::new("Artwork [Tab]"))
                         .clicked()
@@ -1520,6 +1535,7 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.verify_views(ctx, rect);
                 self.verify_presentation(ctx, rect);
                 self.verify_placement(ctx, rect);
                 self.verify_fills(ctx, rect);
@@ -1665,6 +1681,7 @@ impl eframe::App for SketchApp {
                     });
                 });
         }
+        self.show_view(ctx);
         self.show_placement(ctx);
         self.show_lighting(ctx);
         self.show_tutorial(ctx);
@@ -1692,6 +1709,7 @@ impl eframe::App for SketchApp {
             || self.fills.verification_frame.is_some()
             || self.placement.verification_frame.is_some()
             || self.presentation.verification_frame.is_some()
+            || self.view_verification_frame.is_some()
             || self.close_after_recovery
             || self.recovery.busy()
         {

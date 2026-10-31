@@ -143,8 +143,7 @@ impl SketchApp {
         let Some((start, _)) = gizmo::project(&self.camera, rect, origin) else {
             return;
         };
-        let depth = (self.camera.eye() - origin).length();
-        let length = depth * 0.065;
+        let length = 60.0 * self.camera.world_per_pixel(origin, rect.height());
         let Some((end, _)) = gizmo::project(&self.camera, rect, origin + normal * length) else {
             return;
         };

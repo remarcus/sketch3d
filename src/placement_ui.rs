@@ -139,7 +139,7 @@ impl SketchApp {
         let Some((point, _)) = crate::gizmo::project(&self.camera, rect, plane.origin()) else {
             return;
         };
-        let length = (self.camera.eye() - plane.origin()).length() * 0.08;
+        let length = 70.0 * self.camera.world_per_pixel(plane.origin(), rect.height());
         let color = Color32::from_rgb(255, 175, 225);
         let painter = ui.painter().with_clip_rect(rect);
         painter.circle_stroke(point, 7.0, egui::Stroke::new(2.0_f32, color));

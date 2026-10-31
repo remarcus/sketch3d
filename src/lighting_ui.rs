@@ -184,6 +184,7 @@ impl SketchApp {
             .count();
         assert!(holes > 100, "Masked shadow holes missing: {holes}");
         let orbit = Camera {
+            projection: camera.projection,
             yaw: camera.yaw + 0.7,
             pitch: camera.pitch - 0.25,
             distance: camera.distance,

@@ -93,7 +93,6 @@ fn distance(pos: Pos2, a: Pos2, b: Pos2) -> (f32, f32) {
     (pos.distance(a + ab * t), t)
 }
 pub fn pick(doc: &Document, camera: &Camera, rect: Rect, pos: Pos2) -> Option<u64> {
-    let matrix = camera.matrix(rect.aspect_ratio());
     let mut best: Option<(f32, f32, u64)> = None;
     let (origin, direction) = ray(camera, rect, pos);
     for stroke in doc.strokes.iter().filter(|s| doc.editable(s)) {
@@ -110,8 +109,7 @@ pub fn pick(doc: &Document, camera: &Camera, rect: Rect, pos: Pos2) -> Option<u6
         let extent = crate::geometry::stroke_extent(stroke);
         let consider = |point: Vec3| -> Option<(Pos2, f32, f32)> {
             let (p, z) = project(camera, rect, point)?;
-            let w = (matrix * point.extend(1.0)).w;
-            let width = extent * rect.height() / (2.0 * 22.5f32.to_radians().tan() * w);
+            let width = extent / camera.world_per_pixel(point, rect.height());
             Some((p, z, width))
         };
         let mut hit = |a: (Pos2, f32, f32), b: (Pos2, f32, f32)| {
@@ -144,8 +142,7 @@ pub fn pick(doc: &Document, camera: &Camera, rect: Rect, pos: Pos2) -> Option<u6
 impl Layout {
     pub fn new(camera: &Camera, rect: Rect, pivot: Vec3, mode: Mode) -> Option<Self> {
         let (origin, _) = project(camera, rect, pivot)?;
-        let clip = camera.matrix(rect.aspect_ratio()) * pivot.extend(1.0);
-        let length = 80.0 * 2.0 * 22.5f32.to_radians().tan() * clip.w / rect.height();
+        let length = 80.0 * camera.world_per_pixel(pivot, rect.height());
         let colors = [
             Color32::from_rgb(250, 104, 104),
             Color32::from_rgb(115, 224, 139),
