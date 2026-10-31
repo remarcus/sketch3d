@@ -1618,7 +1618,7 @@ impl SketchApp {
                 if ui
                     .add_enabled(
                         self.can_export_png(),
-                        egui::Button::new("Artwork image (.png)…"),
+                        egui::Button::new("Artwork image (.png / .jpg)…"),
                     )
                     .clicked()
                 {
@@ -2571,8 +2571,17 @@ impl eframe::App for SketchApp {
                     Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
-                if let Some((destination, size, allow_overwrite)) = self.png_export.take_request() {
-                    self.start_png_export(destination, size, allow_overwrite, ctx);
+                if let Some((destination, size, allow_overwrite, format, jpeg_background)) =
+                    self.png_export.take_request()
+                {
+                    self.start_png_export(
+                        destination,
+                        size,
+                        allow_overwrite,
+                        format,
+                        jpeg_background,
+                        ctx,
+                    );
                 }
                 if let Some(request) = self.video_export.take_request() {
                     if self.file.as_ref().is_some_and(|source| {

@@ -5,6 +5,19 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 const MAX_PIXELS: u64 = 8_388_608;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum StillFormat {
+    Png,
+    Jpeg,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum JpegBackground {
+    Canvas,
+    White,
+    Black,
+}
+
 struct PngJob {
     receiver: Receiver<Result<(), String>>,
     destination: PathBuf,
@@ -12,10 +25,12 @@ struct PngJob {
 
 pub(super) struct PngExportUi {
     dialog_open: bool,
+    format: StillFormat,
+    jpeg_background: JpegBackground,
     width: u32,
     height: u32,
-    overwrite: Option<(PathBuf, [u32; 2])>,
-    request: Option<(PathBuf, [u32; 2], bool)>,
+    overwrite: Option<(PathBuf, [u32; 2], StillFormat)>,
+    request: Option<(PathBuf, [u32; 2], bool, StillFormat, JpegBackground)>,
     job: Option<PngJob>,
 }
 
@@ -23,6 +38,8 @@ impl Default for PngExportUi {
     fn default() -> Self {
         Self {
             dialog_open: false,
+            format: StillFormat::Png,
+            jpeg_background: JpegBackground::Canvas,
             width: 1920,
             height: 1080,
             overwrite: None,
@@ -56,21 +73,25 @@ impl PngExportUi {
     }
 
     fn choose_destination(&mut self) {
-        let filename = format!("artwork-{}x{}.png", self.width, self.height);
+        let (extension, filter) = match self.format {
+            StillFormat::Png => ("png", "PNG image"),
+            StillFormat::Jpeg => ("jpg", "JPEG image"),
+        };
+        let filename = format!("artwork-{}x{}.{}", self.width, self.height, extension);
         let Some(mut path) = rfd::FileDialog::new()
-            .add_filter("PNG image", &["png"])
+            .add_filter(filter, &[extension])
             .set_file_name(filename)
             .save_file()
         else {
             return;
         };
-        path.set_extension("png");
+        path.set_extension(extension);
         let size = [self.width, self.height];
         self.dialog_open = false;
         if path.exists() {
-            self.overwrite = Some((path, size));
+            self.overwrite = Some((path, size, self.format));
         } else {
-            self.request = Some((path, size, false));
+            self.request = Some((path, size, false, self.format, self.jpeg_background));
         }
     }
 
@@ -81,6 +102,26 @@ impl PngExportUi {
             egui::Modal::new(egui::Id::new("png-export-dimensions")).show(ctx, |ui| {
                 ui.set_min_width(360.0);
                 ui.heading("Export artwork image");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.format, StillFormat::Png, "PNG");
+                    ui.selectable_value(&mut self.format, StillFormat::Jpeg, "JPEG");
+                });
+                if self.format == StillFormat::Jpeg {
+                    ui.horizontal(|ui| {
+                        ui.label("JPEG background");
+                        egui::ComboBox::from_id_salt("jpeg-background")
+                            .selected_text(match self.jpeg_background {
+                                JpegBackground::Canvas => "Canvas color",
+                                JpegBackground::White => "White",
+                                JpegBackground::Black => "Black",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.jpeg_background, JpegBackground::Canvas, "Canvas color");
+                                ui.selectable_value(&mut self.jpeg_background, JpegBackground::White, "White");
+                                ui.selectable_value(&mut self.jpeg_background, JpegBackground::Black, "Black");
+                            });
+                    });
+                }
                 ui.horizontal(|ui| {
                     ui.add(egui::DragValue::new(&mut self.width).range(1..=8192).prefix("Width "));
                     ui.label("×");
@@ -93,7 +134,13 @@ impl PngExportUi {
                 }
                 ui.horizontal(|ui| {
                     choose = ui
-                        .add_enabled(self.dimensions_valid(), egui::Button::new("Choose PNG file…"))
+                        .add_enabled(
+                            self.dimensions_valid(),
+                            egui::Button::new(match self.format {
+                                StillFormat::Png => "Choose PNG file…",
+                                StillFormat::Jpeg => "Choose JPEG file…",
+                            }),
+                        )
                         .clicked();
                     cancel = ui.button("Cancel").clicked();
                 });
@@ -105,7 +152,7 @@ impl PngExportUi {
                 self.dialog_open = false;
             }
         }
-        if let Some((path, size)) = self.overwrite.clone() {
+        if let Some((path, size, format)) = self.overwrite.clone() {
             let mut confirm = false;
             let mut cancel = false;
             egui::Modal::new(egui::Id::new("png-export-overwrite")).show(ctx, |ui| {
@@ -114,7 +161,7 @@ impl PngExportUi {
                 ui.label(
                     path.file_name()
                         .and_then(|name| name.to_str())
-                        .unwrap_or("PNG file"),
+                        .unwrap_or("image file"),
                 );
                 ui.horizontal(|ui| {
                     confirm = ui.button("Overwrite").clicked();
@@ -123,14 +170,16 @@ impl PngExportUi {
             });
             if confirm {
                 self.overwrite = None;
-                self.request = Some((path, size, true));
+                self.request = Some((path, size, true, format, self.jpeg_background));
             } else if cancel {
                 self.overwrite = None;
             }
         }
     }
 
-    pub fn take_request(&mut self) -> Option<(PathBuf, [u32; 2], bool)> {
+    pub fn take_request(
+        &mut self,
+    ) -> Option<(PathBuf, [u32; 2], bool, StillFormat, JpegBackground)> {
         self.request.take()
     }
 
@@ -139,6 +188,7 @@ impl PngExportUi {
         destination: PathBuf,
         size: [u32; 2],
         allow_overwrite: bool,
+        format: StillFormat,
         pixels: Vec<u8>,
         ctx: &egui::Context,
     ) -> Result<(), String> {
@@ -162,7 +212,10 @@ impl PngExportUi {
         std::thread::Builder::new()
             .name("png-export".into())
             .spawn(move || {
-                let result = write_png_atomic(&path, size, &pixels);
+                let result = match format {
+                    StillFormat::Png => write_png_atomic(&path, size, &pixels),
+                    StillFormat::Jpeg => write_jpeg_atomic(&path, size, &pixels),
+                };
                 let _ = sender.send(result);
                 context.request_repaint();
             })
@@ -181,15 +234,15 @@ impl PngExportUi {
                 let destination = job.destination.clone();
                 self.job = None;
                 Some(match result {
-                    Ok(()) => format!("Exported PNG to {}", destination.display()),
-                    Err(error) => format!("PNG export failed: {error}"),
+                    Ok(()) => format!("Exported image to {}", destination.display()),
+                    Err(error) => format!("Image export failed: {error}"),
                 })
             }
             Err(TryRecvError::Disconnected) => {
                 let destination = job.destination.clone();
                 self.job = None;
                 Some(format!(
-                    "PNG export worker stopped for {}",
+                    "Image export worker stopped for {}",
                     destination.display()
                 ))
             }
@@ -224,6 +277,8 @@ impl SketchApp {
         destination: PathBuf,
         size: [u32; 2],
         allow_overwrite: bool,
+        format: StillFormat,
+        jpeg_background: JpegBackground,
         ctx: &egui::Context,
     ) {
         if !self.can_export_png() {
@@ -243,7 +298,11 @@ impl SketchApp {
         }
         self.status = "Rendering artwork image…".into();
         let camera = self.camera;
-        let background = self.presentation.preferences.background;
+        let background = match (format, jpeg_background) {
+            (StillFormat::Jpeg, JpegBackground::White) => [1.0; 3],
+            (StillFormat::Jpeg, JpegBackground::Black) => [0.0; 3],
+            _ => self.presentation.preferences.background,
+        };
         let lighting = self.renderer.lighting;
         let pixels = match self
             .renderer
@@ -257,7 +316,7 @@ impl SketchApp {
         };
         if let Err(error) =
             self.png_export
-                .start_job(destination, size, allow_overwrite, pixels, ctx)
+                .start_job(destination, size, allow_overwrite, format, pixels, ctx)
         {
             self.status = format!("Could not start PNG export: {error}");
         }
@@ -439,6 +498,35 @@ fn write_png_atomic(path: &Path, size: [u32; 2], pixels: &[u8]) -> Result<(), St
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
     image::codecs::png::PngEncoder::new(&mut temp)
         .write_image(pixels, size[0], size[1], image::ExtendedColorType::Rgba8)
+        .map_err(|error| error.to_string())?;
+    temp.as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    temp.persist(path).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn write_jpeg_atomic(path: &Path, size: [u32; 2], pixels: &[u8]) -> Result<(), String> {
+    if size.contains(&0)
+        || size[0] > 8192
+        || size[1] > 8192
+        || size[0] as u64 * size[1] as u64 > MAX_PIXELS
+        || pixels.len() != size[0] as usize * size[1] as usize * 4
+    {
+        return Err("Invalid JPEG dimensions or pixel data".into());
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+    let rgb: Vec<u8> = pixels
+        .chunks_exact(4)
+        .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
+        .collect();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut temp, 92)
+        .write_image(&rgb, size[0], size[1], image::ExtendedColorType::Rgb8)
         .map_err(|error| error.to_string())?;
     temp.as_file()
         .sync_all()
