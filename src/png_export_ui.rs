@@ -204,6 +204,7 @@ impl PngExportUi {
 impl SketchApp {
     pub(super) fn can_export_png(&self) -> bool {
         self.png_export.can_export()
+            && !self.video_export.is_running()
             && self.active.is_none()
             && self.drag.is_none()
             && self.repeat.is_none()

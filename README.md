@@ -24,6 +24,7 @@ An open-source, native 3D sketching prototype inspired by the idea of drawing in
 - Named, saved plane/cylinder/revolved/sphere/cone guides with one active brush target and surface-aware stabilization.
 - Selected-stroke Liquify previews with push/pull falloff controls and atomic undo.
 - Saved camera bookmarks and timed view sequences in separate local workspace settings.
+- Animated GIF export for camera turntables and saved sequences.
 - Live plane-guide mirroring for brush and straight-line strokes, committed as one undoable pair.
 - Background GLB export for the whole drawing or selected strokes, preserving original colors and pressure-shaped geometry.
 - Round, ribbon, and flat/chisel brushes with pressure-shaped width, frozen orientation, and an editable brush sampler.
@@ -414,6 +415,10 @@ Use **Drawing → OBJ references → Import OBJ reference…** to load a bounded
 In Select mode, click a visible model to select it in the viewport. A teal box marks its transformed bounds; use the model's inspector controls for move, rotation, and scale. Shift-click toggles the model selection. Stroke selection and model selection remain separate.
 
 Enable **Draw here** on one visible, unlocked model to place freehand strokes on its surface. Picking selects the nearest positive triangle hit in that model and accepts both face directions. A miss ends the current stroke. Sampling continues only within one triangle or across a shared manifold edge, with a 24-pixel maximum gap; larger jumps, non-manifold edges, and separately indexed seams split the stroke so it cannot bridge disconnected mesh parts. Surface points are stored directly in world space without planar stabilization. Each stroke keeps the surface normal and a camera-facing tangent captured at its first hit. Moving or scaling the OBJ later leaves existing strokes where they were drawn; the resulting strokes remain ordinary editable ink and are included in normal drawing exports. This surface workflow has compile validation; hands-on interaction and save/recovery round trips remain to be checked.
+
+## Animated GIF export
+
+Choose **Export → Animated GIF (.gif)…** for a fixed-focus full turntable or a saved camera sequence. Sequence export uses the saved timing and camera sampler; turntables use the current view as a fixed-pivot start pose. The exporter samples deterministically and renders clean artwork frames without selection handles or editing overlays. Output is bounded to 480 frames, 24 FPS, and 921,600 pixels per frame, with progress and cancellation. The current camera and drawing are not changed. GIF encoding uses the bundled Rust `gif` and `color_quant` crates (MIT/Apache-2.0 and MIT); no external encoder is required. Existing destinations require overwrite confirmation, and incomplete/cancelled output is discarded from a temporary file.
 
 Developer check: `cargo run --release -- --verify-presentation` uses isolated preferences and writes `verification/presentation-report.json` and `presentation-preview.png`. GPU readback checks blue/light/dark sRGB values. Lifecycle checks cover explicit preference restart, mode entry guards, read-only contact, workspace restoration, save-failure visibility, recovery/unsaved prompts, and unchanged JSON/GLB ink. Dedicated benchmarks remain deferred.
 ## Orthographic camera views

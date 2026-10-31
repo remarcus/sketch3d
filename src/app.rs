@@ -84,6 +84,8 @@ mod starter;
 mod tutorial_ui;
 #[path = "ui_style.rs"]
 mod ui_style;
+#[path = "video_export_ui.rs"]
+mod video_export_ui;
 #[path = "views.rs"]
 mod views;
 use std::{
@@ -226,6 +228,7 @@ pub struct SketchApp {
     last_export_result: Option<Result<crate::export::ExportSummary, String>>,
     export_snapshot: Option<export_ui::ExportSnapshot>,
     png_export: png_export_ui::PngExportUi,
+    video_export: video_export_ui::VideoExportUi,
     png_verification_frame: Option<u32>,
 }
 impl SketchApp {
@@ -400,6 +403,7 @@ impl SketchApp {
             last_export_result: None,
             export_snapshot: None,
             png_export: Default::default(),
+            video_export: Default::default(),
             png_verification_frame: None,
         };
         if std::env::args().any(|a| a == "--verify-lines") {
@@ -1038,6 +1042,12 @@ impl SketchApp {
         }
     }
     fn request(&mut self, mut pending: Pending) {
+        if self.video_export.is_running() {
+            self.status =
+                "Wait for the animated export to finish or cancel it before switching drawings."
+                    .into();
+            return;
+        }
         if self.liquify_active() {
             self.status = "Apply or cancel the Liquify preview before switching drawings.".into();
             return;
@@ -1615,6 +1625,16 @@ impl SketchApp {
                     ui.close_menu();
                     self.png_export.begin();
                 }
+                if ui
+                    .add_enabled(
+                        self.can_export_png() && !self.video_export.is_running(),
+                        egui::Button::new("Animated GIF (.gif)…"),
+                    )
+                    .clicked()
+                {
+                    ui.close_menu();
+                    self.video_export.begin();
+                }
             });
             ui.menu_button("Examples", |ui| {
                 for (label, pending) in [
@@ -1999,6 +2019,9 @@ impl SketchApp {
         }
     }
     fn canvas_input(&mut self, ctx: &egui::Context, rect: Rect, mut pen: Vec<PenSample>) {
+        if self.video_export.is_running() {
+            return;
+        }
         let (space, shift, alt, events, pointer, scroll) = ctx.input(|i| {
             (
                 i.key_down(Key::Space),
@@ -2269,6 +2292,9 @@ impl eframe::App for SketchApp {
         self.poll_recovery(ctx);
         self.ensure_workspace();
         self.poll_export(ctx);
+        if let Some(status) = self.video_export.render_next(&mut self.renderer, ctx) {
+            self.status = status;
+        }
         if let Some(status) = self.png_export.poll(ctx) {
             self.status = status;
         }
@@ -2299,10 +2325,12 @@ impl eframe::App for SketchApp {
         }
         if ctx.input(|i| i.viewport().close_requested())
             && !self.allow_close
-            && (self.export_job.is_some() || self.png_export.is_running())
+            && (self.export_job.is_some()
+                || self.png_export.is_running()
+                || self.video_export.is_running())
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.status = "An image export is finishing. Close again when it completes.".into();
+            self.status = "An export is running. Finish or cancel it, then close again.".into();
         } else if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             if self.close_cleanup_failed {
@@ -2441,7 +2469,8 @@ impl eframe::App for SketchApp {
                 && !self.recovery_prompt
                 && !self.close_after_recovery
                 && !self.tutorial.offer
-                && !self.placement.active;
+                && !self.placement.active
+                && !self.video_export.is_running();
             egui::TopBottomPanel::top("menu-bar").show(ctx, |ui| {
                 ui.add_enabled_ui(enabled, |ui| {
                     egui::menu::bar(ui, |ui| self.menu_bar(ui, ctx));
@@ -2485,6 +2514,8 @@ impl eframe::App for SketchApp {
         self.camera_bookmark_controls(ctx);
         self.repeat_modal(ctx);
         self.png_export.show(ctx);
+        self.video_export
+            .show(ctx, &self.camera_bookmarks.sequences);
         let pen = self.pen.as_ref().map(|p| p.drain()).unwrap_or_default();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -2542,6 +2573,23 @@ impl eframe::App for SketchApp {
                 );
                 if let Some((destination, size, allow_overwrite)) = self.png_export.take_request() {
                     self.start_png_export(destination, size, allow_overwrite, ctx);
+                }
+                if let Some(request) = self.video_export.take_request() {
+                    if self.file.as_ref().is_some_and(|source| {
+                        crate::export::same_destination(source, &request.path)
+                    }) {
+                        self.status =
+                            "Choose a GIF destination different from the native drawing.".into();
+                    } else if let Err(error) = self.video_export.start(
+                        request,
+                        &self.doc,
+                        self.camera,
+                        &self.camera_bookmarks,
+                        self.presentation.preferences.background,
+                        self.renderer.lighting,
+                    ) {
+                        self.status = format!("Could not start animated export: {error}");
+                    }
                 }
                 self.verify_png_export(ctx);
                 if !self.presentation.artwork {
