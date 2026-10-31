@@ -1642,6 +1642,7 @@ impl SketchApp {
             return;
         }
         let mut selected = None;
+        let mut copy_source = None;
         let mut browse = false;
         egui::Window::new("Drawing library")
             .open(&mut self.show_drawing_library)
@@ -1671,9 +1672,14 @@ impl SketchApp {
                                     ui.colored_label(Color32::YELLOW, "File is missing");
                                 }
                             });
-                            if ui.add_enabled(path.is_file(), egui::Button::new("Open")).clicked() {
-                                selected = Some(path.clone());
-                            }
+                            ui.horizontal(|ui| {
+                                if ui.add_enabled(path.is_file(), egui::Button::new("Open")).clicked() {
+                                    selected = Some(path.clone());
+                                }
+                                if ui.add_enabled(path.is_file(), egui::Button::new("Copy saved file…")).clicked() {
+                                    copy_source = Some(path.clone());
+                                }
+                            });
                         });
                         ui.separator();
                     }
@@ -1686,6 +1692,24 @@ impl SketchApp {
             self.library_open_path = Some(path);
             self.show_drawing_library = false;
             self.request(Pending::Open);
+        } else if let Some(source) = copy_source {
+            let file_name = source
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("drawing.sketch.json");
+            if let Some(destination) = rfd::FileDialog::new()
+                .add_filter("Spatial Sketch", &["json"])
+                .set_file_name(file_name)
+                .save_file()
+            {
+                match crate::drawing_library::copy_native_drawing(&source, &destination) {
+                    Ok(()) => {
+                        self.drawing_library.record(&destination);
+                        self.status = format!("Copied drawing to {}", destination.display());
+                    }
+                    Err(error) => self.status = format!("Copy failed: {error}"),
+                }
+            }
         } else if browse {
             self.show_drawing_library = false;
             self.request(Pending::Open);
