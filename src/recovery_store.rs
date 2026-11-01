@@ -206,6 +206,85 @@ pub fn session_id() -> String {
         SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
     )
 }
+
+/// Restore the bounded, document-local resources carried by a recovery
+/// snapshot. Every asset name must refer to a resource in `document`; parent
+/// directories and existing targets are checked to reject symlink escapes.
+pub fn restore_assets(
+    document: &Document,
+    asset_root: &Path,
+    assets: &[RecoveryAsset],
+) -> Result<(), String> {
+    validate_assets(document, assets)?;
+    fs::create_dir_all(asset_root)
+        .map_err(|error| format!("Cannot create recovered asset folder: {error}"))?;
+    let root_metadata = fs::symlink_metadata(asset_root)
+        .map_err(|error| format!("Cannot inspect recovered asset folder: {error}"))?;
+    if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
+        return Err("Recovered asset folder must be a regular directory".into());
+    }
+    let canonical_root = asset_root
+        .canonicalize()
+        .map_err(|error| format!("Cannot resolve recovered asset folder: {error}"))?;
+
+    for asset in assets {
+        let relative = Path::new(&asset.asset_file);
+        let target = asset_root.join(relative);
+        let parent = target
+            .parent()
+            .ok_or("Recovered asset path has no parent directory")?;
+        let mut directory = asset_root.to_path_buf();
+        if let Some(relative_parent) = relative.parent() {
+            for component in relative_parent.components() {
+                let std::path::Component::Normal(name) = component else {
+                    return Err("Recovered asset path contains an invalid directory".into());
+                };
+                directory.push(name);
+                match fs::symlink_metadata(&directory) {
+                    Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                    Ok(_) => {
+                        return Err("Recovered resource folder must be a regular directory".into())
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        fs::create_dir(&directory).map_err(|error| {
+                            format!("Cannot create recovered resource folder: {error}")
+                        })?;
+                    }
+                    Err(error) => {
+                        return Err(format!("Cannot inspect recovered resource folder: {error}"))
+                    }
+                }
+            }
+        }
+        let parent_metadata = fs::symlink_metadata(parent)
+            .map_err(|error| format!("Cannot inspect recovered resource folder: {error}"))?;
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|error| format!("Cannot resolve recovered resource folder: {error}"))?;
+        if !parent_metadata.is_dir()
+            || parent_metadata.file_type().is_symlink()
+            || !canonical_parent.starts_with(&canonical_root)
+        {
+            return Err("Recovered resource folder must stay inside its asset folder".into());
+        }
+        if fs::symlink_metadata(&target)
+            .is_ok_and(|metadata| !metadata.is_file() || metadata.file_type().is_symlink())
+        {
+            return Err("Recovered asset target must be a regular file".into());
+        }
+        let mut temp = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|error| format!("Cannot stage recovered asset: {error}"))?;
+        temp.write_all(&asset.bytes)
+            .map_err(|error| format!("Cannot write recovered asset: {error}"))?;
+        temp.as_file()
+            .sync_all()
+            .map_err(|error| format!("Cannot sync recovered asset: {error}"))?;
+        crate::atomic_file::replace(temp, &target)
+            .map_err(|error| format!("Cannot install recovered asset: {error}"))?;
+    }
+    Ok(())
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -249,15 +328,18 @@ fn validate_metadata(snapshot: &RecoverySnapshot) -> Result<(), String> {
     {
         return Err("Invalid original drawing path".into());
     }
+    validate_assets(&snapshot.document, &snapshot.assets)
+}
+
+fn validate_assets(document: &Document, assets: &[RecoveryAsset]) -> Result<(), String> {
     let mut total = 0usize;
     let mut seen = std::collections::HashSet::new();
-    for asset in &snapshot.assets {
-        let image_reference = snapshot
-            .document
+    for asset in assets {
+        let image_reference = document
             .image_planes
             .iter()
             .any(|plane| plane.asset_file == asset.asset_file);
-        let model_reference = model_recovery_asset_referenced(snapshot, &asset.asset_file);
+        let model_reference = model_recovery_asset_referenced(document, &asset.asset_file);
         if (!image_reference && !model_reference)
             || (!valid_asset_file(&asset.asset_file) && !valid_model_asset_file(&asset.asset_file))
             || !seen.insert(&asset.asset_file)
@@ -315,7 +397,7 @@ fn valid_model_asset_file(value: &str) -> bool {
         && number.len() == 3
         && number.bytes().all(|byte| byte.is_ascii_digit())
 }
-fn model_recovery_asset_referenced(snapshot: &RecoverySnapshot, path: &str) -> bool {
+fn model_recovery_asset_referenced(document: &Document, path: &str) -> bool {
     let mut parts = path.split('/');
     let (Some("models"), Some(id), Some(_file), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
@@ -325,8 +407,7 @@ fn model_recovery_asset_referenced(snapshot: &RecoverySnapshot, path: &str) -> b
     let Ok(id) = id.parse::<u64>() else {
         return false;
     };
-    snapshot
-        .document
+    document
         .model_references
         .iter()
         .any(|resource| resource.id == id && resource.asset.bundle_dir == format!("models/{id}"))
@@ -610,6 +691,20 @@ mod tests {
         texture::TextureKind,
     };
     use glam::{Quat, Vec3};
+
+    #[test]
+    fn asset_restore_rejects_unreferenced_files_before_creating_destination() {
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let destination = directory.path().join("recovered-assets");
+        let assets = vec![RecoveryAsset {
+            asset_file: "models/42/model.obj".into(),
+            bytes: b"v 0 0 0\n".to_vec(),
+        }];
+
+        assert!(restore_assets(&Document::default(), &destination, &assets).is_err());
+        assert!(!destination.exists());
+    }
+
     fn sample(session: &str) -> RecoverySnapshot {
         let mut brush = Brush {
             kind: BrushKind::Chisel,

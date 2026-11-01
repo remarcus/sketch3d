@@ -681,6 +681,25 @@ mod tests {
             reloaded.model_references
         );
         assert_eq!(scan.candidates[0].snapshot.assets.len(), 3);
+        let recovered_path = root.path().join("recovered.sketch.json");
+        let recovered_assets = crate::image_plane_storage::asset_root(&recovered_path).unwrap();
+        crate::recovery_store::restore_assets(
+            &scan.candidates[0].snapshot.document,
+            &recovered_assets,
+            &scan.candidates[0].snapshot.assets,
+        )
+        .unwrap();
+        let recovered_images =
+            crate::image_plane_storage::load_assets(&reloaded, &recovered_path).unwrap();
+        assert_eq!(
+            recovered_images[&inserted_plane.id].pixels,
+            source_image.pixels
+        );
+        let recovered_model =
+            crate::obj_reference_storage::load_bundle(&recovered_assets, &inserted_model.asset)
+                .unwrap();
+        assert_eq!(recovered_model.positions, parsed_model.positions);
+        assert_eq!(recovered_model.materials, parsed_model.materials);
 
         edit.apply(&mut merged, false);
         assert!(merged.image_planes.is_empty());

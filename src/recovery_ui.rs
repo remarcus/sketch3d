@@ -212,7 +212,7 @@ impl SketchApp {
         self.status = match image_asset_restore {
             Ok(_) => "Recovered an unsaved copy. Save as to choose a native drawing file.".into(),
             Err(error) => format!(
-                "Recovered an unsaved copy, but an image asset could not be restored: {error}"
+                "Recovered an unsaved copy, but a resource asset could not be restored: {error}"
             ),
         };
     }

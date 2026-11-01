@@ -75,77 +75,25 @@ impl SketchApp {
         &mut self,
         assets: &[crate::recovery_store::RecoveryAsset],
     ) -> Result<usize, String> {
+        crate::recovery_store::restore_assets(&self.doc, &self.image_asset_root, assets)?;
         let mut installed_images = 0;
-        for saved in assets {
-            if let Some(plane) = self
-                .doc
-                .image_planes
-                .iter()
-                .find(|plane| plane.asset_file == saved.asset_file)
-            {
-                let path = self.image_asset_root.join(&plane.asset_file);
-                std::fs::create_dir_all(&self.image_asset_root).map_err(|error| {
-                    format!("Could not create recovered image asset folder: {error}")
-                })?;
-                let mut temp = tempfile::NamedTempFile::new_in(&self.image_asset_root)
-                    .map_err(|error| format!("Could not stage recovered image asset: {error}"))?;
-                std::io::Write::write_all(&mut temp, &saved.bytes)
-                    .map_err(|error| format!("Could not write recovered image asset: {error}"))?;
-                temp.as_file()
-                    .sync_all()
-                    .map_err(|error| format!("Could not sync recovered image asset: {error}"))?;
-                crate::atomic_file::replace(temp, &path)
-                    .map_err(|error| format!("Could not install recovered image asset: {error}"))?;
-                let asset = crate::image_planes::decode_asset(&path)
-                    .map_err(|error| format!("Could not decode recovered image asset: {error}"))?;
-                self.renderer
-                    .set_image_plane_asset(plane.id, &asset)
-                    .map_err(|error| format!("Could not upload recovered image asset: {error}"))?;
-                self.image_plane_assets.insert(plane.id, asset);
-                installed_images += 1;
-                continue;
-            }
-            let Some(resource) = self.doc.model_references.iter().find(|resource| {
-                saved
-                    .asset_file
-                    .starts_with(&format!("{}/", resource.asset.bundle_dir))
-            }) else {
-                continue;
-            };
-            let relative = std::path::Path::new(&saved.asset_file);
-            let components: Vec<_> = relative.components().collect();
-            if components.len() != 3
-                || !matches!(components[0], std::path::Component::Normal(name) if name == "models")
-                || !matches!(components[1], std::path::Component::Normal(name) if name.to_string_lossy() == resource.id.to_string())
-                || !matches!(components[2], std::path::Component::Normal(_))
+        for plane in &self.doc.image_planes {
+            let path = self.image_asset_root.join(&plane.asset_file);
+            if !std::fs::symlink_metadata(&path)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
             {
                 continue;
             }
-            let name = components[2].as_os_str().to_string_lossy();
-            if name != "model.obj" && !(name.starts_with("material-") && name.ends_with(".mtl")) {
-                continue;
-            }
-            let path = self.image_asset_root.join(relative);
-            let Some(parent) = path.parent() else {
-                continue;
-            };
-            if std::fs::create_dir_all(parent).is_err() {
-                continue;
-            }
-            let Ok(mut temp) = tempfile::NamedTempFile::new_in(parent) else {
-                continue;
-            };
-            if std::io::Write::write_all(&mut temp, &saved.bytes).is_err()
-                || temp.as_file().sync_all().is_err()
-                || crate::atomic_file::replace(temp, &path).is_err()
-            {
-                continue;
-            }
+            let asset = crate::image_planes::decode_asset(&path)
+                .map_err(|error| format!("Could not decode recovered image asset: {error}"))?;
+            self.renderer
+                .set_image_plane_asset(plane.id, &asset)
+                .map_err(|error| format!("Could not upload recovered image asset: {error}"))?;
+            self.image_plane_assets.insert(plane.id, asset);
+            installed_images += 1;
         }
-        if let Ok(models) = self.load_obj_reference_models(&self.image_asset_root) {
-            self.obj_reference_models = models;
-            self.refresh_obj_reference_meshes();
-        }
+        self.obj_reference_models = self.load_obj_reference_models(&self.image_asset_root)?;
+        self.refresh_obj_reference_meshes();
         Ok(installed_images)
     }
 
