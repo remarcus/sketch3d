@@ -83,7 +83,7 @@ pub fn canvas_accent(background_srgb: [f32; 3]) -> Color32 {
 /// Pick a selection color that remains distinct from solid and image backgrounds.
 pub fn canvas_selection_accent(background_srgb: [f32; 3], has_image: bool) -> Color32 {
     if has_image {
-        Color32::from_rgb(244, 45, 190)
+        Color32::from_rgb(220, 35, 165)
     } else if scene_luminance(background_srgb) > 0.42 {
         Color32::from_rgb(0, 91, 118)
     } else {
@@ -93,7 +93,7 @@ pub fn canvas_selection_accent(background_srgb: [f32; 3], has_image: bool) -> Co
 
 pub fn canvas_overlay_accent(background_srgb: [f32; 3], has_image: bool) -> Color32 {
     if has_image {
-        Color32::from_rgb(244, 45, 190)
+        Color32::from_rgb(220, 35, 165)
     } else {
         canvas_accent(background_srgb)
     }
@@ -752,6 +752,45 @@ mod tests {
                 ) >= 3.0,
                 "selection focus contrast below 3:1 in dark={dark}"
             );
+        }
+    }
+
+    #[test]
+    fn canvas_selection_and_preview_accents_contrast_on_solid_and_image_backgrounds() {
+        let to_color = |rgb: [f32; 3]| {
+            Color32::from_rgb(
+                (rgb[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+            )
+        };
+        for background in [[0.035, 0.045, 0.06], [0.94, 0.95, 0.97], [0.46, 0.31, 0.68]] {
+            let canvas = to_color(background);
+            for accent in [
+                canvas_overlay_accent(background, false),
+                canvas_selection_accent(background, false),
+            ] {
+                assert!(
+                    contrast_ratio(accent, canvas) >= 3.0,
+                    "canvas accent {accent:?} lacks 3:1 contrast on {canvas:?}"
+                );
+            }
+        }
+
+        for background in [
+            [238.0 / 255.0, 236.0 / 255.0, 224.0 / 255.0],
+            [31.0 / 255.0, 42.0 / 255.0, 55.0 / 255.0],
+        ] {
+            let canvas = to_color(background);
+            for accent in [
+                canvas_overlay_accent([0.0, 0.0, 0.0], true),
+                canvas_selection_accent([0.0, 0.0, 0.0], true),
+            ] {
+                assert!(
+                    contrast_ratio(accent, canvas) >= 3.0,
+                    "image-background accent {accent:?} lacks 3:1 contrast on {canvas:?}"
+                );
+            }
         }
     }
 
