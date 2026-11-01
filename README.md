@@ -47,6 +47,17 @@ Draw in the central canvas. The Input lab reports pen samples, pressure, and til
 
 The **Help** menu and in-app tutorial describe the drawing tools and workflows. Essential controls do not require touch. An edge-on drawing plane cannot accept strokes; press F to align the view or orbit away from the edge.
 
+## Capability gallery
+
+Reviewed video clips are not published yet. These text tutorials and editable fixtures are available as static alternatives while recording and review remain pending.
+
+| Workflow | Recording | Static tutorial | Editable fixture |
+| --- | --- | --- | --- |
+| Explore and edit a curved drawing | Pending review | [Curved drawing tutorial](docs/capability-demos/tutorials/curved-drawing.md) | [Cylindrical lantern](docs/capability-demos/fixtures/cylindrical-lantern.sketch.json) |
+| Select, transform, and save a scene | Pending review | [House editing tutorial](docs/capability-demos/tutorials/house-editing.md) | [Garden house](docs/capability-demos/fixtures/garden-house.sketch.json) |
+
+See the [recording workflow](docs/capability-demos/README.md) and [shot list](docs/capability-demos/shot-list.md) for planned clips. Tutorials include draft narration for future captures; timings should be aligned to reviewed recordings before publication.
+
 ## Drawings and exports
 
 Native drawings use the editable `.sketch.json` format. Image and model references are copied into managed asset folders alongside the drawing. Sketch3D also supports PNG/JPEG artwork images, OBJ meshes, GLB scenes, and animated GIF/MP4. MP4 export requires FFmpeg with libx264 on `PATH`.

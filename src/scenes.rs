@@ -4,7 +4,12 @@ use crate::{
     geometry::Camera,
 };
 use glam::Vec3;
-use std::f32::consts::{PI, TAU};
+use std::{
+    f32::consts::{PI, TAU},
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 type Color = [f32; 3];
 const WOOD: Color = [0.36, 0.17, 0.085];
@@ -547,6 +552,40 @@ pub fn cylindrical_lantern() -> Document {
     a.doc
 }
 
+/// Write the built-in original scenes as editable, no-overwrite demo fixtures.
+pub fn write_capability_fixtures(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    let fixtures = [
+        ("garden-house", japanese_house()),
+        ("cylindrical-lantern", cylindrical_lantern()),
+    ];
+    let mut created = Vec::with_capacity(fixtures.len());
+    let result = (|| -> Result<(), String> {
+        for (name, document) in fixtures {
+            let destination = directory.join(format!("{name}.sketch.json"));
+            let bytes = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&destination)
+                .map_err(|error| {
+                    format!("Cannot create fixture {}: {error}", destination.display())
+                })?;
+            created.push(destination);
+            file.write_all(&bytes).map_err(|error| error.to_string())?;
+            file.sync_all().map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        for path in &created {
+            let _ = fs::remove_file(path);
+        }
+        return Err(error);
+    }
+    Ok(created)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,5 +612,39 @@ mod tests {
         let loaded = Document::from_json(&serde_json::to_string(&lantern).unwrap()).unwrap();
         assert_eq!(loaded.strokes, lantern.strokes);
         assert!(lantern_cylinder().valid());
+    }
+
+    #[test]
+    fn capability_fixture_export_is_editable_and_never_overwrites_existing_files() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let directory = root.path().join("fixtures");
+        fs::create_dir(&directory).unwrap();
+        let lantern_path = directory.join("cylindrical-lantern.sketch.json");
+        fs::write(&lantern_path, b"preserve existing fixture").unwrap();
+
+        assert!(write_capability_fixtures(&directory).is_err());
+        assert!(!directory.join("garden-house.sketch.json").exists());
+        assert_eq!(
+            fs::read(&lantern_path).unwrap(),
+            b"preserve existing fixture"
+        );
+
+        fs::remove_file(&lantern_path).unwrap();
+        let paths = write_capability_fixtures(&directory).unwrap();
+        assert_eq!(paths.len(), 2);
+        for path in &paths {
+            let text = fs::read_to_string(path).unwrap();
+            let loaded = Document::from_json(&text).unwrap();
+            assert!(!loaded.strokes.is_empty());
+        }
+        let original: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
+        assert!(write_capability_fixtures(&directory).is_err());
+        assert_eq!(
+            paths
+                .iter()
+                .map(|path| fs::read(path).unwrap())
+                .collect::<Vec<_>>(),
+            original
+        );
     }
 }

@@ -2,6 +2,8 @@
 
 This folder defines the capture recipe for SKETCH-066. **No capability clips are published yet.** Record and review each clip only after the workflow it demonstrates has passed its feature checks.
 
+The editable sample documents are generated from the built-in original scenes with `cargo run -- --write-capability-fixtures docs/capability-demos/fixtures`. The command refuses to overwrite existing files and removes files it created if fixture generation stops partway through. Static tutorial alternatives and draft captions are in `tutorials/`.
+
 ## Capture a clip
 
 1. Build the application and stage the exact fixture and UI state listed in [shot-list.md](shot-list.md).

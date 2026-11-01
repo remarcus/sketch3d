@@ -48,6 +48,28 @@ mod texture_check;
 mod tutorial;
 
 fn main() -> eframe::Result {
+    let args: Vec<_> = std::env::args().collect();
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--write-capability-fixtures")
+    {
+        let Some(directory) = args.get(index + 1) else {
+            eprintln!("Usage: sketch3d --write-capability-fixtures <directory>");
+            std::process::exit(2);
+        };
+        match scenes::write_capability_fixtures(std::path::Path::new(directory)) {
+            Ok(paths) => {
+                for path in paths {
+                    println!("Wrote {}", path.display());
+                }
+            }
+            Err(error) => {
+                eprintln!("Could not write capability fixtures: {error}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--benchmark-performance") {
         if let Err(error) = performance_benchmark::run() {
             eprintln!("{error}");
