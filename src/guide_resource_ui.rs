@@ -250,40 +250,25 @@ impl SketchApp {
                     self.add_saved_guide("Freeform", GuideGeometry::Freeform { surface });
                 }
                 let eligible = self.selected_stroke_count();
-                if ui
-                    .add_enabled(
-                        (2..=8).contains(&eligible),
-                        egui::Button::new("Preview loft from selected strokes"),
-                    )
-                    .clicked()
-                {
+                if preview_loft_button(ui, eligible).clicked() {
                     self.add_loft_from_selection();
                 }
             });
             ui.small("For a loft, select 2–8 open cross-section strokes drawn in the same endpoint direction.");
             if let Some(surface) = self.loft_preview {
-                ui.group(|ui| {
-                    ui.strong("Loft preview");
-                    ui.small(format!(
-                        "{} sections, ordered along +Z; each stroke keeps its original endpoint direction.",
-                        surface.section_count
-                    ));
-                    for section in 0..surface.section_count {
-                        ui.small(format!("Section {}", section + 1));
+                match loft_preview_controls(ui, &surface) {
+                    Some(LoftPreviewAction::Apply) => {
+                        self.loft_preview = None;
+                        self.add_saved_guide("Loft", GuideGeometry::Loft { surface });
+                        self.selected.clear();
+                        self.status = "Loft guide added as an independent snapshot.".into();
                     }
-                    ui.horizontal(|ui| {
-                        if ui.button("Apply loft").clicked() {
-                            self.loft_preview = None;
-                            self.add_saved_guide("Loft", GuideGeometry::Loft { surface });
-                            self.selected.clear();
-                            self.status = "Loft guide added as an independent snapshot.".into();
-                        }
-                        if ui.button("Cancel preview").clicked() {
-                            self.loft_preview = None;
-                            self.renderer.invalidate();
-                        }
-                    });
-                });
+                    Some(LoftPreviewAction::Cancel) => {
+                        self.loft_preview = None;
+                        self.renderer.invalidate();
+                    }
+                    None => {}
+                }
             }
             if self.doc.guide_resources.is_empty() {
                 ui.small("Save a plane, cylinder, or revolved guide, or add a sphere/cone/ring/freeform.");
@@ -409,85 +394,19 @@ impl SketchApp {
     }
 
     fn add_loft_from_selection(&mut self) {
-        let mut strokes: Vec<_> = self
+        let strokes: Vec<_> = self
             .doc
             .strokes
             .iter()
             .filter(|stroke| self.selected.contains(&stroke.id) && stroke.fill.is_none())
             .collect();
-        if !(2..=8).contains(&strokes.len()) {
-            self.status = "Select between two and eight open strokes for a loft.".into();
-            return;
-        }
-        if strokes.iter().any(|stroke| stroke.points.len() < 2) {
-            self.status = "Each loft section needs at least two points.".into();
-            return;
-        }
-        let centroids: Vec<Vec3> = strokes
-            .iter()
-            .map(|stroke| {
-                stroke
-                    .points
-                    .iter()
-                    .map(|point| point.position)
-                    .sum::<Vec3>()
-                    / stroke.points.len() as f32
-            })
-            .collect();
-        let Some(mut x_axis) = (strokes[0].points.last().unwrap().position
-            - strokes[0].points[0].position)
-            .try_normalize()
-        else {
-            self.status = "The first loft section has no usable direction.".into();
-            return;
+        let surface = match loft_from_strokes(&strokes) {
+            Ok(surface) => surface,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
         };
-        let center = centroids.iter().copied().sum::<Vec3>() / centroids.len() as f32;
-        let progression = centroids.last().unwrap() - centroids[0];
-        let Some(z_axis) = (progression - x_axis * progression.dot(x_axis)).try_normalize() else {
-            self.status = "Loft sections need a distinct progression direction.".into();
-            return;
-        };
-        let Some(y_axis) = z_axis.cross(x_axis).try_normalize() else {
-            self.status = "Loft section and progression directions are parallel.".into();
-            return;
-        };
-        x_axis = y_axis.cross(z_axis).normalize_or_zero();
-        let rotation =
-            glam::Quat::from_mat3(&glam::Mat3::from_cols(x_axis, y_axis, z_axis)).normalize();
-        let inverse = rotation.inverse();
-        let mut ordered: Vec<_> = strokes
-            .drain(..)
-            .map(|stroke| {
-                let points: Vec<Vec3> = stroke
-                    .points
-                    .iter()
-                    .map(|point| inverse * (point.position - center))
-                    .collect();
-                let z = points.iter().map(|point| point.z).sum::<f32>() / points.len() as f32;
-                (z, points)
-            })
-            .collect();
-        ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let sections: Vec<LoftSection> = ordered
-            .iter()
-            .map(|(_, points)| fit_loft_section(points))
-            .collect();
-        let section_count = sections.len();
-        let mut section_storage = [LoftSection {
-            controls: [Vec3::ZERO; 4],
-        }; 8];
-        section_storage[..section_count].copy_from_slice(&sections);
-        let surface = LoftSurface {
-            center,
-            rotation,
-            sections: section_storage,
-            section_count: section_count as u8,
-            tension: 0.0,
-        };
-        if let Err(error) = surface.validate() {
-            self.status = format!("Cannot create loft: {error}");
-            return;
-        }
         self.loft_preview = Some(surface);
         self.renderer.invalidate();
         self.status =
@@ -496,8 +415,145 @@ impl SketchApp {
     }
 }
 
+fn loft_from_strokes(strokes: &[&Stroke]) -> Result<LoftSurface, String> {
+    if let Some(error) = loft_input_error(strokes) {
+        return Err(error);
+    }
+    let centroids: Vec<Vec3> = strokes
+        .iter()
+        .map(|stroke| {
+            stroke
+                .points
+                .iter()
+                .map(|point| point.position)
+                .sum::<Vec3>()
+                / stroke.points.len() as f32
+        })
+        .collect();
+    let x_axis =
+        (strokes[0].points.last().unwrap().position - strokes[0].points[0].position).normalize();
+    let center = centroids.iter().copied().sum::<Vec3>() / centroids.len() as f32;
+    let progression = centroids.last().unwrap() - centroids[0];
+    let z_axis = (progression - x_axis * progression.dot(x_axis)).normalize_or_zero();
+    let y_axis = z_axis.cross(x_axis).normalize_or_zero();
+    let x_axis = y_axis.cross(z_axis).normalize_or_zero();
+    let rotation =
+        glam::Quat::from_mat3(&glam::Mat3::from_cols(x_axis, y_axis, z_axis)).normalize();
+    let inverse = rotation.inverse();
+    let mut ordered: Vec<_> = strokes
+        .iter()
+        .map(|stroke| {
+            let points: Vec<Vec3> = stroke
+                .points
+                .iter()
+                .map(|point| inverse * (point.position - center))
+                .collect();
+            let z = points.iter().map(|point| point.z).sum::<f32>() / points.len() as f32;
+            (z, points)
+        })
+        .collect();
+    ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let sections: Vec<_> = ordered
+        .iter()
+        .map(|(_, points)| fit_loft_section(points))
+        .collect();
+    let section_count = sections.len();
+    let mut section_storage = [LoftSection {
+        controls: [Vec3::ZERO; 4],
+    }; 8];
+    section_storage[..section_count].copy_from_slice(&sections);
+    let surface = LoftSurface {
+        center,
+        rotation,
+        sections: section_storage,
+        section_count: section_count as u8,
+        tension: 0.0,
+    };
+    surface
+        .validate()
+        .map_err(|error| format!("Cannot create loft: {error}"))?;
+    Ok(surface)
+}
+
+fn loft_input_error(strokes: &[&Stroke]) -> Option<String> {
+    if !(2..=8).contains(&strokes.len()) {
+        return Some("Select between two and eight open strokes for a loft.".into());
+    }
+    if strokes.iter().any(|stroke| stroke.points.len() < 2) {
+        return Some("Each loft section needs at least two points.".into());
+    }
+    let Some(tangent) =
+        (strokes[0].points.last()?.position - strokes[0].points.first()?.position).try_normalize()
+    else {
+        return Some("The first loft section has no usable direction.".into());
+    };
+    let centroids: Vec<Vec3> = strokes
+        .iter()
+        .map(|stroke| {
+            stroke
+                .points
+                .iter()
+                .map(|point| point.position)
+                .sum::<Vec3>()
+                / stroke.points.len() as f32
+        })
+        .collect();
+    let progression = centroids.last()? - centroids[0];
+    if (progression - tangent * progression.dot(tangent))
+        .try_normalize()
+        .is_none()
+    {
+        return Some("Loft sections need a distinct progression direction.".into());
+    }
+    None
+}
+
 fn add_ring_button(ui: &mut egui::Ui) -> egui::Response {
     ui.button("Add ring")
+}
+
+fn preview_loft_button(ui: &mut egui::Ui, eligible_strokes: usize) -> egui::Response {
+    ui.add_enabled(
+        (2..=8).contains(&eligible_strokes),
+        egui::Button::new("Preview loft from selected strokes"),
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoftPreviewAction {
+    Apply,
+    Cancel,
+}
+
+fn loft_preview_controls(ui: &mut egui::Ui, surface: &LoftSurface) -> Option<LoftPreviewAction> {
+    let mut action = None;
+    ui.group(|ui| {
+        ui.strong("Loft preview");
+        ui.small(format!(
+            "{} sections, ordered along +Z; each stroke keeps its original endpoint direction.",
+            surface.section_count
+        ));
+        for section in 0..surface.section_count {
+            ui.small(loft_section_label(section));
+        }
+        let (apply, cancel) = loft_preview_action_buttons(ui);
+        if apply.clicked() {
+            action = Some(LoftPreviewAction::Apply);
+        }
+        if cancel.clicked() {
+            action = Some(LoftPreviewAction::Cancel);
+        }
+    });
+    action
+}
+
+fn loft_section_label(index: u8) -> String {
+    format!("Section {}", index + 1)
+}
+
+fn loft_preview_action_buttons(ui: &mut egui::Ui) -> (egui::Response, egui::Response) {
+    ui.horizontal(|ui| (ui.button("Apply loft"), ui.button("Cancel preview")))
+        .inner
 }
 
 #[derive(Default)]
@@ -1178,6 +1234,209 @@ mod guide_row_tests {
             controls.remove_rect.unwrap().center(),
         );
         assert!(remove_action.remove, "Remove dispatches a distinct action");
+    }
+}
+
+#[cfg(test)]
+mod loft_ui_tests {
+    use super::{
+        loft_from_strokes, loft_preview_action_buttons, loft_section_label, preview_loft_button,
+        LoftPreviewAction,
+    };
+    use crate::document::{Brush, Point, Stroke};
+    use eframe::egui::{self, Event, PointerButton, Pos2, Rect, Vec2};
+    use glam::Vec3;
+
+    fn line(id: u64, start: Vec3, end: Vec3) -> Stroke {
+        Stroke {
+            material: Default::default(),
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id,
+            color: [0.2, 0.4, 0.6],
+            radius: 0.02,
+            brush: Brush::default(),
+            points: vec![
+                Point {
+                    position: start,
+                    pressure: 1.0,
+                    tilt: None,
+                },
+                Point {
+                    position: end,
+                    pressure: 1.0,
+                    tilt: None,
+                },
+            ],
+        }
+    }
+
+    fn button_frame(
+        ctx: &egui::Context,
+        eligible_strokes: usize,
+        events: Vec<Event>,
+    ) -> (bool, Rect) {
+        let mut result = None;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(720.0, 480.0))),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let response = preview_loft_button(ui, eligible_strokes);
+                    result = Some((response.clicked(), response.rect));
+                });
+            },
+        );
+        result.expect("loft preview button renders")
+    }
+
+    fn action_buttons_frame(ctx: &egui::Context, events: Vec<Event>) -> (bool, Rect, bool, Rect) {
+        let mut result = None;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(720.0, 480.0))),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (apply, cancel) = loft_preview_action_buttons(ui);
+                    result = Some((apply.clicked(), apply.rect, cancel.clicked(), cancel.rect));
+                });
+            },
+        );
+        result.expect("loft preview action controls render")
+    }
+
+    fn click_selection_button(
+        ctx: &egui::Context,
+        eligible_strokes: usize,
+        position: Pos2,
+    ) -> bool {
+        let _ = button_frame(ctx, eligible_strokes, vec![Event::PointerMoved(position)]);
+        let _ = button_frame(
+            ctx,
+            eligible_strokes,
+            vec![Event::PointerButton {
+                pos: position,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+        );
+        button_frame(
+            ctx,
+            eligible_strokes,
+            vec![Event::PointerButton {
+                pos: position,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        )
+        .0
+    }
+
+    fn click_preview_action(
+        ctx: &egui::Context,
+        position: Pos2,
+        action: LoftPreviewAction,
+    ) -> LoftPreviewAction {
+        let _ = action_buttons_frame(ctx, vec![Event::PointerMoved(position)]);
+        let _ = action_buttons_frame(
+            ctx,
+            vec![Event::PointerButton {
+                pos: position,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+        );
+        let (apply_clicked, _, cancel_clicked, _) = action_buttons_frame(
+            ctx,
+            vec![Event::PointerButton {
+                pos: position,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        let actual = match (apply_clicked, cancel_clicked) {
+            (true, false) => LoftPreviewAction::Apply,
+            (false, true) => LoftPreviewAction::Cancel,
+            _ => panic!("the requested preview action must dispatch by itself"),
+        };
+        assert_eq!(actual, action);
+        actual
+    }
+
+    #[test]
+    fn loft_preview_apply_cancel_and_selection_controls_respond_to_mouse() {
+        let ctx = egui::Context::default();
+        let (disabled_clicked, disabled_rect) = button_frame(&ctx, 1, Vec::new());
+        assert!(!click_selection_button(&ctx, 1, disabled_rect.center()));
+        assert!(!disabled_clicked);
+        let (_, preview_rect) = button_frame(&ctx, 3, Vec::new());
+        assert!(click_selection_button(&ctx, 3, preview_rect.center()));
+
+        assert_eq!(
+            (0..3).map(loft_section_label).collect::<Vec<_>>(),
+            vec!["Section 1", "Section 2", "Section 3"]
+        );
+        let (_, apply_rect, _, cancel_rect) = action_buttons_frame(&ctx, Vec::new());
+        assert_eq!(
+            click_preview_action(&ctx, cancel_rect.center(), LoftPreviewAction::Cancel),
+            LoftPreviewAction::Cancel
+        );
+        assert_eq!(
+            click_preview_action(&ctx, apply_rect.center(), LoftPreviewAction::Apply),
+            LoftPreviewAction::Apply
+        );
+    }
+
+    #[test]
+    fn loft_selection_rejects_parallel_progression_with_user_feedback() {
+        let strokes = [
+            line(1, Vec3::ZERO, Vec3::X),
+            line(2, Vec3::new(2.0, 0.0, 0.0), Vec3::new(3.0, 0.0, 0.0)),
+        ];
+        let selected: Vec<_> = strokes.iter().collect();
+        assert_eq!(
+            loft_from_strokes(&selected).unwrap_err(),
+            "Loft sections need a distinct progression direction."
+        );
+    }
+
+    #[test]
+    fn generated_loft_orders_source_sections_and_keeps_an_independent_snapshot() {
+        let mut strokes = [
+            line(1, Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 0.0, -1.0)),
+            line(2, Vec3::new(-1.0, 0.4, 1.0), Vec3::new(1.0, 0.4, 1.0)),
+            line(3, Vec3::new(-1.0, -0.2, 0.0), Vec3::new(1.0, -0.2, 0.0)),
+        ];
+        let selected: Vec<_> = strokes.iter().collect();
+        let surface = loft_from_strokes(&selected).unwrap();
+        assert_eq!(surface.section_count, 3);
+        assert!(surface.validate().is_ok());
+        assert!(surface.sections[..3]
+            .windows(2)
+            .all(|pair| pair[0].controls[0].z < pair[1].controls[0].z));
+        assert!(surface.sections[..3]
+            .iter()
+            .all(|section| section.controls[0].x < section.controls[3].x));
+
+        let snapshot = surface;
+        strokes[1].points[0].position.y += 5.0;
+        assert_eq!(
+            snapshot, surface,
+            "source edits do not change the generated loft snapshot"
+        );
     }
 }
 
