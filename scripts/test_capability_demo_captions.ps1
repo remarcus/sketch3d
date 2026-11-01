@@ -43,6 +43,20 @@ Final cue.
 '@
     & $recorderPath -Name caption-test -DurationSeconds 60 -CaptionFile $valid -ValidateOnly
 
+    $shortTimestamps = Write-Track 'short-timestamps.vtt' @'
+WEBVTT
+
+00:00.000 --> 00:10.000
+Short-form cue.
+
+00:10.000 --> 00:00:20.000
+Transition to the hour form.
+
+00:00:20.000 --> 01:00.000
+Short-form final cue.
+'@
+    & $recorderPath -Name caption-test -DurationSeconds 60 -CaptionFile $shortTimestamps -ValidateOnly
+
     $overlap = Write-Track 'overlap.vtt' @'
 WEBVTT
 
@@ -61,6 +75,14 @@ WEBVTT
 This cue exceeds the clip.
 '@
     Assert-Rejected -Path $tooLong -DurationSeconds 60 -ExpectedMessage 'extends beyond the 60-second clip'
+
+    $largeHour = Write-Track 'large-hour.vtt' @'
+WEBVTT
+
+100:00:00.000 --> 100:00:01.000
+Valid hour-form syntax outside the clip duration.
+'@
+    Assert-Rejected -Path $largeHour -DurationSeconds 60 -ExpectedMessage 'extends beyond the 60-second clip'
 
     $missingCaptionsRejected = $false
     try {

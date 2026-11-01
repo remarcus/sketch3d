@@ -33,7 +33,7 @@ Example (run from the repository root):
 
 FFmpeg must include the Windows `gdigrab` input and libx264. The script caps captures at 2,700 frames, 7,680×4,320 metadata dimensions, 512 MiB per MP4, and 5 MiB per short GIF. GIF previews are generated only for clips up to 25 seconds; longer tutorials use an MP4 and poster. Output names never overwrite existing files.
 
-Timed WebVTT is a sidecar, not burned into the MP4. Long clips require one. Caption files are UTF-8, at most 1 MiB and 200 cues; timestamps use `HH:MM:SS.mmm`, cannot overlap, and must end within the declared clip duration. The two tutorial VTT files currently contain 60-second draft timing; they still need synchronization against reviewed footage.
+Timed WebVTT is a sidecar, not burned into the MP4. Long clips require one. Caption files are UTF-8, at most 1 MiB and 200 cues; timestamps accept WebVTT's `MM:SS.mmm` short form and `HH:MM:SS.mmm` form, cannot overlap, and must end within the declared clip duration. The hours field is optional when zero and required when nonzero, as defined by the [W3C WebVTT timestamp syntax](https://www.w3.org/TR/webvtt1/#webvtt-timestamp). The two tutorial VTT files currently contain 60-second draft timing; they still need synchronization against reviewed footage.
 
 For either 60-second tutorial, add `-DurationSeconds 60 -CaptionFile docs/capability-demos/tutorials/house-editing.en.vtt` (or `curved-drawing.en.vtt`) to the capture command. Use `-ValidateOnly` to check the selected VTT without launching FFmpeg or starting a recording.
 

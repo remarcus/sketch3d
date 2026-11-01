@@ -62,10 +62,17 @@ function Invoke-Ffmpeg {
 function ConvertTo-CaptionMilliseconds {
     param([string]$Timestamp)
 
-    if ($Timestamp -notmatch '^(?<hours>\d{2}):(?<minutes>[0-5]\d):(?<seconds>[0-5]\d)\.(?<milliseconds>\d{3})$') {
-        throw "Invalid WebVTT timestamp '$Timestamp'. Use HH:MM:SS.mmm."
+    if ($Timestamp -notmatch '^(?:(?<hours>[0-9]{2,}):)?(?<minutes>[0-5][0-9]):(?<seconds>[0-5][0-9])\.(?<milliseconds>[0-9]{3})$') {
+        throw "Invalid WebVTT timestamp '$Timestamp'. Use MM:SS.mmm or HH:MM:SS.mmm."
     }
-    return ((([int]$Matches.hours * 60 + [int]$Matches.minutes) * 60 + [int]$Matches.seconds) * 1000 + [int]$Matches.milliseconds)
+    $hours = [System.Numerics.BigInteger]::Zero
+    if (-not [string]::IsNullOrEmpty($Matches.hours)) {
+        $hours = [System.Numerics.BigInteger]::Parse(
+            $Matches.hours,
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+    }
+    return ((($hours * 60 + [int]$Matches.minutes) * 60 + [int]$Matches.seconds) * 1000 + [int]$Matches.milliseconds)
 }
 
 function Read-ValidatedCaptionTrack {
@@ -93,7 +100,8 @@ function Read-ValidatedCaptionTrack {
         throw 'Caption file must start with the WEBVTT header.'
     }
 
-    $timestampPattern = '^(?<start>\d{2}:[0-5]\d:[0-5]\d\.\d{3})[ \t]+-->[ \t]+(?<end>\d{2}:[0-5]\d:[0-5]\d\.\d{3})(?:[ \t]+.*)?$'
+    $timestampValuePattern = '(?:(?:[0-9]{2,}):)?[0-5][0-9]:[0-5][0-9]\.[0-9]{3}'
+    $timestampPattern = "^(?<start>$timestampValuePattern)[ \t]+-->[ \t]+(?<end>$timestampValuePattern)(?:[ \t]+.*)?$"
     $durationMilliseconds = $MaximumDurationSeconds * 1000
     $previousEnd = -1
     $cueCount = 0
