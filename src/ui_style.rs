@@ -128,7 +128,7 @@ pub fn apply(ctx: &egui::Context, preference: crate::presentation::UiTheme) {
         Color32::from_rgb(222, 232, 237)
     };
     style.visuals.widgets.active.bg_fill = if dark {
-        Color32::from_rgb(32, 124, 132)
+        Color32::from_rgb(21, 106, 113)
     } else {
         Color32::from_rgb(187, 225, 222)
     };
@@ -630,6 +630,79 @@ fn showcase_row<R>(ui: &mut Ui, label: &str, add_sample: impl FnOnce(&mut Ui) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn contrast_ratio(a: Color32, b: Color32) -> f32 {
+        let luminance = |color: Color32| {
+            let [r, g, b] = [color.r(), color.g(), color.b()].map(|channel| {
+                let value = f32::from(channel) / 255.0;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            });
+            0.2126 * r + 0.7152 * g + 0.0722 * b
+        };
+        let (high, low) = {
+            let a = luminance(a);
+            let b = luminance(b);
+            (a.max(b), a.min(b))
+        };
+        (high + 0.05) / (low + 0.05)
+    }
+
+    #[test]
+    fn semantic_text_and_focus_tokens_meet_contrast_targets_in_both_themes() {
+        for dark in [false, true] {
+            let colors = semantic_colors(dark);
+            for text in [colors.text, colors.muted_text] {
+                for background in [colors.surface, colors.elevated, colors.input] {
+                    assert!(
+                        contrast_ratio(text, background) >= 4.5,
+                        "text/background contrast below 4.5:1 in dark={dark}"
+                    );
+                }
+            }
+            for marker in [colors.focus, colors.accent] {
+                for background in [colors.surface, colors.elevated, colors.input] {
+                    assert!(
+                        contrast_ratio(marker, background) >= 3.0,
+                        "focus/accent boundary contrast below 3:1 in dark={dark}"
+                    );
+                }
+            }
+            let context = egui::Context::default();
+            apply(
+                &context,
+                if dark {
+                    crate::presentation::UiTheme::Dark
+                } else {
+                    crate::presentation::UiTheme::Light
+                },
+            );
+            let style = context.style();
+            for (name, widget) in [
+                ("inactive", &style.visuals.widgets.inactive),
+                ("hovered", &style.visuals.widgets.hovered),
+                ("active", &style.visuals.widgets.active),
+                ("open", &style.visuals.widgets.open),
+            ] {
+                assert!(
+                    contrast_ratio(widget.fg_stroke.color, widget.bg_fill) >= 4.5,
+                    "{name} control text contrast below 4.5:1 in dark={dark}: {:?} on {:?}",
+                    widget.fg_stroke.color,
+                    widget.bg_fill
+                );
+            }
+            assert!(
+                contrast_ratio(
+                    style.visuals.selection.stroke.color,
+                    style.visuals.selection.bg_fill,
+                ) >= 3.0,
+                "selection focus contrast below 3:1 in dark={dark}"
+            );
+        }
+    }
 
     #[test]
     fn numeric_parser_preserves_precision_and_display_units() {
