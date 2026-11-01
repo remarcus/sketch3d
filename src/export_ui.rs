@@ -14,6 +14,40 @@ pub(super) struct ExportSnapshot {
     redo: usize,
     selection: HashSet<u64>,
 }
+
+fn build_export_document_snapshot(
+    document: &Document,
+    selection: Option<&HashSet<u64>>,
+    include_scene_resources: bool,
+) -> Document {
+    let include_scene_resources = include_scene_resources && selection.is_none();
+    Document {
+        layers: document.layers.clone(),
+        active_layer: document.active_layer,
+        version: document.version,
+        image_planes: if include_scene_resources {
+            document.image_planes.clone()
+        } else {
+            Vec::new()
+        },
+        active_image_plane: None,
+        guide_resources: Vec::new(),
+        active_guide: None,
+        model_references: if include_scene_resources {
+            document.model_references.clone()
+        } else {
+            Vec::new()
+        },
+        active_model_reference: None,
+        strokes: document
+            .strokes
+            .iter()
+            .filter(|stroke| selection.is_none_or(|ids| ids.contains(&stroke.id)))
+            .cloned()
+            .collect(),
+    }
+}
+
 impl SketchApp {
     pub(super) fn can_export(&self, selected: bool) -> bool {
         self.can_export_scope(selected, false)
@@ -114,32 +148,8 @@ impl SketchApp {
             return;
         }
         let selection = selected.then(|| self.selected.clone());
-        let snapshot = Document {
-            layers: self.doc.layers.clone(),
-            active_layer: self.doc.active_layer,
-            version: self.doc.version,
-            image_planes: if include_images {
-                self.doc.image_planes.clone()
-            } else {
-                Vec::new()
-            },
-            active_image_plane: self.doc.active_image_plane,
-            guide_resources: Vec::new(),
-            active_guide: None,
-            model_references: if include_images {
-                self.doc.model_references.clone()
-            } else {
-                Vec::new()
-            },
-            active_model_reference: None,
-            strokes: self
-                .doc
-                .strokes
-                .iter()
-                .filter(|s| selection.as_ref().is_none_or(|ids| ids.contains(&s.id)))
-                .cloned()
-                .collect(),
-        };
+        let snapshot =
+            build_export_document_snapshot(&self.doc, selection.as_ref(), include_images);
         let (sender, receiver) = mpsc::channel();
         let context = ctx.clone();
         let destination = path.clone();
@@ -251,5 +261,88 @@ impl SketchApp {
         assert_eq!(&bytes[..4], b"glTF");
         self.status="Background GLB export passed; native drawing, file identity, selection, and history are unchanged.".into();
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        document::{model_references::ObjReferenceResource, StrokeMaterial},
+        image_planes::ImagePlane,
+        obj_reference_storage::ObjReferenceAsset,
+    };
+    use glam::{Quat, Vec3};
+
+    fn stroke(id: u64) -> Stroke {
+        Stroke {
+            fill: None,
+            material: StrokeMaterial::default(),
+            group_id: None,
+            layer_id: 1,
+            id,
+            color: [0.2, 0.4, 0.6],
+            radius: 0.02,
+            brush: Default::default(),
+            points: vec![crate::document::Point {
+                position: Vec3::new(id as f32, 0.0, 0.0),
+                pressure: 1.0,
+                tilt: None,
+            }],
+        }
+    }
+
+    fn document_with_scene_resources() -> Document {
+        Document {
+            strokes: vec![stroke(1), stroke(2)],
+            image_planes: vec![ImagePlane::from_asset(
+                7,
+                "Backdrop",
+                "image-7.png".into(),
+                [4, 2],
+                Vec3::ZERO,
+                Quat::IDENTITY,
+                2.0,
+            )
+            .unwrap()],
+            model_references: vec![ObjReferenceResource {
+                id: 9,
+                name: "Model".into(),
+                visible: true,
+                locked: false,
+                center: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                scale: 1.0,
+                asset: ObjReferenceAsset {
+                    id: 9,
+                    bundle_dir: "models/9".into(),
+                },
+            }],
+            ..Document::default()
+        }
+    }
+
+    #[test]
+    fn export_snapshot_separates_whole_scene_ink_only_and_selected_scopes() {
+        let document = document_with_scene_resources();
+
+        let whole_scene = build_export_document_snapshot(&document, None, true);
+        assert_eq!(whole_scene.strokes, document.strokes);
+        assert_eq!(whole_scene.image_planes, document.image_planes);
+        assert_eq!(whole_scene.model_references, document.model_references);
+        assert!(whole_scene.guide_resources.is_empty());
+        assert_eq!(whole_scene.active_image_plane, None);
+        assert_eq!(whole_scene.active_model_reference, None);
+
+        let ink_only = build_export_document_snapshot(&document, None, false);
+        assert_eq!(ink_only.strokes, document.strokes);
+        assert!(ink_only.image_planes.is_empty());
+        assert!(ink_only.model_references.is_empty());
+
+        let selection = HashSet::from([2]);
+        let selected = build_export_document_snapshot(&document, Some(&selection), true);
+        assert_eq!(selected.strokes, vec![document.strokes[1].clone()]);
+        assert!(selected.image_planes.is_empty());
+        assert!(selected.model_references.is_empty());
     }
 }
