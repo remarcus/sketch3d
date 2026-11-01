@@ -10,6 +10,7 @@ use glam::Vec3;
 
 const LEAF_TRIANGLES: usize = 8;
 const NO_TRIANGLE: u32 = u32::MAX;
+pub const MAX_STROKE_CONTACT_GAP_PIXELS: f32 = 24.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ObjMeshHit {
@@ -255,6 +256,19 @@ impl ObjMeshIndex {
             .is_some_and(|edges| edges.contains(&second))
     }
 
+    /// Whether two pointer contacts may continue one model-surface stroke.
+    /// A large screen-space gap or disconnected mesh edge starts a new stroke.
+    pub fn stroke_contacts_connect(
+        &self,
+        previous_triangle: u32,
+        current_triangle: u32,
+        screen_gap_pixels: f32,
+    ) -> bool {
+        screen_gap_pixels.is_finite()
+            && (0.0..=MAX_STROKE_CONTACT_GAP_PIXELS).contains(&screen_gap_pixels)
+            && self.triangles_adjacent(previous_triangle, current_triangle)
+    }
+
     /// Find the nearest positive, double-sided triangle hit in local OBJ space.
     /// Direction need not be normalized; `ray_t` is its corresponding parameter.
     pub fn hit(&self, model: &ObjModel, origin: Vec3, direction: Vec3) -> Option<ObjMeshHit> {
@@ -418,4 +432,63 @@ fn ray_triangle(origin: Vec3, direction: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Opt
         return None;
     }
     Some((t, Vec3::new(1.0 - u - v, u, v)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_obj(contents: &str) -> crate::obj_reference::ObjModel {
+        let directory = tempfile::tempdir().unwrap();
+        crate::obj_reference::parse(contents.as_bytes(), &directory.path().join("mesh.obj"))
+            .unwrap()
+    }
+
+    #[test]
+    fn double_sided_hits_and_manifold_contact_continuity_are_bounded() {
+        let model = parse_obj("v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1 2 3\nf 1 3 4\n");
+        let index = ObjMeshIndex::new(&model).unwrap();
+        assert!(index.triangles_adjacent(0, 1));
+        assert!(index.stroke_contacts_connect(0, 1, 24.0));
+        assert!(!index.stroke_contacts_connect(0, 1, 24.01));
+        assert!(!index.stroke_contacts_connect(0, 1, f32::NAN));
+
+        let above = index
+            .hit(&model, Vec3::new(0.7, 0.2, 1.0), -Vec3::Z)
+            .unwrap();
+        let below = index
+            .hit(&model, Vec3::new(0.7, 0.2, -1.0), Vec3::Z)
+            .unwrap();
+        assert!(above.position.distance(Vec3::new(0.7, 0.2, 0.0)) < 1e-5);
+        assert!(below.position.distance(above.position) < 1e-5);
+
+        let stacked = parse_obj(
+            "v -1 -1 0\nv 1 -1 0\nv 0 1 0\nv -1 -1 1\nv 1 -1 1\nv 0 1 1\nf 1 2 3\nf 4 5 6\n",
+        );
+        let stacked_index = ObjMeshIndex::new(&stacked).unwrap();
+        let nearest = stacked_index
+            .hit(&stacked, Vec3::new(0.0, 0.0, 2.0), -Vec3::Z)
+            .unwrap();
+        assert!((nearest.position.z - 1.0).abs() < 1e-5);
+        assert!(stacked_index
+            .hit(&stacked, Vec3::new(3.0, 0.0, 2.0), -Vec3::Z)
+            .is_none());
+    }
+
+    #[test]
+    fn duplicated_vertices_and_nonmanifold_edges_do_not_join_surface_strokes() {
+        let separate = parse_obj(
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 0 0 0\nv 1 0 0\nv 1 1 0\nf 1 2 3\nf 1 3 4\nf 5 6 7\n",
+        );
+        let separate_index = ObjMeshIndex::new(&separate).unwrap();
+        assert!(!separate_index.triangles_adjacent(0, 2));
+        assert!(!separate_index.stroke_contacts_connect(0, 2, 2.0));
+
+        let nonmanifold = parse_obj(
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 0.5 0.5 1\nf 1 2 3\nf 1 3 4\nf 1 3 5\n",
+        );
+        let nonmanifold_index = ObjMeshIndex::new(&nonmanifold).unwrap();
+        assert!(!nonmanifold_index.triangles_adjacent(0, 1));
+        assert!(!nonmanifold_index.triangles_adjacent(0, 2));
+    }
 }

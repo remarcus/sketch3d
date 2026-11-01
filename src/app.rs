@@ -1038,11 +1038,13 @@ impl SketchApp {
         let connected = self.model_stroke_contact.is_some_and(
             |(previous_id, previous_triangle, previous_screen)| {
                 previous_id == id
-                    && position.distance(previous_screen) <= 24.0
-                    && (previous_triangle == hit.triangle_index
-                        || self.obj_surface_indices.get(&id).is_some_and(|index| {
-                            index.triangles_adjacent(previous_triangle, hit.triangle_index)
-                        }))
+                    && self.obj_surface_indices.get(&id).is_some_and(|index| {
+                        index.stroke_contacts_connect(
+                            previous_triangle,
+                            hit.triangle_index,
+                            position.distance(previous_screen),
+                        )
+                    })
             },
         );
         if self.active.is_some() && !connected {
