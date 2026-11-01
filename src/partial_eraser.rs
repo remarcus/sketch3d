@@ -442,3 +442,248 @@ fn point_in_polygon(point: Pos2, polygon: &[Pos2]) -> bool {
     }
     inside
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Brush, StrokeMaterial};
+    use crate::geometry::Projection;
+    use eframe::egui::Vec2;
+
+    fn canvas() -> Rect {
+        Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))
+    }
+
+    fn point(camera: &Camera, canvas: Rect, world: Vec3) -> Pos2 {
+        gizmo::project(camera, canvas, world).unwrap().0
+    }
+
+    fn source_stroke(points: Vec<Point>) -> Stroke {
+        let mut brush = Brush {
+            kind: crate::document::BrushKind::Ribbon,
+            normal: Vec3::Y,
+            tangent: Vec3::X,
+            ..Brush::default()
+        };
+        brush.texture.kind = crate::texture::TextureKind::Pattern;
+        brush.texture.seed = 29;
+        Stroke {
+            id: 5,
+            color: [0.2, 0.4, 0.7],
+            radius: 0.025,
+            brush,
+            points,
+            fill: None,
+            material: StrokeMaterial::Emissive,
+            group_id: Some(13),
+            layer_id: 1,
+        }
+    }
+
+    fn line(points: [Vec3; 2]) -> Stroke {
+        source_stroke(
+            points
+                .into_iter()
+                .enumerate()
+                .map(|(index, position)| Point {
+                    position,
+                    pressure: if index == 0 { 0.25 } else { 0.75 },
+                    tilt: Some(if index == 0 { Vec3::X } else { Vec3::Y }),
+                })
+                .collect(),
+        )
+    }
+
+    fn front_camera() -> Camera {
+        Camera {
+            projection: Projection::Perspective,
+            yaw: 0.0,
+            pitch: 0.0,
+            ..Camera::default()
+        }
+    }
+
+    #[test]
+    fn split_fragments_keep_interpolated_contacts_and_stroke_metadata_through_history() {
+        let camera = front_camera();
+        let canvas = canvas();
+        let source = line([Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)]);
+        let mut doc = crate::document::Document {
+            strokes: vec![source.clone()],
+            ..Default::default()
+        };
+        let center = point(&camera, canvas, Vec3::ZERO);
+        let path = [center - Vec2::Y * 2.0, center + Vec2::Y * 2.0];
+        let plan = plan_partial_erase(&doc, &camera, canvas, &path, 5.0, 100)
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.split, 1);
+        assert_eq!(plan.removed, 0);
+        assert_eq!(plan.next_id, 101);
+        let expected_after = match &plan.edit {
+            Edit::Change { after, .. } => after.clone(),
+            _ => panic!("partial erasing must produce one reversible change"),
+        };
+
+        plan.edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes.len(), 2);
+        assert_eq!(doc.strokes[0].id, source.id);
+        assert_eq!(doc.strokes[1].id, 100);
+        for fragment in &doc.strokes {
+            assert_eq!(fragment.color, source.color);
+            assert_eq!(fragment.radius, source.radius);
+            assert_eq!(fragment.brush, source.brush);
+            assert_eq!(fragment.material, source.material);
+            assert_eq!(fragment.group_id, source.group_id);
+            assert_eq!(fragment.layer_id, source.layer_id);
+            assert_eq!(fragment.fill, source.fill);
+        }
+        let left = &doc.strokes[0];
+        let right = &doc.strokes[1];
+        assert!(left.points.first().unwrap().position.x < -1.9);
+        assert!(left.points.last().unwrap().position.x < 0.0);
+        assert!(right.points.first().unwrap().position.x > 0.0);
+        assert!(right.points.last().unwrap().position.x > 1.9);
+        assert!(
+            right.points.first().unwrap().position.x - left.points.last().unwrap().position.x > 0.1
+        );
+        for boundary in [left.points.last().unwrap(), right.points.first().unwrap()] {
+            assert!((0.25..=0.75).contains(&boundary.pressure));
+            let tilt = boundary
+                .tilt
+                .expect("tilt should interpolate at split boundaries");
+            assert!((tilt.length() - 1.0).abs() < 0.0001);
+        }
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+        let reopened =
+            crate::document::Document::from_json(&std::fs::read_to_string(file.path()).unwrap())
+                .unwrap();
+        assert_eq!(reopened.strokes, doc.strokes);
+
+        let glb = crate::export::encode(&doc, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&glb.bytes).unwrap();
+        let exported: Vec<_> = gltf
+            .meshes()
+            .map(|mesh| {
+                let primitive = mesh.primitives().next().unwrap();
+                primitive
+                    .reader(|_| gltf.blob.as_deref())
+                    .read_indices()
+                    .unwrap()
+                    .into_u32()
+                    .count()
+            })
+            .collect();
+        let retained: Vec<_> = doc
+            .strokes
+            .iter()
+            .map(|stroke| crate::geometry::stroke_mesh(stroke).len())
+            .collect();
+        assert_eq!(
+            exported, retained,
+            "GLB should contain both exact retained fragments"
+        );
+
+        let recovery_dir = tempfile::tempdir().unwrap();
+        let mut recovery = crate::recovery::Recovery::new(
+            Ok(recovery_dir.path().into()),
+            eframe::egui::Context::default(),
+        );
+        recovery.mark_edit();
+        assert!(recovery.force_snapshot(&doc, None));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while recovery.busy() && std::time::Instant::now() < deadline {
+            recovery.poll();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        recovery.poll();
+        assert!(
+            !recovery.busy(),
+            "recovery worker should finish the snapshot"
+        );
+        drop(recovery);
+        let recovered = crate::recovery_store::scan(recovery_dir.path(), "next-session").unwrap();
+        assert_eq!(recovered.candidates.len(), 1);
+        assert_eq!(
+            recovered.candidates[0].snapshot.document.strokes,
+            doc.strokes
+        );
+
+        plan.edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes, vec![source.clone()]);
+        plan.edit.apply(&mut doc, true);
+        assert_eq!(
+            doc.strokes,
+            expected_after
+                .iter()
+                .map(|(_, stroke)| stroke.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn taps_repeated_cuts_and_complete_erasure_have_exact_results() {
+        let camera = front_camera();
+        let canvas = canvas();
+        let center = point(&camera, canvas, Vec3::ZERO);
+
+        let dot = source_stroke(vec![Point {
+            position: Vec3::ZERO,
+            pressure: 0.6,
+            tilt: Some(Vec3::Z),
+        }]);
+        let mut dot_doc = crate::document::Document {
+            strokes: vec![dot.clone()],
+            ..Default::default()
+        };
+        let tap = plan_partial_erase(&dot_doc, &camera, canvas, &[center], 5.0, 100)
+            .unwrap()
+            .unwrap();
+        assert_eq!(tap.removed, 1);
+        tap.edit.apply(&mut dot_doc, true);
+        assert!(dot_doc.strokes.is_empty());
+        tap.edit.apply(&mut dot_doc, false);
+        assert_eq!(dot_doc.strokes, vec![dot]);
+
+        let source = line([Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)]);
+        let mut repeated_doc = crate::document::Document {
+            strokes: vec![source],
+            ..Default::default()
+        };
+        let left = point(&camera, canvas, Vec3::new(-0.6, 0.0, 0.0));
+        let right = point(&camera, canvas, Vec3::new(0.6, 0.0, 0.0));
+        let repeated_path = [
+            left - Vec2::Y * 10.0,
+            left + Vec2::Y * 10.0,
+            right + Vec2::Y * 10.0,
+            right - Vec2::Y * 10.0,
+        ];
+        let repeated = plan_partial_erase(&repeated_doc, &camera, canvas, &repeated_path, 3.0, 100)
+            .unwrap()
+            .unwrap();
+        assert_eq!(repeated.split, 1);
+        assert_eq!(repeated.next_id, 102);
+        repeated.edit.apply(&mut repeated_doc, true);
+        assert_eq!(repeated_doc.strokes.len(), 3);
+        assert!(repeated_doc.strokes.windows(2).all(|fragments| {
+            fragments[0].points.last().unwrap().position.x
+                < fragments[1].points.first().unwrap().position.x
+        }));
+
+        let short = line([Vec3::new(-0.02, 0.0, 0.0), Vec3::new(0.02, 0.0, 0.0)]);
+        let mut short_doc = crate::document::Document {
+            strokes: vec![short],
+            ..Default::default()
+        };
+        let complete = plan_partial_erase(&short_doc, &camera, canvas, &[center], 10.0, 100)
+            .unwrap()
+            .unwrap();
+        assert_eq!(complete.removed, 1);
+        complete.edit.apply(&mut short_doc, true);
+        assert!(short_doc.strokes.is_empty());
+        complete.edit.apply(&mut short_doc, false);
+        assert_eq!(short_doc.strokes.len(), 1);
+    }
+}
