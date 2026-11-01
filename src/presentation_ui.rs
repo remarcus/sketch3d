@@ -173,6 +173,7 @@ impl PresentationUi {
         focus
     }
 }
+
 impl SketchApp {
     pub(super) fn leave_artwork(&mut self) {
         if self.presentation.artwork {
@@ -257,5 +258,97 @@ impl SketchApp {
                     });
                 });
             });
+    }
+}
+
+#[cfg(test)]
+mod appearance_tests {
+    use super::*;
+
+    fn apply_with_system_theme(
+        presentation: &mut PresentationUi,
+        context: &egui::Context,
+        system_theme: Option<egui::Theme>,
+    ) {
+        let _ = context.run(
+            egui::RawInput {
+                system_theme,
+                ..Default::default()
+            },
+            |ctx| presentation.apply_theme(ctx),
+        );
+    }
+
+    #[test]
+    fn appearance_changes_live_persists_and_tracks_system_theme_without_resetting_workspace_state()
+    {
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let preference_path = directory.path().join("presentation.json");
+        let mut preferences = Preferences {
+            background: [0.21, 0.43, 0.67],
+            grain: 0.04,
+            ..Default::default()
+        };
+        preferences.layout.inspector_width = 412.0;
+        preferences.layout.inspector_tab = presentation::InspectorTab::Layers;
+        let background = preferences.background;
+        let mut presentation = PresentationUi {
+            preferences,
+            artwork: true,
+            path: Ok(preference_path.clone()),
+            notice: None,
+            verification_frame: None,
+            layout_save_due: None,
+            remembered_background: background,
+            applied_theme: None,
+            applied_system_theme: None,
+        };
+        let context = egui::Context::default();
+
+        presentation.apply_theme(&context);
+        assert!(context.style().visuals.dark_mode);
+
+        presentation.set_ui_theme(presentation::UiTheme::Light);
+        presentation.apply_theme(&context);
+        assert!(!context.style().visuals.dark_mode);
+        assert!(
+            presentation.artwork,
+            "theme changes must not exit artwork mode"
+        );
+        assert_eq!(presentation.preferences.background, background);
+        assert_eq!(presentation.preferences.grain, 0.04);
+        assert_eq!(presentation.preferences.layout.inspector_width, 412.0);
+        assert_eq!(
+            presentation.preferences.layout.inspector_tab,
+            presentation::InspectorTab::Layers
+        );
+        let saved = Preferences::load(&preference_path).unwrap();
+        assert_eq!(saved, presentation.preferences);
+
+        presentation.set_ui_theme(presentation::UiTheme::System);
+        apply_with_system_theme(&mut presentation, &context, None);
+        assert!(
+            context.style().visuals.dark_mode,
+            "System falls back to Dark when unavailable"
+        );
+
+        apply_with_system_theme(&mut presentation, &context, Some(egui::Theme::Light));
+        assert!(
+            !context.style().visuals.dark_mode,
+            "System follows a reported light mode"
+        );
+        apply_with_system_theme(&mut presentation, &context, Some(egui::Theme::Dark));
+        assert!(
+            context.style().visuals.dark_mode,
+            "System follows a reported dark mode"
+        );
+
+        let saved = Preferences::load(&preference_path).unwrap();
+        assert_eq!(saved.ui_theme, presentation::UiTheme::System);
+        assert_eq!(saved.background, background);
+        assert_eq!(
+            saved.layout.inspector_tab,
+            presentation::InspectorTab::Layers
+        );
     }
 }
