@@ -9,7 +9,13 @@ use crate::{editing::Edit, gizmo::Mode};
 use color_editor::{ColorAction, ColorTarget};
 use eframe::egui::{self, Color32, Key, PointerButton, Pos2, Rect, RichText, Vec2};
 use glam::Vec3;
-use std::collections::HashSet;
+use std::collections::{hash_map::Entry, HashMap, HashSet};
+
+type LoadedDrawing = (
+    Document,
+    HashMap<u64, crate::image_planes::ImageAsset>,
+    HashMap<u64, crate::obj_reference::ObjModel>,
+);
 #[path = "brush_dynamics.rs"]
 mod brush_dynamics;
 #[path = "brush_textures.rs"]
@@ -48,6 +54,10 @@ mod line_tool;
 mod liquify_ui;
 #[path = "mirror_ui.rs"]
 mod mirror_ui;
+#[path = "mixed_resources_ui.rs"]
+mod mixed_resources_ui;
+#[path = "native_merge.rs"]
+mod native_merge;
 #[path = "obj_export_ui.rs"]
 mod obj_export_ui;
 #[path = "obj_reference_ui.rs"]
@@ -95,6 +105,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+fn canvas_pointer_allowed(ctx: &egui::Context, canvas: Rect, position: Pos2) -> bool {
+    canvas.contains(position)
+        && ctx
+            .layer_id_at(position)
+            .is_none_or(|layer| layer.order == egui::Order::Background)
+}
+
 #[derive(Clone, Copy)]
 enum Pending {
     FilledStudy,
@@ -125,7 +142,11 @@ pub struct SketchApp {
     new_library_folder: String,
     rename_library_source: Option<PathBuf>,
     rename_library_stem: String,
+    delete_library_source: Option<PathBuf>,
     library_open_path: Option<PathBuf>,
+    insert_preview: Option<(PathBuf, Document)>,
+    insert_offset: [f32; 3],
+    insert_as_group: bool,
     show_view: bool,
     view_verification_frame: Option<u32>,
     presentation: presentation_ui::PresentationUi,
@@ -141,6 +162,7 @@ pub struct SketchApp {
     camera_ui: camera_ui::CameraBookmarkUi,
     camera_playback: Option<camera_ui::CameraPlayback>,
     liquify_ui: liquify_ui::LiquifyUi,
+    mixed_resources_ui: mixed_resources_ui::MixedResourcesUi,
     image_plane_assets: std::collections::HashMap<u64, crate::image_planes::ImageAsset>,
     obj_reference_models: std::collections::HashMap<u64, crate::obj_reference::ObjModel>,
     obj_surface_indices: std::collections::HashMap<u64, crate::obj_mesh_index::ObjMeshIndex>,
@@ -171,6 +193,11 @@ pub struct SketchApp {
     layer_name: String,
     layer_target: u64,
     layer_verification_frame: Option<u32>,
+    image_plane_verification_frame: Option<u32>,
+    image_plane_verification_changed_pixels: usize,
+    liquify_brush_verification_frame: Option<u32>,
+    liquify_brush_verification_before: Option<Vec<Stroke>>,
+    mixed_resources_verification_frame: Option<u32>,
     group_verification_frame: Option<u32>,
     repeat_verification_frame: Option<u32>,
     repeat: Option<selection::RepeatState>,
@@ -198,7 +225,11 @@ pub struct SketchApp {
     selected: HashSet<u64>,
     transform_mode: Mode,
     transform_values: [f32; 3],
-    scale_value: f32,
+    scale_values: [f32; 3],
+    scale_uniform_lock: bool,
+    scale_brush_width: bool,
+    transform_pivot: selection::PivotMode,
+    custom_pivot: Vec3,
     drag: Option<selection::Drag>,
     brush_select_enabled: bool,
     brush_select_radius: f32,
@@ -207,6 +238,7 @@ pub struct SketchApp {
     brush_select_drag: Option<selection::BrushSelectionDrag>,
     appearance_draft: Option<selection::AppearanceDraft>,
     active: Option<u64>,
+    active_started_at: Option<Instant>,
     mouse_down: bool,
     next_id: u64,
     undo: Vec<Edit>,
@@ -239,12 +271,13 @@ pub struct SketchApp {
     export_snapshot: Option<export_ui::ExportSnapshot>,
     png_export: png_export_ui::PngExportUi,
     video_export: video_export_ui::VideoExportUi,
+    construction_history: crate::construction_history::ConstructionHistory,
     obj_export: obj_export_ui::ObjExportUi,
     png_verification_frame: Option<u32>,
 }
 impl SketchApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        ui_style::apply(&cc.egui_ctx);
+        ui_style::apply(&cc.egui_ctx, crate::presentation::UiTheme::Dark);
         let (pen, input_status) = match PenInput::install(cc) {
             Ok(p) => (Some(p), "Windows Ink listener ready".into()),
             Err(e) => (None, e),
@@ -305,7 +338,11 @@ impl SketchApp {
             new_library_folder: String::new(),
             rename_library_source: None,
             rename_library_stem: String::new(),
+            delete_library_source: None,
             library_open_path: None,
+            insert_preview: None,
+            insert_offset: [0.0; 3],
+            insert_as_group: false,
             line: Default::default(),
             curve_tool: Default::default(),
             shape_tool: Default::default(),
@@ -325,6 +362,7 @@ impl SketchApp {
             camera_ui: Default::default(),
             camera_playback: None,
             liquify_ui: Default::default(),
+            mixed_resources_ui: Default::default(),
             image_plane_assets: std::collections::HashMap::new(),
             obj_reference_models: std::collections::HashMap::new(),
             obj_surface_indices: std::collections::HashMap::new(),
@@ -355,6 +393,11 @@ impl SketchApp {
             layer_name: String::new(),
             layer_target: 1,
             layer_verification_frame: None,
+            image_plane_verification_frame: None,
+            image_plane_verification_changed_pixels: 0,
+            liquify_brush_verification_frame: None,
+            liquify_brush_verification_before: None,
+            mixed_resources_verification_frame: None,
             group_verification_frame: None,
             repeat_verification_frame: None,
             repeat: None,
@@ -382,7 +425,11 @@ impl SketchApp {
             selected: HashSet::new(),
             transform_mode: Mode::Move,
             transform_values: [0.0; 3],
-            scale_value: 1.0,
+            scale_values: [1.0; 3],
+            scale_uniform_lock: true,
+            scale_brush_width: true,
+            transform_pivot: selection::PivotMode::SelectionCenter,
+            custom_pivot: Vec3::ZERO,
             drag: None,
             brush_select_enabled: false,
             brush_select_radius: 18.0,
@@ -391,6 +438,7 @@ impl SketchApp {
             brush_select_drag: None,
             appearance_draft: None,
             active: None,
+            active_started_at: None,
             mouse_down: false,
             next_id: 1,
             undo: Vec::new(),
@@ -423,10 +471,76 @@ impl SketchApp {
             export_snapshot: None,
             png_export: Default::default(),
             video_export: Default::default(),
+            construction_history: crate::construction_history::ConstructionHistory::load(),
             obj_export: Default::default(),
             png_verification_frame: None,
         };
-        if std::env::args().any(|a| a == "--verify-lines") {
+        if std::env::args().any(|a| a == "--verify-liquify-brush") {
+            app.verification_frame = None;
+            app.liquify_brush_verification_frame = Some(0);
+            app.doc = crate::export_check::brush_fixture();
+            app.selected = HashSet::from([app.doc.strokes[0].id]);
+            app.select_mode = true;
+            app.camera.align(crate::geometry::Plane::Front);
+        } else if std::env::args().any(|a| a == "--verify-mixed-resources") {
+            app.verification_frame = None;
+            app.mixed_resources_verification_frame = Some(0);
+            app.doc = crate::export_check::brush_fixture();
+            app.selected = HashSet::from([app.doc.strokes[0].id]);
+            app.select_mode = true;
+            let plane = crate::image_planes::ImagePlane {
+                id: 9101,
+                name: "Mixed verification image".into(),
+                asset_file: "image-9101.png".into(),
+                pixel_size: Some([2, 2]),
+                origin: Vec3::new(0.0, 0.0, 0.25),
+                rotation: glam::Quat::IDENTITY,
+                size: glam::Vec2::ONE,
+                opacity: 0.8,
+                visible: true,
+                locked: false,
+                drawable: true,
+            };
+            app.doc.image_planes.push(plane);
+            app.doc.active_image_plane = Some(9101);
+            app.doc.model_references.push(
+                crate::document::model_references::ObjReferenceResource {
+                    id: 9201,
+                    name: "Mixed verification model".into(),
+                    visible: true,
+                    locked: false,
+                    center: Vec3::new(0.0, 0.0, -0.25),
+                    rotation: glam::Quat::IDENTITY,
+                    scale: 1.0,
+                    asset: crate::obj_reference_storage::ObjReferenceAsset {
+                        id: 9201,
+                        bundle_dir: "models/9201".into(),
+                    },
+                },
+            );
+            app.doc
+                .guide_resources
+                .push(crate::document::guide_resources::GuideResource {
+                    id: 9301,
+                    name: "Mixed verification guide".into(),
+                    visible: true,
+                    locked: false,
+                    geometry: crate::document::guide_resources::GuideGeometry::Plane {
+                        origin: Vec3::new(0.0, 0.0, 0.5),
+                        rotation: glam::Quat::IDENTITY,
+                    },
+                });
+            app.mixed_resources_ui.selection = crate::mixed_resources::ResourceSelection {
+                stroke_ids: HashSet::new(),
+                image_plane_ids: HashSet::from([9101]),
+                obj_reference_ids: HashSet::from([9201]),
+                guide_ids: HashSet::from([9301]),
+            };
+            app.camera.align(crate::geometry::Plane::Front);
+        } else if std::env::args().any(|a| a == "--verify-image-planes") {
+            app.verification_frame = None;
+            app.image_plane_verification_frame = Some(0);
+        } else if std::env::args().any(|a| a == "--verify-lines") {
             app.verification_frame = None;
             app.line.verification_frame = Some(0);
             app.load_house();
@@ -529,6 +643,7 @@ impl SketchApp {
         }
         app.renderer.grain = app.presentation.preferences.grain;
         app.renderer.toon_shading = app.presentation.preferences.toon_shading;
+        app.renderer.post_effects = app.presentation.preferences.post_effects;
         app.recovery.request_scan();
         app.sync_presentation_background();
         app
@@ -568,6 +683,31 @@ impl SketchApp {
             self.status = format!("Cannot use presentation background image: {error}");
         }
     }
+    fn current_tool_settings(&self) -> crate::construction_history::ToolSettingsSnapshot {
+        let tool = if self.select_mode {
+            "select"
+        } else if self.eraser {
+            "eraser"
+        } else if self.fills.enabled {
+            "fill"
+        } else if self.line.enabled {
+            "line"
+        } else if self.curve_tool.enabled {
+            "curve"
+        } else if self.shape_tool.mode.is_some() {
+            "shape"
+        } else {
+            "brush"
+        };
+        crate::construction_history::ToolSettingsSnapshot {
+            tool: tool.into(),
+            radius: self.radius,
+            color: self.color,
+            stabilization: self.stabilization,
+            brush: self.brush,
+        }
+    }
+
     fn finish(&mut self) {
         let model_surface_stroke = self.model_stroke_contact.is_some();
         self.finish_appearance_edit(false);
@@ -590,6 +730,11 @@ impl SketchApp {
                 }
             }
         }
+        let stroke_duration_ms = self
+            .active_started_at
+            .take()
+            .map(|started| started.elapsed().as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or(0);
         if let Some(id) = self.active.take() {
             if let Some(stroke) = self
                 .doc
@@ -599,15 +744,15 @@ impl SketchApp {
                 .cloned()
             {
                 if model_surface_stroke {
-                    self.commit_model_surface_stroke(stroke);
+                    self.commit_model_surface_stroke(stroke, stroke_duration_ms);
                 } else {
-                    self.commit_drawn_stroke(stroke, true);
+                    self.commit_drawn_stroke(stroke, true, stroke_duration_ms);
                 }
             }
         }
     }
 
-    fn commit_model_surface_stroke(&mut self, stroke: Stroke) {
+    fn commit_model_surface_stroke(&mut self, stroke: Stroke, duration_ms: u64) {
         let Some(index) = self
             .doc
             .strokes
@@ -616,6 +761,7 @@ impl SketchApp {
         else {
             return;
         };
+        let recorded_stroke = stroke.clone();
         let edit = Edit::Change {
             before: Vec::new(),
             after: vec![(index, stroke)],
@@ -624,7 +770,7 @@ impl SketchApp {
         self.undo.push(edit);
         self.redo.clear();
         self.dirty = true;
-        self.record_recovery_edit();
+        self.record_recovery_stroke_labeled("Draw on model", &recorded_stroke, duration_ms);
         self.renderer.invalidate();
     }
     fn cancel(&mut self) {
@@ -637,11 +783,15 @@ impl SketchApp {
         self.sampling_contact = false;
         self.resume_ink = false;
         self.cancel_transform();
+        if self.liquify_active() {
+            self.finish_liquify(false);
+        }
         self.stabilizer.reset();
         self.mouse_down = false;
         if let Some(id) = self.active.take() {
             self.doc.strokes.retain(|s| s.id != id);
         }
+        self.active_started_at = None;
     }
     fn add_point(&mut self, position: Pos2, pressure: f32, rect: Rect, begin: bool) {
         self.add_point_with_tilt(position, pressure, rect, begin, None);
@@ -727,6 +877,7 @@ impl SketchApp {
             let id = self.next_id;
             self.next_id += 1;
             self.active = Some(id);
+            self.active_started_at = Some(Instant::now());
             self.stabilizer.start(if let Some(surface) = saved_surface {
                 surface
             } else if active_image_plane.is_some() {
@@ -739,6 +890,7 @@ impl SketchApp {
                 Surface::Plane
             });
             self.doc.strokes.push(Stroke {
+                material: Default::default(),
                 fill: None,
                 group_id: None,
                 layer_id: self.doc.active_layer,
@@ -843,8 +995,12 @@ impl SketchApp {
             self.status = "The active OBJ surface is not loaded.".into();
             return;
         };
-        if !self.obj_surface_indices.contains_key(&id) {
-            match crate::obj_mesh_index::ObjMeshIndex::new(model) {
+        let index_result = match self.obj_surface_indices.entry(id) {
+            Entry::Occupied(_) => None,
+            Entry::Vacant(_) => Some(crate::obj_mesh_index::ObjMeshIndex::new(model)),
+        };
+        if let Some(result) = index_result {
+            match result {
                 Ok(index) => {
                     self.obj_surface_indices.insert(id, index);
                 }
@@ -902,10 +1058,12 @@ impl SketchApp {
             let id = self.next_id;
             self.next_id += 1;
             self.active = Some(id);
+            self.active_started_at = Some(Instant::now());
             let normal = (resource.rotation * hit.normal).normalize_or_zero();
             let view_right = self.camera.basis().0;
             let tangent = (view_right - normal * view_right.dot(normal)).normalize_or_zero();
             self.doc.strokes.push(Stroke {
+                material: Default::default(),
                 fill: None,
                 group_id: None,
                 layer_id: self.doc.active_layer,
@@ -957,10 +1115,14 @@ impl SketchApp {
             self.undo.push(Edit::Remove(i, stroke));
             self.redo.clear();
             self.dirty = true;
-            self.record_recovery_edit();
+            self.record_recovery_edit_labeled("Erase");
         }
     }
     fn undo(&mut self) {
+        if self.mixed_resource_preview_active() {
+            self.status = "Apply or cancel the mixed-resource preview before undoing.".into();
+            return;
+        }
         if self.liquify_active() {
             self.status = "Apply or cancel the Liquify preview before undoing.".into();
             return;
@@ -971,12 +1133,18 @@ impl SketchApp {
         }
         self.finish();
         if let Some(edit) = self.undo.pop() {
-            let image_planes_changed = matches!(edit, Edit::ImagePlanes { .. });
-            let models_changed = matches!(edit, Edit::ModelReferences { .. });
+            let image_planes_changed = matches!(
+                edit,
+                Edit::ImagePlanes { .. } | Edit::MixedResources { .. } | Edit::Merge(_)
+            );
+            let models_changed = matches!(
+                edit,
+                Edit::ModelReferences { .. } | Edit::MixedResources { .. } | Edit::Merge(_)
+            );
             edit.apply(&mut self.doc, false);
             self.redo.push(edit);
             self.dirty = true;
-            self.record_recovery_edit();
+            self.record_recovery_edit_labeled("Undo");
             self.renderer.invalidate();
             if image_planes_changed {
                 self.refresh_image_plane_textures();
@@ -989,6 +1157,10 @@ impl SketchApp {
         }
     }
     fn redo(&mut self) {
+        if self.mixed_resource_preview_active() {
+            self.status = "Apply or cancel the mixed-resource preview before redoing.".into();
+            return;
+        }
         if self.liquify_active() {
             self.status = "Apply or cancel the Liquify preview before redoing.".into();
             return;
@@ -999,12 +1171,18 @@ impl SketchApp {
         }
         self.finish();
         if let Some(edit) = self.redo.pop() {
-            let image_planes_changed = matches!(edit, Edit::ImagePlanes { .. });
-            let models_changed = matches!(edit, Edit::ModelReferences { .. });
+            let image_planes_changed = matches!(
+                edit,
+                Edit::ImagePlanes { .. } | Edit::MixedResources { .. } | Edit::Merge(_)
+            );
+            let models_changed = matches!(
+                edit,
+                Edit::ModelReferences { .. } | Edit::MixedResources { .. } | Edit::Merge(_)
+            );
             edit.apply(&mut self.doc, true);
             self.undo.push(edit);
             self.dirty = true;
-            self.record_recovery_edit();
+            self.record_recovery_edit_labeled("Redo");
             self.renderer.invalidate();
             if image_planes_changed {
                 self.refresh_image_plane_textures();
@@ -1017,6 +1195,10 @@ impl SketchApp {
         }
     }
     fn save(&mut self, save_as: bool) -> bool {
+        if self.mixed_resource_preview_active() {
+            self.status = "Apply or cancel the mixed-resource preview before saving.".into();
+            return false;
+        }
         if self.liquify_active() {
             self.status = "Apply or cancel the Liquify preview before saving.".into();
             return false;
@@ -1195,7 +1377,7 @@ impl SketchApp {
                         .pick_file()
                 });
                 if let Some(path) = selected_path {
-                    let result = (|| -> Result<(Document, std::collections::HashMap<u64, crate::image_planes::ImageAsset>, std::collections::HashMap<u64, crate::obj_reference::ObjModel>), String> {
+                    let result = (|| -> Result<LoadedDrawing, String> {
                         let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
                         if file.metadata().map_err(|e| e.to_string())?.len() > 64 * 1024 * 1024 {
                             return Err("Document exceeds the prototype's 64 MB limit".into());
@@ -1206,10 +1388,17 @@ impl SketchApp {
                         let document = Document::from_json(&text)?;
                         let assets = crate::image_plane_storage::load_assets(&document, &path)?;
                         let model_root = crate::image_plane_storage::asset_root(&path)?;
-                        let models = document.model_references.iter().map(|resource| {
-                            crate::obj_reference_storage::load_bundle(&model_root, &resource.asset)
+                        let models = document
+                            .model_references
+                            .iter()
+                            .map(|resource| {
+                                crate::obj_reference_storage::load_bundle(
+                                    &model_root,
+                                    &resource.asset,
+                                )
                                 .map(|model| (resource.id, model))
-                        }).collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+                            })
+                            .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
                         Ok((document, assets, models))
                     })();
                     match result {
@@ -1278,6 +1467,7 @@ impl SketchApp {
                 });
             }
             self.doc.strokes.push(Stroke {
+                material: Default::default(),
                 fill: None,
                 group_id: None,
                 layer_id: self.doc.active_layer,
@@ -1361,7 +1551,7 @@ impl SketchApp {
         ui.label(
             RichText::new("TOOLS")
                 .small()
-                .color(Color32::from_gray(140)),
+                .color(ui_style::colors(ui.ctx()).muted_text),
         );
         for (tool, label, selected) in [
             (
@@ -1477,6 +1667,10 @@ impl SketchApp {
     }
 
     fn properties(&mut self, ui: &mut egui::Ui) {
+        if self.mixed_resource_preview_active() {
+            self.mixed_resource_controls(ui);
+            return;
+        }
         self.line_controls(ui);
         self.curve_controls(ui);
         self.fill_controls(ui);
@@ -1485,6 +1679,7 @@ impl SketchApp {
         ui.add_space(6.0);
         if self.select_mode {
             self.group_controls(ui);
+            self.mixed_resource_controls(ui);
         }
         self.palette_ui.controls(ui, &mut self.color);
         self.tutorial_hint(ui, "Brush library");
@@ -1519,7 +1714,7 @@ impl SketchApp {
         ui.label(
             RichText::new("DRAWING GUIDE")
                 .small()
-                .color(Color32::from_gray(140)),
+                .color(ui_style::colors(ui.ctx()).muted_text),
         );
         self.tutorial_hint(ui, "Drawing guide");
         self.plane_controls(ui);
@@ -1532,7 +1727,7 @@ impl SketchApp {
         ui.label(
             RichText::new("NAVIGATION")
                 .small()
-                .color(Color32::from_gray(140)),
+                .color(ui_style::colors(ui.ctx()).muted_text),
         );
         ui.label("Space + drag    Orbit\nSpace + Shift    Pan\nSpace + Alt       Zoom\nRight drag        Orbit\nMiddle drag      Pan\nScroll                Zoom");
         self.tutorial_hint(ui, "Navigation");
@@ -1547,7 +1742,7 @@ impl SketchApp {
         ui.label(
             RichText::new("INPUT LAB")
                 .small()
-                .color(Color32::from_gray(140)),
+                .color(ui_style::colors(ui.ctx()).muted_text),
         );
         ui.heading("Tablet diagnostics");
         ui.label(&self.input_status);
@@ -1561,9 +1756,9 @@ impl SketchApp {
             "WAITING FOR PEN"
         };
         ui.label(RichText::new(label).color(if recent {
-            Color32::from_rgb(76, 220, 190)
+            ui_style::colors(ui.ctx()).accent
         } else {
-            Color32::from_gray(150)
+            ui_style::colors(ui.ctx()).muted_text
         }));
         if let Some(p) = self.last_pen {
             match p.pressure {
@@ -1593,7 +1788,7 @@ impl SketchApp {
         let (rect, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 70.0), egui::Sense::hover());
         ui.painter()
-            .rect_filled(rect, 4.0, Color32::from_rgb(13, 20, 29));
+            .rect_filled(rect, 4.0, ui_style::colors(ui.ctx()).input);
         let points: Vec<Pos2> = self
             .pressure_history
             .iter()
@@ -1608,7 +1803,7 @@ impl SketchApp {
         if points.len() > 1 {
             ui.painter().add(egui::Shape::line(
                 points,
-                egui::Stroke::new(1.5_f32, Color32::from_rgb(76, 220, 190)),
+                egui::Stroke::new(1.5_f32, ui_style::colors(ui.ctx()).accent),
             ));
         }
         ui.label(format!(
@@ -1620,7 +1815,7 @@ impl SketchApp {
         ui.label(
             RichText::new("SCENE")
                 .small()
-                .color(Color32::from_gray(140)),
+                .color(ui_style::colors(ui.ctx()).muted_text),
         );
         ui.label(format!(
             "{} strokes\n{} control points",
@@ -1646,11 +1841,19 @@ impl SketchApp {
     }
 
     fn show_drawing_library(&mut self, ctx: &egui::Context) {
-        if !self.show_drawing_library || self.presentation.artwork {
+        if self.presentation.artwork {
+            return;
+        }
+        if !self.show_drawing_library {
+            self.show_drawing_trash(ctx);
             return;
         }
         let mut selected = None;
         let mut copy_source = None;
+        let mut backup_source = None;
+        let mut delete_source = None;
+        let mut restore_paths = None;
+        let mut import_paths = None;
         let mut rename_source = None;
         let mut browse = false;
         let mut folder_changes = Vec::new();
@@ -1675,6 +1878,40 @@ impl SketchApp {
                     if ui.button("Browse…").clicked() {
                         browse = true;
                     }
+                    if ui.button("Trash…").clicked() {
+                        self.drawing_library.trash_open = true;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Import drawing…").clicked() {
+                        if let Some(source) = rfd::FileDialog::new()
+                            .add_filter("Spatial Sketch", &["json"])
+                            .pick_file()
+                        {
+                            let file_name = source
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("drawing.sketch.json");
+                            if let Some(destination) = rfd::FileDialog::new()
+                                .add_filter("Spatial Sketch", &["json"])
+                                .set_file_name(file_name)
+                                .save_file()
+                            {
+                                import_paths = Some((source, destination));
+                            }
+                        }
+                    }
+                    if ui.button("Restore backup…").clicked() {
+                        if let Some(bundle) = rfd::FileDialog::new().pick_folder() {
+                            if let Some(destination) = rfd::FileDialog::new()
+                                .add_filter("Spatial Sketch", &["json"])
+                                .set_file_name("restored.sketch.json")
+                                .save_file()
+                            {
+                                restore_paths = Some((bundle, destination));
+                            }
+                        }
+                    }
                 });
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.new_library_folder);
@@ -1685,8 +1922,9 @@ impl SketchApp {
                 ui.separator();
                 let filter = self.drawing_library_filter.trim().to_lowercase();
                 let folder_filter = self.library_folder_filter.clone();
+                let recent_paths = self.drawing_library.recent().to_vec();
                 egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                    for path in self.drawing_library.recent() {
+                    for path in &recent_paths {
                         let label = path.file_name().and_then(|name| name.to_str()).unwrap_or("Untitled drawing");
                         if !filter.is_empty() && !label.to_lowercase().contains(&filter) {
                             continue;
@@ -1700,10 +1938,25 @@ impl SketchApp {
                         }
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
+                                if let Some(texture) =
+                                    self.drawing_library.thumbnail(ctx, path.as_path())
+                                {
+                                    ui.add(egui::Image::new((
+                                        texture.id(),
+                                        egui::vec2(96.0, 60.0),
+                                    )));
+                                } else {
+                                    ui.allocate_ui(egui::vec2(96.0, 60.0), |ui| {
+                                        ui.centered_and_justified(|ui| {
+                                            ui.weak("Preview unavailable")
+                                                .on_hover_text("The drawing is still loading, missing, or invalid.");
+                                        });
+                                    });
+                                }
                                 ui.label(label);
                                 ui.small(path.display().to_string());
                                 if !path.is_file() {
-                                    ui.colored_label(Color32::YELLOW, "File is missing");
+                                    ui.colored_label(ui_style::colors(ui.ctx()).error, "File is missing");
                                 }
                             });
                             ui.horizontal(|ui| {
@@ -1725,6 +1978,9 @@ impl SketchApp {
                                 if ui.add_enabled(path.is_file(), egui::Button::new("Copy saved file…")).clicked() {
                                     copy_source = Some(path.clone());
                                 }
+                                if ui.add_enabled(path.is_file(), egui::Button::new("Backup…")).clicked() {
+                                    backup_source = Some(path.clone());
+                                }
                                 let is_current = self.file.as_ref().is_some_and(|file| {
                                     file.canonicalize().ok() == path.canonicalize().ok()
                                 });
@@ -1733,6 +1989,9 @@ impl SketchApp {
                                     && self.recovered_source.is_none();
                                 if ui.add_enabled(can_rename, egui::Button::new("Rename…")).clicked() {
                                     rename_source = Some(path.clone());
+                                }
+                                if ui.add_enabled(path.is_file() && !is_current, egui::Button::new("Delete…")).clicked() {
+                                    delete_source = Some(path.clone());
                                 }
                             });
                         });
@@ -1743,6 +2002,24 @@ impl SketchApp {
                     ui.small(notice);
                 }
             });
+        if let Some((bundle, destination)) = restore_paths {
+            match crate::drawing_library::restore_native_backup(&bundle, &destination) {
+                Ok(()) => {
+                    self.drawing_library.record(&destination);
+                    self.status = format!("Restored drawing to {}", destination.display());
+                }
+                Err(error) => self.status = format!("Restore failed: {error}"),
+            }
+        }
+        if let Some((source, destination)) = import_paths {
+            match crate::drawing_library::copy_native_drawing(&source, &destination) {
+                Ok(()) => {
+                    self.drawing_library.record(&destination);
+                    self.status = format!("Imported drawing to {}", destination.display());
+                }
+                Err(error) => self.status = format!("Import failed: {error}"),
+            }
+        }
         if let Some(path) = rename_source {
             self.rename_library_stem = path
                 .file_stem()
@@ -1750,6 +2027,36 @@ impl SketchApp {
                 .unwrap_or_default()
                 .to_owned();
             self.rename_library_source = Some(path);
+        }
+        if let Some(path) = delete_source {
+            self.delete_library_source = Some(path);
+        }
+        let mut delete_confirmed = false;
+        let mut delete_cancelled = false;
+        if let Some(path) = &self.delete_library_source {
+            egui::Window::new("Move drawing to recoverable trash?")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("A validated backup will be kept in local application data before the drawing and its managed resources are removed.\n{}", path.display()));
+                    ui.horizontal(|ui| {
+                        delete_confirmed = ui.button("Move to trash").clicked();
+                        delete_cancelled = ui.button("Cancel").clicked();
+                    });
+                });
+        }
+        if delete_cancelled {
+            self.delete_library_source = None;
+        } else if delete_confirmed {
+            if let Some(source) = self.delete_library_source.take() {
+                match crate::drawing_library::trash_native_drawing(&source) {
+                    Ok(backup) => {
+                        self.drawing_library.forget(&source);
+                        self.status = format!("Moved drawing to local trash: {}", backup.display());
+                    }
+                    Err(error) => self.status = format!("Could not move drawing to trash: {error}"),
+                }
+            }
         }
         let mut rename_confirmed = false;
         let mut rename_cancelled = false;
@@ -1822,6 +2129,25 @@ impl SketchApp {
             self.library_open_path = Some(path);
             self.show_drawing_library = false;
             self.request(Pending::Open);
+        } else if let Some(source) = backup_source {
+            if let Some(parent) = rfd::FileDialog::new().pick_folder() {
+                let stem = source
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("drawing");
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|value| value.as_secs())
+                    .unwrap_or(0);
+                let destination = parent.join(format!("{stem}-{stamp}.sketch-backup"));
+                match crate::drawing_library::backup_native_drawing(&source, &destination) {
+                    Ok(()) => {
+                        self.status =
+                            format!("Created portable backup at {}", destination.display())
+                    }
+                    Err(error) => self.status = format!("Backup failed: {error}"),
+                }
+            }
         } else if let Some(source) = copy_source {
             let file_name = source
                 .file_name()
@@ -1844,6 +2170,276 @@ impl SketchApp {
             self.show_drawing_library = false;
             self.request(Pending::Open);
         }
+        self.show_drawing_trash(ctx);
+    }
+
+    fn show_drawing_trash(&mut self, ctx: &egui::Context) {
+        if !self.drawing_library.trash_open || self.presentation.artwork {
+            return;
+        }
+        let mut open = self.drawing_library.trash_open;
+        let mut restore = None;
+        let mut read_error = None;
+        let entries = match crate::drawing_library::list_trash() {
+            Ok(entries) => entries,
+            Err(error) => {
+                read_error = Some(error);
+                Vec::new()
+            }
+        };
+        egui::Window::new("Recoverable drawing trash")
+            .open(&mut open)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                ui.label("Deleted drawings remain here until restored. Restoring never overwrites an existing file.");
+                if let Some(error) = &read_error {
+                    ui.colored_label(ui_style::colors(ui.ctx()).error, error);
+                }
+                if entries.is_empty() && read_error.is_none() {
+                    ui.weak("Trash is empty.");
+                }
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    for entry in &entries {
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(&entry.name);
+                                if let Some(deleted) = entry.deleted {
+                                    let age = std::time::SystemTime::now()
+                                        .duration_since(deleted)
+                                        .unwrap_or_default();
+                                    ui.small(format!("Deleted {} days ago", age.as_secs() / 86_400));
+                                }
+                                if let Some(issue) = &entry.issue {
+                                    ui.colored_label(ui_style::colors(ui.ctx()).error, issue);
+                                }
+                            });
+                            if ui
+                                .add_enabled(entry.issue.is_none(), egui::Button::new("Restore…"))
+                                .clicked()
+                            {
+                                restore = Some((entry.path.clone(), entry.name.clone()));
+                            }
+                        });
+                        ui.separator();
+                    }
+                });
+            });
+        self.drawing_library.trash_open = open;
+        if let Some((bundle, original_name)) = restore {
+            let destination = rfd::FileDialog::new()
+                .add_filter("Spatial Sketch", &["json"])
+                .set_file_name(original_name)
+                .save_file();
+            if let Some(destination) = destination {
+                match crate::drawing_library::restore_from_trash(&bundle, &destination) {
+                    Ok(()) => {
+                        self.drawing_library.record(&destination);
+                        self.status = format!("Restored drawing to {}", destination.display());
+                    }
+                    Err(error) => self.status = format!("Restore failed: {error}"),
+                }
+            }
+        }
+    }
+
+    fn begin_insert_drawing(&mut self) {
+        if self.liquify_active()
+            || self.line.draft.is_some()
+            || self.curve_draft_active()
+            || self.shape_draft_active()
+            || self.fills.draft.is_some()
+            || self.video_export.is_running()
+        {
+            self.status =
+                "Finish or cancel the current preview/export before inserting a drawing.".into();
+            return;
+        }
+        self.finish();
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Spatial Sketch", &["json"])
+            .pick_file()
+        else {
+            return;
+        };
+        if self
+            .file
+            .as_ref()
+            .is_some_and(|current| current.canonicalize().ok() == path.canonicalize().ok())
+        {
+            self.status = "Choose a different drawing to insert".into();
+            return;
+        }
+        let loaded = (|| -> Result<Document, String> {
+            let metadata = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+            if !metadata.is_file()
+                || metadata.file_type().is_symlink()
+                || metadata.len() > 64 * 1024 * 1024
+            {
+                return Err("Choose a regular native drawing no larger than 64 MiB".into());
+            }
+            use std::io::Read;
+            let mut text = String::new();
+            std::fs::File::open(&path)
+                .map_err(|error| error.to_string())?
+                .take(64 * 1024 * 1024 + 1)
+                .read_to_string(&mut text)
+                .map_err(|error| error.to_string())?;
+            Document::from_json(&text)
+        })();
+        match loaded {
+            Ok(document) => {
+                self.insert_preview = Some((path, document));
+                self.insert_offset = [0.0; 3];
+                self.insert_as_group = false;
+            }
+            Err(error) => self.status = format!("Cannot insert drawing: {error}"),
+        }
+    }
+
+    fn show_insert_preview(&mut self, ctx: &egui::Context) {
+        let Some((path, source)) = &self.insert_preview else {
+            return;
+        };
+        let path = path.clone();
+        let source = source.clone();
+        let mut apply = false;
+        let mut cancel = false;
+        egui::Window::new("Insert drawing")
+            .collapsible(false)
+            .resizable(false)
+            .default_width(360.0)
+            .show(ctx, |ui| {
+                ui.label(path.file_name().and_then(|name| name.to_str()).unwrap_or("Native drawing"));
+                let point_count: usize = source.strokes.iter().map(|stroke| stroke.points.len()).sum();
+                ui.label(format!("{} strokes · {} control points · {} layers", source.strokes.len(), point_count, source.layers.len()));
+                let (mut minimum, mut maximum) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+                for point in source.strokes.iter().flat_map(|stroke| &stroke.points) {
+                    minimum = minimum.min(point.position);
+                    maximum = maximum.max(point.position);
+                }
+                let (preview, response) = ui.allocate_exact_size(Vec2::new(320.0, 150.0), egui::Sense::hover());
+                ui.painter().rect_filled(preview, 4.0, Color32::from_gray(27));
+                ui.painter().rect_stroke(preview, 4.0, egui::Stroke::new(1.0_f32, Color32::from_gray(82)), egui::StrokeKind::Inside);
+                if minimum.is_finite() {
+                    let offset = Vec3::from_array(self.insert_offset);
+                    minimum += offset;
+                    maximum += offset;
+                    let span = (maximum - minimum).max(Vec3::splat(0.01));
+                    let scale = ((preview.width() - 20.0) / span.x).min((preview.height() - 20.0) / span.y).max(0.001);
+                    let center = (minimum + maximum) * 0.5;
+                    let to_screen = |world: Vec3| {
+                        egui::pos2(preview.center().x + (world.x - center.x) * scale, preview.center().y - (world.y - center.y) * scale)
+                    };
+                    let painter = ui.painter().with_clip_rect(preview);
+                    for stroke in &source.strokes {
+                        let color = Color32::from_rgb(
+                            (stroke.color[0].clamp(0.0, 1.0) * 255.0) as u8,
+                            (stroke.color[1].clamp(0.0, 1.0) * 255.0) as u8,
+                            (stroke.color[2].clamp(0.0, 1.0) * 255.0) as u8,
+                        );
+                        for pair in stroke.points.windows(2) {
+                            let start = to_screen(pair[0].position + offset);
+                            let end = to_screen(pair[1].position + offset);
+                            painter.line_segment([start, end], egui::Stroke::new((stroke.radius * scale).clamp(1.0, 5.0), color));
+                        }
+                    }
+                } else {
+                    ui.painter().text(preview.center(), egui::Align2::CENTER_CENTER, "No stroke geometry", egui::FontId::proportional(13.0), Color32::GRAY);
+                }
+                let _ = response;
+                ui.small("Top-view placement preview; guides and reference models retain their saved transforms.");
+                for (index, axis) in ["X", "Y", "Z"].iter().enumerate() {
+                    ui.add(egui::DragValue::new(&mut self.insert_offset[index]).speed(0.05).range(-10000.0..=10000.0).prefix(format!("{axis} offset ")).suffix(" wu"));
+                }
+                let can_group = source.layers.len() == 1 && source.strokes.iter().all(|stroke| stroke.group_id.is_none());
+                ui.add_enabled_ui(can_group, |ui| {
+                    ui.checkbox(&mut self.insert_as_group, "Wrap inserted strokes in one group");
+                });
+                if !can_group {
+                    ui.small("Single-group insertion is available only for a single-layer source with no existing groups; native group structure is preserved otherwise.");
+                }
+                ui.horizontal(|ui| {
+                    apply = ui.button("Insert").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        if cancel {
+            self.insert_preview = None;
+        } else if apply {
+            if self.liquify_active()
+                || self.line.draft.is_some()
+                || self.curve_draft_active()
+                || self.shape_draft_active()
+                || self.fills.draft.is_some()
+            {
+                self.status = "Finish or cancel the current tool preview before inserting.".into();
+                return;
+            }
+            let same_file = self
+                .file
+                .as_ref()
+                .is_some_and(|current| current.canonicalize().ok() == path.canonicalize().ok());
+            if same_file {
+                self.status = "Choose a different drawing to insert".into();
+                return;
+            }
+            self.insert_preview = None;
+            let source_group = self.insert_as_group;
+            let next_layer_id = self
+                .doc
+                .layers
+                .iter()
+                .map(|layer| layer.id)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            let next_group_id = self
+                .doc
+                .strokes
+                .iter()
+                .filter_map(|stroke| stroke.group_id)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            let offset = Vec3::from_array(self.insert_offset);
+            match native_merge::prepare_insert(
+                &self.doc,
+                &path,
+                &self.image_asset_root,
+                self.next_id,
+                next_layer_id,
+                next_group_id,
+                offset,
+                source_group,
+                &self.obj_reference_models,
+            ) {
+                Ok(inserted) => {
+                    let stroke_ids: HashSet<_> = inserted
+                        .edit
+                        .strokes
+                        .iter()
+                        .map(|stroke| stroke.id)
+                        .collect();
+                    let stroke_count = inserted.edit.strokes.len();
+                    let edit = Edit::Merge(inserted.edit);
+                    edit.apply(&mut self.doc, true);
+                    self.undo.push(edit);
+                    self.redo.clear();
+                    self.next_id = inserted.next_id;
+                    self.image_plane_assets.extend(inserted.image_assets);
+                    self.obj_reference_models.extend(inserted.obj_models);
+                    self.selected = stroke_ids;
+                    self.dirty = true;
+                    self.record_recovery_edit_labeled("Insert drawing");
+                    self.refresh_image_plane_textures();
+                    self.refresh_obj_reference_meshes();
+                    self.renderer.invalidate();
+                    self.status =
+                        format!("Inserted {stroke_count} strokes from {}", path.display());
+                }
+                Err(error) => self.status = format!("Insert failed: {error}"),
+            }
+        }
     }
 
     fn menu_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -1855,6 +2451,10 @@ impl SketchApp {
             if ui.button("Open…   Ctrl+O").clicked() {
                 ui.close_menu();
                 self.request(Pending::Open);
+            }
+            if ui.button("Insert drawing…").clicked() {
+                ui.close_menu();
+                self.begin_insert_drawing();
             }
             if ui.button("Drawing library…").clicked() {
                 ui.close_menu();
@@ -1871,9 +2471,16 @@ impl SketchApp {
                 self.save(true);
             }
             ui.menu_button("Export", |ui| {
-                if ui.button("Whole drawing (.glb)").clicked() {
+                if ui.button("Whole drawing · ink only (.glb)").clicked() {
                     ui.close_menu();
                     self.export_dialog(false, ctx);
+                }
+                if ui
+                    .button("Whole scene · ink + images + OBJ models (.glb)")
+                    .clicked()
+                {
+                    ui.close_menu();
+                    self.export_dialog_with_images(false, true, ctx);
                 }
                 if ui
                     .add_enabled(
@@ -1904,6 +2511,10 @@ impl SketchApp {
                 {
                     ui.close_menu();
                     self.video_export.begin();
+                }
+                if ui.button("Construction history…").clicked() {
+                    ui.close_menu();
+                    self.video_export.begin_history_panel();
                 }
                 if ui
                     .add_enabled(
@@ -1967,6 +2578,27 @@ impl SketchApp {
         });
 
         ui.menu_button("View", |ui| {
+            let mut selected_theme = None;
+            ui.menu_button("Appearance", |ui| {
+                for (theme, label) in [
+                    (crate::presentation::UiTheme::Dark, "Dark"),
+                    (crate::presentation::UiTheme::Light, "Light"),
+                    (crate::presentation::UiTheme::System, "System"),
+                ] {
+                    if ui
+                        .selectable_label(self.presentation.preferences.ui_theme == theme, label)
+                        .clicked()
+                    {
+                        selected_theme = Some(theme);
+                        ui.close_menu();
+                    }
+                }
+                ui.small("System follows the OS theme when available; otherwise it uses Dark.");
+            });
+            if let Some(theme) = selected_theme {
+                self.presentation.set_ui_theme(theme);
+                self.presentation.apply_theme(ui.ctx());
+            }
             if ui.button("Camera and guide controls").clicked() {
                 ui.close_menu();
                 self.finish();
@@ -2034,7 +2666,7 @@ impl SketchApp {
         ui.label(
             RichText::new("SPATIAL / SKETCH")
                 .strong()
-                .color(Color32::from_rgb(99, 229, 207)),
+                .color(ui_style::colors(ui.ctx()).accent),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(if self.dirty {
@@ -2103,35 +2735,46 @@ impl SketchApp {
                 });
                 ui.separator();
                 if let Some(notice) = &self.presentation.notice {
-                    ui.colored_label(Color32::YELLOW, notice);
+                    ui.colored_label(ui_style::colors(ui.ctx()).warning, notice);
                     ui.add_space(4.0);
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
-                        match self.presentation.preferences.layout.inspector_tab {
-                            crate::presentation::InspectorTab::Properties => self.properties(ui),
-                            crate::presentation::InspectorTab::Layers => self.layer_controls(ui),
-                            crate::presentation::InspectorTab::References => {
-                                let (sampled, close, background_changed) =
-                                    self.reference_board.show(
-                                        ui,
-                                        ctx,
-                                        &mut self.presentation.preferences.background_image,
-                                    );
-                                if background_changed {
-                                    self.presentation.remember();
-                                    self.sync_presentation_background();
+                        if self.mixed_resource_preview_active()
+                            && self.presentation.preferences.layout.inspector_tab
+                                != crate::presentation::InspectorTab::Properties
+                        {
+                            ui.label("Finish or cancel the mixed-resource preview first.");
+                        } else {
+                            match self.presentation.preferences.layout.inspector_tab {
+                                crate::presentation::InspectorTab::Properties => {
+                                    self.properties(ui)
                                 }
-                                close_references = close;
-                                if let Some(color) = sampled {
-                                    self.color = color;
-                                    self.palette_ui.set_color_from_sample(color);
-                                    self.status =
-                                        "Reference color sampled into the brush color.".into();
+                                crate::presentation::InspectorTab::Layers => {
+                                    self.layer_controls(ui)
                                 }
-                            }
-                            crate::presentation::InspectorTab::ImagePlanes => {
-                                self.image_plane_controls(ui)
+                                crate::presentation::InspectorTab::References => {
+                                    let (sampled, close, background_changed) =
+                                        self.reference_board.show(
+                                            ui,
+                                            ctx,
+                                            &mut self.presentation.preferences.background_image,
+                                        );
+                                    if background_changed {
+                                        self.presentation.remember();
+                                        self.sync_presentation_background();
+                                    }
+                                    close_references = close;
+                                    if let Some(color) = sampled {
+                                        self.color = color;
+                                        self.palette_ui.set_color_from_sample(color);
+                                        self.status =
+                                            "Reference color sampled into the brush color.".into();
+                                    }
+                                }
+                                crate::presentation::InspectorTab::ImagePlanes => {
+                                    self.image_plane_controls(ui)
+                                }
                             }
                         }
                     });
@@ -2338,6 +2981,7 @@ impl SketchApp {
             && self.preset_verification_frame.is_none()
             && self.recovery_verification_frame.is_none()
             && self.layer_verification_frame.is_none()
+            && self.image_plane_verification_frame.is_none()
             && self.vase_verification_frame.is_none()
             && self.group_verification_frame.is_none()
             && self.tutorial.verification_frame.is_none()
@@ -2347,6 +2991,7 @@ impl SketchApp {
             && self.presentation.verification_frame.is_none()
             && self.view_verification_frame.is_none()
             && self.line.verification_frame.is_none()
+            && self.liquify_brush_verification_frame.is_none()
         {
             self.cancel();
             return;
@@ -2359,13 +3004,9 @@ impl SketchApp {
             || self.preset_ui.browser_is_open()
             || self.palette_ui.color_editor_active()
             || self.camera_playback.is_some()
-            || self.liquify_active();
-        let inside_canvas = |p| {
-            rect.contains(p)
-                && ctx
-                    .layer_id_at(p)
-                    .is_none_or(|layer| layer.order == egui::Order::Background)
-        };
+            || self.mixed_resource_preview_active()
+            || (self.liquify_active() && !self.liquify_brush_active());
+        let inside_canvas = |p| canvas_pointer_allowed(ctx, rect, p);
         let scale = ctx.pixels_per_point();
         for sample in &mut pen {
             sample.position.x /= scale;
@@ -2397,6 +3038,19 @@ impl SketchApp {
                 self.mouse_down = false;
                 self.pen_previous = None;
                 self.cancel_transform();
+                continue;
+            }
+            if self.liquify_brush_active() {
+                if sample.phase == Phase::Cancel || sample.eraser {
+                    self.finish_liquify(false);
+                } else if sample.phase != Phase::Move || sample.contact {
+                    self.liquify_brush_input(
+                        sample.position,
+                        sample.pressure.unwrap_or(1.0),
+                        rect,
+                        sample.phase,
+                    );
+                }
                 continue;
             }
             if sample.phase == Phase::Up {
@@ -2444,6 +3098,9 @@ impl SketchApp {
             }
             if space || sample.barrel {
                 if sample.contact {
+                    if self.liquify_brush_active() {
+                        self.cancel_liquify_gesture();
+                    }
                     if let Some(prev) = previous {
                         self.navigate(sample.position - prev, shift, alt, rect);
                     }
@@ -2489,6 +3146,7 @@ impl SketchApp {
                 || pointer.button_down(PointerButton::Middle)
                 || (space && pointer.primary_down());
             if nav && pointer.interact_pos().is_some_and(inside_canvas) {
+                self.cancel_liquify_for_navigation();
                 self.mouse_down = false;
                 self.navigate(
                     pointer.delta(),
@@ -2507,10 +3165,16 @@ impl SketchApp {
                             modifiers,
                         } if inside_canvas(pos) => {
                             self.mouse_down = true;
-                            self.pointer_action(pos, 1.0, rect, true, modifiers.shift);
+                            if self.liquify_brush_active() {
+                                self.liquify_brush_input(pos, 1.0, rect, Phase::Down);
+                            } else {
+                                self.pointer_action(pos, 1.0, rect, true, modifiers.shift);
+                            }
                         }
                         egui::Event::PointerMoved(pos) if self.mouse_down => {
-                            if inside_canvas(pos)
+                            if self.liquify_brush_active() {
+                                self.liquify_brush_input(pos, 1.0, rect, Phase::Move);
+                            } else if inside_canvas(pos)
                                 || ((self.drag.is_some()
                                     || self.brush_select_drag.is_some()
                                     || self.partial_erase_active()
@@ -2531,6 +3195,11 @@ impl SketchApp {
                             pressed: false,
                             ..
                         } => {
+                            if self.liquify_brush_active() {
+                                self.liquify_brush_input(pos, 1.0, rect, Phase::Up);
+                                self.mouse_down = false;
+                                continue;
+                            }
                             self.sampling_contact = false;
                             if self.partial_erase_active() {
                                 self.partial_erase_input(pos, rect, false);
@@ -2564,6 +3233,10 @@ impl SketchApp {
                         }
                         egui::Event::PointerGone => {
                             self.mouse_down = false;
+                            if self.liquify_brush_active() {
+                                self.finish_liquify(false);
+                                continue;
+                            }
                             self.sampling_contact = false;
                             self.cancel_brush_selection();
                             self.cancel_partial_erase();
@@ -2587,6 +3260,7 @@ impl SketchApp {
 impl eframe::App for SketchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let start = Instant::now();
+        self.presentation.apply_theme(ctx);
         self.presentation.poll_layout_save();
         self.poll_recovery(ctx);
         self.ensure_workspace();
@@ -2622,6 +3296,13 @@ impl eframe::App for SketchApp {
         if self.liquify_active() && ctx.input(|input| input.key_pressed(Key::Escape)) {
             self.finish_liquify(false);
         }
+        if self.mixed_resource_preview_active() && ctx.input(|input| input.key_pressed(Key::Escape))
+        {
+            self.finish_mixed_resource_move(false);
+        }
+        if self.mixed_resource_preview_active() && !ctx.input(|input| input.focused) {
+            self.finish_mixed_resource_move(false);
+        }
         if !self.liquify_active() && self.camera_playback.is_none() {
             self.curve_shortcuts(ctx);
         }
@@ -2651,6 +3332,7 @@ impl eframe::App for SketchApp {
             && !self.tutorial.offer
             && !self.close_after_recovery
             && !self.liquify_active()
+            && !self.mixed_resource_preview_active()
             && self.camera_playback.is_none()
             && self.repeat.is_none()
             && !self.palette_ui.sampling
@@ -2668,6 +3350,7 @@ impl eframe::App for SketchApp {
             && !self.tutorial.offer
             && !self.close_after_recovery
             && !self.liquify_active()
+            && !self.mixed_resource_preview_active()
             && self.camera_playback.is_none()
             && self.repeat.is_none()
             && !self.palette_ui.sampling
@@ -2689,6 +3372,7 @@ impl eframe::App for SketchApp {
             && !self.recovery_prompt
             && !self.close_after_recovery
             && !self.liquify_active()
+            && !self.mixed_resource_preview_active()
             && self.camera_playback.is_none()
             && self.repeat.is_none()
             && !self.palette_ui.sampling
@@ -2773,7 +3457,8 @@ impl eframe::App for SketchApp {
                 && !self.close_after_recovery
                 && !self.tutorial.offer
                 && !self.placement.active
-                && !self.video_export.is_running();
+                && !self.video_export.is_running()
+                && !self.mixed_resource_preview_active();
             egui::TopBottomPanel::top("menu-bar").show(ctx, |ui| {
                 ui.add_enabled_ui(enabled, |ui| {
                     egui::menu::bar(ui, |ui| self.menu_bar(ui, ctx));
@@ -2810,15 +3495,34 @@ impl eframe::App for SketchApp {
                 .show(ctx, |ui| {
                     ui.add_enabled_ui(enabled, |ui| self.tool_rail(ui));
                 });
-            self.inspector(ctx, enabled);
+            self.inspector(ctx, enabled || self.mixed_resource_preview_active());
         } else {
             self.artwork_bar(ctx);
         }
         self.camera_bookmark_controls(ctx);
         self.repeat_modal(ctx);
         self.png_export.show(ctx);
-        self.video_export
-            .show(ctx, &self.camera_bookmarks.sequences);
+        let history_source_key = self.file.as_ref().map_or_else(
+            || "untitled".to_owned(),
+            |path| {
+                path.canonicalize()
+                    .unwrap_or_else(|_| path.clone())
+                    .to_string_lossy()
+                    .into_owned()
+            },
+        );
+        let history_tool_settings = self.current_tool_settings();
+        self.video_export.show(
+            ctx,
+            &self.camera_bookmarks.sequences,
+            &mut self.construction_history,
+            &self.doc,
+            video_export_ui::HistoryRecordingContext {
+                source_key: &history_source_key,
+                camera: &self.camera,
+                tool_settings: &history_tool_settings,
+            },
+        );
         self.obj_export.show(ctx);
         let pen = self.pen.as_ref().map(|p| p.drain()).unwrap_or_default();
         egui::CentralPanel::default()
@@ -2840,6 +3544,9 @@ impl eframe::App for SketchApp {
                 self.verify_layers(ctx, rect);
                 self.verify_recovery(ctx, rect);
                 self.verify_presets(ctx, rect);
+                self.verify_image_planes(ctx, rect);
+                self.verify_liquify_brush(ctx, rect);
+                self.verify_mixed_resources(ctx);
                 self.verify_textures(ctx, rect);
                 self.verify_dynamics(ctx, rect);
                 self.verify_brushes(ctx, rect);
@@ -2875,6 +3582,7 @@ impl eframe::App for SketchApp {
                     Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
+                self.paint_liquify_cursor(ui.painter(), rect, ctx.pointer_hover_pos());
                 if let Some((
                     destination,
                     size,
@@ -2907,6 +3615,15 @@ impl eframe::App for SketchApp {
                         &self.camera_bookmarks,
                         self.presentation.preferences.background,
                         self.renderer.lighting,
+                        &self.construction_history,
+                        video_export_ui::ExportResourceAvailability {
+                            image_plane_ids: self.image_plane_assets.keys().copied().collect(),
+                            model_reference_ids: self
+                                .obj_reference_models
+                                .keys()
+                                .copied()
+                                .collect(),
+                        },
                     ) {
                         self.status = format!("Could not start animated export: {error}");
                     }
@@ -2983,14 +3700,18 @@ impl eframe::App for SketchApp {
                             egui::Align2::CENTER_CENTER,
                             "Your next idea starts here.",
                             egui::FontId::proportional(25.0),
-                            Color32::from_gray(190),
+                            ui_style::contrasting_canvas_text(
+                                self.presentation.preferences.background,
+                            ),
                         );
                         ui.painter().text(
                             rect.center(),
                             egui::Align2::CENTER_CENTER,
                             "Pen to draw   /   Space + drag to explore",
                             egui::FontId::proportional(14.0),
-                            Color32::from_gray(125),
+                            ui_style::contrasting_canvas_text(
+                                self.presentation.preferences.background,
+                            ),
                         );
                     }
                 }
@@ -3041,6 +3762,7 @@ impl eframe::App for SketchApp {
         self.show_placement(ctx);
         self.show_lighting(ctx);
         self.show_drawing_library(ctx);
+        self.show_insert_preview(ctx);
         self.show_tutorial(ctx);
         if self.show_help {
             egui::Window::new("Drawing with a tablet").default_width(540.0).max_height((ctx.screen_rect().height()-80.0).max(200.0)).vscroll(true).show(ctx,|ui|{self.tutorial_help(ui);ui.separator();if ui.button("Close help").clicked(){self.show_help=false;}ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-mark eraser   P: planar fill   I: sample artwork color (Escape cancels)\nK: pick plane   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
@@ -3048,6 +3770,9 @@ impl eframe::App for SketchApp {
         self.show_recovery(ctx);
         self.show_color_editor(ctx);
         self.tick_recovery(ctx);
+        self.construction_history.record_camera(&self.camera);
+        self.construction_history
+            .record_tool_settings(&self.current_tool_settings());
         self.frame_ms = start.elapsed().as_secs_f32() * 1000.0;
         if self.active.is_some()
             || self.drag.is_some()
@@ -3078,6 +3803,568 @@ impl eframe::App for SketchApp {
 }
 
 impl SketchApp {
+    /// Exercise image-plane rendering and brush targeting with deterministic mouse events.
+    fn verify_image_planes(&mut self, ctx: &egui::Context, rect: Rect) {
+        let Some(frame) = self.image_plane_verification_frame else {
+            return;
+        };
+        match frame {
+            0 => {
+                let root = std::env::current_dir()
+                    .unwrap()
+                    .join("verification")
+                    .join(format!(
+                        "image-plane-{}",
+                        crate::recovery_store::session_id()
+                    ));
+                std::fs::create_dir_all(&root).unwrap();
+                let source = root.join("asymmetric-source.png");
+                let image = image::RgbaImage::from_fn(32, 24, |x, y| {
+                    let color = match (x >= 16, y >= 12) {
+                        (false, false) => [235, 40, 35, 255],
+                        (true, false) => [35, 210, 65, 255],
+                        (false, true) => [35, 70, 235, 255],
+                        (true, true) => [235, 210, 35, 255],
+                    };
+                    image::Rgba(color)
+                });
+                image.save(&source).unwrap();
+                self.image_asset_root = root.join("drawing.sketch.assets");
+                let (asset_file, asset) =
+                    crate::image_planes::copy_asset(&source, &self.image_asset_root, 42).unwrap();
+                let rotation =
+                    glam::Quat::from_rotation_z(0.32) * glam::Quat::from_rotation_y(0.12);
+                let origin = Vec3::new(0.35, -0.25, 0.8);
+                let mut plane = crate::image_planes::ImagePlane::from_asset(
+                    42,
+                    "Asymmetric verification image",
+                    asset_file,
+                    asset.size,
+                    origin,
+                    rotation,
+                    6.0,
+                )
+                .unwrap();
+                plane.drawable = true;
+                self.renderer
+                    .set_image_plane_asset(plane.id, &asset)
+                    .unwrap();
+                self.image_plane_assets.clear();
+                self.image_plane_assets.insert(plane.id, asset);
+                self.doc = Document::default();
+                self.doc.image_planes.push(plane);
+                self.doc.active_image_plane = Some(42);
+                self.next_id = 43;
+                self.undo.clear();
+                self.redo.clear();
+                self.camera.align(crate::geometry::Plane::Front);
+                self.camera.target = origin;
+                self.camera.distance = 9.0;
+                self.stabilization = 0.0;
+                self.guide = DrawingPlane::default();
+                self.renderer.background = [0.12, 0.12, 0.12];
+                self.renderer.invalidate();
+            }
+            1 => {
+                let plane = &self.doc.image_planes[0];
+                let a = plane.origin + plane.rotation * Vec3::new(-1.0, -0.3, 0.0);
+                let b = plane.origin + plane.rotation * Vec3::new(1.0, 0.3, 0.0);
+                let start = crate::gizmo::project(&self.camera, rect, a).unwrap().0;
+                let end = crate::gizmo::project(&self.camera, rect, b).unwrap().0;
+                assert!(rect.contains(start) && rect.contains(end));
+                ctx.input_mut(|input| {
+                    input.events = vec![
+                        egui::Event::PointerButton {
+                            pos: start,
+                            button: PointerButton::Primary,
+                            pressed: true,
+                            modifiers: Default::default(),
+                        },
+                        egui::Event::PointerMoved(end),
+                        egui::Event::PointerButton {
+                            pos: end,
+                            button: PointerButton::Primary,
+                            pressed: false,
+                            modifiers: Default::default(),
+                        },
+                    ];
+                });
+            }
+            2 => {
+                assert_eq!(
+                    self.doc.strokes.len(),
+                    1,
+                    "Image-plane brush contact commits one stroke"
+                );
+                let stroke = self.doc.strokes[0].clone();
+                assert!(
+                    stroke.points.len() >= 2,
+                    "Pointer movement reaches the image-plane target"
+                );
+                let plane = &self.doc.image_planes[0];
+                let inverse = plane.rotation.inverse();
+                for point in &stroke.points {
+                    let local = inverse * (point.position - plane.origin);
+                    assert!(
+                        local.z.abs() < 0.0001,
+                        "Drawn point remains on transformed image plane"
+                    );
+                    assert!(local.x.abs() <= plane.size.x * 0.5 + 0.001);
+                    assert!(local.y.abs() <= plane.size.y * 0.5 + 0.001);
+                }
+                assert!((stroke.brush.normal - plane.rotation * Vec3::Z).length() < 0.0001);
+                assert!((stroke.brush.tangent - plane.rotation * Vec3::X).length() < 0.0001);
+                assert_eq!(self.undo.len(), 1, "One contact is one undoable stroke");
+                self.undo();
+                assert!(
+                    self.doc.strokes.is_empty(),
+                    "Undo removes the image-plane stroke"
+                );
+                self.redo();
+                assert_eq!(
+                    self.doc.strokes,
+                    vec![stroke],
+                    "Redo restores exact stroke data"
+                );
+
+                let plane = &self.doc.image_planes[0];
+                let outside_world = plane.origin + plane.rotation * Vec3::new(3.3, 0.0, 0.0);
+                let outside = crate::gizmo::project(&self.camera, rect, outside_world)
+                    .unwrap()
+                    .0;
+                assert!(
+                    rect.contains(outside),
+                    "Outside-bounds test remains within the canvas"
+                );
+                ctx.input_mut(|input| {
+                    input.events = vec![
+                        egui::Event::PointerButton {
+                            pos: outside,
+                            button: PointerButton::Primary,
+                            pressed: true,
+                            modifiers: Default::default(),
+                        },
+                        egui::Event::PointerButton {
+                            pos: outside,
+                            button: PointerButton::Primary,
+                            pressed: false,
+                            modifiers: Default::default(),
+                        },
+                    ];
+                });
+            }
+            3 => {
+                assert_eq!(
+                    self.doc.strokes.len(),
+                    1,
+                    "Out-of-bounds contact creates no image-plane stroke"
+                );
+                let plane = &mut self.doc.image_planes[0];
+                plane.drawable = false;
+                self.doc.active_image_plane = None;
+                let world = plane.origin + plane.rotation * Vec3::new(-0.8, 0.0, 0.0);
+                let pos = crate::gizmo::project(&self.camera, rect, world).unwrap().0;
+                ctx.input_mut(|input| {
+                    input.events = vec![
+                        egui::Event::PointerButton {
+                            pos,
+                            button: PointerButton::Primary,
+                            pressed: true,
+                            modifiers: Default::default(),
+                        },
+                        egui::Event::PointerButton {
+                            pos,
+                            button: PointerButton::Primary,
+                            pressed: false,
+                            modifiers: Default::default(),
+                        },
+                    ];
+                });
+            }
+            4 => {
+                assert_eq!(
+                    self.doc.strokes.len(),
+                    2,
+                    "Inactive plane falls back to the regular drawing guide"
+                );
+                let plane = &self.doc.image_planes[0];
+                let fallback = self.doc.strokes.last().unwrap();
+                assert!(
+                    fallback.points.iter().all(|point| {
+                        (plane.rotation.inverse() * (point.position - plane.origin))
+                            .z
+                            .abs()
+                            > 0.1
+                    }),
+                    "Inactive image plane does not intercept brush input"
+                );
+
+                let with_plane = self
+                    .renderer
+                    .render_png_pixels(
+                        &self.doc,
+                        &self.camera,
+                        [256, 256],
+                        [0.12, 0.12, 0.12],
+                        self.renderer.lighting,
+                    )
+                    .unwrap();
+                let mut without_plane_doc = self.doc.clone();
+                without_plane_doc.image_planes.clear();
+                without_plane_doc.active_image_plane = None;
+                let without_plane = self
+                    .renderer
+                    .render_png_pixels(
+                        &without_plane_doc,
+                        &self.camera,
+                        [256, 256],
+                        [0.12, 0.12, 0.12],
+                        self.renderer.lighting,
+                    )
+                    .unwrap();
+                let (with_plane_pixels, _) = with_plane.as_chunks::<4>();
+                let (without_plane_pixels, _) = without_plane.as_chunks::<4>();
+                let changed_pixels = with_plane_pixels
+                    .iter()
+                    .zip(without_plane_pixels.iter())
+                    .filter(|(a, b)| {
+                        a.iter()
+                            .zip(b.iter())
+                            .take(3)
+                            .any(|(x, y)| x.abs_diff(*y) > 20)
+                    })
+                    .count();
+                assert!(
+                    changed_pixels > 500,
+                    "Artwork PNG includes the image plane texture"
+                );
+                self.image_plane_verification_changed_pixels = changed_pixels;
+                let output = std::env::current_dir().unwrap().join("verification");
+                std::fs::create_dir_all(&output).unwrap();
+                image::save_buffer(
+                    output.join("image-plane-png-with.png"),
+                    &with_plane,
+                    256,
+                    256,
+                    image::ColorType::Rgba8,
+                )
+                .unwrap();
+                image::save_buffer(
+                    output.join("image-plane-png-without.png"),
+                    &without_plane,
+                    256,
+                    256,
+                    image::ColorType::Rgba8,
+                )
+                .unwrap();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+            }
+            _ => {}
+        }
+        self.image_plane_verification_frame = Some(frame + 1);
+    }
+
+    fn verify_liquify_brush(&mut self, ctx: &egui::Context, rect: Rect) {
+        let Some(frame) = self.liquify_brush_verification_frame else {
+            return;
+        };
+        match frame {
+            0 | 1 => {
+                if frame == 0 {
+                    self.liquify_brush_verification_before = Some(self.doc.strokes.clone());
+                    let selected = &self.doc.strokes[0];
+                    let center = selected
+                        .points
+                        .iter()
+                        .map(|point| point.position)
+                        .sum::<Vec3>()
+                        / selected.points.len() as f32;
+                    self.camera.target = center;
+                    self.camera.distance = 7.0;
+                    self.begin_liquify();
+                } else {
+                    let before = self
+                        .liquify_brush_verification_before
+                        .as_ref()
+                        .unwrap()
+                        .clone();
+                    assert_ne!(self.doc.strokes, before, "Canvas drag previews deformation");
+                    assert!(self.undo.is_empty(), "Preview does not enter history");
+                    self.finish_liquify(false);
+                    assert_eq!(self.doc.strokes, before, "Cancel restores exact points");
+                    self.begin_liquify();
+                }
+                self.activate_liquify_brush();
+                let stroke = &self.liquify_brush_verification_before.as_ref().unwrap()[0];
+                let center = stroke
+                    .points
+                    .iter()
+                    .map(|point| point.position)
+                    .sum::<Vec3>()
+                    / stroke.points.len() as f32;
+                let start = crate::gizmo::project(&self.camera, rect, center - Vec3::X * 0.25)
+                    .unwrap()
+                    .0;
+                let end = crate::gizmo::project(&self.camera, rect, center + Vec3::X * 0.35)
+                    .unwrap()
+                    .0;
+                assert!(rect.contains(start) && rect.contains(end));
+                ctx.input_mut(|input| {
+                    input.events = vec![
+                        egui::Event::PointerButton {
+                            pos: start,
+                            button: PointerButton::Primary,
+                            pressed: true,
+                            modifiers: Default::default(),
+                        },
+                        egui::Event::PointerMoved(end),
+                        egui::Event::PointerButton {
+                            pos: end,
+                            button: PointerButton::Primary,
+                            pressed: false,
+                            modifiers: Default::default(),
+                        },
+                    ];
+                });
+            }
+            2 => {
+                let before = self
+                    .liquify_brush_verification_before
+                    .as_ref()
+                    .unwrap()
+                    .clone();
+                let applied = self.doc.strokes.clone();
+                assert_ne!(applied, before, "Second drag previews deformation");
+                assert!(self.undo.is_empty());
+                self.finish_liquify(true);
+                assert_eq!(self.undo.len(), 1, "Brush gesture is one undo step");
+                assert_eq!(self.doc.strokes, applied, "Commit matches the preview");
+                self.undo();
+                assert_eq!(
+                    self.doc.strokes, before,
+                    "Undo restores exact source geometry"
+                );
+                self.redo();
+                assert_eq!(
+                    self.doc.strokes, applied,
+                    "Redo restores committed deformation"
+                );
+
+                let native = Document::from_json(&serde_json::to_string(&self.doc).unwrap())
+                    .expect("Liquify output survives native serialization");
+                assert_eq!(
+                    native.strokes, applied,
+                    "Native reload preserves Liquify geometry"
+                );
+                let recovery_dir = tempfile::tempdir().unwrap();
+                let recovery = crate::recovery_store::RecoverySnapshot::new(
+                    "liquify-verification-session".into(),
+                    None,
+                    native,
+                );
+                crate::recovery_store::write(recovery_dir.path(), &recovery).unwrap();
+                let recovered =
+                    crate::recovery_store::scan(recovery_dir.path(), "liquify-verification-reader")
+                        .unwrap();
+                assert_eq!(
+                    recovered.candidates[0].snapshot.document.strokes, applied,
+                    "Recovery preserves Liquify geometry"
+                );
+                let whole_scene = crate::export::encode(&self.doc, None).unwrap();
+                let selected = crate::export::encode(&self.doc, Some(&self.selected)).unwrap();
+                assert_eq!(whole_scene.summary.strokes, applied.len());
+                assert_eq!(selected.summary.strokes, 1);
+                assert!(selected.summary.triangles > 0);
+
+                let camera_before = self.camera;
+                for view in [
+                    crate::geometry::Plane::Front,
+                    crate::geometry::Plane::Side,
+                    crate::geometry::Plane::Ground,
+                ] {
+                    let baseline = self.doc.strokes.clone();
+                    let selected_stroke = baseline
+                        .iter()
+                        .find(|stroke| self.selected.contains(&stroke.id))
+                        .unwrap();
+                    let center = selected_stroke
+                        .points
+                        .iter()
+                        .map(|point| point.position)
+                        .sum::<Vec3>()
+                        / selected_stroke.points.len() as f32;
+                    self.camera.align(view);
+                    self.camera.target = center;
+                    self.camera.distance = 7.0;
+                    self.begin_liquify();
+                    self.activate_liquify_brush();
+                    let (right, _, normal) = self.camera.basis();
+                    let start = crate::gizmo::project(&self.camera, rect, center - right * 0.25)
+                        .unwrap()
+                        .0;
+                    let end = crate::gizmo::project(&self.camera, rect, center + right * 0.35)
+                        .unwrap()
+                        .0;
+                    self.liquify_brush_input(start, 1.0, rect, Phase::Down);
+                    self.liquify_brush_input(end, 1.0, rect, Phase::Move);
+                    self.liquify_brush_input(end, 1.0, rect, Phase::Up);
+                    let deformed = &self.doc.strokes;
+                    assert_ne!(
+                        deformed, &baseline,
+                        "Drag previews from each tested camera view"
+                    );
+                    for (before_stroke, after_stroke) in baseline.iter().zip(deformed) {
+                        if self.selected.contains(&before_stroke.id) {
+                            for (before_point, after_point) in
+                                before_stroke.points.iter().zip(&after_stroke.points)
+                            {
+                                assert!(
+                                    (after_point.position - before_point.position)
+                                        .dot(normal)
+                                        .abs()
+                                        < 1e-4,
+                                    "Camera-facing working plane preserves selected-ink depth"
+                                );
+                            }
+                        } else {
+                            assert_eq!(
+                                before_stroke, after_stroke,
+                                "Occluded/unselected ink stays fixed"
+                            );
+                        }
+                    }
+                    self.finish_liquify(false);
+                    assert_eq!(
+                        self.doc.strokes, baseline,
+                        "Cancel restores camera-view preview"
+                    );
+                }
+                let navigation_baseline = self.doc.strokes.clone();
+                let selected_stroke = self
+                    .doc
+                    .strokes
+                    .iter()
+                    .find(|stroke| self.selected.contains(&stroke.id))
+                    .unwrap();
+                let center = selected_stroke
+                    .points
+                    .iter()
+                    .map(|point| point.position)
+                    .sum::<Vec3>()
+                    / selected_stroke.points.len() as f32;
+                self.begin_liquify();
+                self.activate_liquify_brush();
+                let (right, _, _) = self.camera.basis();
+                let start = crate::gizmo::project(&self.camera, rect, center - right * 0.25)
+                    .unwrap()
+                    .0;
+                let end = crate::gizmo::project(&self.camera, rect, center + right * 0.35)
+                    .unwrap()
+                    .0;
+                self.liquify_brush_input(start, 1.0, rect, Phase::Down);
+                self.liquify_brush_input(end, 1.0, rect, Phase::Move);
+                assert_ne!(self.doc.strokes, navigation_baseline);
+                let navigation_history_len = self.undo.len();
+                self.mouse_down = true;
+                self.cancel_liquify_for_navigation();
+                self.mouse_down = false;
+                self.navigate(Vec2::new(12.0, -8.0), false, false, rect);
+                assert_eq!(self.doc.strokes, navigation_baseline);
+                assert_eq!(self.undo.len(), navigation_history_len);
+                self.camera = camera_before;
+                self.dirty = false;
+                self.renderer.invalidate();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+            }
+            _ => {}
+        }
+        self.liquify_brush_verification_frame = Some(frame + 1);
+    }
+
+    fn verify_mixed_resources(&mut self, ctx: &egui::Context) {
+        let Some(frame) = self.mixed_resources_verification_frame else {
+            return;
+        };
+        if frame == 0 {
+            self.undo.clear();
+            self.redo.clear();
+            let mut selection = self.mixed_resources_ui.selection.clone();
+            selection.stroke_ids = self.selected.clone();
+            let original = crate::mixed_resources::MoveSnapshot::capture(
+                &self.doc,
+                selection.clone(),
+                crate::mixed_resources::TransformMode::Translate,
+                Vec3::ZERO,
+            )
+            .unwrap()
+            .before;
+            let active_plane = self.doc.active_image_plane;
+
+            self.begin_mixed_resource_move();
+            assert!(self.mixed_resource_preview_active());
+            self.set_mixed_resource_translation(Vec3::new(0.3, -0.2, 0.15));
+            let preview = crate::mixed_resources::MoveSnapshot::capture(
+                &self.doc,
+                selection.clone(),
+                crate::mixed_resources::TransformMode::Translate,
+                Vec3::ZERO,
+            )
+            .unwrap()
+            .before;
+            assert_ne!(preview, original, "All selected resources preview together");
+            assert!(self.undo.is_empty(), "Preview does not enter history");
+            self.finish_mixed_resource_move(false);
+            let cancelled = crate::mixed_resources::MoveSnapshot::capture(
+                &self.doc,
+                selection.clone(),
+                crate::mixed_resources::TransformMode::Translate,
+                Vec3::ZERO,
+            )
+            .unwrap()
+            .before;
+            assert_eq!(cancelled, original, "Cancel restores all source records");
+
+            self.begin_mixed_resource_move();
+            self.set_mixed_resource_translation(Vec3::new(0.3, -0.2, 0.15));
+            let applied = crate::mixed_resources::MoveSnapshot::capture(
+                &self.doc,
+                selection.clone(),
+                crate::mixed_resources::TransformMode::Translate,
+                Vec3::ZERO,
+            )
+            .unwrap()
+            .before;
+            self.finish_mixed_resource_move(true);
+            assert_eq!(self.undo.len(), 1, "Mixed movement is one history edit");
+            assert_eq!(self.doc.active_image_plane, active_plane);
+            self.undo();
+            let undone = crate::mixed_resources::MoveSnapshot::capture(
+                &self.doc,
+                selection.clone(),
+                crate::mixed_resources::TransformMode::Translate,
+                Vec3::ZERO,
+            )
+            .unwrap()
+            .before;
+            assert_eq!(undone, original, "Undo restores every selected resource");
+            self.redo();
+            let redone = crate::mixed_resources::MoveSnapshot::capture(
+                &self.doc,
+                selection,
+                crate::mixed_resources::TransformMode::Translate,
+                Vec3::ZERO,
+            )
+            .unwrap()
+            .before;
+            assert_eq!(redone, applied, "Redo reapplies every selected resource");
+            self.dirty = false;
+            self.renderer.invalidate();
+            self.refresh_obj_reference_meshes();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+        }
+        self.mixed_resources_verification_frame = Some(frame + 1);
+    }
+
     /// Deterministic software-input smoke test; never labels synthetic input as hardware input.
     fn verify_canvas(&mut self, ctx: &egui::Context, rect: Rect) {
         let Some(frame) = self.verification_frame else {
@@ -3171,6 +4458,9 @@ impl SketchApp {
             && self.preset_verification_frame.is_none()
             && self.recovery_verification_frame.is_none()
             && self.layer_verification_frame.is_none()
+            && self.image_plane_verification_frame.is_none()
+            && self.liquify_brush_verification_frame.is_none()
+            && self.mixed_resources_verification_frame.is_none()
             && self.vase_verification_frame.is_none()
             && self.group_verification_frame.is_none()
         {
@@ -3207,6 +4497,12 @@ impl SketchApp {
                     "vase-preview.png"
                 } else if self.layer_verification_frame.is_some() {
                     "layer-preview.png"
+                } else if self.image_plane_verification_frame.is_some() {
+                    "image-plane-preview.png"
+                } else if self.liquify_brush_verification_frame.is_some() {
+                    "liquify-brush-preview.png"
+                } else if self.mixed_resources_verification_frame.is_some() {
+                    "mixed-resources-preview.png"
                 } else if self.recovery_verification_frame.is_some() {
                     "recovery-preview.png"
                 } else if self.preset_verification_frame.is_some() {
@@ -3233,20 +4529,26 @@ impl SketchApp {
             let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload","background GLB export preserves document state"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
             let report = if self.group_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["house component grouping","group and individual selection","duplicate independent group","shared pivot transforms","ungroup undo and native persistence","layer protection","GPU groups"],"gpu":self.renderer.adapter})
+            } else if self.image_plane_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["generated asymmetric image texture uploaded to GPU","transformed image plane brush stroke via synthetic canvas events","stroke points remain within transformed plane bounds","captured brush frame follows plane rotation","one-step stroke undo and exact redo","out-of-bounds image-plane contact rejected","inactive image plane does not intercept brush input","artwork PNG includes image-plane pixels"],"image_plane_count":self.doc.image_planes.len(),"stroke_count":self.doc.strokes.len(),"png_changed_pixels_vs_no_plane":self.image_plane_verification_changed_pixels,"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+            } else if self.liquify_brush_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["synthetic canvas drag creates a non-destructive preview","front, side, and ground camera views preserve the working-plane depth","unselected and occluding strokes remain unchanged","cancel restores exact source strokes","navigation interruption cancels brush preview without history","apply commits preview as one history edit","undo restores source geometry","redo restores committed deformation","native serialization and recovery scan preserve the deformed geometry","whole-scene and selected-stroke GLB encode the committed result","brush cursor indicates radius and working-plane depth"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+            } else if self.mixed_resources_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["mixed stroke, image plane, OBJ reference, and guide translation preview","preview does not enter history","cancel restores all exact source records","apply commits one mixed-resource history edit","undo restores every selected record","redo reapplies every selected record","active image-plane drawable binding is preserved","rotation and scaling are rejected before mutation"],"resource_counts":{"strokes":self.doc.strokes.len(),"image_planes":self.doc.image_planes.len(),"obj_references":self.doc.model_references.len(),"guides":self.doc.guide_resources.len()},"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.vase_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["revolved profile drawing","captured guide and surface release tail","pressure tilt brush frames","guide editing preserves ink","selection duplicate undo","native persistence","GPU painted vase"],"gpu":self.renderer.adapter})
             } else if self.layer_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["layer drawing and locking","visibility picking and erasing","layer reassignment undo redo","nonempty deletion protection","version 5 persistence","GPU layers"],"gpu":self.renderer.adapter})
             } else if self.recovery_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["forced process termination","startup recovery offer","exact fill contour offset pressure tilt dynamics texture restoration","recovered copy is untitled and dirty","native source unchanged","new session snapshot durable before old retirement","Save New and close cleanup ordering","corrupt and unsupported issue visibility","GPU recovery workflow"],"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["forced process termination","startup recovery offer","exact fill contour offset pressure tilt dynamics texture restoration","image-plane recovery asset reinstalls the renderer texture","recovered copy is untitled and dirty","native source unchanged","new session snapshot durable before old retirement","Save New and close cleanup ordering","corrupt and unsupported issue visibility","GPU recovery workflow"],"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.preset_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["preset application captures resolved settings","create duplicate rename update delete and defaults","restart persistence","live GPU previews","library edits preserve existing ink and export","corrupt library fallback and explicit repair backup"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.texture_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 8 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 13 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.dynamics_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 8 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 13 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 8 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 13 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {
@@ -3261,6 +4563,12 @@ impl SketchApp {
                     "vase-report.json"
                 } else if self.layer_verification_frame.is_some() {
                     "layer-report.json"
+                } else if self.image_plane_verification_frame.is_some() {
+                    "image-plane-report.json"
+                } else if self.liquify_brush_verification_frame.is_some() {
+                    "liquify-brush-report.json"
+                } else if self.mixed_resources_verification_frame.is_some() {
+                    "mixed-resources-report.json"
                 } else if self.recovery_verification_frame.is_some() {
                     "recovery-report.json"
                 } else if self.preset_verification_frame.is_some() {

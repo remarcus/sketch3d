@@ -6,20 +6,11 @@ struct ObjExportJob {
     destination: PathBuf,
 }
 
+#[derive(Default)]
 pub(super) struct ObjExportUi {
     request: Option<(PathBuf, bool, bool)>,
     overwrite: Option<(PathBuf, bool)>,
     job: Option<ObjExportJob>,
-}
-
-impl Default for ObjExportUi {
-    fn default() -> Self {
-        Self {
-            request: None,
-            overwrite: None,
-            job: None,
-        }
-    }
 }
 
 impl ObjExportUi {

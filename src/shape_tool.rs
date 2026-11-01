@@ -1,3 +1,4 @@
+use super::guide_resource_ui::PlanarTarget;
 use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +18,7 @@ impl ShapeMode {
 
 struct ShapeDraft {
     mode: ShapeMode,
+    target: PlanarTarget,
     plane: DrawingPlane,
     first: Vec3,
     current: Vec3,
@@ -55,8 +57,9 @@ impl SketchApp {
     }
 
     pub(super) fn start_shape_tool(&mut self, mode: ShapeMode) {
-        if self.resource_target_active() {
-            self.status = "Circle and ellipse tools currently use the temporary plane guide. Switch to it before drawing a shape.".into();
+        if self.planar_drawing_target().is_none() {
+            self.status =
+                "Circles and ellipses require a plane guide. Activate a planar guide first.".into();
             return;
         }
         self.finish();
@@ -67,7 +70,7 @@ impl SketchApp {
         self.select_mode = false;
         self.eraser = false;
         self.status = format!(
-            "{} tool ready. Drag on a plane guide to preview.",
+            "{} tool ready. Drag on the active planar target to preview.",
             mode.label()
         );
     }
@@ -83,7 +86,7 @@ impl SketchApp {
             return;
         };
         ui.strong(format!("{} TOOL", mode.label().to_ascii_uppercase()));
-        ui.label("Shapes follow the active plane and use uniform start pressure.");
+        ui.label("Shapes follow the active plane or image plane and use uniform start pressure.");
         ui.checkbox(&mut self.shape_tool.precise, "Use typed dimensions");
         if self.shape_tool.precise {
             match mode {
@@ -129,24 +132,28 @@ impl SketchApp {
         if begin {
             self.finish();
             self.cancel_shape_draft();
-            if self.use_cylinder || self.use_revolved {
-                self.status = "Circle and ellipse tools require a plane guide.".into();
+            let Some(target) = self.planar_drawing_target() else {
+                self.status =
+                    "Circles and ellipses require a plane guide. Activate a planar guide first."
+                        .into();
                 return;
-            }
+            };
             if !self.doc.active_editable() {
                 self.status = "Choose a visible unlocked layer for the shape.".into();
                 return;
             }
             let (origin, direction) = crate::gizmo::ray(&self.camera, rect, pos);
-            let Some(world) = intersect_plane(origin, direction, self.guide) else {
+            let Some(world) = target.hit(origin, direction) else {
                 return;
             };
+            let plane = target.plane;
             let mut brush = self.brush;
             brush.dynamics.taper_start = 0.0;
             brush.dynamics.taper_end = 0.0;
             self.shape_tool.draft = Some(ShapeDraft {
                 mode: self.shape_tool.mode.expect("shape mode active"),
-                plane: self.guide,
+                target,
+                plane,
                 first: world,
                 current: world,
                 pressure: pressure.clamp(0.0, 1.0),
@@ -163,7 +170,7 @@ impl SketchApp {
             return;
         }
         let (origin, direction) = crate::gizmo::ray(&self.camera, rect, pos);
-        if let Some(world) = intersect_plane(origin, direction, draft.plane) {
+        if let Some(world) = draft.target.hit(origin, direction) {
             draft.current = world;
             let id = self.next_id;
             let result = match (draft.mode, self.shape_tool.precise) {
@@ -214,7 +221,18 @@ impl SketchApp {
                 ),
             };
             match result {
-                Ok(stroke) => draft.preview = Some(stroke),
+                Ok(stroke)
+                    if stroke
+                        .points
+                        .iter()
+                        .all(|point| draft.target.contains(point.position)) =>
+                {
+                    draft.preview = Some(stroke)
+                }
+                Ok(_) => {
+                    draft.preview = None;
+                    self.status = "Shape extends beyond the active image bounds.".into();
+                }
                 Err(error) => {
                     draft.preview = None;
                     self.status = error;
@@ -279,13 +297,19 @@ impl SketchApp {
             for pair in points.windows(2) {
                 painter.line_segment(
                     [pair[0], pair[1]],
-                    egui::Stroke::new(2.0_f32, Color32::from_rgb(89, 228, 199)),
+                    egui::Stroke::new(
+                        2.0_f32,
+                        ui_style::canvas_accent(self.presentation.preferences.background),
+                    ),
                 );
             }
             if let (Some(first), Some(last)) = (points.first(), points.last()) {
                 painter.line_segment(
                     [*last, *first],
-                    egui::Stroke::new(2.0_f32, Color32::from_rgb(89, 228, 199)),
+                    egui::Stroke::new(
+                        2.0_f32,
+                        ui_style::canvas_accent(self.presentation.preferences.background),
+                    ),
                 );
             }
         }

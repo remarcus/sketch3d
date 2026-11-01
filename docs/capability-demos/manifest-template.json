@@ -1,0 +1,47 @@
+{
+  "format": "spatial-sketch-capability-demo",
+  "manifest_version": 1,
+  "clip": "replace-with-unique-name",
+  "recorded_utc": null,
+  "duration_seconds": null,
+  "app_commit": null,
+  "fixture": null,
+  "fixture_version": null,
+  "viewport": null,
+  "dpi_percent": null,
+  "theme": null,
+  "capture_mode": "manual user operation; app-window-only screen capture",
+  "input_note": "No input automation, pressure synthesis, or latency measurement.",
+  "window_title": "Spatial Sketch",
+  "shot_steps": [],
+  "license_or_provenance": null,
+  "encoding": {
+    "mp4": "FFmpeg gdigrab, native app-window resolution, libx264 CRF 18, 30 fps (configurable), <=512 MiB",
+    "gif": "FFmpeg palettegen/paletteuse, 960px wide, 12 fps (configurable), <=5 MiB; clips over 25 seconds omit GIF"
+  },
+  "outputs": {
+    "mp4": {
+      "file": null,
+      "bytes": null,
+      "sha256": null
+    },
+    "gif": {
+      "file": null,
+      "bytes": null,
+      "sha256": null
+    },
+    "poster": {
+      "file": null,
+      "bytes": null,
+      "alt": null
+    }
+  },
+  "review": {
+    "reviewed": false,
+    "loop_boundary_checked": false,
+    "intended_readme_surface_checked": false,
+    "private_content_checked": false,
+    "reviewer": null,
+    "notes": null
+  }
+}

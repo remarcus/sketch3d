@@ -132,6 +132,85 @@ pub fn mirror_stroke(
     Ok(Some(mirrored))
 }
 
+/// Mirror only the portions of a stroke that are not coincident with the
+/// symmetry plane. Consecutive seam samples are removed from the reflected
+/// copy and split it into independent runs, so the original seam ink is never
+/// overdrawn. Isolated seam samples remain shared endpoints when a stroke
+/// simply crosses the plane.
+pub fn mirror_stroke_runs(
+    source: &Stroke,
+    plane: MirrorPlane,
+    first_fresh_id: u64,
+    seam_tolerance: f32,
+) -> Result<Vec<Stroke>, String> {
+    if source.points.len() < 2 {
+        return Err("Cannot mirror a stroke without at least two points".into());
+    }
+    if !seam_tolerance.is_finite() || seam_tolerance < 0.0 {
+        return Err("Mirror seam tolerance must be finite and non-negative".into());
+    }
+    let normal = plane.unit_normal()?;
+    let seam: Vec<bool> = source
+        .points
+        .iter()
+        .map(|point| {
+            plane
+                .signed_distance(point.position)
+                .map(|d| d.abs() <= seam_tolerance)
+        })
+        .collect::<Result<_, _>>()?;
+    if seam.iter().all(|is_seam| *is_seam) {
+        return Ok(Vec::new());
+    }
+
+    let snap = |mut point: Point| {
+        let distance = (point.position - plane.point).dot(normal);
+        if distance.abs() <= seam_tolerance {
+            point.position -= normal * distance;
+        }
+        point
+    };
+    let mut runs: Vec<Vec<Point>> = Vec::new();
+    let mut current = Vec::new();
+    for index in 0..source.points.len() - 1 {
+        let (a, b) = (source.points[index], source.points[index + 1]);
+        if seam[index] && seam[index + 1] {
+            if current.len() >= 2 {
+                runs.push(std::mem::take(&mut current));
+            } else {
+                current.clear();
+            }
+            continue;
+        }
+        let a = snap(a);
+        let b = snap(b);
+        if current.last().is_none_or(|last: &Point| *last != a) {
+            current.push(a);
+        }
+        current.push(b);
+    }
+    if current.len() >= 2 {
+        runs.push(current);
+    }
+
+    if runs.len() > 100_000 || first_fresh_id == u64::MAX {
+        return Err("Mirrored runs exceed stroke or ID limits".into());
+    }
+    let mut mirrored = Vec::with_capacity(runs.len());
+    for (index, points) in runs.into_iter().enumerate() {
+        let id = first_fresh_id
+            .checked_add(index as u64)
+            .filter(|id| *id != u64::MAX)
+            .ok_or("No more stroke IDs available")?;
+        let mut run = source.clone();
+        run.points = points;
+        if let Some(copy) = mirror_stroke(&run, plane, id, seam_tolerance)? {
+            mirrored.push(copy);
+        }
+    }
+    Ok(mirrored)
+}
+
 /// Reflect a point sample while retaining pressure and tilt exactly apart from
 /// the geometric transform.
 pub fn mirror_point(point: Point, plane: MirrorPlane) -> Result<Point, String> {
@@ -147,4 +226,92 @@ pub fn mirror_point(point: Point, plane: MirrorPlane) -> Result<Point, String> {
         return Err("Reflected point is outside the document limits".into());
     }
     Ok(mirrored)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Brush, BrushKind, StrokeMaterial};
+
+    fn source(points: Vec<Point>) -> Stroke {
+        let brush = Brush {
+            kind: BrushKind::Ribbon,
+            angle_degrees: 28.0,
+            normal: Vec3::Z,
+            tangent: Vec3::X,
+            ..Brush::default()
+        };
+        Stroke {
+            id: 7,
+            color: [0.2, 0.4, 0.8],
+            radius: 0.08,
+            brush,
+            points,
+            fill: None,
+            material: StrokeMaterial::Emissive,
+            group_id: Some(3),
+            layer_id: 2,
+        }
+    }
+
+    fn point(x: f32) -> Point {
+        Point {
+            position: Vec3::new(x, 0.25, 0.0),
+            pressure: 0.3 + (x.abs() * 0.1),
+            tilt: Some(Vec3::Y),
+        }
+    }
+
+    #[test]
+    fn partial_seam_overlap_splits_reflected_runs_without_losing_attributes() {
+        let original = source(vec![
+            point(-1.0),
+            point(0.0),
+            point(0.0),
+            point(1.0),
+            point(2.0),
+        ]);
+        let plane = MirrorPlane {
+            point: Vec3::ZERO,
+            normal: Vec3::X,
+        };
+        let untouched = original.clone();
+        let runs = mirror_stroke_runs(&original, plane, 100, 1e-5).unwrap();
+
+        assert_eq!(original, untouched, "mirroring must be immutable");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(
+            runs.iter().map(|stroke| stroke.id).collect::<Vec<_>>(),
+            [100, 101]
+        );
+        assert_eq!(runs[0].points.len(), 2);
+        assert_eq!(runs[1].points.len(), 3);
+        assert_eq!(runs[0].points[0].position, Vec3::new(1.0, 0.25, 0.0));
+        assert_eq!(runs[0].points[1].position, Vec3::new(0.0, 0.25, 0.0));
+        assert_eq!(runs[1].points[0].position, Vec3::new(0.0, 0.25, 0.0));
+        assert_eq!(runs[1].points[2].position, Vec3::new(-2.0, 0.25, 0.0));
+        assert_eq!(runs[0].material, StrokeMaterial::Emissive);
+        assert_eq!(runs[0].group_id, Some(3));
+        assert_eq!(runs[0].layer_id, 2);
+        assert_eq!(runs[0].color, original.color);
+        assert_eq!(runs[0].radius, original.radius);
+        assert_eq!(runs[0].brush.kind, BrushKind::Ribbon);
+        assert_eq!(runs[0].brush.angle_degrees, -original.brush.angle_degrees);
+        assert_eq!(runs[0].points[0].pressure, original.points[0].pressure);
+        assert_eq!(runs[0].points[0].tilt, original.points[0].tilt);
+        assert_eq!(runs[0].points[1].pressure, original.points[1].pressure);
+        assert_eq!(runs[0].points[1].tilt, original.points[1].tilt);
+    }
+
+    #[test]
+    fn fully_seam_coincident_stroke_has_no_reflected_run() {
+        let original = source(vec![point(0.0), point(0.0), point(0.0)]);
+        let plane = MirrorPlane {
+            point: Vec3::ZERO,
+            normal: Vec3::X,
+        };
+        assert!(mirror_stroke_runs(&original, plane, 100, 1e-5)
+            .unwrap()
+            .is_empty());
+    }
 }

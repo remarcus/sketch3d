@@ -16,6 +16,8 @@ pub enum HandleKind {
     Free,
     Rotation(usize),
     Scale,
+    ScaleAxis(usize),
+    ScaleView,
 }
 pub struct Handle {
     pub kind: HandleKind,
@@ -219,10 +221,29 @@ impl Layout {
                 }
             }
             Mode::Scale => {
+                // Keep the established uniform handle first for stable hit
+                // ordering and compatibility with saved interaction scripts.
                 handles.push(Handle {
                     kind: HandleKind::Scale,
                     path: vec![origin, origin + egui::vec2(58.0, -58.0)],
                     color: Color32::from_rgb(255, 210, 100),
+                });
+                for (i, color) in colors.into_iter().enumerate() {
+                    if let Some((end, _)) = project(camera, rect, pivot + axis(i) * length) {
+                        let delta = end - origin;
+                        if delta.length() > 18.0 {
+                            handles.push(Handle {
+                                kind: HandleKind::ScaleAxis(i),
+                                path: vec![origin + delta.normalized() * 12.0, end],
+                                color,
+                            });
+                        }
+                    }
+                }
+                handles.push(Handle {
+                    kind: HandleKind::ScaleView,
+                    path: vec![origin, origin + egui::vec2(-34.0, -34.0)],
+                    color: Color32::from_rgb(115, 224, 220),
                 });
             }
         }
@@ -238,7 +259,7 @@ impl Layout {
             .filter_map(|h| {
                 let d = if h.path.len() == 1 {
                     h.path[0].distance(pos)
-                } else if h.kind == HandleKind::Scale {
+                } else if matches!(h.kind, HandleKind::Scale | HandleKind::ScaleView) {
                     h.path.last()?.distance(pos)
                 } else {
                     h.path
@@ -312,6 +333,34 @@ impl Layout {
                         color,
                     );
                 }
+                HandleKind::ScaleAxis(i) => {
+                    let a = handle.path[0];
+                    let b = handle.path[1];
+                    painter.line_segment([a, b], stroke);
+                    painter.circle_filled(b, 5.0, color);
+                    painter.text(
+                        b + egui::vec2(8.0, -8.0),
+                        egui::Align2::CENTER_CENTER,
+                        ["SX", "SY", "SZ"][i],
+                        egui::FontId::proportional(12.0),
+                        color,
+                    );
+                }
+                HandleKind::ScaleView => {
+                    painter.line_segment([self.origin, handle.path[1]], stroke);
+                    painter.rect_filled(
+                        Rect::from_center_size(handle.path[1], egui::vec2(11.0, 11.0)),
+                        1.0,
+                        color,
+                    );
+                    painter.text(
+                        handle.path[1] + egui::vec2(-6.0, -16.0),
+                        egui::Align2::CENTER_CENTER,
+                        "View",
+                        egui::FontId::proportional(11.0),
+                        color,
+                    );
+                }
             }
         }
     }
@@ -330,6 +379,7 @@ mod tests {
         camera.align(Plane::Front);
         let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
         let stroke = |id, z| Stroke {
+            material: Default::default(),
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -382,6 +432,7 @@ mod layer_picking_tests {
         camera.align(Plane::Front);
         let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
         let mark = |id, layer_id, z| Stroke {
+            material: Default::default(),
             fill: None,
             group_id: None,
             id,

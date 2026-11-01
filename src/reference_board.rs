@@ -33,6 +33,10 @@ pub(super) struct ReferenceBoard {
     pan: Vec2,
     pan_origin: Vec2,
     pan_start: Option<Pos2>,
+    #[cfg(test)]
+    viewer_rect: Option<Rect>,
+    #[cfg(test)]
+    last_viewer_response: [bool; 4],
 }
 
 impl ReferenceBoard {
@@ -53,6 +57,10 @@ impl ReferenceBoard {
             pan: Vec2::ZERO,
             pan_origin: Vec2::ZERO,
             pan_start: None,
+            #[cfg(test)]
+            viewer_rect: None,
+            #[cfg(test)]
+            last_viewer_response: [false; 4],
         };
         board.load(ctx);
         board
@@ -154,7 +162,7 @@ impl ReferenceBoard {
         temp.as_file()
             .sync_all()
             .map_err(|error| error.to_string())?;
-        temp.persist(path).map_err(|error| error.to_string())?;
+        crate::atomic_file::replace(temp, &path).map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -243,8 +251,7 @@ impl ReferenceBoard {
             temp.as_file()
                 .sync_all()
                 .map_err(|error| error.to_string())?;
-            temp.persist(&destination)
-                .map_err(|error| error.to_string())?;
+            crate::atomic_file::replace(temp, &destination).map_err(|error| error.to_string())?;
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -424,8 +431,18 @@ impl ReferenceBoard {
                 .min(Vec2::new(1000.0, 1000.0));
             let (viewer, response) =
                 ui.allocate_exact_size(viewer_size, egui::Sense::click_and_drag());
+            #[cfg(test)]
+            {
+                self.viewer_rect = Some(viewer);
+                self.last_viewer_response = [
+                    response.hovered(),
+                    response.drag_started(),
+                    response.dragged(),
+                    response.drag_stopped(),
+                ];
+            }
             ui.painter()
-                .rect_filled(viewer, 3.0, Color32::from_rgb(24, 29, 36));
+                .rect_filled(viewer, 3.0, super::ui_style::colors(ui.ctx()).surface);
             if let Some(index) = self.selected_index() {
                 let image = &self.images[index];
                 let base_scale = (viewer.width() / image.size[0] as f32)
@@ -590,5 +607,293 @@ fn make_image(
         pixels,
         size,
         texture,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn sample_bytes(format: image::ImageFormat) -> Vec<u8> {
+        let mut output = Cursor::new(Vec::new());
+        let image = match format {
+            image::ImageFormat::Jpeg => image::DynamicImage::ImageRgb8(
+                image::RgbImage::from_pixel(2, 1, image::Rgb([20, 80, 140])),
+            ),
+            _ => image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                2,
+                1,
+                image::Rgba([20, 80, 140, 255]),
+            )),
+        };
+        image.write_to(&mut output, format).unwrap();
+        output.into_inner()
+    }
+
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = u32::MAX;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xEDB8_8320 & 0_u32.wrapping_sub(crc & 1));
+            }
+        }
+        !crc
+    }
+
+    fn with_png_dimensions(mut bytes: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+        bytes[16..20].copy_from_slice(&width.to_be_bytes());
+        bytes[20..24].copy_from_slice(&height.to_be_bytes());
+        let checksum = crc32(&bytes[12..29]);
+        bytes[29..33].copy_from_slice(&checksum.to_be_bytes());
+        bytes
+    }
+
+    fn empty_board(root: PathBuf) -> ReferenceBoard {
+        ReferenceBoard {
+            root: Ok(root),
+            images: Vec::new(),
+            selected: None,
+            notice: None,
+            zoom: 1.0,
+            pan: Vec2::ZERO,
+            pan_origin: Vec2::ZERO,
+            pan_start: None,
+            viewer_rect: None,
+            last_viewer_response: [false; 4],
+        }
+    }
+
+    fn run_reference_frame(
+        context: &egui::Context,
+        board: &mut ReferenceBoard,
+        background: &mut Option<crate::presentation::BackgroundImageSettings>,
+        canvas: &mut Rect,
+        screen: Rect,
+        events: Vec<egui::Event>,
+    ) {
+        let _ = context.run(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::SidePanel::right("reference-panel")
+                    .exact_width(300.0)
+                    .show(ctx, |ui| {
+                        board.show(ui, ctx, background);
+                    });
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    *canvas = ui.max_rect();
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn png_and_jpeg_decode_with_pixel_and_file_limits() {
+        let png = sample_bytes(image::ImageFormat::Png);
+        let jpeg = sample_bytes(image::ImageFormat::Jpeg);
+        assert_eq!(
+            decode_bytes(&png, image::ImageFormat::Png)
+                .unwrap()
+                .dimensions(),
+            (2, 1)
+        );
+        assert_eq!(
+            decode_bytes(&jpeg, image::ImageFormat::Jpeg)
+                .unwrap()
+                .dimensions(),
+            (2, 1)
+        );
+
+        let oversized = with_png_dimensions(png, 4000, 4000);
+        assert!(decode_bytes(&oversized, image::ImageFormat::Png)
+            .unwrap_err()
+            .contains("12 megapixel"));
+
+        let directory = tempfile::tempdir().unwrap();
+        let too_large = directory.path().join("ref-1.png");
+        std::fs::File::create(&too_large)
+            .unwrap()
+            .set_len(MAX_SOURCE_BYTES + 1)
+            .unwrap();
+        assert!(decode(&too_large).unwrap_err().contains("file-size limit"));
+    }
+
+    #[test]
+    fn managed_board_reloads_and_skips_missing_or_unsafe_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("reference-board");
+        std::fs::create_dir_all(&root).unwrap();
+        let bytes = sample_bytes(image::ImageFormat::Png);
+        std::fs::write(root.join("ref-1.png"), &bytes).unwrap();
+
+        let context = egui::Context::default();
+        let pixels = decode_bytes(&bytes, image::ImageFormat::Png)
+            .unwrap()
+            .into_raw();
+        let mut first = empty_board(root.clone());
+        first.images.push(make_image(
+            &context,
+            ReferenceRecord {
+                id: 1,
+                name: "Facade photo".into(),
+                file: "ref-1.png".into(),
+            },
+            pixels,
+            [2, 1],
+        ));
+        first.selected = Some(1);
+        first.persist().unwrap();
+        drop(first);
+
+        let mut restarted = empty_board(root.clone());
+        restarted.load(&context);
+        assert_eq!(restarted.images.len(), 1);
+        assert_eq!(restarted.selected, Some(1));
+        assert_eq!(restarted.images[0].record.name, "Facade photo");
+        assert_eq!(restarted.images[0].size, [2, 1]);
+        assert!(restarted.background_image(1).is_some());
+
+        let records = vec![
+            ReferenceRecord {
+                id: 1,
+                name: "Facade photo".into(),
+                file: "ref-1.png".into(),
+            },
+            ReferenceRecord {
+                id: 2,
+                name: "Missing photo".into(),
+                file: "ref-2.png".into(),
+            },
+            ReferenceRecord {
+                id: 3,
+                name: "Unsafe path".into(),
+                file: "..\\outside.png".into(),
+            },
+        ];
+        std::fs::write(
+            root.join("index.json"),
+            serde_json::to_vec(&records).unwrap(),
+        )
+        .unwrap();
+        let mut reopened = empty_board(root);
+        reopened.load(&context);
+        assert_eq!(reopened.images.len(), 1);
+        assert!(reopened
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("2 missing or unreadable")));
+    }
+
+    #[test]
+    fn reference_panel_drag_and_wheel_do_not_route_to_canvas() {
+        let context = egui::Context::default();
+        let mut board = empty_board(std::env::temp_dir());
+        board.images.push(make_image(
+            &context,
+            ReferenceRecord {
+                id: 1,
+                name: "Synthetic test image".into(),
+                file: "ref-1.png".into(),
+            },
+            vec![20, 80, 140, 255, 20, 80, 140, 255],
+            [2, 1],
+        ));
+        board.selected = Some(1);
+        let mut canvas = Rect::NOTHING;
+        let mut background = None;
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0));
+        run_reference_frame(
+            &context,
+            &mut board,
+            &mut background,
+            &mut canvas,
+            screen,
+            vec![],
+        );
+        let over_board = board.viewer_rect.expect("viewer is allocated").center();
+        run_reference_frame(
+            &context,
+            &mut board,
+            &mut background,
+            &mut canvas,
+            screen,
+            vec![
+                egui::Event::PointerMoved(over_board),
+                egui::Event::PointerButton {
+                    pos: over_board,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ],
+        );
+        assert!(board.last_viewer_response[0], "pointer should hover viewer");
+        run_reference_frame(
+            &context,
+            &mut board,
+            &mut background,
+            &mut canvas,
+            screen,
+            vec![egui::Event::PointerMoved(over_board + Vec2::new(10.0, 0.0))],
+        );
+        run_reference_frame(
+            &context,
+            &mut board,
+            &mut background,
+            &mut canvas,
+            screen,
+            vec![egui::Event::PointerMoved(
+                over_board + Vec2::new(30.0, 20.0),
+            )],
+        );
+        assert!(
+            board.last_viewer_response[2],
+            "held movement should drag viewer"
+        );
+        run_reference_frame(
+            &context,
+            &mut board,
+            &mut background,
+            &mut canvas,
+            screen,
+            vec![egui::Event::PointerButton {
+                pos: over_board + Vec2::new(30.0, 20.0),
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+        );
+
+        assert_eq!(board.pan, Vec2::new(20.0, 20.0));
+        assert!(!super::canvas_pointer_allowed(&context, canvas, over_board));
+        assert!(super::canvas_pointer_allowed(
+            &context,
+            canvas,
+            canvas.center()
+        ));
+
+        run_reference_frame(
+            &context,
+            &mut board,
+            &mut background,
+            &mut canvas,
+            screen,
+            vec![
+                egui::Event::PointerMoved(over_board),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: Vec2::new(0.0, 100.0),
+                    modifiers: egui::Modifiers::default(),
+                },
+            ],
+        );
+        assert!(board.zoom > 1.0);
+        assert!(!super::canvas_pointer_allowed(&context, canvas, over_board));
     }
 }

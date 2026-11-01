@@ -40,9 +40,17 @@ fn vs_image(input: VertexInput) -> VertexOutput {
 }
 
 @fragment
-fn fs_image(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_image(input: VertexOutput) -> FragmentOutput {
     var color = textureSample(image_texture, image_sampler, input.uv);
-    color.rgb = apply_grain(color.rgb, input.clip_position.xy);
+    color = vec4<f32>(apply_grain(color.rgb, input.clip_position.xy), color.a);
     color.a *= input.opacity;
-    return color;
+    var output: FragmentOutput;
+    output.color = color;
+    output.emission = vec4<f32>(0.0);
+    return output;
+}
+
+struct FragmentOutput {
+    @location(0) color: vec4<f32>,
+    @location(1) emission: vec4<f32>,
 }

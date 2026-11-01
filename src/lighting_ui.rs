@@ -15,6 +15,7 @@ impl SketchApp {
         let mut artwork_requested = false;
         let grain_before = self.presentation.preferences.grain;
         let toon_before = self.presentation.preferences.toon_shading;
+        let effects_before = self.presentation.preferences.post_effects;
         egui::Window::new("Scene lighting").open(&mut self.show_scene).default_width(300.0)
             .max_height((ctx.screen_rect().height()-100.0).max(200.0)).vscroll(true)
             .anchor(egui::Align2::RIGHT_TOP,egui::vec2(-255.0,60.0)).show(ctx,|ui| {
@@ -33,6 +34,13 @@ impl SketchApp {
                     self.presentation.preferences.grain = 0.0;
                 }
                 ui.checkbox(&mut self.presentation.preferences.toon_shading, "Toon shading (4 light bands)");
+                ui_style::section(ui, "Post-processing");
+                let effects = &mut self.presentation.preferences.post_effects;
+                ui_style::slider_row(ui, "Glow", "effect-glow", &mut effects.glow, 0.0..=1.0, 100.0, "%");
+                ui_style::slider_row(ui, "Focus distance", "effect-focus-distance", &mut effects.focus_distance, 0.0..=1000.0, 1.0, "wu");
+                ui_style::slider_row(ui, "Depth blur", "effect-depth-of-field", &mut effects.depth_of_field, 0.0..=16.0, 1.0, "px");
+                ui_style::slider_row(ui, "Pixel size", "effect-pixel-size", &mut effects.pixel_size, 1.0..=16.0, 1.0, "px");
+                ui.small("Effects apply to the canvas and artwork image export; pixelation and glow are screen-space, while depth blur follows camera distance.");
                 let light=&mut self.renderer.lighting;
                 ui_style::section(ui, "Directional light");
                 ui_style::slider_row(ui, "Direction", "light-azimuth", &mut light.azimuth, -180.0..=180.0, 1.0, "°");
@@ -66,9 +74,11 @@ impl SketchApp {
             });
         if self.presentation.preferences.grain != grain_before
             || self.presentation.preferences.toon_shading != toon_before
+            || self.presentation.preferences.post_effects != effects_before
         {
             self.renderer.grain = self.presentation.preferences.grain;
             self.renderer.toon_shading = self.presentation.preferences.toon_shading;
+            self.renderer.post_effects = self.presentation.preferences.post_effects;
             self.presentation.remember();
         }
         if artwork_requested {
@@ -130,6 +140,7 @@ impl SketchApp {
         let export = crate::export::encode(&self.doc, None).unwrap();
         let mut doc = Document::default();
         doc.strokes.push(Stroke {
+            material: Default::default(),
             id: 1,
             layer_id: 1,
             fill: None,
@@ -263,6 +274,7 @@ impl SketchApp {
             ),
         ] {
             building.strokes.push(Stroke {
+                material: Default::default(),
                 id,
                 layer_id: 1,
                 fill: None,

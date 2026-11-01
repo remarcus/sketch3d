@@ -1,4 +1,5 @@
 //! Separate local canvas preferences; no artwork or document fields.
+use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::{io::Write, path::Path};
 pub const BLUE: [f32; 3] = [0.16, 0.44, 0.74];
@@ -15,6 +16,26 @@ pub fn srgb_to_linear(c: f32) -> f32 {
         c / 12.92
     } else {
         ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiTheme {
+    /// Keep the appearance used before theme preferences were introduced.
+    #[default]
+    Dark,
+    Light,
+    System,
+}
+
+impl UiTheme {
+    pub fn egui(self) -> egui::ThemePreference {
+        match self {
+            Self::Dark => egui::ThemePreference::Dark,
+            Self::Light => egui::ThemePreference::Light,
+            Self::System => egui::ThemePreference::System,
+        }
     }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -41,6 +62,30 @@ pub struct BackgroundImageSettings {
     pub fit: BackgroundImageFit,
     pub alignment: [f32; 2],
     pub opacity: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostEffects {
+    /// Bright-pass bloom contribution. Zero disables glow.
+    pub glow: f32,
+    /// Focus distance in world units; zero disables depth of field.
+    pub focus_distance: f32,
+    /// Blur radius in pixels, bounded to keep GPU cost predictable.
+    pub depth_of_field: f32,
+    /// Pixel block width in pixels; 1 disables pixelation.
+    pub pixel_size: f32,
+}
+
+impl Default for PostEffects {
+    fn default() -> Self {
+        Self {
+            glow: 0.0,
+            focus_distance: 0.0,
+            depth_of_field: 0.0,
+            pixel_size: 1.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -72,11 +117,15 @@ impl LayoutPreferences {
 #[serde(deny_unknown_fields)]
 pub struct Preferences {
     pub version: u32,
+    #[serde(default)]
+    pub ui_theme: UiTheme,
     pub background: [f32; 3],
     #[serde(default)]
     pub grain: f32,
     #[serde(default)]
     pub toon_shading: bool,
+    #[serde(default)]
+    pub post_effects: PostEffects,
     #[serde(default)]
     pub background_image: Option<BackgroundImageSettings>,
     #[serde(default)]
@@ -85,10 +134,12 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            version: 5,
+            version: 7,
+            ui_theme: UiTheme::Dark,
             background: [0.018, 0.029, 0.046].map(linear_to_srgb),
             grain: 0.0,
             toon_shading: false,
+            post_effects: PostEffects::default(),
             background_image: None,
             layout: LayoutPreferences::default(),
         }
@@ -96,13 +147,21 @@ impl Default for Preferences {
 }
 impl Preferences {
     fn valid(&self) -> bool {
-        (1..=5).contains(&self.version)
+        (1..=7).contains(&self.version)
             && self
                 .background
                 .iter()
                 .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
             && self.grain.is_finite()
             && (0.0..=0.12).contains(&self.grain)
+            && self.post_effects.glow.is_finite()
+            && (0.0..=1.0).contains(&self.post_effects.glow)
+            && self.post_effects.focus_distance.is_finite()
+            && (0.0..=1000.0).contains(&self.post_effects.focus_distance)
+            && self.post_effects.depth_of_field.is_finite()
+            && (0.0..=16.0).contains(&self.post_effects.depth_of_field)
+            && self.post_effects.pixel_size.is_finite()
+            && (1.0..=16.0).contains(&self.post_effects.pixel_size)
             && self.layout.valid()
             && self.background_image.is_none_or(|image| {
                 image.reference_id != 0
@@ -128,8 +187,8 @@ impl Preferences {
         if !prefs.valid() {
             return Err("Unsupported or invalid presentation preferences".into());
         }
-        // Older versions stored no post-processing settings; effects default off.
-        prefs.version = 5;
+        // Older versions have no appearance mode; it defaults to Dark.
+        prefs.version = 7;
         Ok(prefs)
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -145,7 +204,7 @@ impl Preferences {
         temp.write_all(&serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
         temp.as_file().sync_all().map_err(|e| e.to_string())?;
-        temp.persist(path).map_err(|e| e.to_string())?;
+        crate::atomic_file::replace(temp, path).map_err(|e| e.to_string())?;
         Ok(())
     }
 }
@@ -196,7 +255,7 @@ mod tests {
         let path = dir.path().join("presentation.json");
         std::fs::write(&path, br#"{"version":1,"background":[0.1,0.2,0.3]}"#).unwrap();
         let prefs = Preferences::load(&path).unwrap();
-        assert_eq!(prefs.version, 5);
+        assert_eq!(prefs.version, 7);
         assert_eq!(prefs.background, [0.1, 0.2, 0.3]);
         assert_eq!(prefs.layout, LayoutPreferences::default());
     }

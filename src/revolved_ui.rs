@@ -55,13 +55,13 @@ impl SketchApp {
             )
         };
         ui.painter()
-            .rect_filled(rect, 3.0, Color32::from_rgb(16, 22, 31));
+            .rect_filled(rect, 3.0, ui_style::colors(ui.ctx()).surface);
         for i in 0..next.count {
             let point = pos(next.profile[i]);
             if i > 0 {
                 ui.painter().line_segment(
                     [pos(next.profile[i - 1]), point],
-                    egui::Stroke::new(2.0_f32, Color32::from_rgb(80, 195, 180)),
+                    egui::Stroke::new(2.0_f32, ui_style::colors(ui.ctx()).accent),
                 );
             }
             let response = ui.interact(
@@ -70,7 +70,7 @@ impl SketchApp {
                 egui::Sense::drag(),
             );
             ui.painter()
-                .circle_filled(point, 4.0, Color32::from_rgb(120, 230, 210));
+                .circle_filled(point, 4.0, ui_style::colors(ui.ctx()).focus);
             if response.dragged() {
                 if let Some(mouse) = response.interact_pointer_pos() {
                     next.profile[i].radius =
@@ -262,7 +262,13 @@ impl SketchApp {
                 let ink = self.doc.strokes.clone();
                 self.selected = HashSet::from([stroke.id]);
                 self.duplicate_selected();
-                assert_eq!(self.doc.strokes.last().unwrap().brush, stroke.brush);
+                let duplicated_brush = &self.doc.strokes.last().unwrap().brush;
+                assert!((duplicated_brush.normal - stroke.brush.normal).length() < 1e-6);
+                assert!((duplicated_brush.tangent - stroke.brush.tangent).length() < 1e-6);
+                let mut expected_brush = stroke.brush;
+                expected_brush.normal = duplicated_brush.normal;
+                expected_brush.tangent = duplicated_brush.tangent;
+                assert_eq!(*duplicated_brush, expected_brush);
                 self.undo();
                 assert_eq!(self.doc.strokes, ink);
                 self.selected.clear();

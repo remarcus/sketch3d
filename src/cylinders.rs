@@ -103,7 +103,7 @@ impl SketchApp {
         ui.label(
             RichText::new("Open cylinder / side surface")
                 .small()
-                .color(Color32::from_rgb(119, 203, 195)),
+                .color(ui_style::colors(ui.ctx()).accent),
         );
         ui_style::section(ui, "Cylinder geometry");
         for (i, axis) in ["X", "Y", "Z"].iter().enumerate() {

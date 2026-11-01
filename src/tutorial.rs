@@ -46,7 +46,7 @@ impl Preferences {
         temp.write_all(&serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
         temp.as_file().sync_all().map_err(|e| e.to_string())?;
-        temp.persist(path).map_err(|e| e.to_string())?;
+        crate::atomic_file::replace(temp, path).map_err(|e| e.to_string())?;
         Ok(())
     }
 }

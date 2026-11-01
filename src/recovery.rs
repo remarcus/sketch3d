@@ -19,7 +19,7 @@ enum Command {
     Save {
         epoch: u64,
         revision: u64,
-        snapshot: RecoverySnapshot,
+        snapshot: Box<RecoverySnapshot>,
     },
     Clear {
         epoch: u64,
@@ -308,12 +308,12 @@ impl Recovery {
         let command = Command::Save {
             epoch: self.epoch,
             revision,
-            snapshot: RecoverySnapshot::new_with_assets(
+            snapshot: Box::new(RecoverySnapshot::new_with_assets(
                 self.session.clone(),
                 original,
                 document.clone(),
                 assets,
-            ),
+            )),
         };
         if self.send(command) {
             self.saving = Some((self.epoch, revision));
@@ -518,6 +518,7 @@ mod tests {
     fn document() -> Document {
         Document {
             strokes: vec![Stroke {
+                material: Default::default(),
                 id: 1,
                 fill: None,
                 group_id: None,

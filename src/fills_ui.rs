@@ -1,9 +1,10 @@
+use super::guide_resource_ui::PlanarTarget;
 use super::*;
 use crate::{document::PlanarFill, polygon};
 
 pub(super) struct FillDraft {
     pub mark: Stroke,
-    plane: DrawingPlane,
+    target: PlanarTarget,
 }
 pub(super) struct FillUi {
     pub enabled: bool,
@@ -79,10 +80,11 @@ impl SketchApp {
         }
     }
     pub(super) fn fill_corner(&mut self, pos: Pos2, rect: Rect) {
-        if self.use_cylinder || self.use_revolved {
-            self.status = "Planar fills require a plane guide; choose Plane first.".into();
+        let Some(target) = self.planar_drawing_target() else {
+            self.status =
+                "Planar fills require a plane guide. Activate a planar guide first.".into();
             return;
-        }
+        };
         if !self.doc.active_editable() {
             self.status = "Choose a visible unlocked layer for a fill.".into();
             return;
@@ -100,9 +102,14 @@ impl SketchApp {
                 return;
             }
         }
-        let plane = self.fills.draft.as_ref().map_or(self.guide, |d| d.plane);
+        let target = self
+            .fills
+            .draft
+            .as_ref()
+            .map_or(target, |draft| draft.target);
+        let plane = target.plane;
         let (o, d) = crate::gizmo::ray(&self.camera, rect, pos);
-        let Some(world) = intersect_plane(o, d, plane) else {
+        let Some(world) = target.hit(o, d) else {
             self.status = "Plane is edge-on; align the view with F.".into();
             return;
         };
@@ -111,8 +118,9 @@ impl SketchApp {
             return;
         }
         let draft = self.fills.draft.get_or_insert_with(|| FillDraft {
-            plane,
+            target,
             mark: Stroke {
+                material: Default::default(),
                 fill: Some(PlanarFill {
                     offset: self.fills.offset,
                 }),
@@ -198,11 +206,10 @@ impl SketchApp {
             )
         });
         if p && !ctx.input(|i| i.modifiers.command || i.modifiers.alt)
-            && self.resource_target_active()
+            && self.planar_drawing_target().is_none()
         {
             self.status =
-                "Fill currently uses the temporary plane guide. Switch to it before filling."
-                    .into();
+                "Planar fills require a plane guide. Activate a planar guide first.".into();
         } else if p && !ctx.input(|i| i.modifiers.command || i.modifiers.alt) {
             self.cancel_line_tool();
             self.finish();
@@ -227,7 +234,7 @@ impl SketchApp {
             return;
         };
         let painter = ui.painter().with_clip_rect(rect);
-        let color = Color32::from_rgb(76, 220, 190);
+        let color = ui_style::canvas_accent(self.presentation.preferences.background);
         let projected: Vec<_> = draft
             .mark
             .points

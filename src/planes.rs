@@ -78,7 +78,7 @@ impl SketchApp {
         ui.label(
             RichText::new(self.guide.label())
                 .small()
-                .color(Color32::from_rgb(119, 203, 195)),
+                .color(ui_style::colors(ui.ctx()).accent),
         );
         ui_style::section(ui, "Guide geometry");
         for (i, axis) in ["X", "Y", "Z"].iter().enumerate() {
@@ -169,7 +169,7 @@ impl SketchApp {
             return;
         };
         let painter = ui.painter().with_clip_rect(rect);
-        let color = Color32::from_rgb(87, 215, 207);
+        let color = ui_style::canvas_accent(self.presentation.preferences.background);
         painter.circle_stroke(start, 5.0, egui::Stroke::new(1.5_f32, color));
         if start.distance(end) > 10.0 {
             painter.arrow(start, end - start, egui::Stroke::new(1.5_f32, color));

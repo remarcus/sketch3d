@@ -141,7 +141,7 @@ impl Palette {
         temp.as_file()
             .sync_all()
             .map_err(|error| error.to_string())?;
-        temp.persist(path).map_err(|error| error.to_string())?;
+        crate::atomic_file::replace(temp, path).map_err(|error| error.to_string())?;
         Ok(())
     }
 }

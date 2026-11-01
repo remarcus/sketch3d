@@ -693,6 +693,7 @@ fn describe_preset(ui: &mut egui::Ui, preset: &Preset) {
 pub fn preview_document(preset: &Preset) -> Document {
     Document {
         strokes: vec![Stroke {
+            material: Default::default(),
             id: 1,
             fill: None,
             group_id: None,

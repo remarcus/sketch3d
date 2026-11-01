@@ -107,6 +107,7 @@ impl Cylinder {
         let mut segment = |a: Vec3, b: Vec3, color| {
             for p in [a, b] {
                 vertices.push(Vertex {
+                    material: 0.0,
                     position: p.to_array(),
                     normal: [0.0; 3],
                     uv: [0.0; 2],
@@ -192,6 +193,7 @@ impl SphereSurface {
         let mut segment = |a: Vec3, b: Vec3| {
             for position in [a, b] {
                 vertices.push(Vertex {
+                    material: 0.0,
                     position: position.to_array(),
                     normal: [0.0; 3],
                     uv: [0.0; 2],
@@ -214,6 +216,82 @@ impl SphereSurface {
                 let a = -PI * 0.5 + PI * i as f32 / 32.0;
                 let b = -PI * 0.5 + PI * (i + 1) as f32 / 32.0;
                 segment(self.point(longitude, a), self.point(longitude, b));
+            }
+        }
+        vertices
+    }
+}
+
+/// Smooth toroidal ring surface. Both periodic parameters are stored in world
+/// units so stabilization can cross each seam without jumping back to zero.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RingSurface {
+    pub center: Vec3,
+    pub rotation: Quat,
+    pub major_radius: f32,
+    pub minor_radius: f32,
+}
+
+impl RingSurface {
+    pub fn point(self, major_angle: f32, minor_angle: f32) -> Vec3 {
+        let tube_radius = self.major_radius + self.minor_radius * minor_angle.cos();
+        self.center
+            + self.rotation
+                * Vec3::new(
+                    tube_radius * major_angle.sin(),
+                    self.minor_radius * minor_angle.sin(),
+                    tube_radius * major_angle.cos(),
+                )
+    }
+
+    fn parameter(self, world: Vec3, previous: Option<Vec3>) -> Vec3 {
+        let local = self.rotation.inverse() * (world - self.center);
+        let radial = local.x.hypot(local.z);
+        let mut major = local.x.atan2(local.z);
+        let mut minor = local.y.atan2(radial - self.major_radius);
+        if let Some(previous) = previous {
+            major = unwrap_angle(major, previous.x / self.major_radius);
+            minor = unwrap_angle(minor, previous.y / self.minor_radius);
+        }
+        Vec3::new(major * self.major_radius, minor * self.minor_radius, 0.0)
+    }
+
+    fn decode(self, parameter: Vec3) -> Vec3 {
+        self.point(
+            parameter.x / self.major_radius,
+            parameter.y / self.minor_radius,
+        )
+    }
+
+    pub fn wireframe(self) -> Vec<Vertex> {
+        let mut vertices = Vec::new();
+        let color = [0.12, 0.38, 0.39];
+        let mut segment = |a: Vec3, b: Vec3| {
+            for position in [a, b] {
+                vertices.push(Vertex {
+                    material: 0.0,
+                    position: position.to_array(),
+                    normal: [0.0; 3],
+                    uv: [0.0; 2],
+                    color,
+                    opacity: 1.0,
+                });
+            }
+        };
+        for minor_index in 0..=8 {
+            let minor = minor_index as f32 / 8.0 * TAU;
+            for major_index in 0..64 {
+                let a = major_index as f32 / 64.0 * TAU;
+                let b = (major_index + 1) as f32 / 64.0 * TAU;
+                segment(self.point(a, minor), self.point(b, minor));
+            }
+        }
+        for major_index in 0..=12 {
+            let major = major_index as f32 / 12.0 * TAU;
+            for minor_index in 0..32 {
+                let a = minor_index as f32 / 32.0 * TAU;
+                let b = (minor_index + 1) as f32 / 32.0 * TAU;
+                segment(self.point(major, a), self.point(major, b));
             }
         }
         vertices
@@ -263,6 +341,7 @@ impl ConeSurface {
         let mut segment = |a: Vec3, b: Vec3| {
             for position in [a, b] {
                 vertices.push(Vertex {
+                    material: 0.0,
                     position: position.to_array(),
                     normal: [0.0; 3],
                     uv: [0.0; 2],
@@ -295,11 +374,13 @@ fn unwrap_angle(angle: f32, previous: f32) -> f32 {
 }
 
 #[derive(Clone, Copy, PartialEq)]
+#[allow(clippy::large_enum_variant)] // Preview values are copied through the active-guide UI.
 pub enum GuidePreview {
     Plane(DrawingPlane),
     Cylinder(Cylinder),
     Revolved(Revolved),
     Sphere(SphereSurface),
+    Ring(RingSurface),
     Cone(ConeSurface),
     Freeform(FreeformSurface),
     Loft(LoftSurface),
@@ -312,6 +393,7 @@ impl GuidePreview {
             Self::Cylinder(cylinder) => cylinder.wireframe(),
             Self::Revolved(r) => r.wireframe(),
             Self::Sphere(sphere) => sphere.wireframe(),
+            Self::Ring(ring) => ring.wireframe(),
             Self::Cone(cone) => cone.wireframe(),
             Self::Freeform(surface) => {
                 let mut vertices = Vec::new();
@@ -319,6 +401,7 @@ impl GuidePreview {
                 let mut segment = |a: Vec3, b: Vec3| {
                     for position in [a, b] {
                         vertices.push(Vertex {
+                            material: 0.0,
                             position: position.to_array(),
                             normal: [0.0; 3],
                             uv: [0.0; 2],
@@ -351,6 +434,7 @@ impl GuidePreview {
                 let mut segment = |a: Vec3, b: Vec3| {
                     for position in [a, b] {
                         vertices.push(Vertex {
+                            material: 0.0,
                             position: position.to_array(),
                             normal: [0.0; 3],
                             uv: [0.0; 2],
@@ -385,12 +469,14 @@ impl GuidePreview {
     }
 }
 #[derive(Clone, Copy, Default)]
+#[allow(clippy::large_enum_variant)] // Surface values are Copy geometry adapters used by tool hot paths.
 pub enum Surface {
     #[default]
     Plane,
     Cylinder(Cylinder),
     Revolved(Revolved),
     Sphere(SphereSurface),
+    Ring(RingSurface),
     Cone(ConeSurface),
     Freeform(FreeformSurface),
     Loft(LoftSurface),
@@ -402,6 +488,7 @@ impl Surface {
             Self::Cylinder(c) => c.parameter(world, previous),
             Self::Revolved(r) => r.parameter(world, previous),
             Self::Sphere(sphere) => sphere.parameter(world, previous),
+            Self::Ring(ring) => ring.parameter(world, previous),
             Self::Cone(cone) => cone.parameter(world, previous),
             Self::Freeform(surface) => surface
                 .coordinates(world)
@@ -419,6 +506,7 @@ impl Surface {
                 Self::Cylinder(c) => c.decode(point.position),
                 Self::Revolved(r) => r.decode(point.position),
                 Self::Sphere(sphere) => sphere.decode(point.position),
+                Self::Ring(ring) => ring.decode(point.position),
                 Self::Cone(cone) => cone.decode(point.position),
                 Self::Freeform(surface) => surface.point(point.position.x, point.position.y),
                 Self::Loft(surface) => surface.point(point.position.x, point.position.y),
@@ -437,6 +525,11 @@ impl Surface {
             }
             Self::Sphere(sphere) => {
                 (((end - start).length() / sphere.radius / 0.035).ceil() as usize).clamp(1, 128)
+            }
+            Self::Ring(ring) => {
+                let major = (end.x - start.x).abs() / ring.major_radius;
+                let minor = (end.y - start.y).abs() / ring.minor_radius;
+                (((major + minor) / 0.035).ceil() as usize).clamp(1, 128)
             }
             Self::Cone(cone) => {
                 (((end - start).length() / cone.radius / 0.035).ceil() as usize).clamp(1, 128)
@@ -476,6 +569,11 @@ impl SurfaceStabilizer {
                 let current = sphere.parameter(world, Some(previous));
                 (current.x - previous.x).abs() / sphere.radius > PI * 0.5
                     || (current.y - previous.y).abs() / sphere.radius > PI * 0.5
+            }
+            (Surface::Ring(ring), Some(previous)) => {
+                let current = ring.parameter(world, Some(previous));
+                (current.x - previous.x).abs() / ring.major_radius > PI * 0.5
+                    || (current.y - previous.y).abs() / ring.minor_radius > PI * 0.5
             }
             (Surface::Cone(cone), Some(previous)) => {
                 let current = cone.parameter(world, Some(previous));
@@ -673,6 +771,57 @@ mod tests {
         let tail = filter.finish();
         assert!(tail.last().unwrap().position.distance(target) < 0.00001);
         assert_eq!(tail.last().unwrap().pressure, 0.7);
+    }
+}
+
+#[cfg(test)]
+mod ring_tests {
+    use super::*;
+
+    #[test]
+    fn ring_crosses_both_periodic_seams_without_leaving_captured_surface() {
+        let ring = RingSurface {
+            center: Vec3::new(0.4, -0.3, 0.8),
+            rotation: Quat::from_rotation_y(0.4) * Quat::from_rotation_x(-0.2),
+            major_radius: 2.0,
+            minor_radius: 0.5,
+        };
+        let mut stabilizer = SurfaceStabilizer::default();
+        stabilizer.start(Surface::Ring(ring));
+        let start = ring.point(PI - 0.08, PI - 0.08);
+        stabilizer.push(
+            Point {
+                position: start,
+                pressure: 0.2,
+                tilt: Some(Vec3::Y),
+            },
+            0.0,
+        );
+        let target = ring.point(-PI + 0.08, -PI + 0.08);
+        assert!(!stabilizer.discontinuity(target));
+        let mut points = stabilizer.push(
+            Point {
+                position: target,
+                pressure: 0.8,
+                tilt: Some(Vec3::X),
+            },
+            0.0,
+        );
+        points.extend(stabilizer.finish());
+
+        assert!(points.len() > 3, "cross-seam input is resampled");
+        assert!(points.last().unwrap().position.distance(target) < 1e-5);
+        assert_eq!(points.last().unwrap().pressure, 0.8);
+        assert_eq!(points.last().unwrap().tilt, Some(Vec3::X));
+        for point in &points {
+            let local = ring.rotation.inverse() * (point.position - ring.center);
+            let radial = local.x.hypot(local.z);
+            let torus_distance = (radial - ring.major_radius).hypot(local.y);
+            assert!((torus_distance - ring.minor_radius).abs() < 1e-4);
+        }
+        assert!(points
+            .windows(2)
+            .all(|pair| pair[0].position.distance(pair[1].position) < 0.2));
     }
 }
 

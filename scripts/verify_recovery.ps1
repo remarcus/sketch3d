@@ -127,8 +127,12 @@ try {
         throw "Recovery verification did not finish within $RestartTimeoutSeconds seconds. See recovery-restart.stderr.log."
     }
     $restartProcess.WaitForExit()
-    if ($restartProcess.ExitCode -ne 0) {
-        throw "Recovery verification failed (exit $($restartProcess.ExitCode)). See recovery-restart.stderr.log."
+    $restartExitCode = $restartProcess.ExitCode
+    if ($null -ne $restartExitCode -and $restartExitCode -ne 0) {
+        throw "Recovery verification failed (exit $restartExitCode). See recovery-restart.stderr.log."
+    }
+    if ($null -eq $restartExitCode) {
+        Write-Warning 'The GUI process exit code was unavailable; requiring the fresh passed report and unchanged source checks below.'
     }
     $report = Read-Marker $reportPath
     if ($null -eq $report -or $report.passed -ne $true) {

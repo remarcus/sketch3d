@@ -43,7 +43,7 @@ pub(super) struct Practice {
     individual: bool,
     transform_mode: Mode,
     transform_values: [f32; 3],
-    scale_value: f32,
+    scale_values: [f32; 3],
     layer_target: u64,
     layer_name: String,
 }
@@ -146,7 +146,7 @@ impl SketchApp {
             individual: self.individual_selection,
             transform_mode: self.transform_mode,
             transform_values: self.transform_values,
-            scale_value: self.scale_value,
+            scale_values: self.scale_values,
             layer_target: self.layer_target,
             layer_name: std::mem::take(&mut self.layer_name),
         });
@@ -219,7 +219,7 @@ impl SketchApp {
         self.individual_selection = p.individual;
         self.transform_mode = p.transform_mode;
         self.transform_values = p.transform_values;
-        self.scale_value = p.scale_value;
+        self.scale_values = p.scale_values;
         self.layer_target = p.layer_target;
         self.layer_name = p.layer_name;
         self.renderer.invalidate();
@@ -228,11 +228,14 @@ impl SketchApp {
     pub(super) fn tutorial_hint(&self, ui: &mut egui::Ui, target: &str) {
         if self.tutorial.practice.is_some() && LESSONS[self.tutorial.step].target == target {
             egui::Frame::new()
-                .stroke(egui::Stroke::new(1.5_f32, Color32::from_rgb(76, 220, 190)))
+                .stroke(egui::Stroke::new(
+                    1.5_f32,
+                    ui_style::colors(ui.ctx()).accent,
+                ))
                 .inner_margin(6.0)
                 .show(ui, |ui| {
                     ui.colored_label(
-                        Color32::from_rgb(76, 220, 190),
+                        ui_style::colors(ui.ctx()).accent,
                         "Tutorial: try these controls",
                     );
                 });
@@ -253,7 +256,10 @@ impl SketchApp {
             self.tutorial.save_preferences();
         }
         if let Some(error) = &self.tutorial.error {
-            ui.colored_label(Color32::LIGHT_RED, format!("Tutorial preferences: {error}"));
+            ui.colored_label(
+                ui_style::colors(ui.ctx()).error,
+                format!("Tutorial preferences: {error}"),
+            );
         }
     }
     fn replay_tutorial(&mut self) {
@@ -286,7 +292,7 @@ impl SketchApp {
                 ui.label("Nine short lessons with optional practice. Your current drawing stays in memory and returns when you exit. Save it first for a deliberate disk copy.");
                 ui.small("Practice has no automatic recovery. You can Save as to keep it. You can replay the tutorial from Help anytime.");
                 if ui.checkbox(&mut self.tutorial.preferences.show_on_startup, "Offer tutorial on every startup").changed() { self.tutorial.save_preferences(); }
-                if let Some(error) = &self.tutorial.error { ui.colored_label(Color32::LIGHT_RED, format!("Preference save: {error}")); }
+                if let Some(error) = &self.tutorial.error { ui.colored_label(ui_style::colors(ui.ctx()).error, format!("Preference save: {error}")); }
                 ui.horizontal(|ui| { start = ui.button("Start practice").clicked(); skip = ui.button("Skip").clicked(); });
             });
             if skip {
@@ -307,10 +313,10 @@ impl SketchApp {
                 ui.set_max_width(420.0);
                 ui.label(format!("Step {} of {} · {}", self.tutorial.step+1, LESSONS.len(), lesson.target));
                 ui.heading(lesson.title); ui.label(lesson.text); ui.separator();
-                ui.colored_label(Color32::from_rgb(76,220,190), lesson.practice);
+                ui.colored_label(ui_style::colors(ui.ctx()).accent, lesson.practice);
                 if self.tutorial.step == 1 { ui.small(if self.samples > 0 { "Pen samples received: inspect the Input lab pressure graph. This does not certify physical tablet behavior." } else { "No pen samples received yet. Mouse practice is fully supported." }); }
                 ui.small("All steps are optional. Original drawing is suspended; practice has no automatic recovery.");
-                if let Some(error) = &self.tutorial.error { ui.colored_label(Color32::LIGHT_RED, format!("Tutorial preferences: {error}")); }
+                if let Some(error) = &self.tutorial.error { ui.colored_label(ui_style::colors(ui.ctx()).error, format!("Tutorial preferences: {error}")); }
                 ui.horizontal(|ui| {
                     if ui.add_enabled(self.tutorial.step > 0, egui::Button::new("Back")).clicked() { self.tutorial_step(-1); }
                     if self.tutorial.step+1 < LESSONS.len() {

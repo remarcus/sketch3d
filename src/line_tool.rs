@@ -1,3 +1,4 @@
+use super::guide_resource_ui::PlanarTarget;
 use super::ui_style;
 use super::*;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -9,7 +10,7 @@ pub(super) enum Constraint {
     Angle,
 }
 pub(super) struct LineDraft {
-    plane: DrawingPlane,
+    target: PlanarTarget,
     mark: Stroke,
     constraint: Constraint,
     step: f32,
@@ -68,8 +69,9 @@ impl SketchApp {
         self.line.enabled = false;
     }
     pub(super) fn start_line_tool(&mut self) {
-        if self.resource_target_active() {
-            self.status = "Line tool currently uses the temporary plane guide. Switch to it before drawing a line.".into();
+        if self.planar_drawing_target().is_none() {
+            self.status =
+                "Straight lines require a plane guide. Activate a planar guide first.".into();
             return;
         }
         self.finish();
@@ -84,7 +86,7 @@ impl SketchApp {
             return;
         }
         ui.strong("STRAIGHT LINE");
-        ui.label("Press, drag to preview, then release to draw. Escape cancels. Uses a plane guide only.");
+        ui.label("Press, drag to preview, then release to draw. Escape cancels. Uses plane or image-plane targets.");
         ui_style::field_row(ui, "Constraint", |ui| {
             ui.horizontal_wrapped(|ui| {
                 for (constraint, label) in [
@@ -124,18 +126,20 @@ impl SketchApp {
         if begin {
             self.finish();
             self.cancel_line();
-            if self.use_cylinder || self.use_revolved {
-                self.status = "Straight lines require a plane guide. Choose Plane first.".into();
+            let Some(target) = self.planar_drawing_target() else {
+                self.status =
+                    "Straight lines require a plane guide. Activate a planar guide first.".into();
                 return;
-            }
+            };
             if !self.doc.active_editable() {
                 self.status = "Choose a visible unlocked layer for a line.".into();
                 return;
             }
             let (o, d) = crate::gizmo::ray(&self.camera, rect, pos);
-            let Some(world) = intersect_plane(o, d, self.guide) else {
+            let Some(world) = target.hit(o, d) else {
                 return;
             };
+            let plane = target.plane;
             let point = Point {
                 position: world,
                 pressure: pressure.clamp(0.0, 1.0),
@@ -145,10 +149,11 @@ impl SketchApp {
                 return;
             }
             self.line.draft = Some(LineDraft {
-                plane: self.guide,
+                target,
                 constraint: self.line.constraint,
                 step: self.line.step,
                 mark: Stroke {
+                    material: Default::default(),
                     fill: None,
                     group_id: None,
                     layer_id: self.doc.active_layer,
@@ -156,8 +161,8 @@ impl SketchApp {
                     color: self.color,
                     radius: self.radius,
                     brush: Brush {
-                        normal: self.guide.basis().2,
-                        tangent: self.guide.basis().0,
+                        normal: plane.basis().2,
+                        tangent: plane.basis().0,
                         ..self.brush
                     },
                     points: vec![point, point],
@@ -178,17 +183,18 @@ impl SketchApp {
             return false;
         }
         let (o, d) = crate::gizmo::ray(&self.camera, rect, pos);
-        let Some(world) = intersect_plane(o, d, draft.plane) else {
+        let Some(world) = draft.target.hit(o, d) else {
             return false;
         };
+        let plane = draft.target.plane;
         let end = constrain(
             draft.mark.points[0].position,
             world,
-            draft.plane,
+            plane,
             draft.constraint,
             draft.step,
         );
-        if !end.is_finite() || end.abs().max_element() > 10000.0 {
+        if !end.is_finite() || end.abs().max_element() > 10000.0 || !draft.target.contains(end) {
             return false;
         }
         draft.mark.points[1].position = end;
@@ -227,7 +233,7 @@ impl SketchApp {
         }
         mark.id = self.next_id;
         self.next_id += 1;
-        self.commit_drawn_stroke(mark, false);
+        self.commit_drawn_stroke(mark, false, 0);
     }
     pub(super) fn line_shortcuts(&mut self, ctx: &egui::Context) {
         let (l, escape, mods) = ctx.input(|i| {
@@ -254,7 +260,7 @@ impl SketchApp {
             crate::gizmo::project(&self.camera, rect, draft.mark.points[1].position),
         ) {
             let painter = ui.painter().with_clip_rect(rect);
-            let color = Color32::from_rgb(76, 220, 190);
+            let color = ui_style::canvas_accent(self.presentation.preferences.background);
             painter.line_segment([a, b], egui::Stroke::new(2.0_f32, color));
             for p in [a, b] {
                 painter.circle_stroke(p, 5.0, egui::Stroke::new(1.5_f32, color));

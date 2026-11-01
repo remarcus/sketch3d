@@ -1,9 +1,22 @@
 //! Reversible edits and transforms, independent of the interface and GPU.
-use crate::document::{BrushKind, Document, Layer, Stroke};
-use glam::{Quat, Vec3};
+use crate::document::{BrushKind, Document, Layer, Stroke, StrokeMaterial};
+use glam::{Mat3, Quat, Vec3};
 use std::collections::HashSet;
 
 pub type Snapshot = Vec<(usize, Stroke)>;
+pub type ImagePlaneState = (
+    Vec<crate::image_planes::ImagePlane>,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+);
+pub type GuideState = (
+    Vec<crate::document::guide_resources::GuideResource>,
+    Option<u64>,
+    Vec<crate::image_planes::ImagePlane>,
+    Option<u64>,
+    Option<u64>,
+);
 pub type ModelReferenceState = (
     Vec<crate::document::model_references::ObjReferenceResource>,
     Option<u64>,
@@ -13,6 +26,20 @@ pub type ModelReferenceState = (
     Option<u64>,
 );
 
+/// Content introduced by one native-drawing insertion. Undo removes document
+/// references while deliberately leaving copied managed assets in place; a
+/// later merge may share those files and must not lose them on undo.
+#[derive(Clone)]
+pub struct MergeEdit {
+    pub strokes: Vec<Stroke>,
+    pub layers: Vec<Layer>,
+    pub image_planes: Vec<crate::image_planes::ImagePlane>,
+    pub guides: Vec<crate::document::guide_resources::GuideResource>,
+    pub model_references: Vec<crate::document::model_references::ObjReferenceResource>,
+    pub previous_active_layer: u64,
+    pub inserted_active_layer: u64,
+}
+
 /// A partial appearance update. `None` means leave that property exactly as-is,
 /// including when the selected strokes have mixed values.
 #[derive(Clone, Copy, Debug, Default)]
@@ -21,6 +48,7 @@ pub struct AppearancePatch {
     pub radius: Option<f32>,
     pub opacity: Option<f32>,
     pub brush_kind: Option<BrushKind>,
+    pub material: Option<StrokeMaterial>,
 }
 
 impl AppearancePatch {
@@ -29,6 +57,7 @@ impl AppearancePatch {
             && self.radius.is_none()
             && self.opacity.is_none()
             && self.brush_kind.is_none()
+            && self.material.is_none()
     }
 }
 
@@ -85,6 +114,9 @@ pub fn appearance_preview(before: &Snapshot, patch: AppearancePatch) -> Result<S
         if let Some(kind) = patch.brush_kind {
             stroke.brush.kind = kind;
         }
+        if let Some(material) = patch.material {
+            stroke.material = material;
+        }
         if !stroke.brush.is_valid() {
             return Err("Appearance change would make brush settings invalid".into());
         }
@@ -129,39 +161,22 @@ pub enum Edit {
         after: LayerState,
     },
     ImagePlanes {
-        before: (
-            Vec<crate::image_planes::ImagePlane>,
-            Option<u64>,
-            Option<u64>,
-            Option<u64>,
-        ),
-        after: (
-            Vec<crate::image_planes::ImagePlane>,
-            Option<u64>,
-            Option<u64>,
-            Option<u64>,
-        ),
+        before: ImagePlaneState,
+        after: ImagePlaneState,
     },
     Guides {
-        before: (
-            Vec<crate::document::guide_resources::GuideResource>,
-            Option<u64>,
-            Vec<crate::image_planes::ImagePlane>,
-            Option<u64>,
-            Option<u64>,
-        ),
-        after: (
-            Vec<crate::document::guide_resources::GuideResource>,
-            Option<u64>,
-            Vec<crate::image_planes::ImagePlane>,
-            Option<u64>,
-            Option<u64>,
-        ),
+        before: GuideState,
+        after: GuideState,
     },
     ModelReferences {
         before: ModelReferenceState,
         after: ModelReferenceState,
     },
+    MixedResources {
+        before: crate::mixed_resources::ResourceState,
+        after: crate::mixed_resources::ResourceState,
+    },
+    Merge(MergeEdit),
 }
 impl Edit {
     pub fn apply(&self, doc: &mut Document, forward: bool) {
@@ -220,6 +235,33 @@ impl Edit {
                 doc.active_image_plane = *active_plane;
                 doc.guide_resources = guides.clone();
                 doc.active_guide = *active_guide;
+            }
+            Self::MixedResources { before, after } => {
+                crate::mixed_resources::restore_state(doc, if forward { after } else { before });
+            }
+            Self::Merge(merge) => {
+                if forward {
+                    doc.strokes.extend(merge.strokes.iter().cloned());
+                    doc.layers.extend(merge.layers.iter().cloned());
+                    doc.image_planes.extend(merge.image_planes.iter().cloned());
+                    doc.guide_resources.extend(merge.guides.iter().cloned());
+                    doc.model_references
+                        .extend(merge.model_references.iter().cloned());
+                    doc.active_layer = merge.inserted_active_layer;
+                } else {
+                    let stroke_ids: HashSet<_> = merge.strokes.iter().map(|s| s.id).collect();
+                    let layer_ids: HashSet<_> = merge.layers.iter().map(|l| l.id).collect();
+                    let plane_ids: HashSet<_> = merge.image_planes.iter().map(|p| p.id).collect();
+                    let guide_ids: HashSet<_> = merge.guides.iter().map(|g| g.id).collect();
+                    let model_ids: HashSet<_> =
+                        merge.model_references.iter().map(|m| m.id).collect();
+                    doc.strokes.retain(|s| !stroke_ids.contains(&s.id));
+                    doc.layers.retain(|l| !layer_ids.contains(&l.id));
+                    doc.image_planes.retain(|p| !plane_ids.contains(&p.id));
+                    doc.guide_resources.retain(|g| !guide_ids.contains(&g.id));
+                    doc.model_references.retain(|m| !model_ids.contains(&m.id));
+                    doc.active_layer = merge.previous_active_layer;
+                }
             }
         }
     }
@@ -284,24 +326,87 @@ pub fn transformed(
     rotation: Quat,
     scale: f32,
 ) -> Result<Snapshot, &'static str> {
-    if !scale.is_finite() || scale <= 0.0 || !translation.is_finite() || !rotation.is_finite() {
+    transformed_with_scale(
+        before,
+        pivot,
+        translation,
+        rotation,
+        Vec3::splat(scale),
+        Quat::IDENTITY,
+        true,
+    )
+}
+
+/// Apply a positive scale along the axes of `scale_basis`, optionally scaling
+/// each stroke's isotropic brush width by the geometric mean of its two
+/// transformed cross-section axes. Existing callers use the uniform wrapper.
+pub fn transformed_with_scale(
+    before: &Snapshot,
+    pivot: Vec3,
+    translation: Vec3,
+    rotation: Quat,
+    scale: Vec3,
+    scale_basis: Quat,
+    scale_brush_width: bool,
+) -> Result<Snapshot, &'static str> {
+    if !scale.is_finite()
+        || scale.min_element() <= 0.0
+        || scale.max_element() > 100.0
+        || !pivot.is_finite()
+        || !translation.is_finite()
+        || !rotation.is_finite()
+        || !scale_basis.is_finite()
+        || scale_basis.length_squared() < 1e-8
+    {
         return Err("Invalid transform");
     }
     // Preserve exact data for a click or a drag returned to its starting point.
-    if translation == Vec3::ZERO && rotation == Quat::IDENTITY && scale == 1.0 {
+    if translation == Vec3::ZERO && rotation == Quat::IDENTITY && scale == Vec3::ONE {
         return Ok(before.clone());
+    }
+    let basis = Mat3::from_quat(scale_basis.normalize());
+    let linear = Mat3::from_quat(rotation.normalize())
+        * basis
+        * Mat3::from_diagonal(scale)
+        * basis.transpose();
+    let normal_matrix = linear.inverse().transpose();
+    let average_scale = scale.x * scale.y * scale.z;
+    let average_scale = average_scale.cbrt();
+    if !linear.is_finite() || !normal_matrix.is_finite() || !average_scale.is_finite() {
+        return Err("Invalid transform");
     }
     let mut after = before.clone();
     for (_, stroke) in &mut after {
-        if let Some(fill) = &mut stroke.fill {
-            fill.offset *= scale;
+        let old_normal = stroke.brush.normal;
+        let old_tangent = stroke.brush.tangent;
+        let old_side = old_normal.cross(old_tangent).normalize_or_zero();
+        if old_side == Vec3::ZERO {
+            return Err("Stroke brush frame is invalid");
         }
-        stroke.radius *= scale;
-        stroke.brush.texture.scale *= scale;
-        stroke.brush.dynamics.taper_start *= scale;
-        stroke.brush.dynamics.taper_end *= scale;
-        stroke.brush.normal = rotation * stroke.brush.normal;
-        stroke.brush.tangent = rotation * stroke.brush.tangent;
+        let transformed_normal = normal_matrix * old_normal;
+        let transformed_tangent = linear * old_tangent;
+        let normal_factor = transformed_normal.length();
+        let next_normal = transformed_normal
+            .try_normalize()
+            .ok_or("Brush frame collapsed")?;
+        let next_tangent = (transformed_tangent
+            - next_normal * transformed_tangent.dot(next_normal))
+        .try_normalize()
+        .ok_or("Brush frame collapsed")?;
+        let width_scale = if scale_brush_width {
+            ((linear * old_tangent).length() * (linear * old_side).length()).sqrt()
+        } else {
+            1.0
+        };
+        if let Some(fill) = &mut stroke.fill {
+            fill.offset *= normal_factor.recip();
+        }
+        stroke.radius *= width_scale;
+        stroke.brush.texture.scale *= average_scale;
+        stroke.brush.dynamics.taper_start *= average_scale;
+        stroke.brush.dynamics.taper_end *= average_scale;
+        stroke.brush.normal = next_normal;
+        stroke.brush.tangent = next_tangent;
         if !stroke.brush.is_valid() {
             return Err("Transform would exceed brush dynamics or orientation limits");
         }
@@ -309,8 +414,10 @@ pub fn transformed(
             return Err("Scale would exceed brush radius limits");
         }
         for point in &mut stroke.points {
-            point.tilt = point.tilt.map(|tilt| rotation * tilt);
-            point.position = pivot + rotation * ((point.position - pivot) * scale) + translation;
+            point.tilt = point
+                .tilt
+                .map(|tilt| (linear * tilt).try_normalize().unwrap_or(tilt));
+            point.position = pivot + linear * (point.position - pivot) + translation;
             if !point.is_valid() {
                 return Err("Transform exceeds document bounds");
             }
@@ -328,6 +435,7 @@ mod tests {
     use crate::document::{Brush, BrushKind, Point};
     fn stroke(id: u64, x: f32) -> Stroke {
         Stroke {
+            material: Default::default(),
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -365,7 +473,7 @@ mod tests {
                 .distance(Vec3::new(1.0, 2.0, 1.0))
                 < 0.0001
         );
-        assert_eq!(after[0].1.radius, 0.04);
+        assert!((after[0].1.radius - 0.04).abs() < 1e-6);
         assert_eq!(after[0].1.points[0].pressure, 0.3);
         assert_eq!(after[0].1.color, before[0].1.color);
     }
@@ -422,6 +530,41 @@ mod tests {
         .is_err());
         assert_eq!(before, original);
     }
+
+    #[test]
+    fn non_uniform_scale_uses_explicit_pivot_and_optional_width_scaling() {
+        let before = vec![(0, stroke(1, 2.0))];
+        let pivot = Vec3::new(1.0, 0.0, 0.0);
+        let fixed_width = transformed_with_scale(
+            &before,
+            pivot,
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            Vec3::new(2.0, 3.0, 1.0),
+            Quat::IDENTITY,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            fixed_width[0].1.points[0].position,
+            Vec3::new(3.0, 0.0, 0.0)
+        );
+        assert_eq!(fixed_width[0].1.radius, before[0].1.radius);
+        assert!((fixed_width[0].1.brush.normal.length() - 1.0).abs() < 1e-6);
+
+        let scaled_width = transformed_with_scale(
+            &before,
+            pivot,
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            Vec3::new(2.0, 3.0, 1.0),
+            Quat::IDENTITY,
+            true,
+        )
+        .unwrap();
+        assert!((scaled_width[0].1.radius - before[0].1.radius * 6.0_f32.sqrt()).abs() < 1e-6);
+        assert_eq!(before[0].1.points[0].position, Vec3::new(2.0, 0.0, 0.0));
+    }
     #[test]
     fn brush_shape_orientation_and_undo_survive_transforms() {
         for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
@@ -451,7 +594,7 @@ mod tests {
             assert_eq!(after[0].1.brush.angle_degrees, 35.0);
             assert!(after[0].1.brush.normal.distance(-Vec3::Y) < 0.0001);
             assert!(after[0].1.brush.tangent.distance(Vec3::Z) < 0.0001);
-            assert_eq!(after[0].1.radius, 0.04);
+            assert!((after[0].1.radius - 0.04).abs() < 1e-6);
             let edit = Edit::Change { before, after };
             edit.apply(&mut doc, true);
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
@@ -712,6 +855,7 @@ mod layer_tests {
     fn sample() -> Document {
         Document {
             strokes: vec![Stroke {
+                material: Default::default(),
                 id: 1,
                 fill: None,
                 group_id: None,
@@ -919,6 +1063,7 @@ mod group_tests {
         Document {
             strokes: (1..=3)
                 .map(|id| Stroke {
+                    material: Default::default(),
                     id,
                     fill: None,
                     group_id: None,
@@ -1021,6 +1166,7 @@ mod large_group_tests {
         let mut doc = Document {
             strokes: (1..=10000)
                 .map(|id| Stroke {
+                    material: Default::default(),
                     id,
                     fill: None,
                     group_id: Some(1 + (id - 1) / 10),

@@ -142,7 +142,7 @@ impl PngExportUi {
                 ui.label(format!("{} pixels", self.width as u64 * self.height as u64));
                 ui.small("Keeps the current camera target and vertical framing; output aspect sets horizontal framing.");
                 if !self.dimensions_valid() {
-                    ui.colored_label(egui::Color32::LIGHT_RED, "Use 1–8192 pixels per side and at most 8 megapixels.");
+                    ui.colored_label(ui_style::colors(ui.ctx()).error, "Use 1–8192 pixels per side and at most 8 megapixels.");
                 }
                 ui.horizontal(|ui| {
                     choose = ui
@@ -291,6 +291,7 @@ impl SketchApp {
                 .any(|stroke| self.doc.visible(stroke) && !stroke.points.is_empty())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn start_png_export(
         &mut self,
         destination: PathBuf,
@@ -452,6 +453,7 @@ fn append_storefront_details(doc: &mut Document) {
             ..Default::default()
         };
         doc.strokes.push(Stroke {
+            material: Default::default(),
             fill: Some(crate::document::PlanarFill { offset: 0.004 }),
             group_id: None,
             layer_id: doc.active_layer,
@@ -464,6 +466,7 @@ fn append_storefront_details(doc: &mut Document) {
         let mut outline = points;
         outline.push(outline[0]);
         doc.strokes.push(Stroke {
+            material: Default::default(),
             fill: None,
             group_id: None,
             layer_id: doc.active_layer,
@@ -546,7 +549,9 @@ fn write_jpeg_atomic(path: &Path, size: [u32; 2], pixels: &[u8]) -> Result<(), S
     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
     let rgb: Vec<u8> = pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
         .collect();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut temp, 92)

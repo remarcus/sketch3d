@@ -4,7 +4,15 @@ use crate::{
     editing::{self, Snapshot},
     gizmo::{self, HandleKind, Layout, Mode},
 };
-use glam::Quat;
+use glam::{Mat3, Quat};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum PivotMode {
+    #[default]
+    SelectionCenter,
+    WorldOrigin,
+    Custom,
+}
 
 pub(super) struct Drag {
     before: Snapshot,
@@ -13,6 +21,7 @@ pub(super) struct Drag {
     start: Pos2,
     view_normal: Vec3,
     translation: Vec3,
+    scale_basis: Quat,
 }
 
 pub(super) struct BrushSelectionDrag {
@@ -27,14 +36,17 @@ pub(super) struct AppearanceDraft {
     radius: f32,
     opacity: f32,
     brush_kind: crate::document::BrushKind,
+    material: crate::document::StrokeMaterial,
     set_color: bool,
     set_radius: bool,
     set_opacity: bool,
     set_brush_kind: bool,
+    set_material: bool,
     mixed_color: bool,
     mixed_radius: bool,
     mixed_opacity: bool,
     mixed_brush_kind: bool,
+    mixed_material: bool,
     has_preview: bool,
 }
 
@@ -52,16 +64,21 @@ impl AppearanceDraft {
             mixed_brush_kind: before
                 .iter()
                 .any(|(_, stroke)| stroke.brush.kind != first.brush.kind),
+            mixed_material: before
+                .iter()
+                .any(|(_, stroke)| stroke.material != first.material),
             after: before.clone(),
             color: first.color,
             radius: first.radius,
             opacity: first.brush.opacity,
             brush_kind: first.brush.kind,
+            material: first.material,
             before,
             set_color: false,
             set_radius: false,
             set_opacity: false,
             set_brush_kind: false,
+            set_material: false,
             has_preview: false,
         })
     }
@@ -71,6 +88,7 @@ impl AppearanceDraft {
             radius: self.set_radius.then_some(self.radius),
             opacity: self.set_opacity.then_some(self.opacity),
             brush_kind: self.set_brush_kind.then_some(self.brush_kind),
+            material: self.set_material.then_some(self.material),
         }
     }
 }
@@ -129,7 +147,7 @@ impl SketchApp {
                 draft.after = draft.before.clone();
                 draft.has_preview = false;
                 self.renderer.invalidate_ids(&ids);
-                self.status = error.into();
+                self.status = error;
             }
         }
     }
@@ -263,12 +281,26 @@ impl SketchApp {
             return None;
         }
         let (min, max) = editing::bounds(&self.doc, &self.selected)?;
-        let pivot = self
+        let center = (min + max) * 0.5;
+        let selected_pivot = self
             .drag
             .as_ref()
             .map(|d| d.pivot + d.translation)
-            .unwrap_or((min + max) * 0.5);
+            .unwrap_or_else(|| self.transform_pivot_value(center));
+        let pivot = if self.drag.is_some() {
+            selected_pivot
+        } else {
+            self.transform_pivot_value(center)
+        };
         Layout::new(&self.camera, rect, pivot, self.transform_mode)
+    }
+
+    fn transform_pivot_value(&self, selection_center: Vec3) -> Vec3 {
+        match self.transform_pivot {
+            PivotMode::SelectionCenter => selection_center,
+            PivotMode::WorldOrigin => Vec3::ZERO,
+            PivotMode::Custom => self.custom_pivot,
+        }
     }
     pub(super) fn select_pointer(&mut self, pos: Pos2, rect: Rect, begin: bool, shift: bool) {
         if self.appearance_draft.is_some() {
@@ -299,6 +331,10 @@ impl SketchApp {
                             start: pos,
                             view_normal: (self.camera.eye() - layout.pivot).normalize(),
                             translation: Vec3::ZERO,
+                            scale_basis: {
+                                let (right, up, forward) = self.camera.basis();
+                                Quat::from_mat3(&Mat3::from_cols(right, up, forward))
+                            },
                         });
                         return;
                     }
@@ -349,7 +385,8 @@ impl SketchApp {
         };
         let mut translation = Vec3::ZERO;
         let mut rotation = Quat::IDENTITY;
-        let mut scale = 1.0;
+        let mut scale = Vec3::ONE;
+        let mut scale_basis = Quat::IDENTITY;
         match drag.kind {
             HandleKind::Axis(i) => {
                 let axis = gizmo::axis(i);
@@ -389,20 +426,70 @@ impl SketchApp {
             }
             HandleKind::Scale => {
                 let delta = pos - drag.start;
-                let min = drag
-                    .before
-                    .iter()
-                    .map(|(_, s)| 0.001 / s.radius)
-                    .fold(0.01_f32, f32::max);
-                let max = drag
-                    .before
-                    .iter()
-                    .map(|(_, s)| 1.0 / s.radius)
-                    .fold(100.0_f32, f32::min);
-                scale = ((delta.x - delta.y) * 0.01).exp().clamp(min, max);
+                let min = if self.scale_brush_width {
+                    drag.before
+                        .iter()
+                        .map(|(_, s)| 0.001 / s.radius)
+                        .fold(0.01_f32, f32::max)
+                } else {
+                    0.01
+                };
+                let max = if self.scale_brush_width {
+                    drag.before
+                        .iter()
+                        .map(|(_, s)| 1.0 / s.radius)
+                        .fold(100.0_f32, f32::min)
+                } else {
+                    100.0
+                };
+                let uniform = ((delta.x - delta.y) * 0.01).exp().clamp(min, max);
+                scale = Vec3::splat(uniform);
+            }
+            HandleKind::ScaleAxis(i) => {
+                let axis = gizmo::axis(i);
+                let length = 80.0 * self.camera.world_per_pixel(drag.pivot, rect.height());
+                let Some((end, _)) = gizmo::project(&self.camera, rect, drag.pivot + axis * length)
+                else {
+                    return;
+                };
+                let Some((origin, _)) = gizmo::project(&self.camera, rect, drag.pivot) else {
+                    return;
+                };
+                let direction = end - origin;
+                if direction.length_sq() <= f32::EPSILON {
+                    return;
+                }
+                let direction = direction.normalized();
+                let factor = ((pos - drag.start).dot(direction) * 0.01)
+                    .exp()
+                    .clamp(0.01, 100.0);
+                if self.scale_uniform_lock {
+                    scale = Vec3::splat(factor);
+                } else {
+                    scale[i] = factor;
+                }
+            }
+            HandleKind::ScaleView => {
+                let delta = pos - drag.start;
+                let x = (delta.x * 0.01).exp().clamp(0.01, 100.0);
+                let y = (-delta.y * 0.01).exp().clamp(0.01, 100.0);
+                if self.scale_uniform_lock {
+                    scale = Vec3::splat((x * y).sqrt());
+                } else {
+                    scale = Vec3::new(x, y, 1.0);
+                    scale_basis = drag.scale_basis;
+                }
             }
         }
-        match editing::transformed(&drag.before, drag.pivot, translation, rotation, scale) {
+        match editing::transformed_with_scale(
+            &drag.before,
+            drag.pivot,
+            translation,
+            rotation,
+            scale,
+            scale_basis,
+            self.scale_brush_width,
+        ) {
             Ok(after) => {
                 editing::replace(&mut self.doc, &drag.before, &after, true);
                 self.renderer.invalidate_ids(&self.selected);
@@ -710,7 +797,7 @@ impl SketchApp {
                     ui.label("Copies remain individually editable; Apply is one undo step.");
                 }
                 Err(error) => {
-                    ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    ui.colored_label(ui_style::colors(ui.ctx()).error, error);
                 }
             }
             ui.horizontal(|ui| {
@@ -779,10 +866,21 @@ impl SketchApp {
                     .enumerate()
                 {
                     let source = &self.repeat.as_ref().unwrap().source[source_index].1;
-                    assert_eq!(stroke.fill, source.fill);
+                    match (stroke.fill, source.fill) {
+                        (Some(actual), Some(expected)) => {
+                            assert!((actual.offset - expected.offset).abs() < 1e-6);
+                        }
+                        (None, None) => {}
+                        _ => panic!("Repeated stroke changed its fill kind"),
+                    }
                     assert_eq!(stroke.color, source.color);
-                    assert_eq!(stroke.brush, source.brush);
-                    assert_eq!(stroke.radius, source.radius);
+                    assert!((stroke.brush.normal - source.brush.normal).length() < 1e-6);
+                    assert!((stroke.brush.tangent - source.brush.tangent).length() < 1e-6);
+                    let mut expected_brush = source.brush;
+                    expected_brush.normal = stroke.brush.normal;
+                    expected_brush.tangent = stroke.brush.tangent;
+                    assert_eq!(stroke.brush, expected_brush);
+                    assert!((stroke.radius - source.radius).abs() < 1e-6);
                     assert_eq!(stroke.layer_id, source.layer_id);
                     assert!(
                         (stroke.points[0].position
@@ -915,21 +1013,36 @@ impl SketchApp {
         let Some((min, max)) = editing::bounds(&self.doc, &self.selected) else {
             return;
         };
-        let (translation, rotation, scale) = match self.transform_mode {
-            Mode::Move => (Vec3::from(self.transform_values), Quat::IDENTITY, 1.0),
-            Mode::Rotate => (
-                Vec3::ZERO,
-                Quat::from_euler(
+        let mut translation = Vec3::ZERO;
+        let mut rotation = Quat::IDENTITY;
+        let mut scale = Vec3::ONE;
+        match self.transform_mode {
+            Mode::Move => translation = Vec3::from(self.transform_values),
+            Mode::Rotate => {
+                rotation = Quat::from_euler(
                     glam::EulerRot::ZYX,
                     self.transform_values[2].to_radians(),
                     self.transform_values[1].to_radians(),
                     self.transform_values[0].to_radians(),
-                ),
-                1.0,
-            ),
-            Mode::Scale => (Vec3::ZERO, Quat::IDENTITY, self.scale_value),
-        };
-        match editing::transformed(&before, (min + max) * 0.5, translation, rotation, scale) {
+                );
+            }
+            Mode::Scale => {
+                scale = Vec3::from(self.scale_values);
+                if self.scale_uniform_lock {
+                    scale = Vec3::splat(scale.x);
+                }
+            }
+        }
+        let pivot = self.transform_pivot_value((min + max) * 0.5);
+        match editing::transformed_with_scale(
+            &before,
+            pivot,
+            translation,
+            rotation,
+            scale,
+            Quat::IDENTITY,
+            self.scale_brush_width,
+        ) {
             Ok(after) if after != before => {
                 let edit = Edit::Change { before, after };
                 edit.apply(&mut self.doc, true);
@@ -939,7 +1052,7 @@ impl SketchApp {
                 self.dirty = true;
                 self.record_recovery_edit();
                 self.transform_values = [0.0; 3];
-                self.scale_value = 1.0;
+                self.scale_values = [1.0; 3];
                 self.status = "Transform applied".into();
             }
             Ok(_) => {}
@@ -947,6 +1060,12 @@ impl SketchApp {
         }
     }
     pub(super) fn selection_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.mixed_resource_preview_active() {
+            if ctx.input(|input| input.key_pressed(Key::Escape)) {
+                self.finish_mixed_resource_move(false);
+            }
+            return;
+        }
         let (mods, v, g, r, s, a, d, delete, escape) = ctx.input(|i| {
             (
                 i.modifiers,
@@ -1079,6 +1198,20 @@ impl SketchApp {
                                 }
                             });
                     }
+                    ui.horizontal(|ui| {
+                        changed |= ui.checkbox(&mut draft.set_material, "Material").changed();
+                        ui.small(if draft.mixed_material { "Mixed; unchanged" } else { "Same" });
+                    });
+                    if draft.set_material {
+                        egui::ComboBox::from_id_salt("appearance-stroke-material")
+                            .selected_text(format!("{:?}", draft.material))
+                            .show_ui(ui, |ui| {
+                                for material in [crate::document::StrokeMaterial::Shaded, crate::document::StrokeMaterial::Unlit, crate::document::StrokeMaterial::Emissive, crate::document::StrokeMaterial::Cutout] {
+                                    changed |= ui.selectable_value(&mut draft.material, material, format!("{:?}", material)).changed();
+                                }
+                            });
+                        ui.small("Unlit and emissive strokes do not cast shadows. Emissive strokes alone feed glow. Cutout coverage erases prior color and glow to transparency; later strokes remain visible.");
+                    }
                     if contains_fill {
                         ui.small("Filled marks keep their contour; radius and brush type cannot change while any fill is selected.");
                     }
@@ -1136,10 +1269,38 @@ impl SketchApp {
         ui.separator();
         ui.add_enabled_ui(!self.selected.is_empty(),|ui|{
             ui.horizontal(|ui|{for(mode,label)in[(Mode::Move,"Move [G]"),(Mode::Rotate,"Rotate [R]"),(Mode::Scale,"Scale [S]")]{if ui.selectable_label(self.transform_mode==mode,label).clicked(){self.finish();self.transform_mode=mode;self.transform_values=[0.0;3];}}});
-            ui.label(match self.transform_mode{Mode::Move=>"Drag an axis arrow, or the center square to move in the view plane.",Mode::Rotate=>"Drag a colored ring to rotate around its world axis. Orbit to expose other rings.",Mode::Scale=>"Drag the gold square to scale the group and its brush widths uniformly."});
+            ui.horizontal(|ui| {
+                ui.label("Pivot");
+                egui::ComboBox::from_id_salt("transform-pivot")
+                    .selected_text(match self.transform_pivot {
+                        PivotMode::SelectionCenter => "Selection center",
+                        PivotMode::WorldOrigin => "World origin",
+                        PivotMode::Custom => "Custom",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.transform_pivot, PivotMode::SelectionCenter, "Selection center");
+                        ui.selectable_value(&mut self.transform_pivot, PivotMode::WorldOrigin, "World origin");
+                        ui.selectable_value(&mut self.transform_pivot, PivotMode::Custom, "Custom");
+                    });
+            });
+            if self.transform_pivot == PivotMode::Custom {
+                for (i, axis) in ["Pivot X", "Pivot Y", "Pivot Z"].iter().enumerate() {
+                    ui_style::numeric_row(ui, axis, ("transform-custom-pivot", i), &mut self.custom_pivot[i], Some(-10000.0..=10000.0), "wu");
+                }
+            }
+            ui.label(match self.transform_mode{Mode::Move=>"Drag an axis arrow, or the center square to move in the view plane.",Mode::Rotate=>"Drag a colored ring to rotate around its world axis. Orbit to expose other rings.",Mode::Scale=>"Drag the gold square for uniform scale, colored endpoints for one axis, or View for independent view-plane scale."});
             ui.add_space(4.0);
             if self.transform_mode==Mode::Scale {
-                ui_style::numeric_row(ui, "Scale factor", "transform-scale", &mut self.scale_value, Some(0.01..=100.0), "×");
+                ui.checkbox(&mut self.scale_uniform_lock, "Lock proportions");
+                ui.checkbox(&mut self.scale_brush_width, "Scale brush width");
+                for (i, axis) in ["Scale X", "Scale Y", "Scale Z"].iter().enumerate() {
+                    let response = ui_style::numeric_row(ui, axis, ("transform-scale", i), &mut self.scale_values[i], Some(0.01..=100.0), "×");
+                    if self.scale_uniform_lock && response.changed() {
+                        let value = self.scale_values[i];
+                        self.scale_values = [value; 3];
+                    }
+                }
+                ui.small("Proportion lock affects numeric fields and handles. Scaling stays positive; brush width follows the geometric mean of each stroke's transformed cross-section when enabled.");
             } else {
                 let unit = if self.transform_mode == Mode::Rotate { "°" } else { "wu" };
                 ui.label(if self.transform_mode==Mode::Rotate{"Rotation in degrees (X, then Y, then Z)"}else{"Offset in world units"});
@@ -1149,7 +1310,7 @@ impl SketchApp {
             }
             if ui.button("Reset numeric values").clicked() {
                 self.transform_values = [0.0; 3];
-                self.scale_value = 1.0;
+                self.scale_values = [1.0; 3];
             }
             if ui.button("Apply values").clicked(){self.numeric_transform();}
             ui.horizontal(|ui|{if ui.button("Duplicate").on_hover_text("Ctrl/Cmd+D").clicked(){self.duplicate_selected();}

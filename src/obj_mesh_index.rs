@@ -236,7 +236,7 @@ impl ObjMeshIndex {
         }
 
         let mut index = Self {
-            nodes: Vec::with_capacity(((triangle_count + LEAF_TRIANGLES - 1) / LEAF_TRIANGLES) * 2),
+            nodes: Vec::with_capacity(triangle_count.div_ceil(LEAF_TRIANGLES) * 2),
             triangle_order: (0..triangle_count as u32).collect(),
             adjacency,
         };

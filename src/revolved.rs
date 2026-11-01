@@ -220,6 +220,7 @@ impl Revolved {
         let mut line = |a: Vec3, b: Vec3, color| {
             for p in [a, b] {
                 out.push(Vertex {
+                    material: 0.0,
                     position: p.to_array(),
                     normal: [0.0; 3],
                     color,

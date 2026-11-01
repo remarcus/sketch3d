@@ -9,41 +9,13 @@ impl SketchApp {
         position: egui::Pos2,
     ) -> Option<u64> {
         let (origin, direction) = crate::gizmo::ray(&self.camera, rect, position);
-        let mut nearest: Option<(f32, u64)> = None;
-        for resource in self
-            .doc
-            .model_references
-            .iter()
-            .filter(|resource| resource.visible)
-        {
-            let id = resource.id;
-            let Some(model) = self.obj_reference_models.get(&id) else {
-                continue;
-            };
-            if !self.obj_surface_indices.contains_key(&id) {
-                if let Ok(index) = crate::obj_mesh_index::ObjMeshIndex::new(model) {
-                    self.obj_surface_indices.insert(id, index);
-                } else {
-                    continue;
-                }
-            }
-            let inverse = resource.rotation.inverse();
-            let local_origin = inverse * (origin - resource.center) / resource.scale;
-            let local_direction = inverse * direction / resource.scale;
-            let hit = self
-                .obj_surface_indices
-                .get(&id)
-                .and_then(|index| index.hit(model, local_origin, local_direction));
-            let Some(hit) = hit else {
-                continue;
-            };
-            let world = resource.center + resource.rotation * (hit.position * resource.scale);
-            let ray_t = (world - origin).dot(direction);
-            if ray_t > 0.0 && nearest.is_none_or(|(best, _)| ray_t < best) {
-                nearest = Some((ray_t, id));
-            }
-        }
-        nearest.map(|(_, id)| id)
+        nearest_obj_reference_hit(
+            origin,
+            direction,
+            &self.doc.model_references,
+            &self.obj_reference_models,
+            &mut self.obj_surface_indices,
+        )
     }
 
     pub(super) fn selected_obj_bounds(&self) -> Option<[glam::Vec3; 8]> {
@@ -81,7 +53,7 @@ impl SketchApp {
             if ui.button("Import OBJ reference…").clicked() {
                 self.import_obj_reference();
             }
-            ui.small("OBJ models are read-only references. They do not become strokes or GLB export geometry.");
+            ui.small("OBJ models are read-only references. Whole-scene GLB includes visible models; selected-stroke export remains ink-only. Supported MTL properties: Kd diffuse color and d/Tr opacity. Texture maps and other MTL properties are ignored and listed in the GLB metadata.");
 
             let before = self.model_reference_edit_state();
             let mut remove = None;
@@ -112,7 +84,7 @@ impl SketchApp {
                     if let Err(error) = resource.validate() {
                         *resource = original.clone();
                         resource_changed = false;
-                        ui.colored_label(Color32::LIGHT_RED, error);
+                        ui.colored_label(ui_style::colors(ui.ctx()).error, error);
                     }
                 });
                 changed |= resource_changed;
@@ -279,7 +251,7 @@ impl SketchApp {
         });
         self.redo.clear();
         self.dirty = true;
-        self.record_recovery_edit();
+        self.record_recovery_edit_labeled("Import OBJ reference");
         self.renderer.invalidate();
         self.status = format!(
             "Imported {} triangles and {} materials. Unsupported MTL features: {}.",
@@ -410,6 +382,43 @@ impl SketchApp {
     }
 }
 
+fn nearest_obj_reference_hit(
+    origin: glam::Vec3,
+    direction: glam::Vec3,
+    resources: &[ObjReferenceResource],
+    models: &std::collections::HashMap<u64, crate::obj_reference::ObjModel>,
+    indices: &mut std::collections::HashMap<u64, crate::obj_mesh_index::ObjMeshIndex>,
+) -> Option<u64> {
+    let mut nearest: Option<(f32, u64)> = None;
+    for resource in resources.iter().filter(|resource| resource.visible) {
+        let id = resource.id;
+        let Some(model) = models.get(&id) else {
+            continue;
+        };
+        if let std::collections::hash_map::Entry::Vacant(entry) = indices.entry(id) {
+            let Ok(index) = crate::obj_mesh_index::ObjMeshIndex::new(model) else {
+                continue;
+            };
+            entry.insert(index);
+        }
+        let inverse = resource.rotation.inverse();
+        let local_origin = inverse * (origin - resource.center) / resource.scale;
+        let local_direction = inverse * direction / resource.scale;
+        let hit = indices
+            .get(&id)
+            .and_then(|index| index.hit(model, local_origin, local_direction));
+        let Some(hit) = hit else {
+            continue;
+        };
+        let world = resource.center + resource.rotation * (hit.position * resource.scale);
+        let ray_t = (world - origin).dot(direction);
+        if ray_t > 0.0 && nearest.is_none_or(|(best, _)| ray_t < best) {
+            nearest = Some((ray_t, id));
+        }
+    }
+    nearest.map(|(_, id)| id)
+}
+
 fn transform_controls(ui: &mut egui::Ui, resource: &mut ObjReferenceResource) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
@@ -456,5 +465,96 @@ fn same_asset_root(first: &Path, second: &Path) -> bool {
     match (first.canonicalize(), second.canonicalize()) {
         (Ok(first), Ok(second)) => first == second,
         _ => first == second,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model() -> crate::obj_reference::ObjModel {
+        crate::obj_reference::parse(
+            b"v -1 -1 0\nv 1 -1 0\nv 0 1 0\nf 1 2 3\n",
+            Path::new("test.obj"),
+        )
+        .unwrap()
+    }
+
+    fn resource(id: u64, center: glam::Vec3, scale: f32, visible: bool) -> ObjReferenceResource {
+        ObjReferenceResource {
+            id,
+            name: format!("Model {id}"),
+            visible,
+            locked: false,
+            center,
+            rotation: glam::Quat::IDENTITY,
+            scale,
+            asset: crate::obj_reference_storage::ObjReferenceAsset {
+                id,
+                bundle_dir: format!("models/{id}"),
+            },
+        }
+    }
+
+    #[test]
+    fn picking_uses_transformed_meshes_skips_hidden_models_and_selects_nearest_hit() {
+        let mut resources = [
+            {
+                let mut resource = resource(1, glam::Vec3::new(2.0, 0.0, 0.0), 2.0, true);
+                resource.rotation = glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+                resource
+            },
+            {
+                let mut resource = resource(2, glam::Vec3::new(4.0, 0.0, 0.0), 2.0, false);
+                resource.rotation = glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+                resource
+            },
+            {
+                let mut resource = resource(3, glam::Vec3::new(0.0, 0.0, 0.0), 2.0, true);
+                resource.rotation = glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+                resource
+            },
+        ];
+        let models = [(1, model()), (2, model()), (3, model())]
+            .into_iter()
+            .collect();
+        let mut indices = std::collections::HashMap::new();
+
+        let picked = nearest_obj_reference_hit(
+            glam::Vec3::new(5.0, 0.0, 0.0),
+            glam::Vec3::NEG_X,
+            &resources,
+            &models,
+            &mut indices,
+        );
+
+        assert_eq!(picked, Some(1));
+        assert_eq!(indices.len(), 2, "hidden model should not be indexed");
+
+        resources[1].visible = true;
+        assert_eq!(
+            nearest_obj_reference_hit(
+                glam::Vec3::new(5.0, 0.0, 0.0),
+                glam::Vec3::NEG_X,
+                &resources,
+                &models,
+                &mut indices,
+            ),
+            Some(2),
+            "the closest visible transformed surface should win"
+        );
+        for resource in &mut resources {
+            resource.visible = false;
+        }
+        assert_eq!(
+            nearest_obj_reference_hit(
+                glam::Vec3::new(5.0, 0.0, 0.0),
+                glam::Vec3::NEG_X,
+                &resources,
+                &models,
+                &mut indices,
+            ),
+            None
+        );
     }
 }

@@ -170,3 +170,95 @@ fn validate_stroke(stroke: &Stroke) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Brush, Point};
+
+    fn sample_document() -> Document {
+        Document {
+            strokes: vec![Stroke {
+                fill: None,
+                material: Default::default(),
+                group_id: None,
+                layer_id: 1,
+                id: 7,
+                color: [0.2, 0.4, 0.8],
+                radius: 0.05,
+                brush: Brush::default(),
+                points: vec![
+                    Point {
+                        position: Vec3::new(-0.2, 0.0, 0.0),
+                        pressure: 0.3,
+                        tilt: None,
+                    },
+                    Point {
+                        position: Vec3::new(0.0, 0.0, 0.0),
+                        pressure: 0.7,
+                        tilt: None,
+                    },
+                    Point {
+                        position: Vec3::new(0.2, 0.0, 0.0),
+                        pressure: 1.0,
+                        tilt: None,
+                    },
+                ],
+            }],
+            ..Document::default()
+        }
+    }
+
+    fn settings() -> LiquifySettings {
+        LiquifySettings {
+            center: Vec3::ZERO,
+            displacement: Vec3::new(0.3, 0.2, 0.0),
+            radius: 0.5,
+            strength: 0.75,
+            direction: Direction::Push,
+            falloff: Falloff::Smooth,
+        }
+    }
+
+    #[test]
+    fn preview_is_pure_and_atomic_edit_roundtrips_exact_ink() {
+        let mut document = sample_document();
+        let before = document.strokes.clone();
+        let ids = HashSet::from([7]);
+        let preview = edit(&document, &ids, settings()).unwrap();
+        assert_eq!(
+            document.strokes, before,
+            "Preview must not mutate the source"
+        );
+        let Edit::Change {
+            before: original,
+            after,
+        } = preview.clone()
+        else {
+            panic!("Liquify must produce one change edit");
+        };
+        assert_eq!(original[0].1, before[0]);
+        assert_ne!(after[0].1.points, before[0].points);
+        assert_eq!(after[0].1.brush, before[0].brush);
+        assert_eq!(after[0].1.color, before[0].color);
+        assert_eq!(after[0].1.radius, before[0].radius);
+        preview.apply(&mut document, true);
+        assert_eq!(document.strokes[0], after[0].1);
+        preview.apply(&mut document, false);
+        assert_eq!(document.strokes, before);
+    }
+
+    #[test]
+    fn hidden_locked_and_filled_ink_cannot_be_liquified() {
+        let ids = HashSet::from([7]);
+        let mut document = sample_document();
+        document.layers[0].locked = true;
+        assert!(edit(&document, &ids, settings()).is_err());
+        document.layers[0].locked = false;
+        document.layers[0].visible = false;
+        assert!(edit(&document, &ids, settings()).is_err());
+        document.layers[0].visible = true;
+        document.strokes[0].fill = Some(crate::document::PlanarFill { offset: 0.01 });
+        assert!(edit(&document, &ids, settings()).is_err());
+    }
+}

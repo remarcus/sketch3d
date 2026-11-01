@@ -59,7 +59,7 @@ impl SketchApp {
                     "Camera views are stored in local workspace settings, separate from drawings.",
                 );
                 if let Some(error) = &self.camera_bookmark_error {
-                    ui.colored_label(Color32::YELLOW, error);
+                    ui.colored_label(ui_style::colors(ui.ctx()).error, error);
                 }
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.camera_ui.bookmark_name);

@@ -68,7 +68,7 @@ impl SketchApp {
             self.file = Some(path.clone());
             assert!(self.save(false));
             let loaded = Document::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
-            assert_eq!(loaded.version, 8);
+            assert_eq!(loaded.version, 13);
             assert_eq!(loaded.strokes, self.doc.strokes);
             let mesh = crate::geometry::stroke_mesh(&self.doc.strokes[0]);
             let center = mesh
@@ -147,6 +147,7 @@ impl SketchApp {
             (3, [0.2, -0.4], [0.8, 0.4], 0.3, [0.1, 0.8, 0.2]),
         ] {
             doc.strokes.push(Stroke {
+                material: Default::default(),
                 fill: Some(PlanarFill { offset: 0.003 }),
                 group_id: None,
                 layer_id: 1,
@@ -170,6 +171,7 @@ impl SketchApp {
             });
         }
         doc.strokes.push(Stroke {
+            material: Default::default(),
             fill: None,
             group_id: None,
             layer_id: 1,

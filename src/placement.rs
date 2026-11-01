@@ -134,6 +134,7 @@ mod tests {
     use crate::document::{Brush, BrushKind, PlanarFill, Point, Stroke};
     fn panel(id: u64, z: f32) -> Stroke {
         Stroke {
+            material: Default::default(),
             id,
             fill: Some(PlanarFill { offset: 0.0 }),
             group_id: None,

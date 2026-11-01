@@ -18,6 +18,8 @@ pub(crate) const MAX_TRIANGLE_VERTICES_PER_STROKE: usize = 2_000_000;
 #[derive(Clone, Debug, Serialize)]
 pub struct ExportSummary {
     pub strokes: usize,
+    pub image_planes: usize,
+    pub model_references: usize,
     pub vertices: usize,
     pub triangles: usize,
     pub bytes: usize,
@@ -176,8 +178,31 @@ pub(crate) fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
     }
     Ok(mesh)
 }
+fn ensure_binary_budget(current: usize, additional: usize, label: &str) -> Result<(), String> {
+    if current
+        .checked_add(additional)
+        .is_none_or(|size| size > MAX_BINARY_BYTES)
+    {
+        Err(format!(
+            "Export exceeds the 128 MiB binary limit including {label}"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=11) {
+    encode_with_images(doc, selected, None)
+}
+
+/// Encode visible managed image planes as textured scene geometry when a bundle
+/// root is supplied. Selected-stroke export always omits images.
+pub fn encode_with_images(
+    doc: &Document,
+    selected: Option<&HashSet<u64>>,
+    image_root: Option<&Path>,
+) -> Result<EncodedGlb, String> {
+    if !matches!(doc.version, 1..=13) {
         return Err("Unsupported source document version".into());
     }
     let mut layer_ids = HashSet::new();
@@ -222,9 +247,13 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
     let mut image_keys = HashMap::new();
     let mut images = Vec::new();
     let mut textures = Vec::new();
+    let mut image_samplers = false;
+    let mut uses_unlit = false;
     let mut ids = HashSet::new();
     let mut summary = ExportSummary {
         strokes: 0,
+        image_planes: 0,
+        model_references: 0,
         vertices: 0,
         triangles: 0,
         bytes: 0,
@@ -281,6 +310,7 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         let texture_key = (settings.kind != TextureKind::Solid).then(|| texture::key(settings));
         let alpha_blended = stroke.brush.opacity < 1.0
             || (stroke.fill.is_none() && stroke.brush.softness > 0.0)
+            || stroke.material == crate::document::StrokeMaterial::Cutout
             || (stroke.brush.dynamics.opacity.enabled
                 && stroke.brush.dynamics.opacity.minimum < 1.0);
         let key = (
@@ -288,12 +318,31 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
             double_sided,
             texture_key,
             alpha_blended,
+            stroke.material,
         );
         let material = if let Some(index) = colors.get(&key) {
             *index
         } else {
             let index = materials.len();
-            let mut material = json!({"name":format!("Ink {}",index+1),"pbrMetallicRoughness":{"baseColorFactor":[stroke.color[0],stroke.color[1],stroke.color[2],1.0],"metallicFactor":0.0,"roughnessFactor":0.8},"alphaMode":if alpha_blended {"BLEND"} else if texture_key.is_some() {"MASK"} else {"OPAQUE"},"doubleSided":double_sided});
+            let material_alpha = if stroke.material == crate::document::StrokeMaterial::Cutout {
+                0.0
+            } else {
+                1.0
+            };
+            let mut material = json!({"name":format!("Ink {}",index+1),"pbrMetallicRoughness":{"baseColorFactor":[stroke.color[0],stroke.color[1],stroke.color[2],material_alpha],"metallicFactor":0.0,"roughnessFactor":0.8},"alphaMode":if alpha_blended {"BLEND"} else if texture_key.is_some() {"MASK"} else {"OPAQUE"},"doubleSided":double_sided});
+            match stroke.material {
+                crate::document::StrokeMaterial::Shaded => {}
+                crate::document::StrokeMaterial::Unlit => {
+                    uses_unlit = true;
+                    material["extensions"] = json!({"KHR_materials_unlit":{}});
+                }
+                crate::document::StrokeMaterial::Emissive => {
+                    uses_unlit = true;
+                    material["extensions"] = json!({"KHR_materials_unlit":{}});
+                    material["emissiveFactor"] = json!(stroke.color);
+                }
+                crate::document::StrokeMaterial::Cutout => {}
+            }
             if let Some(texture_key) = texture_key {
                 let image_index = if let Some(index) = image_keys.get(&texture_key) {
                     *index
@@ -336,6 +385,18 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         accessors.push(json!({"bufferView":vertex_view,"byteOffset":32,"componentType":5126,"count":mesh.vertices.len(),"type":"VEC4"}));
         meshes.push(json!({"name":name,"primitives":[{"attributes":{"POSITION":position,"NORMAL":normal,"TEXCOORD_0":uv,"COLOR_0":color},"indices":indices,"material":material,"mode":4}]}));
         let mut node = json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":doc.layers.iter().find(|l|l.id==stroke.layer_id).unwrap().name}});
+        node["extras"]["spatialSketchMaterial"] = json!(match stroke.material {
+            crate::document::StrokeMaterial::Shaded => "shaded",
+            crate::document::StrokeMaterial::Unlit => "unlit",
+            crate::document::StrokeMaterial::Emissive => "emissive",
+            crate::document::StrokeMaterial::Cutout => "cutout",
+        });
+        node["extras"]["spatialSketchCastsShadows"] =
+            json!(stroke.material == crate::document::StrokeMaterial::Shaded);
+        if stroke.material == crate::document::StrokeMaterial::Cutout {
+            node["extras"]["spatialSketchCompositingFallback"] =
+                json!("fully_transparent_geometry_destination_not_erased");
+        }
         if let Some(fill) = stroke.fill {
             node["extras"]["spatialSketchGeometry"] = json!("planar_fill");
             node["extras"]["spatialSketchFillOffset"] = json!(fill.offset);
@@ -348,15 +409,291 @@ pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<Encoded
         summary.vertices += mesh.vertices.len();
         summary.triangles += mesh.indices.len() / 3;
     }
-    if summary.strokes == 0 {
-        return Err("No drawable strokes to export".into());
+    if selected.is_none() {
+        if let Some(image_root) = image_root {
+            for plane in doc.image_planes.iter().filter(|plane| plane.visible) {
+                plane.validate()?;
+                let path = plane.resolve_asset(image_root)?.ok_or_else(|| {
+                    format!(
+                        "Visible image '{}' is missing from its asset bundle",
+                        plane.name
+                    )
+                })?;
+                let asset = crate::image_planes::decode_asset(&path)?;
+                if plane.pixel_size != Some(asset.size) {
+                    return Err(format!(
+                        "Image '{}' dimensions do not match the drawing metadata",
+                        plane.name
+                    ));
+                }
+                let rgba = image::RgbaImage::from_raw(asset.size[0], asset.size[1], asset.pixels)
+                    .ok_or("Could not construct decoded image plane")?;
+                let has_alpha = plane.opacity < 1.0 || rgba.pixels().any(|pixel| pixel[3] < 255);
+                let mut png = std::io::Cursor::new(Vec::new());
+                image::DynamicImage::ImageRgba8(rgba)
+                    .write_to(&mut png, image::ImageFormat::Png)
+                    .map_err(|error| format!("Could not encode image '{}': {error}", plane.name))?;
+                let png = png.into_inner();
+                while !binary.len().is_multiple_of(4) {
+                    binary.push(0);
+                }
+                if binary.len().saturating_add(png.len()).saturating_add(320) > MAX_BINARY_BYTES {
+                    return Err(
+                        "Export exceeds the 128 MiB binary limit including image planes".into(),
+                    );
+                }
+                let png_offset = binary.len();
+                binary.extend_from_slice(&png);
+                let png_view = views.len();
+                views.push(json!({"buffer":0,"byteOffset":png_offset,"byteLength":png.len()}));
+                while !binary.len().is_multiple_of(4) {
+                    binary.push(0);
+                }
+                let image_index = images.len();
+                images.push(json!({"name":format!("Image {}",plane.name),"bufferView":png_view,"mimeType":"image/png"}));
+                let texture_index = textures.len();
+                textures.push(json!({"sampler":1,"source":image_index}));
+                image_samplers = true;
+                let material_index = materials.len();
+                materials.push(json!({
+                    "name": format!("Image {}", plane.name),
+                    "pbrMetallicRoughness": {
+                        "baseColorFactor": [1.0, 1.0, 1.0, plane.opacity],
+                        "baseColorTexture": {"index": texture_index, "texCoord": 0},
+                        "metallicFactor": 0.0,
+                        "roughnessFactor": 1.0
+                    },
+                    "alphaMode": if has_alpha {"BLEND"} else {"OPAQUE"},
+                    "doubleSided": true
+                }));
+
+                let half = plane.size * 0.5;
+                let corners = [
+                    (Vec3::new(-half.x, half.y, 0.0), [0.0_f32, 0.0_f32]),
+                    (Vec3::new(-half.x, -half.y, 0.0), [0.0, 1.0]),
+                    (Vec3::new(half.x, -half.y, 0.0), [1.0, 1.0]),
+                    (Vec3::new(half.x, half.y, 0.0), [1.0, 0.0]),
+                ];
+                let normal = plane.rotation * Vec3::Z;
+                let vertex_offset = binary.len();
+                let mut min = Vec3::splat(f32::INFINITY);
+                let mut max = Vec3::splat(f32::NEG_INFINITY);
+                for (local, uv) in corners {
+                    let position = plane.origin + plane.rotation * local;
+                    if !position.is_finite() || position.abs().max_element() > 20_000.0 {
+                        return Err(format!(
+                            "Image '{}' exceeds export coordinate bounds",
+                            plane.name
+                        ));
+                    }
+                    min = min.min(position);
+                    max = max.max(position);
+                    for value in [
+                        position.x, position.y, position.z, normal.x, normal.y, normal.z, uv[0],
+                        uv[1],
+                    ] {
+                        binary.extend_from_slice(&value.to_le_bytes());
+                    }
+                }
+                let vertex_view = views.len();
+                views.push(json!({"buffer":0,"byteOffset":vertex_offset,"byteLength":128,"byteStride":32,"target":34962}));
+                let position_accessor = accessors.len();
+                accessors.push(json!({"bufferView":vertex_view,"byteOffset":0,"componentType":5126,"count":4,"type":"VEC3","min":min.to_array(),"max":max.to_array()}));
+                let normal_accessor = accessors.len();
+                accessors.push(json!({"bufferView":vertex_view,"byteOffset":12,"componentType":5126,"count":4,"type":"VEC3"}));
+                let uv_accessor = accessors.len();
+                accessors.push(json!({"bufferView":vertex_view,"byteOffset":24,"componentType":5126,"count":4,"type":"VEC2"}));
+                let index_offset = binary.len();
+                for index in [0_u32, 1, 2, 0, 2, 3] {
+                    binary.extend_from_slice(&index.to_le_bytes());
+                }
+                let index_view = views.len();
+                views.push(
+                    json!({"buffer":0,"byteOffset":index_offset,"byteLength":24,"target":34963}),
+                );
+                let index_accessor = accessors.len();
+                accessors.push(
+                    json!({"bufferView":index_view,"componentType":5125,"count":6,"type":"SCALAR"}),
+                );
+                let mesh_index = meshes.len();
+                meshes.push(json!({"name":format!("Image_{}",plane.id),"primitives":[{"attributes":{"POSITION":position_accessor,"NORMAL":normal_accessor,"TEXCOORD_0":uv_accessor},"indices":index_accessor,"material":material_index,"mode":4}]}));
+                nodes.push(json!({"name":format!("Image_{}",plane.name),"mesh":mesh_index,"extras":{"spatialSketchImagePlaneId":plane.id.to_string(),"spatialSketchAsset":plane.asset_file,"spatialSketchOpacity":plane.opacity}}));
+                summary.image_planes += 1;
+                summary.vertices += 4;
+                summary.triangles += 2;
+            }
+
+            crate::document::model_references::validate_catalog(
+                &doc.model_references,
+                doc.active_model_reference,
+            )?;
+            for resource in doc
+                .model_references
+                .iter()
+                .filter(|resource| resource.visible)
+            {
+                let model = crate::obj_reference_storage::load_bundle(image_root, &resource.asset)
+                    .map_err(|error| {
+                        format!("Cannot load visible OBJ model '{}': {error}", resource.name)
+                    })?;
+                let mut material_groups = std::collections::BTreeMap::<
+                    Option<u16>,
+                    Vec<&crate::obj_reference::ObjTriangle>,
+                >::new();
+                for triangle in &model.triangles {
+                    material_groups
+                        .entry(triangle.material)
+                        .or_default()
+                        .push(triangle);
+                }
+                let mut primitives = Vec::with_capacity(material_groups.len());
+                for (material_id, triangles) in material_groups {
+                    let triangle_count = triangles.len();
+                    let vertex_count = triangle_count
+                        .checked_mul(3)
+                        .ok_or("OBJ export vertex count overflow")?;
+                    let vertex_bytes = vertex_count
+                        .checked_mul(32)
+                        .ok_or("OBJ export vertex size overflow")?;
+                    let index_bytes = vertex_count
+                        .checked_mul(4)
+                        .ok_or("OBJ export index size overflow")?;
+                    let required = vertex_bytes
+                        .checked_add(index_bytes)
+                        .and_then(|bytes| bytes.checked_add(192))
+                        .ok_or("OBJ export size overflow")?;
+                    ensure_binary_budget(binary.len(), required, "OBJ models")?;
+
+                    let mut min = Vec3::splat(f32::INFINITY);
+                    let mut max = Vec3::splat(f32::NEG_INFINITY);
+                    let vertex_offset = binary.len();
+                    for triangle in &triangles {
+                        let vertices = model.render_vertices(triangle)?;
+                        for source in &vertices {
+                            let position = resource.center
+                                + resource.rotation * (source.position * resource.scale);
+                            let normal = (resource.rotation * source.normal).normalize_or_zero();
+                            let uv = source.texcoord.unwrap_or(glam::Vec2::ZERO);
+                            if !position.is_finite()
+                                || position.abs().max_element() > 10_000.0
+                                || !normal.is_finite()
+                                || normal.length_squared() < 0.99
+                                || !uv.is_finite()
+                            {
+                                return Err(format!(
+                                    "OBJ model '{}' has invalid transformed geometry",
+                                    resource.name
+                                ));
+                            }
+                            min = min.min(position);
+                            max = max.max(position);
+                            for value in [
+                                position.x, position.y, position.z, normal.x, normal.y, normal.z,
+                                uv.x, uv.y,
+                            ] {
+                                binary.extend_from_slice(&value.to_le_bytes());
+                            }
+                        }
+                    }
+                    let vertex_view = views.len();
+                    views.push(json!({"buffer":0,"byteOffset":vertex_offset,"byteLength":vertex_bytes,"byteStride":32,"target":34962}));
+                    let position_accessor = accessors.len();
+                    accessors.push(json!({"bufferView":vertex_view,"byteOffset":0,"componentType":5126,"count":vertex_count,"type":"VEC3","min":min.to_array(),"max":max.to_array()}));
+                    let normal_accessor = accessors.len();
+                    accessors.push(json!({"bufferView":vertex_view,"byteOffset":12,"componentType":5126,"count":vertex_count,"type":"VEC3"}));
+                    let uv_accessor = accessors.len();
+                    accessors.push(json!({"bufferView":vertex_view,"byteOffset":24,"componentType":5126,"count":vertex_count,"type":"VEC2"}));
+
+                    let index_offset = binary.len();
+                    for index in 0..vertex_count {
+                        let index =
+                            u32::try_from(index).map_err(|_| "OBJ export has too many vertices")?;
+                        binary.extend_from_slice(&index.to_le_bytes());
+                    }
+                    let index_view = views.len();
+                    views.push(json!({"buffer":0,"byteOffset":index_offset,"byteLength":index_bytes,"target":34963}));
+                    let index_accessor = accessors.len();
+                    accessors.push(json!({"bufferView":index_view,"componentType":5125,"count":vertex_count,"type":"SCALAR"}));
+
+                    let material = model
+                        .materials
+                        .get(material_id.unwrap_or(u16::MAX) as usize);
+                    let material_name =
+                        material.map_or_else(|| "Default".to_owned(), |m| m.name.clone());
+                    let diffuse = material.map_or([1.0; 3], |m| m.diffuse);
+                    let opacity = material.map_or(1.0, |m| m.opacity);
+                    let material_index = materials.len();
+                    materials.push(json!({
+                        "name": format!("OBJ {} - {}", resource.name, material_name),
+                        "pbrMetallicRoughness": {
+                            "baseColorFactor": [diffuse[0], diffuse[1], diffuse[2], opacity],
+                            "metallicFactor": 0.0,
+                            "roughnessFactor": 0.8
+                        },
+                        "alphaMode": if opacity < 0.999_999 {"BLEND"} else {"OPAQUE"},
+                        "doubleSided": true
+                    }));
+                    let mesh_index = meshes.len();
+                    meshes.push(json!({"name":format!("OBJ_{}_{}",resource.id,material_name),"primitives":[{"attributes":{"POSITION":position_accessor,"NORMAL":normal_accessor,"TEXCOORD_0":uv_accessor},"indices":index_accessor,"material":material_index,"mode":4}]}));
+                    primitives.push(mesh_index);
+                    summary.vertices += vertex_count;
+                    summary.triangles += triangle_count;
+                }
+                let mesh = if primitives.len() == 1 {
+                    primitives[0]
+                } else {
+                    let primitive_values: Vec<_> = primitives
+                        .iter()
+                        .map(|index| meshes[*index]["primitives"][0].clone())
+                        .collect();
+                    for index in primitives.iter().rev() {
+                        meshes.remove(*index);
+                    }
+                    let mesh_index = meshes.len();
+                    meshes.push(
+                        json!({"name":format!("OBJ_{}",resource.id),"primitives":primitive_values}),
+                    );
+                    mesh_index
+                };
+                let mut extras = json!({
+                    "spatialSketchObjReferenceId": resource.id.to_string(),
+                    "spatialSketchAsset": resource.asset.bundle_dir,
+                    "spatialSketchObjMaterials": "MTL Kd diffuse color and d/Tr opacity"
+                });
+                if !model.warnings.is_empty() {
+                    extras["spatialSketchIgnoredObjMaterialProperties"] = json!(model.warnings);
+                }
+                nodes.push(
+                    json!({"name":format!("OBJ_{}",resource.name),"mesh":mesh,"extras":extras}),
+                );
+                summary.model_references += 1;
+            }
+        }
+    }
+    if summary.strokes == 0 && summary.image_planes == 0 && summary.model_references == 0 {
+        return Err("No drawable scene geometry to export".into());
     }
     let scene_nodes: Vec<usize> = (0..nodes.len()).collect();
-    let mut root = json!({"asset":{"version":"2.0","generator":concat!("Spatial Sketch ",env!("CARGO_PKG_VERSION"))},"scene":0,"scenes":[{"name":"Spatial Sketch drawing","nodes":scene_nodes}],"nodes":nodes,"meshes":meshes,"materials":materials,"accessors":accessors,"bufferViews":views,"buffers":[{"byteLength":binary.len()}],"extras":{"sourceFormat":format!("Spatial Sketch version {}",doc.version),"unitInMeters":1.0,"axes":"+X right, +Y up, +Z front","scope":if selected.is_some(){"selection"}else{"all strokes"}}});
+    let scope = if selected.is_some() {
+        "selected strokes (image planes and OBJ models omitted)"
+    } else if image_root.is_some() {
+        "all visible strokes, image planes, and OBJ models"
+    } else {
+        "all strokes"
+    };
+    let mut root = json!({"asset":{"version":"2.0","generator":concat!("Spatial Sketch ",env!("CARGO_PKG_VERSION"))},"scene":0,"scenes":[{"name":"Spatial Sketch drawing","nodes":scene_nodes}],"nodes":nodes,"meshes":meshes,"materials":materials,"accessors":accessors,"bufferViews":views,"buffers":[{"byteLength":binary.len()}],"extras":{"sourceFormat":format!("Spatial Sketch version {}",doc.version),"unitInMeters":1.0,"axes":"+X right, +Y up, +Z front","scope":scope}});
+    if uses_unlit {
+        root["extensionsUsed"] = json!(["KHR_materials_unlit"]);
+    }
     if !images.is_empty() {
         root["images"] = json!(images);
         root["textures"] = json!(textures);
-        root["samplers"] = json!([{"magFilter":9728,"minFilter":9728,"wrapS":10497,"wrapT":10497}]);
+        let mut samplers =
+            vec![json!({"magFilter":9728,"minFilter":9728,"wrapS":10497,"wrapT":10497})];
+        if image_samplers {
+            samplers.push(json!({"magFilter":9729,"minFilter":9987,"wrapS":33071,"wrapT":33071}));
+        }
+        root["samplers"] = json!(samplers);
     }
     let mut json =
         serde_json::to_vec(&root).map_err(|e| format!("Could not encode export metadata: {e}"))?;
@@ -406,6 +743,20 @@ pub fn write_glb(
     path: &Path,
 ) -> Result<ExportSummary, String> {
     let encoded = encode(doc, selected)?;
+    write_encoded_glb(encoded, path)
+}
+
+pub fn write_glb_with_images(
+    doc: &Document,
+    selected: Option<&HashSet<u64>>,
+    image_root: &Path,
+    path: &Path,
+) -> Result<ExportSummary, String> {
+    let encoded = encode_with_images(doc, selected, Some(image_root))?;
+    write_encoded_glb(encoded, path)
+}
+
+fn write_encoded_glb(encoded: EncodedGlb, path: &Path) -> Result<ExportSummary, String> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -417,7 +768,7 @@ pub fn write_glb(
     temp.as_file()
         .sync_all()
         .map_err(|e| format!("Could not finish export: {e}"))?;
-    temp.persist(path)
+    crate::atomic_file::replace(temp, path)
         .map_err(|e| format!("Could not replace export destination: {e}"))?;
     Ok(encoded.summary)
 }
@@ -425,9 +776,10 @@ pub fn write_glb(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::Point;
+    use crate::document::{Point, StrokeMaterial};
     fn stroke(id: u64, color: [f32; 3]) -> Stroke {
         Stroke {
+            material: Default::default(),
             id,
             fill: None,
             group_id: None,
@@ -494,6 +846,97 @@ mod tests {
                 face.dot(normals[*a as usize] + normals[*b as usize] + normals[*c as usize]) > 0.0
             );
         }
+    }
+
+    #[test]
+    fn material_modes_export_with_explicit_cutout_fallback_metadata() {
+        let materials = [
+            StrokeMaterial::Shaded,
+            StrokeMaterial::Unlit,
+            StrokeMaterial::Emissive,
+            StrokeMaterial::Cutout,
+        ];
+        let doc = Document {
+            version: 13,
+            strokes: materials
+                .into_iter()
+                .enumerate()
+                .map(|(index, material)| {
+                    let mut mark = stroke(index as u64 + 1, [0.25, 0.5, 0.75]);
+                    mark.material = material;
+                    mark
+                })
+                .collect(),
+            ..Document::default()
+        };
+        let encoded = encode(&doc, None).unwrap();
+        let json_len = u32::from_le_bytes(encoded.bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value =
+            serde_json::from_slice(&encoded.bytes[20..20 + json_len]).unwrap();
+        assert_eq!(json["extensionsUsed"], json!(["KHR_materials_unlit"]));
+
+        let mut nodes_by_material = std::collections::HashMap::new();
+        for node in json["nodes"].as_array().unwrap() {
+            nodes_by_material.insert(
+                node["extras"]["spatialSketchMaterial"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+                node,
+            );
+        }
+        assert_eq!(nodes_by_material.len(), 4);
+        assert_eq!(
+            nodes_by_material["shaded"]["extras"]["spatialSketchCastsShadows"],
+            true
+        );
+        assert_eq!(
+            nodes_by_material["unlit"]["extras"]["spatialSketchCastsShadows"],
+            false
+        );
+        assert_eq!(
+            nodes_by_material["emissive"]["extras"]["spatialSketchCastsShadows"],
+            false
+        );
+        assert_eq!(
+            nodes_by_material["cutout"]["extras"]["spatialSketchCastsShadows"],
+            false
+        );
+        assert_eq!(
+            nodes_by_material["cutout"]["extras"]["spatialSketchCompositingFallback"],
+            "fully_transparent_geometry_destination_not_erased"
+        );
+        let cutout_mesh = json["meshes"]
+            [nodes_by_material["cutout"]["mesh"].as_u64().unwrap() as usize]["primitives"][0]
+            ["material"]
+            .as_u64()
+            .unwrap() as usize;
+        assert_eq!(
+            json["materials"][cutout_mesh]["pbrMetallicRoughness"]["baseColorFactor"][3],
+            0.0
+        );
+        for mode in ["unlit", "emissive"] {
+            let mesh = json["meshes"][nodes_by_material[mode]["mesh"].as_u64().unwrap() as usize]
+                ["primitives"][0]["material"]
+                .as_u64()
+                .unwrap() as usize;
+            assert!(json["materials"][mesh]["extensions"]["KHR_materials_unlit"].is_object());
+        }
+        assert_eq!(
+            json["materials"][2]["emissiveFactor"],
+            json!([0.25, 0.5, 0.75])
+        );
+
+        let roundtrip = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(
+            roundtrip
+                .strokes
+                .iter()
+                .map(|mark| mark.material)
+                .collect::<Vec<_>>(),
+            materials
+        );
+        assert_eq!(encoded.summary.strokes, materials.len());
     }
     #[test]
     fn all_brush_types_export_with_shape_normals_and_distinct_sidedness() {
@@ -699,7 +1142,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 8);
+        assert_eq!(loaded.version, 13);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -979,7 +1422,7 @@ mod group_export_tests {
     fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
         let doc = crate::export_check::grouped_fixture();
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-        assert_eq!(loaded.version, 8);
+        assert_eq!(loaded.version, 13);
         assert_eq!(loaded.strokes, doc.strokes);
         let encoded = encode(&doc, None).unwrap();
         let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
@@ -1015,5 +1458,459 @@ mod group_export_tests {
         doc.strokes[1].layer_id = 1;
         doc.strokes[0].group_id = Some(0);
         assert!(encode(&doc, None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod image_plane_export_tests {
+    use super::*;
+    use crate::image_planes::ImagePlane;
+    use glam::{Quat, Vec2};
+    use image::{ImageFormat, Rgba, RgbaImage};
+    use std::io::Cursor;
+
+    #[test]
+    fn whole_scene_glb_embeds_visible_image_plane_and_keeps_selected_export_ink_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let image_root = directory.path().join("drawing.sketch.json.assets");
+        let source_path = directory.path().join("source.png");
+        let source_image = RgbaImage::from_pixel(2, 1, Rgba([40, 120, 200, 128]));
+        let mut source_bytes = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(source_image)
+            .write_to(&mut source_bytes, ImageFormat::Png)
+            .unwrap();
+        std::fs::write(&source_path, source_bytes.into_inner()).unwrap();
+        let (asset_file, asset) =
+            crate::image_planes::copy_asset(&source_path, &image_root, 7).unwrap();
+        let rotation = Quat::from_rotation_y(0.35);
+        let mut plane = ImagePlane::from_asset(
+            7,
+            "Facade",
+            asset_file,
+            asset.size,
+            Vec3::new(1.0, 2.0, 3.0),
+            rotation,
+            3.0,
+        )
+        .unwrap();
+        plane.opacity = 0.75;
+        let document = Document {
+            image_planes: vec![plane.clone()],
+            ..Document::default()
+        };
+
+        let encoded = encode_with_images(&document, None, Some(&image_root)).unwrap();
+        assert_eq!(encoded.summary.image_planes, 1);
+        assert_eq!(encoded.summary.vertices, 4);
+        assert!(encoded.summary.triangles > 1);
+        let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
+        assert_eq!(parsed.meshes().count(), 1);
+        assert_eq!(parsed.images().count(), 1);
+        assert!(parsed
+            .blob
+            .as_ref()
+            .is_some_and(|blob| blob.windows(8).any(|window| window == b"\x89PNG\r\n\x1a\n")));
+
+        let json_length = u32::from_le_bytes(encoded.bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value =
+            serde_json::from_slice(&encoded.bytes[20..20 + json_length]).unwrap();
+        assert_eq!(
+            json["extras"]["scope"],
+            "all visible strokes, image planes, and OBJ models"
+        );
+        assert_eq!(json["nodes"][0]["extras"]["spatialSketchImagePlaneId"], "7");
+        assert_eq!(
+            json["nodes"][0]["extras"]["spatialSketchAsset"],
+            plane.asset_file
+        );
+        assert_eq!(json["materials"][0]["alphaMode"], "BLEND");
+        assert_eq!(
+            json["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"][3],
+            0.75
+        );
+
+        let position_accessor = json["meshes"][0]["primitives"][0]["attributes"]["POSITION"]
+            .as_u64()
+            .unwrap() as usize;
+        let half = plane.size * 0.5;
+        let corners = [
+            Vec3::new(-half.x, half.y, 0.0),
+            Vec3::new(-half.x, -half.y, 0.0),
+            Vec3::new(half.x, -half.y, 0.0),
+            Vec3::new(half.x, half.y, 0.0),
+        ];
+        let points: Vec<_> = corners
+            .iter()
+            .map(|corner| plane.origin + plane.rotation * *corner)
+            .collect();
+        let minimum = points.iter().copied().reduce(Vec3::min).unwrap();
+        let maximum = points.iter().copied().reduce(Vec3::max).unwrap();
+        let gltf_min = json["accessors"][position_accessor]["min"]
+            .as_array()
+            .unwrap();
+        let gltf_max = json["accessors"][position_accessor]["max"]
+            .as_array()
+            .unwrap();
+        for axis in 0..3 {
+            assert!((gltf_min[axis].as_f64().unwrap() as f32 - minimum[axis]).abs() < 1e-5);
+            assert!((gltf_max[axis].as_f64().unwrap() as f32 - maximum[axis]).abs() < 1e-5);
+        }
+
+        let mut selected_document = crate::scenes::japanese_house();
+        selected_document.image_planes.push(plane.clone());
+        let selected_id = HashSet::from([selected_document.strokes[0].id]);
+        let selected_encoded =
+            encode_with_images(&selected_document, Some(&selected_id), Some(&image_root)).unwrap();
+        assert_eq!(selected_encoded.summary.image_planes, 0);
+        assert!(gltf::Gltf::from_slice(&selected_encoded.bytes)
+            .unwrap()
+            .images()
+            .next()
+            .is_none());
+        plane.visible = false;
+        let mut hidden = crate::scenes::japanese_house();
+        hidden.image_planes.push(plane);
+        let hidden_encoded = encode_with_images(&hidden, None, Some(&image_root)).unwrap();
+        assert_eq!(hidden_encoded.summary.image_planes, 0);
+        assert!(gltf::Gltf::from_slice(&hidden_encoded.bytes)
+            .unwrap()
+            .images()
+            .next()
+            .is_none());
+    }
+
+    #[test]
+    fn whole_scene_image_export_rejects_missing_visible_assets() {
+        let directory = tempfile::tempdir().unwrap();
+        let plane = ImagePlane::from_asset(
+            3,
+            "Missing",
+            "image-3.png".into(),
+            [2, 1],
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            2.0,
+        )
+        .unwrap();
+        assert_eq!(plane.size, Vec2::new(2.0, 1.0));
+        let document = Document {
+            image_planes: vec![plane],
+            ..Document::default()
+        };
+        let error = encode_with_images(&document, None, Some(directory.path()))
+            .err()
+            .unwrap();
+        assert!(error.contains("is missing from its asset bundle"));
+    }
+}
+
+#[cfg(test)]
+mod obj_reference_export_tests {
+    use super::*;
+    use crate::document::Point;
+    use glam::Quat;
+
+    fn imported_model(
+        root: &Path,
+        id: u64,
+    ) -> crate::document::model_references::ObjReferenceResource {
+        let source_root = root.join("source");
+        std::fs::create_dir_all(&source_root).unwrap();
+        let obj = source_root.join("sample.obj");
+        let mtl = source_root.join("sample.mtl");
+        std::fs::write(
+            &mtl,
+            "newmtl Brick\nKd 0.8 0.2 0.1\nd 0.4\nNs 32\nmap_Kd ignored.png\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &obj,
+            "mtllib sample.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\nusemtl Brick\nf 1/1/1 2/2/1 3/3/1\n",
+        )
+        .unwrap();
+        let asset_root = root.join("managed");
+        let bundle = asset_root.join("models").join(id.to_string());
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(
+            bundle.join("model.obj"),
+            "mtllib material-000.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\nusemtl Brick\nf 1/1/1 2/2/1 3/3/1\n",
+        )
+        .unwrap();
+        std::fs::copy(&mtl, bundle.join("material-000.mtl")).unwrap();
+        let asset = crate::obj_reference_storage::ObjReferenceAsset {
+            id,
+            bundle_dir: format!("models/{id}"),
+        };
+        crate::document::model_references::ObjReferenceResource {
+            id,
+            name: "Brick sample".into(),
+            visible: true,
+            locked: false,
+            center: Vec3::new(1.0, 2.0, 3.0),
+            rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            scale: 2.0,
+            asset,
+        }
+    }
+
+    fn sample_stroke() -> Stroke {
+        Stroke {
+            fill: None,
+            material: Default::default(),
+            group_id: None,
+            layer_id: 1,
+            id: 9,
+            color: [0.2, 0.7, 0.9],
+            radius: 0.05,
+            brush: Default::default(),
+            points: vec![
+                Point {
+                    tilt: None,
+                    position: Vec3::ZERO,
+                    pressure: 1.0,
+                },
+                Point {
+                    tilt: None,
+                    position: Vec3::Y,
+                    pressure: 1.0,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn whole_scene_glb_exports_transformed_obj_geometry_materials_and_selected_ink_stays_ink_only()
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let resource = imported_model(directory.path(), 77);
+        let asset_root = directory.path().join("managed");
+        let document = Document {
+            strokes: vec![sample_stroke()],
+            model_references: vec![resource.clone()],
+            ..Document::default()
+        };
+
+        let encoded = encode_with_images(&document, None, Some(&asset_root)).unwrap();
+        assert_eq!(encoded.summary.strokes, 1);
+        assert_eq!(encoded.summary.model_references, 1);
+        assert!(encoded.summary.triangles > 1);
+        let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
+        assert_eq!(parsed.meshes().count(), 2);
+        assert_eq!(parsed.materials().count(), 2);
+        let model_node = parsed
+            .nodes()
+            .find(|node| node.name() == Some("OBJ_Brick sample"))
+            .unwrap();
+        let primitive = model_node.mesh().unwrap().primitives().next().unwrap();
+        let positions: Vec<_> = primitive
+            .reader(|_| parsed.blob.as_deref())
+            .read_positions()
+            .unwrap()
+            .collect();
+        assert_eq!(positions.len(), 3);
+        let expected = [[1.0, 2.0, 3.0], [1.0, 4.0, 3.0], [-1.0, 2.0, 3.0]];
+        for (actual, expected) in positions.iter().zip(expected) {
+            assert!(glam::Vec3::from(*actual).distance(Vec3::from(expected)) < 1e-5);
+        }
+        let normals: Vec<_> = primitive
+            .reader(|_| parsed.blob.as_deref())
+            .read_normals()
+            .unwrap()
+            .collect();
+        assert!(normals
+            .iter()
+            .all(|normal| { glam::Vec3::from(*normal).distance(Vec3::Z) < 1e-5 }));
+        let uvs: Vec<_> = primitive
+            .reader(|_| parsed.blob.as_deref())
+            .read_tex_coords(0)
+            .unwrap()
+            .into_f32()
+            .collect();
+        assert_eq!(uvs, vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
+
+        let json_length = u32::from_le_bytes(encoded.bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value =
+            serde_json::from_slice(&encoded.bytes[20..20 + json_length]).unwrap();
+        let node = json["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["extras"]["spatialSketchObjReferenceId"] == "77")
+            .unwrap();
+        assert_eq!(
+            node["extras"]["spatialSketchAsset"],
+            resource.asset.bundle_dir
+        );
+        assert_eq!(
+            node["extras"]["spatialSketchObjMaterials"],
+            "MTL Kd diffuse color and d/Tr opacity"
+        );
+        assert_eq!(
+            node["extras"]["spatialSketchIgnoredObjMaterialProperties"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        let material_index = json["meshes"][node["mesh"].as_u64().unwrap() as usize]["primitives"]
+            [0]["material"]
+            .as_u64()
+            .unwrap() as usize;
+        let factors = json["materials"][material_index]["pbrMetallicRoughness"]["baseColorFactor"]
+            .as_array()
+            .unwrap();
+        for (actual, expected) in factors.iter().zip([0.8_f64, 0.2, 0.1, 0.4]) {
+            assert!((actual.as_f64().unwrap() - expected).abs() < 1e-6);
+        }
+        assert_eq!(json["materials"][material_index]["alphaMode"], "BLEND");
+        assert_eq!(json["materials"][material_index]["doubleSided"], true);
+        assert_eq!(
+            json["extras"]["scope"],
+            "all visible strokes, image planes, and OBJ models"
+        );
+
+        let translation = Vec3::new(-0.25, 0.5, 1.25);
+        let mut moved_document = document.clone();
+        let movement = crate::mixed_resources::MoveSnapshot::capture(
+            &moved_document,
+            crate::mixed_resources::ResourceSelection {
+                stroke_ids: HashSet::from([9]),
+                obj_reference_ids: HashSet::from([77]),
+                ..Default::default()
+            },
+            crate::mixed_resources::TransformMode::Translate,
+            translation,
+        )
+        .unwrap();
+        movement
+            .apply(
+                &mut moved_document,
+                crate::mixed_resources::MoveDirection::Forward,
+            )
+            .unwrap();
+        let moved_glb = encode_with_images(&moved_document, None, Some(&asset_root)).unwrap();
+        let moved_parsed = gltf::Gltf::from_slice(&moved_glb.bytes).unwrap();
+        let moved_node = moved_parsed
+            .nodes()
+            .find(|node| node.name() == Some("OBJ_Brick sample"))
+            .unwrap();
+        let moved_primitive = moved_node.mesh().unwrap().primitives().next().unwrap();
+        let moved_positions: Vec<_> = moved_primitive
+            .reader(|_| moved_parsed.blob.as_deref())
+            .read_positions()
+            .unwrap()
+            .collect();
+        for (actual, original) in moved_positions.iter().zip(expected) {
+            assert!(glam::Vec3::from(*actual).distance(Vec3::from(original) + translation) < 1e-5);
+        }
+
+        let model_only = Document {
+            model_references: vec![resource.clone()],
+            ..Document::default()
+        };
+        let model_only_glb = encode_with_images(&model_only, None, Some(&asset_root)).unwrap();
+        assert_eq!(model_only_glb.summary.strokes, 0);
+        assert_eq!(model_only_glb.summary.model_references, 1);
+        assert_eq!(
+            gltf::Gltf::from_slice(&model_only_glb.bytes)
+                .unwrap()
+                .meshes()
+                .count(),
+            1
+        );
+
+        let selected =
+            encode_with_images(&document, Some(&HashSet::from([9])), Some(&asset_root)).unwrap();
+        assert_eq!(selected.summary.strokes, 1);
+        assert_eq!(selected.summary.model_references, 0);
+        let selected_json_length =
+            u32::from_le_bytes(selected.bytes[12..16].try_into().unwrap()) as usize;
+        let selected_json: serde_json::Value =
+            serde_json::from_slice(&selected.bytes[20..20 + selected_json_length]).unwrap();
+        assert_eq!(selected_json["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            selected_json["extras"]["scope"],
+            "selected strokes (image planes and OBJ models omitted)"
+        );
+    }
+
+    #[test]
+    fn hidden_models_are_omitted_and_missing_visible_models_do_not_replace_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let resource = imported_model(directory.path(), 88);
+        let asset_root = directory.path().join("managed");
+        let mut hidden = resource.clone();
+        hidden.visible = false;
+        hidden.id = 89;
+        hidden.asset.bundle_dir = "models/89".into();
+        hidden.asset.id = 89;
+        let document = Document {
+            strokes: vec![sample_stroke()],
+            model_references: vec![hidden.clone()],
+            ..Document::default()
+        };
+        let encoded = encode_with_images(&document, None, Some(&asset_root)).unwrap();
+        assert_eq!(encoded.summary.model_references, 0);
+        assert_eq!(
+            gltf::Gltf::from_slice(&encoded.bytes)
+                .unwrap()
+                .meshes()
+                .count(),
+            1
+        );
+
+        let too_many_models = (0..=crate::document::model_references::MAX_MODEL_REFERENCES)
+            .map(|index| {
+                let id = 1000 + index as u64;
+                let mut resource = hidden.clone();
+                resource.id = id;
+                resource.name = format!("Hidden {index}");
+                resource.asset.id = id;
+                resource.asset.bundle_dir = format!("models/{id}");
+                resource
+            })
+            .collect();
+        let oversized_catalog = Document {
+            strokes: vec![sample_stroke()],
+            model_references: too_many_models,
+            ..Document::default()
+        };
+        assert!(
+            encode_with_images(&oversized_catalog, None, Some(&asset_root))
+                .err()
+                .unwrap()
+                .contains("at most 64 OBJ references")
+        );
+
+        let mut out_of_bounds = resource.clone();
+        out_of_bounds.center = Vec3::splat(10_000.0);
+        let invalid_geometry = Document {
+            strokes: vec![sample_stroke()],
+            model_references: vec![out_of_bounds],
+            ..Document::default()
+        };
+        assert!(
+            encode_with_images(&invalid_geometry, None, Some(&asset_root))
+                .err()
+                .unwrap()
+                .contains("invalid transformed geometry")
+        );
+
+        let missing = Document {
+            strokes: vec![sample_stroke()],
+            model_references: vec![resource],
+            ..Document::default()
+        };
+        let bundle = asset_root.join("models/88");
+        std::fs::remove_dir_all(bundle).unwrap();
+        let destination = directory.path().join("existing.glb");
+        std::fs::write(&destination, b"keep previous export").unwrap();
+        let error = write_glb_with_images(&missing, None, &asset_root, &destination).unwrap_err();
+        assert!(error.contains("Cannot load visible OBJ model"));
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"keep previous export"
+        );
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 3);
     }
 }

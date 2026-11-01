@@ -16,19 +16,19 @@ An open-source, native 3D sketching prototype inspired by the idea of drawing in
 - Move, rotate, and uniform-scale handles, numeric transforms, grouped duplication and deletion.
 - Whole-stroke and partial-stroke erasers, undo/redo, versioned JSON documents, atomic saves, and unsaved-change prompts.
 - A local reference image board for bounded PNG/JPEG imports, panning, zooming, color sampling, and image ordering.
-- Transformable PNG/JPEG image planes with opacity, visibility, locking, active-plane brush drawing, native sidecar assets, undo/redo, and recovery.
+- Transformable PNG/JPEG image planes with opacity, visibility, locking, brush and planar-tool drawing, native sidecar assets, undo/redo, and recovery.
 - Selected-stroke appearance previews for color, radius, opacity, and brush type, with explicit Apply/Cancel and one-step undo.
 - Drag brush selection and deselection with adjustable radius and visible-only or through-selection modes.
 - Planar circle and ellipse tools with center/radius, bounding-box, and typed-dimension workflows.
 - A planar smooth-curve tool with editable anchors/tangents, pressure-aware preview, and one-step commit.
 - Named, saved plane/cylinder/revolved/sphere/cone guides with one active brush target and surface-aware stabilization.
-- Selected-stroke Liquify previews with push/pull falloff controls and atomic undo.
+- Selected-stroke Liquify with numeric controls or a canvas brush, a camera-facing working plane, pressure-scaled preview, push/pull falloff, cancel, and atomic undo.
 - Saved camera bookmarks and timed view sequences in separate local workspace settings.
-- Animated GIF export for camera turntables and saved sequences.
+- Animated GIF and MP4 export for camera turntables and saved sequences (MP4 requires FFmpeg with libx264 on PATH).
 - PNG and JPEG artwork still exports; JPEG lets you choose canvas, white, or black background.
 - OBJ exports for the whole drawing or selected strokes, with MTL material and mask companions.
 - Live plane-guide mirroring for brush and straight-line strokes, committed as one undoable pair.
-- Background GLB export for the whole drawing or selected strokes, preserving original colors and pressure-shaped geometry.
+- Background GLB export for the whole scene or selected strokes. Whole-scene GLB includes visible image planes and imported OBJ references with supported transforms, UVs, and MTL diffuse color/opacity; selected-stroke export remains ink-only.
 - Round, ribbon, and flat/chisel brushes with pressure-shaped width, frozen orientation, and an editable brush sampler.
 - GPU depth testing and cached completed-stroke meshes. Only changed strokes are tessellated again.
 
@@ -49,6 +49,8 @@ For the original three-ring geometry example:
 ```sh
 cargo run --release -- --demo
 ```
+
+Run `cargo run -- --verify-mixed-resources` to check a mixed stroke/image/model/guide movement preview, cancellation, Apply, undo/redo, and its active drawable binding. It writes `verification/mixed-resources-preview.png` and `mixed-resources-report.json`.
 
 The Windows executable is `target/release/spatial-sketch.exe`. The first build downloads dependencies and can take several minutes.
 
@@ -75,11 +77,12 @@ The first hardware targets are a screenless Wacom tablet and a a pen display. **
 | Add a scene image plane | Images inspector → Import image plane…; enable Draw here to ink on it |
 | Save or activate a guide | Drawing guide → Saved guides; use the guide toggle to set the active brush surface |
 | Draw a smooth curve | Choose Curve; add anchors and adjust tangent handles; Enter finishes, Escape cancels |
-| Deform selected strokes | Select strokes → Liquify selected strokes…; adjust the brush center/displacement, then Apply or Cancel |
+| Deform selected strokes | Select strokes → Liquify selected strokes…; choose Brush on canvas… or numeric controls, then Apply or Cancel |
 | Save/play camera views | View → Camera bookmarks and sequences… |
 | Select all / clear selection | Ctrl/Cmd+A / Escape |
-| Move / rotate / uniform scale | G / R / S in Select tool |
+| Move / rotate / scale | G / R / S in Select tool; scale handles or numeric controls |
 | Duplicate selection | Ctrl/Cmd+D |
+| Move mixed resources | Select strokes, then in Select → Mixed resource selection choose visible, unlocked image planes, OBJ references, or saved guides; choose Translate selected resources… and Apply or Cancel |
 | Delete selection | Delete / Backspace |
 | Cancel transform gesture | Escape |
 | Orbit | Space + pen/mouse drag, or right mouse drag |
@@ -99,9 +102,15 @@ Brush radius is in world units, so its visible size changes with camera distance
 
 ## Documents
 
-Documents use a versioned `.sketch.json` format with positions in world space. Version 10 adds saved guide resources; version 9 added image-plane records whose source images are stored in a sibling `<drawing filename>.assets` folder. Version 8 adds per-brush opacity, pressure-to-opacity mapping, and soft-edge settings; version 7 added editable planar fills with a physical paint offset, alongside flat groups and named layers. Versions 1–9 migrate while preserving their existing ink; versions 1–4 receive one visible, unlocked layer. Older application versions cannot open version-10 files. Open validates version, IDs, positions, pressure, color, image metadata, guide geometry, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. Recovery snapshots protect completed edits and include bounded image assets; use Save for your deliberate native drawing file. PNG renders include scene image planes. GLB export contains stroke geometry only. Camera bookmarks/sequences live in a separate local workspace file and do not travel with the drawing or recovery snapshot. Saved guides and image planes currently target brush input; switch to the temporary guide for line, fill, shape, and curve tools.
+Documents use a versioned `.sketch.json` format with positions in world space. Version 13 adds per-stroke shaded, unlit, emissive, and cutout materials; versions 11–12 added saved guide, OBJ reference, and earlier material metadata. Version 9 added image-plane records whose source images are stored in a sibling `<drawing filename>.assets` folder. Version 8 adds per-brush opacity, pressure-to-opacity mapping, and soft-edge settings; version 7 added editable planar fills with a physical paint offset, alongside flat groups and named layers. Versions 1–12 migrate while preserving their ink and appearance; versions 1–4 receive one visible, unlocked layer. Older application versions cannot open version-13 files. Open validates version, IDs, positions, pressure, color, image metadata, guide geometry, and size limits. Saves write to a temporary file in the destination directory and replace the destination after syncing. Errors appear in the bottom status bar. Recovery snapshots protect completed edits and include bounded image assets; use Save for your deliberate native drawing file. PNG renders include scene image planes. Whole-scene GLB export can include visible image planes; selected-stroke exports remain ink-only. Camera bookmarks/sequences live in a separate local workspace file and do not travel with the drawing or recovery snapshot. Saved plane guides and bounded image planes support brush, line, fill, shape, and curve tools; non-planar guides and model surfaces remain brush targets.
 
-Open **File → Drawing library** to search recent native drawings. The list records files after successful saves and opens and uses the same unsaved-work prompt and resource validation as **Open**. Create virtual folders and assign drawings without moving files or asset bundles. **Copy saved file…** copies the on-disk drawing and its complete managed asset folder to a new location; it does not include unsaved edits in the current drawing. **Rename…** renames a saved drawing together with its resource folder and is disabled for the dirty active drawing. Thumbnails, import, recoverable deletion, and backup/restore are still in progress.
+Run `cargo run --release -- --verify-image-planes` for synthetic canvas input on a rotated image plane, local-coordinate stroke bounds, undo/redo, off-plane rejection, inactive-target fallback, and PNG inclusion checks. It writes `verification/image-plane-report.json`, `image-plane-preview.png`, and paired PNG renders with and without the image plane. This verifies software input only; physical pen validation remains under SKETCH-006.
+
+Open **File → Drawing library** to search recent native drawings. The list records files after successful saves and opens and uses the same unsaved-work prompt and resource validation as **Open**. Create virtual folders and assign drawings without moving files or asset bundles. **Import drawing…** and **Copy saved file…** validate the native document and copy its complete managed asset folder; neither includes unsaved edits in the current drawing. **Rename…** renames a saved drawing together with its resource folder and is disabled for the dirty active drawing. **Backup…** creates a portable `.sketch-backup` folder; **Restore backup…** validates and copies it into a new location. **Delete…** moves a drawing into recoverable local trash after creating a validated backup. The browser creates bounded thumbnails in the background; **Trash…** lists validated backups and restores to a chosen destination without overwriting existing files.
+
+Choose **File → Insert drawing…** to place a portable drawing into the current scene. Review the top-view preview, set a world-space offset, and optionally group an ungrouped source. Apply copies managed image/model assets, remaps resource and drawing IDs, and adds the merge as one undoable edit. Camera bookmarks and presentation preferences stay with the current workspace.
+
+Selected strokes can be scaled independently along X/Y/Z, in the view plane, or uniformly. Choose a selection-center, world-origin, or custom pivot; scale factors stay positive. Brush width can remain fixed or scale with the transformed cross-section. In the Appearance editor, shaded strokes receive scene lighting, unlit strokes keep their stored color, emissive strokes add to Glow, and cutout strokes clear previously composited canvas pixels at their visible coverage. Cutout replacement uses the solid canvas background (transparent alpha for transparent PNG); later opaque ink can repaint the region, and translucent ink composites afterward. GLB and OBJ cannot erase destination pixels, so cutouts become fully transparent geometry with explicit fallback metadata/comments.
 
 ## Development
 
@@ -212,7 +221,7 @@ Use **Export → Whole drawing (.glb)** or **Export → Selected strokes (.glb)*
 
 Export takes a snapshot and builds the file in a background worker. You can continue drawing; edits made after that snapshot belong to a later export. The status bar reports completion or an error. Let an active export finish before closing the app.
 
-The result is a self-contained **binary glTF 2.0** file with indexed triangle meshes, outward-facing triangles, normals, and opaque PBR materials. Each drawable stroke becomes a named mesh object. Colors come from the original stroke data; pressure is baked into mesh thickness. Selection highlights, drawing guides, handles, cameras, and interface geometry are excluded. No external textures or binary sidecar files are required.
+The result is a self-contained **binary glTF 2.0** file with indexed triangle meshes, outward-facing triangles, normals, and PBR materials. Each drawable stroke becomes a named mesh object. Colors come from the original stroke data; pressure is baked into mesh thickness. Whole-scene exports also include visible image planes as textured quads and visible OBJ references with baked center/rotation/uniform scale, normals, available UVs, and MTL `Kd` diffuse color plus `d`/`Tr` opacity. Unsupported MTL texture maps and lighting properties are listed in node metadata. Selected-stroke exports stay ink-only. Selection highlights, drawing guides, handles, cameras, and interface geometry are excluded. No external textures or binary sidecar files are required.
 
 One drawing world unit exports as **one meter**, with right-handed +X right, +Y up, and +Z front coordinates. Blender converts this to its +Z-up convention on import. Material factors preserve the drawing colors; lighting and tone mapping in other viewers can change their rendered appearance.
 
@@ -224,7 +233,7 @@ One drawing world unit exports as **one meter**, with right-handed +X right, +Y 
 cargo run --release -- --verify-export
 ```
 
-This creates `verification/exports/house.glb`, `lantern.glb`, `pressure.glb`, `brushes.glb`, `dynamics.glb`, `textures.glb`, `selection.glb`, and a source-geometry manifest. The normal `--verify` workflow also exercises the asynchronous UI path and verifies that source geometry, file identity, dirty state, selection, and undo/redo depths remain unchanged.
+This creates the stroke fixtures (`house.glb`, `lantern.glb`, `pressure.glb`, `brushes.glb`, `dynamics.glb`, `textures.glb`, and `selection.glb`), plus a rotated translucent `image-plane.glb` containing a visible OBJ reference and a source-geometry manifest. The normal `--verify` workflow also exercises the asynchronous UI path and verifies that source geometry, file identity, dirty state, selection, and undo/redo depths remain unchanged.
 
 To validate fixtures using the official Khronos validator, from the project root:
 
@@ -239,7 +248,7 @@ To check imports in an installed Blender (put `blender` on PATH or use its execu
 blender --background --factory-startup --python-exit-code 1 --python scripts/verify_glb_blender.py -- verification/exports
 ```
 
-The Blender check verifies stroke IDs, mesh counts, converted axes, per-stroke bounds, original color factors, double-sided ribbon materials, and triangle counts. It also renders the imported house to `verification/exports/house-blender.png` and saves a review scene. Verification cameras, lighting, and floor are added by that script after geometry checks; they are not part of the GLB export. Node and Blender are development verification tools, not application runtime requirements. The verification directory is ignored by Git.
+The Blender check verifies stroke IDs, mesh counts, converted axes, per-stroke bounds, original color factors, double-sided ribbon materials, triangle counts, and the image/model fixture's embedded image, transformed OBJ bounds, normals, UVs, IDs, diffuse color, and opacity. It also renders the imported house to `verification/exports/house-blender.png` and saves a review scene. Verification cameras, lighting, and floor are added by that script after geometry checks; they are not part of the GLB export. Node and Blender are development verification tools, not application runtime requirements. The verification directory is ignored by Git.
 
 Format reference: [Khronos glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html).
 
@@ -394,9 +403,11 @@ Placement mode pauses ordinary drawing, selection, and edit shortcuts; the previ
 Developer check: `cargo run --release -- --verify-placement` writes `verification/placement-preview.png` and `placement-report.json`. Unit checks cover rotated/locked/hidden references, nearest hits, back faces, round/chisel surfaces and caps, misses without a halo, and masked holes. The graphical workflow verifies cancellation of an existing curved guide, flip/offset, unchanged document/history/GLB bytes, alignment, and new ink constrained to the accepted plane. Physical tablet and performance campaigns remain deferred.
 ## Background and artwork-only view
 
-Open **Scene → Background** to choose a canvas color, the **Dark / Blue / Light** presets, or **Reset background**. Canvas background is independent of stroke, fill, and presentation-ground colors. **Remember background** saves the current color as your startup default; other color changes are session-only. Lighting and ground still reset on restart. Background preferences live in `%LOCALAPPDATA%/SpatialSketch/presentation.json` on Windows, beside the brush library on other platforms, separately from drawings and onboarding.
+Open **Scene → Background** to choose a canvas color, the **Dark studio / Blue / Light paper** presets, or **Reset background**. Canvas background is independent of stroke, fill, and presentation-ground colors. **Remember background** saves the current color as your startup default; other color changes are session-only. Lighting and ground still reset on restart. Background preferences live in `%LOCALAPPDATA%/SpatialSketch/presentation.json` on Windows, beside the brush library on other platforms, separately from drawings and onboarding.
 
-The **Scene lighting** window also has a **Film grain** amount from 0–12%, **Reset film grain**, and a **Toon shading** toggle with four light bands. Both settings are saved with presentation preferences and included in artwork image/GIF renders. Grain is screen-position-based; both effects preserve transparency and leave the interface and screen-aligned presentation background unchanged. They are disabled by default. Native drawings and GLB/OBJ exports contain the original artwork without these display effects.
+Choose **View → Appearance → Dark / Light / System** to change the application interface. System follows the operating-system theme when the windowing backend reports it; otherwise it falls back to Dark. The choice persists in the same presentation preferences file. Changing the UI appearance does not change the canvas background or artwork. The scene presets are named **Dark studio** and **Light paper** to distinguish them from the UI theme.
+
+The **Scene lighting** window also has **Film grain** (0–12%), **Toon shading** (four bands), **Glow**, **Focus distance**, **Depth blur**, and **Pixel size** controls. They are saved with presentation preferences and included in artwork image and animation renders. Grain is screen-position-based; depth blur respects perspective and orthographic projection. Effects leave the interface and screen-aligned presentation background unchanged and are disabled by default. Transparent artwork may show screen-space fringes where blur or glow crosses alpha edges. Native drawings and GLB/OBJ exports contain the original artwork without these display effects.
 
 To use a photo behind a presentation, open the **References** tab, select an image, and enable **Use as presentation background**. Choose **Fit** to show the whole image or **Fill** to crop it, then adjust X/Y alignment and opacity. The image stays screen-aligned and does not affect drawing or picking; Fit gaps show the canvas color. The selected reference and display settings persist across restarts. Opaque PNG and GIF exports include this background, while transparent PNG exports omit it.
 
@@ -406,11 +417,13 @@ Artwork-only view is read-only for marks: ordinary contact and eraser contact do
 
 Recovery and unsaved-change prompts return to the workspace. Close requests also leave artwork view, including an export that temporarily blocks closing. Native save errors return to editing so the error can be seen. The compact toolbar indicates recovery issues; Recovery opens the normal recovery flow. Artwork-only mode is never remembered across restarts, so each launch starts with the workspace visible.
 
-Background and view mode do not change native document version 11, recovery content, GLB materials, or ink. Invalid, oversized, or newer-version preference files are retained on load; Scene shows the issue and uses defaults until you explicitly remember a valid preference. Reset changes the current session; use Remember afterward to reset the startup default as well.
+Background and view mode do not change native document version 13, recovery content, GLB materials, or ink. Invalid, oversized, or newer-version preference files are retained on load; Scene shows the issue and uses defaults until you explicitly remember a valid preference. Reset changes the current session; use Remember afterward to reset the startup default as well.
 
 ## Saved freeform guide
 
-In **Drawing → Saved guides**, choose **Add freeform** to create an editable bounded sheet. Adjust the center and rotation, sweep depth, bend, and four local XY directrix control points. The directrix control X coordinates must remain increasing, which keeps the curve monotone and excludes loops. Activate the guide with **Use** and draw with the brush; new ink is stabilized on the guide while existing strokes remain fixed. The preview is a wire grid. Ray hits are approximated against a deterministic 64×8 triangle mesh, so the guide is suitable for sketching and reference construction rather than precision CAD. Line, fill, shape, and curve draft tools remain unavailable while a saved guide is active.
+In **Drawing → Saved guides**, choose **Add freeform** to create an editable bounded sheet. Adjust the center and rotation, sweep depth, bend, and four local XY directrix control points. The directrix control X coordinates must remain increasing, which keeps the curve monotone and excludes loops. Activate the guide with **Use** and draw with the brush; new ink is stabilized on the guide while existing strokes remain fixed. The preview is a wire grid. Ray hits are approximated against a deterministic 64×8 triangle mesh, so the guide is suitable for sketching and reference construction rather than precision CAD. Planar line, fill, shape, and curve tools require a saved plane guide or the temporary plane; surface tools are not yet implemented for curved guide meshes.
+
+In **Drawing → Saved guides**, choose **Add ring** to create a toroidal drawing surface. Set its center/rotation, major radius, and tube radius; the tube radius must stay smaller than the major radius. Brush strokes are stabilized in both wrapped directions, and the wire preview shows the ring mesh. Missed surface regions split strokes as with other curved guides.
 
 ## Loft guides
 
@@ -424,11 +437,11 @@ In Select mode, click a visible model to select it in the viewport. A teal box m
 
 Enable **Draw here** on one visible, unlocked model to place freehand strokes on its surface. Picking selects the nearest positive triangle hit in that model and accepts both face directions. A miss ends the current stroke. Sampling continues only within one triangle or across a shared manifold edge, with a 24-pixel maximum gap; larger jumps, non-manifold edges, and separately indexed seams split the stroke so it cannot bridge disconnected mesh parts. Surface points are stored directly in world space without planar stabilization. Each stroke keeps the surface normal and a camera-facing tangent captured at its first hit. Moving or scaling the OBJ later leaves existing strokes where they were drawn; the resulting strokes remain ordinary editable ink and are included in normal drawing exports. This surface workflow has compile validation; hands-on interaction and save/recovery round trips remain to be checked.
 
-## Animated GIF export
+## Animated GIF and MP4 export
 
-Choose **Export → Animated GIF (.gif)…** for a fixed-focus full turntable or a saved camera sequence. Sequence export uses the saved timing and camera sampler; turntables use the current view as a fixed-pivot start pose. The exporter samples deterministically and renders clean artwork frames without selection handles or editing overlays. Output is bounded to 480 frames, 24 FPS, and 921,600 pixels per frame, with progress and cancellation. The current camera and drawing are not changed. GIF encoding uses the bundled Rust `gif` and `color_quant` crates (MIT/Apache-2.0 and MIT); no external encoder is required. Existing destinations require overwrite confirmation, and incomplete/cancelled output is discarded from a temporary file.
+Choose **Export → Animated GIF/MP4** for a fixed-focus full turntable or a saved camera sequence. Sequence export uses the saved timing and camera sampler; turntables use the current view as a fixed-pivot start pose. The exporter samples deterministically and renders clean artwork frames without selection handles or editing overlays. Output is bounded to 480 frames, 24 FPS, and 921,600 pixels per frame, with progress and cancellation. The current camera and drawing are not changed. GIF encoding uses bundled Rust crates; MP4 uses FFmpeg with libx264 on PATH and pads odd dimensions for H.264. Existing destinations require overwrite confirmation, and incomplete/cancelled output is discarded from a temporary file.
 
-The **Reconstructed reveal** mode is a synthetic preview from the current visible strokes in saved document order. It spreads those strokes evenly across the chosen duration; it does not claim to reproduce when they were drawn. Deleted strokes are absent, while imports and mirrored copies appear in their current list order. Native document saves already preserve this order, so no recording log or additional storage is needed.
+The **Reconstructed reveal** mode is a synthetic preview from the current visible strokes in saved document order. It spreads those strokes evenly across the chosen duration; it does not claim to reproduce when they were drawn. Deleted strokes are absent, while imports and mirrored copies appear in their current list order. To capture real future edits, open **Construction history** from the animated export workflow and start a recording before drawing. The recorder stores a bounded baseline and completed document snapshots, including undo/redo and insert operations; typed action metadata distinguishes drawing, model drawing, erase, undo, redo, imports, and other scene edits. It excludes unfinished gestures, camera/view changes, and tool settings. Recordings survive restart and are capped at 200 edits, 64 MiB each, and 256 MiB total. You can pause/resume recording; edits made during a pause appear together in the next snapshot after resume. The History window reports average and maximum synchronous per-edit capture cost; JSONL encoding and disk sync run in the background and are excluded from that measurement. **Recorded history** replays saved states using captured event timing, with trim and 0.25×–4× speed controls. Older drawings have no invented timing; use Reconstructed reveal for those.
 
 Artwork still export supports PNG and JPEG through **Export → Artwork image**. JPEG flattens to the selected Canvas, White, or Black background at quality 92; dimensions share the 8-megapixel limit. PNG remains the default format. Its optional transparent mode preserves stroke lighting and shadows, unpremultiplies anti-aliased edges in linear color, and excludes the ground and 3D image planes.
 
@@ -477,3 +490,17 @@ Run `cargo run --release -- --verify-palette` for fill/outline sampling, visibil
 Choose **Export → Artwork image (.png)…** to save the current view as a PNG. Set dimensions up to 8192 pixels per side and 8 megapixels total. The export uses the current camera target and vertical framing; changing the output aspect changes the horizontal framing. It keeps the current background and lighting and includes visible layers, while omitting guides, selection tint, handles, and interface overlays. The export renders from a snapshot and does not change the drawing, camera, selection, history, or workspace presentation.
 
 An existing destination requires a separate overwrite confirmation. Run `cargo run --release -- --verify-png` to render and inspect the storefront fixture at two dimensions; it writes `verification/artwork-1024x768.png`, `verification/artwork-640x480.png`, and `verification/png-report.json`.
+
+## Capability demos and tutorials
+
+The shot list, recording workflow, and manifest format are in [docs/capability-demos](docs/capability-demos/README.md). **Recorded clips are not published yet.** Each clip will be linked here only after its demonstrated workflow and the recording itself have been reviewed.
+
+| Topic | Status | Static alternative |
+| --- | --- | --- |
+| Drawing and orbiting | Recording pending | Use the [controls](#controls) and straight-line/guide walkthroughs above. |
+| Curved guides | Recording pending | See [revolved surfaces](#revolved-drawing-surfaces--sketch-016) and [saved freeform guides](#saved-freeform-guide). |
+| Mirror and shapes | Recording pending | See [filled planar shapes](#filled-planar-shapes-and-outlines) and the Live Mirror panel instructions. |
+| Selection and erasing | Recording pending | See the [controls](#controls) and selection inspector. |
+| References and export | Recording pending | See [OBJ references](#obj-reference-models), [animation export](#animated-gif-and-mp4-export), and [artwork image export](#artwork-image-export). |
+
+Long-form tutorials and transcripts will be linked here after capture and review. Their instructions will remain available as text if animation is disabled.

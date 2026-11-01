@@ -12,6 +12,12 @@ const validator = require(require.resolve('gltf-validator', { paths: [path.resol
     fs.writeFileSync(path.join(root, `${item.name}-validator.json`), JSON.stringify(report, null, 2));
     cases.push({ name: item.name, errors: report.issues.numErrors, warnings: report.issues.numWarnings, validator: report.validatorVersion });
   }
+  if (manifest.imagePlaneFixture) {
+    const item = manifest.imagePlaneFixture;
+    const report = await validator.validateBytes(new Uint8Array(fs.readFileSync(path.join(root, item.file))), { uri: item.file, maxIssues: 100 });
+    fs.writeFileSync(path.join(root, 'image-plane-validator.json'), JSON.stringify(report, null, 2));
+    cases.push({ name: 'mixed-scene', errors: report.issues.numErrors, warnings: report.issues.numWarnings, validator: report.validatorVersion });
+  }
   const passed = cases.every(item => item.errors === 0 && item.warnings === 0);
   fs.writeFileSync(path.join(root, 'validator-report.json'), JSON.stringify({ passed, cases }, null, 2));
   console.log(JSON.stringify({ passed, cases }, null, 2));

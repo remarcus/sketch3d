@@ -267,8 +267,7 @@ pub fn copy_asset(
     temp.as_file()
         .sync_all()
         .map_err(|error| error.to_string())?;
-    temp.persist(&destination)
-        .map_err(|error| error.to_string())?;
+    crate::atomic_file::replace(temp, &destination).map_err(|error| error.to_string())?;
     Ok((file_name, image))
 }
 

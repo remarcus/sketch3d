@@ -1,6 +1,7 @@
 //! Shared staged color editor for brush ink, the canvas background, and ground.
 //! Model colors stay in linear RGB; text and swatches are shown as sRGB.
 
+use super::ui_style;
 use crate::{palette::Palette, presentation};
 use eframe::egui::ecolor::Hsva;
 use eframe::egui::{self, Color32, Id, RichText, Ui};
@@ -237,7 +238,7 @@ impl ColorEditor {
             });
 
             if let Some(error) = &self.invalid {
-                ui.colored_label(Color32::LIGHT_RED, error);
+                ui.colored_label(ui_style::colors(ui.ctx()).error, error);
             }
 
             ui.separator();

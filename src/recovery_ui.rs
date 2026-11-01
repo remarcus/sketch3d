@@ -19,13 +19,35 @@ fn age_label(time: u64) -> String {
 }
 impl SketchApp {
     pub(super) fn record_recovery_edit(&mut self) {
+        self.record_recovery_edit_labeled("Scene edit");
+    }
+    pub(super) fn record_recovery_edit_labeled(&mut self, label: &str) {
         if self.tutorial.practice.is_some() {
             return;
         }
         self.close_cleanup_failed = false;
         self.recovery.mark_edit();
+        self.construction_history.record(&self.doc, label);
+    }
+    pub(super) fn record_recovery_stroke_labeled(
+        &mut self,
+        label: &str,
+        stroke: &crate::document::Stroke,
+        duration_ms: u64,
+    ) {
+        if self.tutorial.practice.is_some() {
+            return;
+        }
+        self.close_cleanup_failed = false;
+        self.recovery.mark_edit();
+        self.construction_history
+            .record_stroke(&self.doc, label, stroke, duration_ms);
     }
     pub(super) fn reset_recovery_document(&mut self) {
+        if self.construction_history.recording() {
+            self.construction_history.stop();
+            self.construction_history.notice = Some("Construction recording stopped because the document changed. Opening, restoring, and creating drawings are not recorded as edits.".into());
+        }
         self.close_cleanup_failed = false;
         self.retire_recovered_source();
         self.recovery.begin_document();
@@ -181,13 +203,18 @@ impl SketchApp {
         self.image_plane_assets.clear();
         self.renderer.clear_image_plane_assets();
         self.renderer.clear_obj_reference_models();
-        self.install_recovery_image_assets(&recovered_assets);
+        let image_asset_restore = self.install_recovery_image_assets(&recovered_assets);
         self.recovery.force_snapshot_with_assets(
             &self.doc,
             self.recovered_source.clone(),
             recovered_assets,
         );
-        self.status = "Recovered an unsaved copy. Save as to choose a native drawing file.".into();
+        self.status = match image_asset_restore {
+            Ok(_) => "Recovered an unsaved copy. Save as to choose a native drawing file.".into(),
+            Err(error) => format!(
+                "Recovered an unsaved copy, but an image asset could not be restored: {error}"
+            ),
+        };
     }
     pub(super) fn show_recovery(&mut self, ctx: &egui::Context) {
         if !self.recovery_prompt {
@@ -250,6 +277,26 @@ impl SketchApp {
                     std::fs::create_dir_all(&root).unwrap();
                     self.file = Some(source.clone());
                     assert!(self.save(false));
+                    let image_fixture = root.join("image-plane-preview.png");
+                    let image_bytes = std::fs::read(&image_fixture).unwrap();
+                    let image_asset = crate::image_planes::decode_asset(&image_fixture).unwrap();
+                    let recovered_plane = crate::image_planes::ImagePlane::from_asset(
+                        9801,
+                        "Recovery image",
+                        "image-9801.png".into(),
+                        image_asset.size,
+                        Vec3::new(-0.7, 0.7, 0.2),
+                        glam::Quat::IDENTITY,
+                        1.4,
+                    )
+                    .unwrap();
+                    self.doc.image_planes.push(recovered_plane.clone());
+                    assert!(self
+                        .renderer
+                        .set_image_plane_asset(recovered_plane.id, &image_asset)
+                        .is_ok());
+                    self.image_plane_assets
+                        .insert(recovered_plane.id, image_asset);
                     let mut fill = crate::polygon::study().strokes.remove(0);
                     fill.id = self.next_id;
                     self.next_id += 1;
@@ -299,7 +346,14 @@ impl SketchApp {
                     }
                     self.finish();
                     std::fs::write(&expected_path, serde_json::to_vec(&self.doc).unwrap()).unwrap();
-                    assert!(self.recovery.force_snapshot(&self.doc, self.file.clone()));
+                    assert!(self.recovery.force_snapshot_with_assets(
+                        &self.doc,
+                        self.file.clone(),
+                        vec![crate::recovery_store::RecoveryAsset {
+                            asset_file: recovered_plane.asset_file,
+                            bytes: image_bytes,
+                        }],
+                    ));
                     self.recovery_verify_stage = 1;
                 }
                 1 if !self.recovery.busy()
@@ -349,6 +403,14 @@ impl SketchApp {
                             Document::from_json(&std::fs::read_to_string(&expected_path).unwrap())
                                 .unwrap();
                         assert_eq!(self.doc.strokes, expected.strokes);
+                        assert_eq!(self.doc.image_planes, expected.image_planes);
+                        let recovered_plane_id = expected.image_planes[0].id;
+                        assert!(
+                            self.image_plane_assets.contains_key(&recovered_plane_id),
+                            "recovery image asset restore failed: {}",
+                            self.status
+                        );
+                        assert!(self.renderer.has_image_plane_asset(recovered_plane_id));
                         assert_eq!(
                             self.doc
                                 .strokes

@@ -5,7 +5,7 @@ use crate::{
         ProfilePoint as SavedProfilePoint,
     },
     revolved::{ProfilePoint, Revolved},
-    surface::{ConeSurface, Cylinder, GuidePreview, SphereSurface, Surface},
+    surface::{ConeSurface, Cylinder, GuidePreview, RingSurface, SphereSurface, Surface},
 };
 
 type GuideEditState = (
@@ -15,6 +15,30 @@ type GuideEditState = (
     Option<u64>,
     Option<u64>,
 );
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PlanarTarget {
+    pub plane: DrawingPlane,
+    half_extent: Option<glam::Vec2>,
+}
+
+impl PlanarTarget {
+    pub fn hit(self, origin: Vec3, direction: Vec3) -> Option<Vec3> {
+        let point = intersect_plane(origin, direction, self.plane)?;
+        self.contains(point).then_some(point)
+    }
+
+    pub fn contains(self, point: Vec3) -> bool {
+        let Some(half_extent) = self.half_extent else {
+            return true;
+        };
+        let (u, v, _) = self.plane.basis();
+        let offset = point - self.plane.origin();
+        let tolerance = 1e-5 * half_extent.max_element().max(1.0);
+        offset.dot(u).abs() <= half_extent.x + tolerance
+            && offset.dot(v).abs() <= half_extent.y + tolerance
+    }
+}
 
 impl SketchApp {
     pub(super) fn resource_target_active(&self) -> bool {
@@ -71,6 +95,45 @@ impl SketchApp {
             .map(|guide| &guide.geometry)
     }
 
+    /// Plane snapshot used by planar drawing tools. Saved non-planar guides,
+    /// image planes, and model surfaces stay exclusive to brush drawing.
+    pub(super) fn planar_drawing_target(&self) -> Option<PlanarTarget> {
+        if self.doc.active_model_reference.is_some() {
+            return None;
+        }
+        if let Some(id) = self.doc.active_image_plane {
+            let image =
+                self.doc.image_planes.iter().find(|image| {
+                    image.id == id && image.visible && !image.locked && image.drawable
+                })?;
+            return Some(PlanarTarget {
+                plane: DrawingPlane {
+                    anchor: image.origin,
+                    rotation_degrees: rotation_degrees(image.rotation),
+                    depth: 0.0,
+                },
+                half_extent: Some(image.size * 0.5),
+            });
+        }
+        if self.doc.active_guide.is_some() {
+            return match self.saved_guide_geometry()? {
+                GuideGeometry::Plane { origin, rotation } => Some(PlanarTarget {
+                    plane: DrawingPlane {
+                        anchor: *origin,
+                        rotation_degrees: rotation_degrees(*rotation),
+                        depth: 0.0,
+                    },
+                    half_extent: None,
+                }),
+                _ => None,
+            };
+        }
+        (!self.use_cylinder && !self.use_revolved).then_some(PlanarTarget {
+            plane: self.guide,
+            half_extent: None,
+        })
+    }
+
     pub(super) fn saved_guide_surface(&self) -> Option<Surface> {
         geometry_surface(self.saved_guide_geometry()?)
     }
@@ -108,6 +171,12 @@ impl SketchApp {
                 rotation,
                 radius,
             } => (*center, *rotation, radius * 3.0),
+            GuideGeometry::Ring {
+                center,
+                rotation,
+                major_radius,
+                minor_radius,
+            } => (*center, *rotation, (major_radius + minor_radius) * 1.8),
             GuideGeometry::Freeform { surface } => (
                 surface.center,
                 surface.rotation,
@@ -149,6 +218,17 @@ impl SketchApp {
                 }
                 if ui.button("Add cone").clicked() {
                     self.add_saved_guide("Cone", GuideGeometry::cone(self.camera.target, 1.0, 2.0));
+                }
+                if ui.button("Add ring").clicked() {
+                    self.add_saved_guide(
+                        "Ring",
+                        GuideGeometry::Ring {
+                            center: self.camera.target,
+                            rotation: glam::Quat::IDENTITY,
+                            major_radius: 1.5,
+                            minor_radius: 0.4,
+                        },
+                    );
                 }
                 if ui.button("Add freeform").clicked() {
                     let surface = FreeformSurface {
@@ -202,7 +282,7 @@ impl SketchApp {
                 });
             }
             if self.doc.guide_resources.is_empty() {
-                ui.small("Save a plane, cylinder, or revolved guide, or add a sphere/cone/freeform.");
+                ui.small("Save a plane, cylinder, or revolved guide, or add a sphere/cone/ring/freeform.");
             }
             let mut remove = None;
             let before = self.guide_edit_state();
@@ -228,7 +308,7 @@ impl SketchApp {
                     if changed_guide && guide.validate().is_err() {
                         guide.geometry = original_geometry;
                         changed_guide = false;
-                        ui.colored_label(Color32::LIGHT_RED, "Invalid guide geometry; the last valid values were restored.");
+                        ui.colored_label(ui_style::colors(ui.ctx()).error, "Invalid guide geometry; the last valid values were restored.");
                     }
                 });
                 changed |= changed_guide;
@@ -256,7 +336,7 @@ impl SketchApp {
                 }
             }
             if changed { self.commit_guide_edit(before); }
-            ui.small("Saved guide transforms live in the drawing. Existing strokes never move. Ring/torus guides are not included.");
+            ui.small("Saved guide transforms live in the drawing. Existing strokes never move.");
         });
         self.obj_reference_controls(ui);
     }
@@ -480,10 +560,12 @@ fn revolved_geometry(value: Revolved) -> GuideGeometry {
     }
 }
 fn to_revolved(center: Vec3, rotation: glam::Quat, profile: &[SavedProfilePoint]) -> Revolved {
-    let mut result = Revolved::default();
-    result.center = center;
-    result.rotation_degrees = rotation_degrees(rotation);
-    result.count = profile.len().min(8);
+    let mut result = Revolved {
+        center,
+        rotation_degrees: rotation_degrees(rotation),
+        count: profile.len().min(8),
+        ..Revolved::default()
+    };
     for (dest, source) in result.profile.iter_mut().zip(profile.iter()).take(8) {
         *dest = ProfilePoint {
             height: source.height,
@@ -524,6 +606,17 @@ fn geometry_surface(geometry: &GuideGeometry) -> Option<Surface> {
             rotation: *rotation,
             radius: *radius,
         }),
+        GuideGeometry::Ring {
+            center,
+            rotation,
+            major_radius,
+            minor_radius,
+        } => Surface::Ring(RingSurface {
+            center: *center,
+            rotation: *rotation,
+            major_radius: *major_radius,
+            minor_radius: *minor_radius,
+        }),
         GuideGeometry::Cone {
             center,
             rotation,
@@ -536,7 +629,7 @@ fn geometry_surface(geometry: &GuideGeometry) -> Option<Surface> {
             height: *height,
         }),
         GuideGeometry::Freeform { surface } => Surface::Freeform(*surface),
-        GuideGeometry::Loft { surface } => Surface::Loft(surface.clone()),
+        GuideGeometry::Loft { surface } => Surface::Loft(*surface),
     })
 }
 fn geometry_preview(geometry: &GuideGeometry) -> Option<GuidePreview> {
@@ -566,6 +659,17 @@ fn geometry_preview(geometry: &GuideGeometry) -> Option<GuidePreview> {
             rotation: *rotation,
             radius: *radius,
         }),
+        GuideGeometry::Ring {
+            center,
+            rotation,
+            major_radius,
+            minor_radius,
+        } => GuidePreview::Ring(RingSurface {
+            center: *center,
+            rotation: *rotation,
+            major_radius: *major_radius,
+            minor_radius: *minor_radius,
+        }),
         GuideGeometry::Cone {
             center,
             rotation,
@@ -578,7 +682,7 @@ fn geometry_preview(geometry: &GuideGeometry) -> Option<GuidePreview> {
             height: *height,
         }),
         GuideGeometry::Freeform { surface } => GuidePreview::Freeform(*surface),
-        GuideGeometry::Loft { surface } => GuidePreview::Loft(surface.clone()),
+        GuideGeometry::Loft { surface } => GuidePreview::Loft(*surface),
     })
 }
 fn geometry_frame(geometry: &GuideGeometry, world: Vec3) -> Option<(Vec3, Vec3)> {
@@ -615,6 +719,23 @@ fn geometry_frame(geometry: &GuideGeometry, world: Vec3) -> Option<(Vec3, Vec3)>
                         Vec3::X
                     },
             )
+        }
+        GuideGeometry::Ring {
+            center,
+            rotation,
+            major_radius,
+            minor_radius: _,
+        } => {
+            let local = rotation.inverse() * (world - *center);
+            let major = local.x.atan2(local.z);
+            let tube_center = Vec3::new(
+                *major_radius * major.sin(),
+                0.0,
+                *major_radius * major.cos(),
+            );
+            let normal = (local - tube_center).normalize_or_zero();
+            let tangent = Vec3::new(major.cos(), 0.0, -major.sin());
+            (*rotation * normal, *rotation * tangent)
         }
         GuideGeometry::Cone {
             center,
@@ -684,6 +805,21 @@ fn edit_geometry(ui: &mut egui::Ui, geometry: &mut GuideGeometry) -> bool {
             changed |= ui
                 .add(egui::Slider::new(radius, 0.001..=10000.0).text("Radius (wu)"))
                 .changed();
+        }
+        GuideGeometry::Ring {
+            center,
+            rotation,
+            major_radius,
+            minor_radius,
+        } => {
+            changed |= edit_transform(ui, center, rotation);
+            changed |= ui
+                .add(egui::Slider::new(major_radius, 0.002..=10000.0).text("Major radius (wu)"))
+                .changed();
+            changed |= ui
+                .add(egui::Slider::new(minor_radius, 0.001..=9999.0).text("Tube radius (wu)"))
+                .changed();
+            ui.small("Tube radius must stay smaller than major radius to keep a non-self-intersecting ring.");
         }
         GuideGeometry::Revolved {
             center,
@@ -805,4 +941,40 @@ fn edit_transform(ui: &mut egui::Ui, center: &mut Vec3, rotation: &mut glam::Qua
         *rotation = rotation_from_degrees(degrees);
     }
     changed
+}
+
+#[cfg(test)]
+mod planar_target_tests {
+    use super::*;
+
+    #[test]
+    fn rotated_bounded_planar_target_accepts_edges_and_rejects_outside_rays() {
+        let target = PlanarTarget {
+            plane: DrawingPlane {
+                anchor: Vec3::new(0.7, -0.4, 1.2),
+                rotation_degrees: Vec3::new(23.0, -31.0, 42.0),
+                depth: 0.0,
+            },
+            half_extent: Some(glam::Vec2::new(1.5, 0.75)),
+        };
+        let (u, v, normal) = target.plane.basis();
+        let origin = target.plane.origin();
+        let edge = origin + u * 1.5 + v * 0.75;
+        assert!(target.contains(edge), "the image boundary is inclusive");
+        let edge_hit = target.hit(edge + normal * 2.0, -normal).unwrap();
+        assert!(edge_hit.distance(edge) < 1e-5);
+
+        let outside = origin + u * 1.501;
+        assert!(!target.contains(outside));
+        assert!(target.hit(outside + normal * 2.0, -normal).is_none());
+
+        let infinite_guide = PlanarTarget {
+            plane: target.plane,
+            half_extent: None,
+        };
+        assert!(infinite_guide.contains(outside));
+        assert!(infinite_guide
+            .hit(outside + normal * 2.0, -normal)
+            .is_some());
+    }
 }

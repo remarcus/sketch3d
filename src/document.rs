@@ -8,13 +8,28 @@ pub mod guide_resources;
 #[path = "model_references.rs"]
 pub mod model_references;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrushKind {
     #[default]
     Round,
     Ribbon,
     Chisel,
+}
+
+/// How a stroke responds to scene lighting and exports to mesh formats.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StrokeMaterial {
+    /// Receives scene lighting and casts shadows.
+    #[default]
+    Shaded,
+    /// Keeps its stored color regardless of scene lighting and does not cast shadows.
+    Unlit,
+    /// Unlit stored color with a fixed emissive contribution.
+    Emissive,
+    /// Erases previously composited canvas pixels within the stroke's coverage.
+    Cutout,
 }
 
 /// Brush orientation is captured in world space when the stroke begins.
@@ -114,6 +129,8 @@ pub struct Stroke {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<PlanarFill>,
     #[serde(default)]
+    pub material: StrokeMaterial,
+    #[serde(default)]
     pub group_id: Option<u64>,
     #[serde(default = "default_layer_id")]
     pub layer_id: u64,
@@ -153,7 +170,7 @@ impl Default for Document {
         Self {
             layers: layers_default(),
             active_layer: 1,
-            version: 11,
+            version: 13,
             strokes: Vec::new(),
             image_planes: Vec::new(),
             active_image_plane: None,
@@ -208,7 +225,7 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=11)) {
+        if !matches!(version, Some(1..=13)) {
             return Err("Unsupported document version".into());
         }
         if matches!(version, Some(1..=6)) {
@@ -278,7 +295,7 @@ impl Document {
             }
         }
         let mut doc: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
-        doc.version = 11;
+        doc.version = 13;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
         }
@@ -375,6 +392,7 @@ mod tests {
     use super::*;
     fn stroke() -> Stroke {
         Stroke {
+            material: Default::default(),
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -429,7 +447,7 @@ mod tests {
                 active_model_reference: None,
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-            assert_eq!(loaded.version, 11);
+            assert_eq!(loaded.version, 13);
             assert_eq!(loaded.strokes, doc.strokes);
         }
     }
@@ -453,7 +471,7 @@ mod tests {
         // a new shape, or prevent an otherwise valid legacy file from opening.
         old["strokes"][0]["brush"] = serde_json::json!({"kind": "future_brush"});
         let loaded = Document::from_json(&old.to_string()).unwrap();
-        assert_eq!(loaded.version, 11);
+        assert_eq!(loaded.version, 13);
         assert_eq!(loaded.strokes, vec![original]);
         old["strokes"][0].as_object_mut().unwrap().remove("brush");
         let without_extension = Document::from_json(&old.to_string()).unwrap();
@@ -481,7 +499,7 @@ mod tests {
             .remove("opacity");
 
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 11);
+        assert_eq!(loaded.version, 13);
         assert_eq!(loaded.strokes[0].brush.opacity, 1.0);
         assert_eq!(loaded.strokes[0].brush.softness, 0.0);
         assert_eq!(
@@ -491,7 +509,7 @@ mod tests {
 
         let saved = serde_json::to_string(&loaded).unwrap();
         let reopened = Document::from_json(&saved).unwrap();
-        assert_eq!(reopened.version, 11);
+        assert_eq!(reopened.version, 13);
         assert_eq!(reopened.strokes, loaded.strokes);
     }
     #[test]
@@ -624,7 +642,7 @@ mod tests {
         value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
         value["strokes"][0]["points"][0]["tilt"] = serde_json::json!("unknown extension");
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 11);
+        assert_eq!(loaded.version, 13);
         assert_eq!(loaded.strokes, vec![original]);
     }
     #[test]
@@ -720,7 +738,7 @@ mod tests {
         legacy["strokes"][0]["brush"]["texture"] = serde_json::json!({"kind":"future_pattern"});
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
         mark.brush.texture = TextureSettings::default();
-        assert_eq!(loaded.version, 11);
+        assert_eq!(loaded.version, 13);
         assert_eq!(loaded.strokes, vec![mark]);
     }
     #[test]
@@ -756,6 +774,7 @@ mod layer_tests {
     #[test]
     fn version_four_migration_preserves_all_resolved_ink() {
         let mut stroke = Stroke {
+            material: Default::default(),
             fill: None,
             group_id: None,
             id: 8,
@@ -784,7 +803,7 @@ mod layer_tests {
         value["active_layer"] = serde_json::json!(99);
         value["strokes"][0]["layer_id"] = serde_json::json!("unknown");
         let migrated = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(migrated.version, 11);
+        assert_eq!(migrated.version, 13);
         assert_eq!(migrated.strokes, vec![original]);
         assert_eq!(migrated.layers, layers_default());
         assert_eq!(migrated.active_layer, 1);
@@ -800,6 +819,7 @@ mod layer_tests {
         });
         doc.active_layer = 2;
         let stroke = Stroke {
+            material: Default::default(),
             fill: None,
             group_id: None,
             id: 1,
@@ -849,6 +869,7 @@ mod layer_tests {
                 "blank_name" => doc.layers[0].name = " ".into(),
                 "active_missing" => doc.active_layer = 2,
                 "orphan" => doc.strokes.push(Stroke {
+                    material: Default::default(),
                     fill: None,
                     group_id: None,
                     id: 1,
@@ -874,6 +895,7 @@ mod group_tests {
     use super::*;
     fn mark(id: u64) -> Stroke {
         Stroke {
+            material: Default::default(),
             id,
             fill: None,
             group_id: Some(7),
@@ -913,7 +935,7 @@ mod group_tests {
             s.group_id = None;
         }
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 11);
+        assert_eq!(loaded.version, 13);
         assert_eq!(loaded.strokes, doc.strokes);
         assert_eq!(loaded.layers, doc.layers);
     }

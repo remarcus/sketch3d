@@ -13,6 +13,7 @@ pub fn pressure_fixture() -> Document {
         version: 7,
         strokes: vec![
             Stroke {
+                material: Default::default(),
                 id: 1001,
                 fill: None,
                 group_id: None,
@@ -39,6 +40,7 @@ pub fn pressure_fixture() -> Document {
                 ],
             },
             Stroke {
+                material: Default::default(),
                 id: 1002,
                 fill: None,
                 group_id: None,
@@ -53,6 +55,7 @@ pub fn pressure_fixture() -> Document {
                 }],
             },
             Stroke {
+                material: Default::default(),
                 id: 1003,
                 fill: None,
                 group_id: None,
@@ -98,6 +101,7 @@ pub fn brush_fixture() -> Document {
         let color = [[0.17, 0.82, 0.74], [0.94, 0.35, 0.14], [0.35, 0.45, 0.9]][row];
         let y = 1.2 - row as f32 * 1.2;
         doc.strokes.push(Stroke {
+            material: Default::default(),
             id: 2001 + row as u64 * 2,
             fill: None,
             group_id: None,
@@ -123,6 +127,7 @@ pub fn brush_fixture() -> Document {
         let dot_rotation =
             glam::Quat::from_rotation_arc(Vec3::Z, Vec3::new(0.3, 0.2, 1.0).normalize());
         doc.strokes.push(Stroke {
+            material: Default::default(),
             id: 2002 + row as u64 * 2,
             fill: None,
             group_id: None,
@@ -186,6 +191,7 @@ pub fn dynamics_fixture() -> Document {
         ][row];
         let y = 1.8 - row as f32 * 1.2;
         doc.strokes.push(Stroke {
+            material: Default::default(),
             id: 3001 + row as u64 * 2,
             fill: None,
             group_id: None,
@@ -210,6 +216,7 @@ pub fn dynamics_fixture() -> Document {
                 .collect(),
         });
         doc.strokes.push(Stroke {
+            material: Default::default(),
             id: 3002 + row as u64 * 2,
             fill: None,
             group_id: None,
@@ -261,6 +268,7 @@ pub fn textured_fixture() -> Document {
         ][row];
         let y = 1.8 - row as f32 * 1.2;
         doc.strokes.push(Stroke {
+            material: Default::default(),
             id: 4001 + row as u64 * 3,
             fill: None,
             group_id: None,
@@ -284,6 +292,7 @@ pub fn textured_fixture() -> Document {
                 .collect(),
         });
         doc.strokes.push(Stroke {
+            material: Default::default(),
             id: 4002 + row as u64 * 3,
             fill: None,
             group_id: None,
@@ -299,6 +308,7 @@ pub fn textured_fixture() -> Document {
         });
         // A short depth-oriented round companion exercises circumference UV seams.
         doc.strokes.push(Stroke {
+            material: Default::default(),
             id: 4003 + row as u64 * 3,
             fill: None,
             group_id: None,
@@ -363,6 +373,7 @@ pub fn vase_fixture() -> Document {
             })
             .collect();
         doc.strokes.push(Stroke {
+            material: Default::default(),
             id: 6001 + doc.strokes.len() as u64,
             fill: None,
             group_id: None,
@@ -535,7 +546,104 @@ pub fn run() -> Result<(), String> {
         }
         cases.push(json!({"name":name,"file":file,"summary":summary,"strokes":strokes}));
     }
-    let report = json!({"passed":true,"axes":"+X right, +Y up, +Z front","unitInMeters":1.0,"cases":cases,"independentValidationRequired":["Khronos glTF Validator","Blender import"]});
+    let image_root = directory.join("image-plane-assets");
+    std::fs::create_dir_all(&image_root).map_err(|e| e.to_string())?;
+    let mut fixture_image = image::RgbaImage::new(4, 2);
+    for (x, y, pixel) in fixture_image.enumerate_pixels_mut() {
+        *pixel = match (x < 2, y == 0) {
+            (true, true) => image::Rgba([240, 32, 24, 255]),
+            (false, true) => image::Rgba([24, 220, 48, 255]),
+            (true, false) => image::Rgba([32, 64, 240, 128]),
+            (false, false) => image::Rgba([240, 208, 24, 255]),
+        };
+    }
+    let asset_file = "image-9001.png".to_owned();
+    let asset_path = image_root.join(&asset_file);
+    fixture_image.save(&asset_path).map_err(|e| e.to_string())?;
+    let asset = crate::image_planes::decode_asset(&asset_path)?;
+    let mut plane = crate::image_planes::ImagePlane::from_asset(
+        9001,
+        "Blender verification plane",
+        asset_file.clone(),
+        asset.size,
+        Vec3::new(1.5, 0.75, -0.5),
+        glam::Quat::from_rotation_y(0.35),
+        3.0,
+    )?;
+    plane.opacity = 0.65;
+
+    let model_bundle = image_root.join("models/9002");
+    std::fs::create_dir_all(&model_bundle).map_err(|error| error.to_string())?;
+    std::fs::write(
+        model_bundle.join("model.obj"),
+        "mtllib material-000.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\nusemtl WarmPaint\nf 1/1/1 2/2/1 3/3/1\n",
+    )
+    .map_err(|error| error.to_string())?;
+    std::fs::write(
+        model_bundle.join("material-000.mtl"),
+        "newmtl WarmPaint\nKd 0.8 0.2 0.1\nd 0.6\nNs 32\nmap_Kd ignored.png\n",
+    )
+    .map_err(|error| error.to_string())?;
+    let model_resource = crate::document::model_references::ObjReferenceResource {
+        id: 9002,
+        name: "Verification furniture".into(),
+        visible: true,
+        locked: false,
+        center: Vec3::new(4.0, 1.0, -0.5),
+        rotation: glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        scale: 2.0,
+        asset: crate::obj_reference_storage::ObjReferenceAsset {
+            id: 9002,
+            bundle_dir: "models/9002".into(),
+        },
+    };
+    let model_min = Vec3::new(2.0, 1.0, -0.5);
+    let model_max = Vec3::new(4.0, 3.0, -0.5);
+    let image_plane_doc = Document {
+        image_planes: vec![plane.clone()],
+        model_references: vec![model_resource.clone()],
+        strokes: vec![pressure_fixture().strokes[0].clone()],
+        ..Document::default()
+    };
+    let plane_path = "image-plane.glb";
+    let image_plane_summary = export::write_glb_with_images(
+        &image_plane_doc,
+        None,
+        &image_root,
+        &directory.join(plane_path),
+    )?;
+    let corners = [
+        Vec3::new(-plane.size.x * 0.5, plane.size.y * 0.5, 0.0),
+        Vec3::new(-plane.size.x * 0.5, -plane.size.y * 0.5, 0.0),
+        Vec3::new(plane.size.x * 0.5, -plane.size.y * 0.5, 0.0),
+        Vec3::new(plane.size.x * 0.5, plane.size.y * 0.5, 0.0),
+    ];
+    let positions = corners
+        .iter()
+        .map(|corner| plane.origin + plane.rotation * *corner)
+        .collect::<Vec<_>>();
+    let minimum = positions.iter().copied().reduce(Vec3::min).unwrap();
+    let maximum = positions.iter().copied().reduce(Vec3::max).unwrap();
+    let image_plane = json!({
+        "file":plane_path,
+        "name":format!("Image_{}", plane.name),
+        "id":plane.id.to_string(),
+        "asset":plane.asset_file,
+        "pixelSize":asset.size,
+        "opacity":plane.opacity,
+        "min":minimum.to_array(),
+        "max":maximum.to_array(),
+        "modelName":format!("OBJ_{}", model_resource.name),
+        "modelId":model_resource.id.to_string(),
+        "modelAsset":model_resource.asset.bundle_dir,
+        "modelMin":model_min.to_array(),
+        "modelMax":model_max.to_array(),
+        "modelOpacity":0.6,
+        "modelDiffuse":[0.8, 0.2, 0.1],
+        "modelUnsupportedMtl":["Ns", "map_Kd"],
+        "summary":image_plane_summary
+    });
+    let report = json!({"passed":true,"axes":"+X right, +Y up, +Z front","unitInMeters":1.0,"cases":cases,"imagePlaneFixture":image_plane,"independentValidationRequired":["Khronos glTF Validator","Blender import"]});
     std::fs::write(
         directory.join("manifest.json"),
         serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,

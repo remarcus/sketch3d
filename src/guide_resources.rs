@@ -16,6 +16,7 @@ pub const MAX_GUIDE_NAME_CHARS: usize = 96;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // Resource variants stay directly serializable without boxing.
 pub enum GuideGeometry {
     Plane {
         origin: Vec3,
@@ -36,6 +37,12 @@ pub enum GuideGeometry {
         center: Vec3,
         rotation: Quat,
         radius: f32,
+    },
+    Ring {
+        center: Vec3,
+        rotation: Quat,
+        major_radius: f32,
+        minor_radius: f32,
     },
     Cone {
         center: Vec3,
@@ -138,6 +145,64 @@ impl GuideGeometry {
                     .filter(|t| *t > 1e-6 && t.is_finite())
                     .min_by(f32::total_cmp)?;
                 Some(origin + direction * t)
+            }
+            Self::Ring {
+                center,
+                rotation,
+                major_radius,
+                minor_radius,
+            } => {
+                if !valid_ring(center, rotation, major_radius, minor_radius) {
+                    return None;
+                }
+                let inverse = rotation.inverse();
+                let o = inverse * (origin - center);
+                let d = inverse * direction;
+                let bound = major_radius + minor_radius;
+                let a = d.length_squared() as f64;
+                let b = (2.0 * o.dot(d)) as f64;
+                let c = (o.length_squared() - bound * bound) as f64;
+                let discriminant = b * b - 4.0 * a * c;
+                let discriminant_tolerance = (b * b).abs().max((4.0 * a * c).abs()).max(1.0) * 1e-6;
+                if !discriminant.is_finite() || discriminant < -discriminant_tolerance || a <= 1e-14
+                {
+                    return None;
+                }
+                let root = discriminant.max(0.0).sqrt();
+                // Expand the enclosing-sphere interval slightly. Transformed
+                // rays can land just outside an exact tangent endpoint due to
+                // f32 rotation roundoff, which otherwise drops the first torus
+                // surface root and incorrectly returns the farther tube hit.
+                let endpoint_tolerance = 1e-5 * bound.max(1.0) as f64;
+                let t0 = ((-b - root) / (2.0 * a) - endpoint_tolerance).max(1e-6);
+                let t1 = (-b + root) / (2.0 * a) + endpoint_tolerance;
+                if !t1.is_finite() || t1 < t0 {
+                    return None;
+                }
+                let r = major_radius as f64;
+                let tube = minor_radius as f64;
+                let x = o.x as f64;
+                let y = o.y as f64;
+                let z = o.z as f64;
+                let dx = d.x as f64;
+                let dy = d.y as f64;
+                let dz = d.z as f64;
+                let q0 = x * x + y * y + z * z + r * r - tube * tube;
+                let q1 = 2.0 * (x * dx + y * dy + z * dz);
+                let q2 = dx * dx + dy * dy + dz * dz;
+                let coeff = [
+                    q0 * q0 - 4.0 * r * r * (x * x + z * z),
+                    2.0 * q0 * q1 - 8.0 * r * r * (x * dx + z * dz),
+                    q1 * q1 + 2.0 * q0 * q2 - 4.0 * r * r * (dx * dx + dz * dz),
+                    2.0 * q1 * q2,
+                    q2 * q2,
+                ];
+                let roots = polynomial_roots_in_interval(&coeff, t0, t1);
+                let t = roots
+                    .into_iter()
+                    .filter(|t| *t > 1e-6)
+                    .min_by(f64::total_cmp)?;
+                Some(origin + direction * t as f32)
             }
             Self::Cylinder {
                 center,
@@ -314,6 +379,18 @@ impl GuideResource {
                 validate_transform(*center, *rotation)?;
                 validate_dimension(*radius, "Guide radius")
             }
+            GuideGeometry::Ring {
+                center,
+                rotation,
+                major_radius,
+                minor_radius,
+            } => {
+                if valid_ring(*center, *rotation, *major_radius, *minor_radius) {
+                    Ok(())
+                } else {
+                    Err("Ring major radius must be greater than its valid tube radius".into())
+                }
+            }
             GuideGeometry::Freeform { surface } => surface.validate(),
             GuideGeometry::Loft { surface } => surface.validate(),
         }
@@ -368,6 +445,107 @@ fn validate_dimension(value: f32, label: &str) -> Result<(), String> {
         ))
     }
 }
+
+fn valid_ring(center: Vec3, rotation: Quat, major_radius: f32, minor_radius: f32) -> bool {
+    center.is_finite()
+        && center.abs().max_element() <= 10000.0
+        && rotation.is_finite()
+        && (rotation.length_squared() - 1.0).abs() <= 0.001
+        && major_radius.is_finite()
+        && minor_radius.is_finite()
+        && major_radius > minor_radius
+        && minor_radius >= 0.001
+        && major_radius <= 10000.0
+        && major_radius + minor_radius <= 10000.0
+}
+
+fn polynomial_value(coefficients: &[f64], x: f64) -> f64 {
+    coefficients
+        .iter()
+        .rev()
+        .fold(0.0, |value, coefficient| value.mul_add(x, *coefficient))
+}
+
+/// Isolate every real root in a bounded interval by recursively finding the
+/// derivative roots, then bisecting each monotone section. This handles the
+/// repeated roots produced by tangent silhouette hits as well as crossings.
+fn polynomial_roots_in_interval(coefficients: &[f64], low: f64, high: f64) -> Vec<f64> {
+    let mut coefficients = coefficients.to_vec();
+    while coefficients.len() > 1 && coefficients.last().is_some_and(|value| value.abs() < 1e-18) {
+        coefficients.pop();
+    }
+    if coefficients.len() <= 1 || !low.is_finite() || !high.is_finite() || high < low {
+        return Vec::new();
+    }
+    if coefficients.len() == 2 {
+        let root = -coefficients[0] / coefficients[1];
+        return (root >= low && root <= high && root.is_finite())
+            .then_some(root)
+            .into_iter()
+            .collect();
+    }
+    let derivative: Vec<_> = coefficients
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(power, coefficient)| *coefficient * power as f64)
+        .collect();
+    let mut partitions = vec![low];
+    partitions.extend(polynomial_roots_in_interval(&derivative, low, high));
+    partitions.push(high);
+    partitions.sort_by(f64::total_cmp);
+    partitions.dedup_by(|a, b| (*a - *b).abs() <= 1e-10 * a.abs().max(b.abs()).max(1.0));
+    let scale = coefficients
+        .iter()
+        .enumerate()
+        .map(|(power, coefficient)| {
+            coefficient.abs() * high.abs().max(low.abs()).max(1.0).powi(power as i32)
+        })
+        .sum::<f64>()
+        .max(1.0);
+    let tolerance = scale * 1e-12;
+    let mut roots = Vec::new();
+    for &point in &partitions {
+        if polynomial_value(&coefficients, point).abs() <= tolerance {
+            roots.push(point);
+        }
+    }
+    for interval in partitions.windows(2) {
+        let (mut a, mut b) = (interval[0], interval[1]);
+        let mut fa = polynomial_value(&coefficients, a);
+        let fb = polynomial_value(&coefficients, b);
+        if !fa.is_finite()
+            || !fb.is_finite()
+            || fa == 0.0
+            || fb == 0.0
+            || fa.signum() == fb.signum()
+        {
+            continue;
+        }
+        for _ in 0..64 {
+            let midpoint = (a + b) * 0.5;
+            let fm = polynomial_value(&coefficients, midpoint);
+            if !fm.is_finite() {
+                break;
+            }
+            if fm.abs() <= tolerance || b - a <= 1e-10 * midpoint.abs().max(1.0) {
+                a = midpoint;
+                b = midpoint;
+                break;
+            }
+            if fa.signum() == fm.signum() {
+                a = midpoint;
+                fa = fm;
+            } else {
+                b = midpoint;
+            }
+        }
+        roots.push((a + b) * 0.5);
+    }
+    roots.sort_by(f64::total_cmp);
+    roots.dedup_by(|a, b| (*a - *b).abs() <= 1e-7 * a.abs().max(b.abs()).max(1.0));
+    roots
+}
 fn quadratic_roots(a: f32, b: f32, c: f32) -> Option<Vec<f32>> {
     if !a.is_finite() || !b.is_finite() || !c.is_finite() {
         return None;
@@ -384,4 +562,45 @@ fn quadratic_roots(a: f32, b: f32, c: f32) -> Option<Vec<f32>> {
     }
     let root = discriminant.sqrt();
     Some(vec![(-b - root) / (2.0 * a), (-b + root) / (2.0 * a)])
+}
+
+#[cfg(test)]
+mod ring_hit_tests {
+    use super::*;
+
+    fn ring(rotation: Quat) -> GuideGeometry {
+        GuideGeometry::Ring {
+            center: Vec3::new(1.0, -0.5, 2.0),
+            rotation,
+            major_radius: 2.0,
+            minor_radius: 0.5,
+        }
+    }
+
+    #[test]
+    fn ring_selects_nearest_tube_hit_and_accepts_tangent_silhouette() {
+        let rotation = Quat::from_rotation_y(0.63) * Quat::from_rotation_x(-0.28);
+        let center = Vec3::new(1.0, -0.5, 2.0);
+        let geometry = ring(rotation);
+
+        let origin = center + rotation * Vec3::new(0.0, 0.0, 5.2);
+        let direction = rotation * -Vec3::Z;
+        let hit = geometry.clone().hit(origin, direction).unwrap();
+        let expected = center + rotation * Vec3::new(0.0, 0.0, 2.5);
+        assert!(hit.distance(expected) < 1e-4, "nearest outer hit: {hit:?}");
+
+        // A ray tangent to the torus's outer silhouette has a repeated quartic
+        // root; this guards against dropping tangencies in root isolation.
+        let tangent_geometry = ring(Quat::IDENTITY);
+        let tangent_origin = center + Vec3::new(2.5, 0.0, -5.0);
+        let tangent_direction = Vec3::Z;
+        let tangent_hit = tangent_geometry
+            .hit(tangent_origin, tangent_direction)
+            .unwrap();
+        let tangent_expected = center + Vec3::new(2.5, 0.0, 0.0);
+        assert!(
+            tangent_hit.distance(tangent_expected) < 2e-3,
+            "tangent hit: {tangent_hit:?}"
+        );
+    }
 }

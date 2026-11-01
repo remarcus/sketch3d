@@ -182,6 +182,7 @@ pub fn mesh(stroke: &Stroke) -> Vec<crate::geometry::Vertex> {
         .into_iter()
         .flatten()
         .map(|i| crate::geometry::Vertex {
+            material: 0.0,
             position: (stroke.points[i].position - offset).to_array(),
             normal: stroke.brush.normal.to_array(),
             color: stroke.color,
@@ -208,6 +209,7 @@ pub fn study() -> crate::document::Document {
             })
             .collect();
         doc.strokes.push(Stroke {
+            material: Default::default(),
             fill: Some(PlanarFill { offset: 0.003 }),
             group_id: None,
             layer_id: 1,
@@ -224,6 +226,7 @@ pub fn study() -> crate::document::Document {
         let mut outline = points;
         outline.push(outline[0]);
         doc.strokes.push(Stroke {
+            material: Default::default(),
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -316,6 +319,7 @@ mod tests {
     use crate::document::{Brush, Document, PlanarFill, Point};
     fn mark(points: &[[f32; 2]]) -> Stroke {
         Stroke {
+            material: Default::default(),
             fill: Some(PlanarFill { offset: 0.003 }),
             group_id: None,
             layer_id: 1,

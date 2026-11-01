@@ -11,20 +11,139 @@ use std::{hash::Hash, ops::RangeInclusive};
 
 const CURRENT_FIELD_LABEL: &str = "ui-style-current-field-accessible-label";
 
+#[derive(Clone, Copy)]
+pub struct SemanticColors {
+    pub surface: Color32,
+    pub elevated: Color32,
+    pub input: Color32,
+    pub text: Color32,
+    pub muted_text: Color32,
+    pub border: Color32,
+    pub accent: Color32,
+    pub selection: Color32,
+    pub focus: Color32,
+    pub warning: Color32,
+    pub error: Color32,
+}
+
+fn semantic_colors(dark: bool) -> SemanticColors {
+    if dark {
+        SemanticColors {
+            surface: Color32::from_rgb(20, 27, 37),
+            elevated: Color32::from_rgb(25, 34, 46),
+            input: Color32::from_rgb(15, 22, 32),
+            text: Color32::from_rgb(233, 239, 244),
+            muted_text: Color32::from_rgb(171, 190, 205),
+            border: Color32::from_rgb(62, 77, 94),
+            accent: Color32::from_rgb(76, 202, 195),
+            selection: Color32::from_rgb(27, 105, 111),
+            focus: Color32::from_rgb(126, 226, 220),
+            warning: Color32::from_rgb(241, 190, 82),
+            error: Color32::from_rgb(255, 135, 135),
+        }
+    } else {
+        SemanticColors {
+            surface: Color32::from_rgb(245, 246, 248),
+            elevated: Color32::WHITE,
+            input: Color32::WHITE,
+            text: Color32::from_rgb(32, 39, 51),
+            muted_text: Color32::from_rgb(82, 96, 111),
+            border: Color32::from_rgb(183, 194, 204),
+            accent: Color32::from_rgb(8, 127, 134),
+            selection: Color32::from_rgb(195, 235, 232),
+            focus: Color32::from_rgb(8, 127, 134),
+            warning: Color32::from_rgb(126, 79, 0),
+            error: Color32::from_rgb(176, 36, 24),
+        }
+    }
+}
+
+pub fn colors(ctx: &egui::Context) -> SemanticColors {
+    semantic_colors(ctx.style().visuals.dark_mode)
+}
+
+/// Pick canvas text that contrasts with the configured solid scene background.
+pub fn contrasting_canvas_text(background_srgb: [f32; 3]) -> Color32 {
+    let luminance = scene_luminance(background_srgb);
+    if luminance > 0.42 {
+        Color32::from_rgb(32, 39, 51)
+    } else {
+        Color32::from_rgb(241, 245, 248)
+    }
+}
+
+pub fn canvas_accent(background_srgb: [f32; 3]) -> Color32 {
+    if scene_luminance(background_srgb) > 0.42 {
+        Color32::from_rgb(0, 104, 110)
+    } else {
+        Color32::from_rgb(85, 232, 222)
+    }
+}
+
+fn scene_luminance(background_srgb: [f32; 3]) -> f32 {
+    background_srgb
+        .into_iter()
+        .map(|channel| {
+            let channel = channel.clamp(0.0, 1.0);
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        })
+        .zip([0.2126, 0.7152, 0.0722])
+        .map(|(channel, weight)| channel * weight)
+        .sum::<f32>()
+}
+
 pub const FIELD_LABEL_WIDTH: f32 = 104.0;
 pub const CONTROL_HEIGHT: f32 = 36.0;
 
-pub fn apply(ctx: &egui::Context) {
-    ctx.set_theme(egui::Theme::Dark);
+pub fn apply(ctx: &egui::Context, preference: crate::presentation::UiTheme) {
+    ctx.options_mut(|options| options.fallback_theme = egui::Theme::Dark);
+    ctx.set_theme(preference.egui());
+    let dark = ctx.style().visuals.dark_mode;
+    let colors = semantic_colors(dark);
     let mut style = (*ctx.style()).clone();
-    style.visuals = egui::Visuals::dark();
-    style.visuals.panel_fill = Color32::from_rgb(20, 27, 37);
-    style.visuals.window_fill = Color32::from_rgb(25, 34, 46);
-    style.visuals.selection.bg_fill = Color32::from_rgb(27, 105, 111);
-    style.visuals.selection.stroke = Stroke::new(1.5_f32, Color32::from_rgb(126, 226, 220));
-    style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(38, 49, 64);
-    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(49, 67, 84);
-    style.visuals.widgets.active.bg_fill = Color32::from_rgb(32, 124, 132);
+    style.visuals = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    style.visuals.panel_fill = colors.surface;
+    style.visuals.window_fill = colors.elevated;
+    style.visuals.extreme_bg_color = colors.input;
+    style.visuals.faint_bg_color = colors.surface;
+    style.visuals.selection.bg_fill = colors.selection;
+    style.visuals.selection.stroke = Stroke::new(1.5_f32, colors.focus);
+    style.visuals.widgets.noninteractive.fg_stroke.color = colors.text;
+    style.visuals.widgets.inactive.bg_fill = if dark {
+        Color32::from_rgb(38, 49, 64)
+    } else {
+        Color32::from_rgb(232, 236, 240)
+    };
+    style.visuals.widgets.hovered.bg_fill = if dark {
+        Color32::from_rgb(49, 67, 84)
+    } else {
+        Color32::from_rgb(222, 232, 237)
+    };
+    style.visuals.widgets.active.bg_fill = if dark {
+        Color32::from_rgb(32, 124, 132)
+    } else {
+        Color32::from_rgb(187, 225, 222)
+    };
+    style.visuals.widgets.inactive.fg_stroke.color = colors.text;
+    style.visuals.widgets.hovered.fg_stroke.color = colors.text;
+    style.visuals.widgets.active.fg_stroke.color = colors.text;
+    style.visuals.widgets.open.fg_stroke.color = colors.text;
+    style.visuals.widgets.active.bg_stroke = Stroke::new(1.5_f32, colors.focus);
+    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, colors.focus);
+    style.visuals.widgets.noninteractive.bg_fill = colors.surface;
+    style.visuals.widgets.noninteractive.bg_stroke.color = colors.border;
+    style.visuals.widgets.inactive.bg_stroke.color = colors.border;
+    style.visuals.hyperlink_color = colors.accent;
+    style.visuals.warn_fg_color = colors.warning;
+    style.visuals.error_fg_color = colors.error;
     style.spacing.item_spacing = Vec2::new(8.0, 8.0);
     style.spacing.button_padding = Vec2::new(10.0, 6.0);
     style.spacing.interact_size.y = CONTROL_HEIGHT;
@@ -33,12 +152,13 @@ pub fn apply(ctx: &egui::Context) {
 }
 
 pub fn section(ui: &mut Ui, title: &str) {
+    let muted = colors(ui.ctx()).muted_text;
     ui.add_space(4.0);
     ui.label(
         RichText::new(title.to_uppercase())
             .small()
             .strong()
-            .color(Color32::from_rgb(171, 190, 205)),
+            .color(muted),
     );
 }
 
@@ -141,7 +261,7 @@ pub fn numeric_field(
         ui.painter().rect_stroke(
             response.rect.expand(1.0),
             3.0,
-            Stroke::new(1.5_f32, Color32::from_rgb(238, 95, 95)),
+            Stroke::new(1.5_f32, colors(ui.ctx()).error),
             egui::StrokeKind::Outside,
         );
         response = response.on_hover_text(state.warning.as_deref().unwrap_or_default());
@@ -186,7 +306,7 @@ pub fn numeric_field(
         ui.label(egui::RichText::new(suffix).small());
     }
     if let Some(warning) = &state.warning {
-        ui.colored_label(Color32::from_rgb(255, 145, 145), warning);
+        ui.colored_label(colors(ui.ctx()).error, warning);
     }
     ui.ctx().data_mut(|data| data.insert_temp(id, state));
     response
@@ -357,7 +477,7 @@ fn integer_field(
         ui.painter().rect_stroke(
             response.rect.expand(1.0),
             3.0,
-            Stroke::new(1.5_f32, Color32::from_rgb(238, 95, 95)),
+            Stroke::new(1.5_f32, colors(ui.ctx()).error),
             egui::StrokeKind::Outside,
         );
         response = response.on_hover_text(warning);
@@ -408,7 +528,7 @@ fn integer_field(
         state.editing = false;
     }
     if let Some(warning) = &state.warning {
-        ui.colored_label(Color32::from_rgb(255, 145, 145), warning);
+        ui.colored_label(colors(ui.ctx()).error, warning);
     }
     ui.ctx().data_mut(|data| data.insert_temp(id, state));
     response
@@ -471,7 +591,7 @@ pub fn component_showcase(ui: &mut Ui) {
                 }
                 let focused = response.has_focus();
                 let stroke = if focused {
-                    Stroke::new(2.0_f32, Color32::from_rgb(126, 226, 220))
+                    Stroke::new(2.0_f32, colors(ui.ctx()).focus)
                 } else {
                     Stroke::NONE
                 };
@@ -491,12 +611,10 @@ pub fn component_showcase(ui: &mut Ui) {
                     ui.painter().rect_stroke(
                         ui.max_rect(),
                         4.0,
-                        Stroke::new(1.5_f32, Color32::from_rgb(238, 95, 95)),
+                        Stroke::new(1.5_f32, colors(ui.ctx()).error),
                         egui::StrokeKind::Inside,
                     );
-                    ui.label(
-                        RichText::new("Invalid value").color(Color32::from_rgb(255, 145, 145)),
-                    );
+                    ui.label(RichText::new("Invalid value").color(colors(ui.ctx()).error));
                 })
             });
             showcase_row(ui, "Mixed", |ui| {

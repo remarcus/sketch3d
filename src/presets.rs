@@ -150,8 +150,7 @@ impl BrushPackage {
             .write_all(text.as_bytes())
             .map_err(|e| e.to_string())?;
         temporary.as_file().sync_all().map_err(|e| e.to_string())?;
-        temporary
-            .persist(path)
+        crate::atomic_file::replace(temporary, path)
             .map_err(|e| format!("Cannot save brush package: {e}"))?;
         Ok(())
     }
@@ -300,8 +299,7 @@ impl Library {
         let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
         temporary.write_all(&bytes).map_err(|e| e.to_string())?;
         temporary.as_file().sync_all().map_err(|e| e.to_string())?;
-        temporary
-            .persist(path)
+        crate::atomic_file::replace(temporary, path)
             .map_err(|e| format!("Cannot save brush library: {e}"))?;
         Ok(())
     }

@@ -16,6 +16,7 @@ pub fn run() -> Result<(), String> {
             TextureKind::Pattern,
         ] {
             let mut stroke = Stroke {
+                material: Default::default(),
                 id: 1,
                 fill: None,
                 group_id: None,

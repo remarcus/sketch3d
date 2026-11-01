@@ -1,4 +1,4 @@
-use crate::document::{BrushKind, Stroke};
+use crate::document::{BrushKind, Stroke, StrokeMaterial};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
 #[repr(C)]
@@ -10,6 +10,8 @@ pub struct Vertex {
     pub uv: [f32; 2],
     /// Final per-vertex alpha, including base opacity, pressure, and soft coverage.
     pub opacity: f32,
+    /// Encoded material mode: shaded=0, unlit=1, emissive=2.
+    pub material: f32,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Plane {
@@ -276,6 +278,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
             let angle = j as f32 * std::f32::consts::TAU / 8.0;
             let normal = a * angle.cos() + b * angle.sin();
             Vertex {
+                material: 0.0,
                 position: (p.position + normal * radius).to_array(),
                 normal: normal.to_array(),
                 color: stroke.color,
@@ -311,6 +314,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
                 for local in [up, axes[i], axes[(i + 1) % 4]] {
                     let normal = frame * local;
                     out.push(Vertex {
+                        material: 0.0,
                         position: (p.position + normal * r).to_array(),
                         normal: normal.to_array(),
                         color: stroke.color,
@@ -342,6 +346,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
     if !closed {
         for (index, ring) in [(0, &rings[0]), (rings.len() - 1, rings.last().unwrap())] {
             let center = Vertex {
+                material: 0.0,
                 position: stroke.points[index].position.to_array(),
                 normal: [0.0, 0.0, 1.0],
                 color: stroke.color,
@@ -428,49 +433,61 @@ fn taper_points(stroke: &Stroke) -> Vec<crate::document::Point> {
 }
 /// All ink is built in document space. Camera changes cannot rotate a brush mark.
 pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
-    if stroke.fill.is_some() {
-        return crate::polygon::mesh(stroke);
-    }
-    let prepared;
-    let stroke = if stroke.brush.dynamics.taper_start > 0.0 || stroke.brush.dynamics.taper_end > 0.0
-    {
-        prepared = Stroke {
-            points: taper_points(stroke),
-            ..stroke.clone()
-        };
-        &prepared
-    } else {
-        stroke
+    let material = match stroke.material {
+        StrokeMaterial::Shaded => 0.0,
+        StrokeMaterial::Unlit => 1.0,
+        StrokeMaterial::Emissive => 2.0,
+        StrokeMaterial::Cutout => 3.0,
     };
-    if stroke.brush.kind != BrushKind::Round {
-        return flat_brush(stroke);
-    }
-    // Retain the original round brush's positions and pressure profile. Give caps
-    // their true axial normals and fix the legacy inward side winding here.
-    let mut mesh = tube(stroke);
-    if stroke.points.len() > 1 && !is_closed_stroke(stroke) {
-        let sides = (stroke.points.len() - 1) * 48;
-        let first = (stroke.points[1].position - stroke.points[0].position)
-            .try_normalize()
-            .unwrap_or(Vec3::Y);
-        let end = stroke.points.len() - 1;
-        let last = (stroke.points[end].position - stroke.points[end - 1].position)
-            .try_normalize()
-            .unwrap_or(Vec3::Y);
-        for (i, vertex) in mesh[sides..].iter_mut().enumerate() {
-            vertex.normal = if i < 24 { -first } else { last }.to_array();
+    let mut vertices = if stroke.fill.is_some() {
+        crate::polygon::mesh(stroke)
+    } else {
+        let prepared;
+        let stroke =
+            if stroke.brush.dynamics.taper_start > 0.0 || stroke.brush.dynamics.taper_end > 0.0 {
+                prepared = Stroke {
+                    points: taper_points(stroke),
+                    ..stroke.clone()
+                };
+                &prepared
+            } else {
+                stroke
+            };
+        if stroke.brush.kind != BrushKind::Round {
+            flat_brush(stroke)
+        } else {
+            // Retain the original round brush's positions and pressure profile. Give caps
+            // their true axial normals and fix the legacy inward side winding here.
+            let mut mesh = tube(stroke);
+            if stroke.points.len() > 1 && !is_closed_stroke(stroke) {
+                let sides = (stroke.points.len() - 1) * 48;
+                let first = (stroke.points[1].position - stroke.points[0].position)
+                    .try_normalize()
+                    .unwrap_or(Vec3::Y);
+                let end = stroke.points.len() - 1;
+                let last = (stroke.points[end].position - stroke.points[end - 1].position)
+                    .try_normalize()
+                    .unwrap_or(Vec3::Y);
+                for (i, vertex) in mesh[sides..].iter_mut().enumerate() {
+                    vertex.normal = if i < 24 { -first } else { last }.to_array();
+                }
+            }
+            for triangle in mesh.as_chunks_mut::<3>().0 {
+                let a = Vec3::from(triangle[0].position);
+                let b = Vec3::from(triangle[1].position);
+                let c = Vec3::from(triangle[2].position);
+                let normal: Vec3 = triangle.iter().map(|v| Vec3::from(v.normal)).sum();
+                if (b - a).cross(c - a).dot(normal) < 0.0 {
+                    triangle.swap(1, 2);
+                }
+            }
+            mesh
         }
+    };
+    for vertex in &mut vertices {
+        vertex.material = material;
     }
-    for triangle in mesh.as_chunks_mut::<3>().0 {
-        let a = Vec3::from(triangle[0].position);
-        let b = Vec3::from(triangle[1].position);
-        let c = Vec3::from(triangle[2].position);
-        let normal: Vec3 = triangle.iter().map(|v| Vec3::from(v.normal)).sum();
-        if (b - a).cross(c - a).dot(normal) < 0.0 {
-            triangle.swap(1, 2);
-        }
-    }
-    mesh
+    vertices
 }
 
 fn is_closed_stroke(stroke: &Stroke) -> bool {
@@ -693,6 +710,7 @@ fn flat_triangle(
             .zip(uv)
             .zip(opacity)
             .map(|((position, uv), opacity)| Vertex {
+                material: 0.0,
                 position: position.to_array(),
                 normal: normal.to_array(),
                 color,
@@ -920,6 +938,7 @@ pub fn grid(plane: DrawingPlane) -> Vec<Vertex> {
             };
             for sign in [-1.0, 1.0] {
                 vertices.push(Vertex {
+                    material: 0.0,
                     position: (origin + a * i as f32 * 0.5 + b * 6.0 * sign).to_array(),
                     normal: [0.0; 3],
                     uv: [0.0; 2],
@@ -952,6 +971,7 @@ mod tests {
     #[test]
     fn pressure_geometry() {
         let make = |pressure| Stroke {
+            material: Default::default(),
             id: 1,
             fill: None,
             group_id: None,
@@ -997,6 +1017,7 @@ mod curve_regression {
             })
             .collect();
         let stroke = Stroke {
+            material: Default::default(),
             id: 1,
             fill: None,
             group_id: None,
@@ -1086,6 +1107,7 @@ mod brush_tests {
 
     fn mark(kind: BrushKind, positions: &[Vec3]) -> Stroke {
         Stroke {
+            material: Default::default(),
             id: 7,
             fill: None,
             group_id: None,
@@ -1237,6 +1259,7 @@ mod dynamics_tests {
 
     fn line(kind: BrushKind, xs: &[f32]) -> Stroke {
         Stroke {
+            material: Default::default(),
             id: 100,
             fill: None,
             group_id: None,
@@ -1365,6 +1388,7 @@ mod dynamics_boundary_tests {
     fn zero_pressure_dimensions_and_tilt_azimuth_wrap_stay_finite() {
         for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
             let mut stroke = Stroke {
+                material: Default::default(),
                 id: 101,
                 fill: None,
                 group_id: None,
@@ -1452,6 +1476,7 @@ mod seam_dynamics_tests {
                     && p.tilt == Some(Vec3::Y)
             }));
             let mut stroke = Stroke {
+                material: Default::default(),
                 id: 1,
                 fill: None,
                 group_id: None,
@@ -1501,6 +1526,7 @@ mod texture_uv_tests {
         brush.texture.kind = TextureKind::Grain;
         brush.texture.scale = 0.2;
         Stroke {
+            material: Default::default(),
             id: 1,
             fill: None,
             group_id: None,

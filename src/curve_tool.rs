@@ -1,3 +1,4 @@
+use super::guide_resource_ui::PlanarTarget;
 use super::ui_style;
 use super::*;
 use crate::curve_geometry::{CubicBezier, PressureSegment};
@@ -19,7 +20,7 @@ enum HandleRef {
 }
 
 struct CurveDraft {
-    plane: DrawingPlane,
+    target: PlanarTarget,
     stroke: Stroke,
     anchors: Vec<Anchor>,
     preview: Option<Stroke>,
@@ -53,8 +54,9 @@ impl SketchApp {
     }
 
     pub(super) fn start_curve_tool(&mut self) {
-        if self.resource_target_active() {
-            self.status = "Curve tool currently uses the temporary plane guide. Switch to it before drawing a curve.".into();
+        if self.planar_drawing_target().is_none() {
+            self.status =
+                "Smooth curves require a plane guide. Activate a planar guide first.".into();
             return;
         }
         self.finish();
@@ -126,7 +128,7 @@ impl SketchApp {
             }
         ));
         if let Some(error) = &self.curve_tool.error {
-            ui.colored_label(Color32::LIGHT_RED, error);
+            ui.colored_label(ui_style::colors(ui.ctx()).error, error);
         }
         ui.horizontal(|ui| {
             if ui
@@ -154,21 +156,24 @@ impl SketchApp {
         }
         if begin {
             if self.curve_tool.draft.is_none() {
-                if self.use_cylinder || self.use_revolved {
+                let Some(target) = self.planar_drawing_target() else {
                     self.status =
-                        "Smooth curves currently require a plane guide. Choose Plane first.".into();
+                        "Smooth curves require a plane guide. Activate a planar guide first."
+                            .into();
                     return;
-                }
+                };
+                let plane = target.plane;
                 if !self.doc.active_editable() {
                     self.status = "Choose a visible unlocked layer for the curve.".into();
                     return;
                 }
                 let (origin, direction) = crate::gizmo::ray(&self.camera, rect, pos);
-                let Some(_) = intersect_plane(origin, direction, self.guide) else {
+                let Some(_) = target.hit(origin, direction) else {
                     return;
                 };
-                let (u, _, normal) = self.guide.basis();
+                let (u, _, normal) = plane.basis();
                 let stroke = Stroke {
+                    material: Default::default(),
                     fill: None,
                     group_id: None,
                     layer_id: self.doc.active_layer,
@@ -183,7 +188,7 @@ impl SketchApp {
                     points: Vec::new(),
                 };
                 self.curve_tool.draft = Some(CurveDraft {
-                    plane: self.guide,
+                    target,
                     stroke,
                     anchors: Vec::new(),
                     preview: None,
@@ -281,13 +286,14 @@ impl SketchApp {
     }
 
     fn curve_world(&self, pos: Pos2, rect: Rect) -> Option<Vec3> {
-        let plane = self
+        let target = self
             .curve_tool
             .draft
             .as_ref()
-            .map_or(self.guide, |draft| draft.plane);
+            .map(|draft| draft.target)
+            .or_else(|| self.planar_drawing_target())?;
         let (origin, direction) = crate::gizmo::ray(&self.camera, rect, pos);
-        intersect_plane(origin, direction, plane)
+        target.hit(origin, direction)
     }
 
     fn curve_handle_at(&self, draft: &CurveDraft, pos: Pos2, rect: Rect) -> Option<HandleRef> {
@@ -423,9 +429,19 @@ impl SketchApp {
             tolerance,
             crate::curve_geometry::MAX_CURVE_POINTS,
         ) {
-            Ok(stroke) => {
+            Ok(stroke)
+                if stroke
+                    .points
+                    .iter()
+                    .all(|point| draft.target.contains(point.position)) =>
+            {
                 draft.preview = Some(stroke);
                 self.curve_tool.error = None;
+            }
+            Ok(_) => {
+                draft.preview = None;
+                self.curve_tool.error =
+                    Some("Curve extends beyond the active image bounds.".into());
             }
             Err(error) => {
                 draft.preview = None;
@@ -492,7 +508,7 @@ impl SketchApp {
         }
         stroke.id = self.next_id;
         self.next_id += 1;
-        self.commit_drawn_stroke(stroke, false);
+        self.commit_drawn_stroke(stroke, false, 0);
         self.curve_tool.error = None;
         self.status = "Smooth curve committed as one editable stroke.".into();
     }
@@ -527,7 +543,7 @@ impl SketchApp {
             return;
         };
         let painter = ui.painter().with_clip_rect(rect);
-        let color = Color32::from_rgb(76, 220, 190);
+        let color = ui_style::canvas_accent(self.presentation.preferences.background);
         if let Some(stroke) = &draft.preview {
             let points: Vec<_> = stroke
                 .points
@@ -554,7 +570,12 @@ impl SketchApp {
                 ) {
                     painter.line_segment(
                         [a, b],
-                        egui::Stroke::new(1.0_f32, Color32::from_rgb(145, 170, 165)),
+                        egui::Stroke::new(
+                            1.0_f32,
+                            ui_style::contrasting_canvas_text(
+                                self.presentation.preferences.background,
+                            ),
+                        ),
                     );
                     painter.circle_stroke(b, 3.5, egui::Stroke::new(1.0_f32, color));
                 }

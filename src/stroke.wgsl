@@ -1,6 +1,6 @@
 struct Scene {
     view_projection: mat4x4<f32>, light_projection: mat4x4<f32>,
-    light: vec4<f32>, settings: vec4<f32>, shadow: vec4<f32>, camera: vec4<f32>,
+    light: vec4<f32>, settings: vec4<f32>, shadow: vec4<f32>, camera: vec4<f32>, background: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(1) @binding(0) var brush_mask: texture_2d<f32>;
@@ -17,12 +17,12 @@ fn apply_grain(color: vec3<f32>, position: vec2<f32>) -> vec3<f32> {
 struct Output {
     @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32>,
     @location(1) color: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) world: vec3<f32>,
-    @location(4) opacity: f32,
+    @location(4) opacity: f32, @location(5) material: f32,
 }
-@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) color: vec3<f32>, @location(3) uv: vec2<f32>, @location(4) opacity: f32) -> Output {
+@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) color: vec3<f32>, @location(3) uv: vec2<f32>, @location(4) opacity: f32, @location(5) material: f32) -> Output {
     var out: Output;
     out.position=scene.view_projection*vec4<f32>(position,1.0);
-    out.normal=normal; out.color=color; out.uv=uv; out.world=position; out.opacity=opacity; return out;
+    out.normal=normal; out.color=color; out.uv=uv; out.world=position; out.opacity=opacity; out.material=material; return out;
 }
 fn visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     if scene.settings.y<0.5 { return 1.0; }
@@ -39,27 +39,39 @@ fn visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     }
     return mix(1.0,sum/9.0,scene.settings.z);
 }
-@fragment fn fs_main(in: Output) -> @location(0) vec4<f32> {
-    if length(in.normal)<0.1 { return vec4<f32>(apply_grain(in.color, in.position.xy),1.0); }
+struct FragmentOutput { @location(0) color: vec4<f32>, @location(1) emission: vec4<f32>, }
+fn material_output(in: Output, alpha: f32) -> FragmentOutput {
+    var shade=1.0;
+    if in.material<0.5 && length(in.normal)>=0.1 {
+        let normal=normalize(in.normal);
+        shade=scene.light.w+scene.settings.x*abs(dot(normal,scene.light.xyz))*visibility(in.world,normal);
+        if scene.shadow.w > 0.5 { shade=floor(shade*4.0+0.5)/4.0; }
+    }
+    var color=in.color*shade;
+    var emission=vec3<f32>(0.0);
+    if in.material>1.5 && in.material<2.5 {
+        emission=in.color*2.0;
+        color+=emission;
+    }
+    return FragmentOutput(vec4<f32>(apply_grain(color,in.position.xy),alpha),vec4<f32>(emission*alpha,alpha));
+}
+@fragment fn fs_main(in: Output) -> FragmentOutput {
+    if length(in.normal)<0.1 { return material_output(in, 1.0); }
     let mask_alpha=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a;
     var coverage=mask_alpha;
     if scene.shadow.z<0.5 {
         if mask_alpha<0.5 { discard; }
         coverage=1.0;
     }
-    let normal=normalize(in.normal);
-    var shade=scene.light.w+scene.settings.x*abs(dot(normal,scene.light.xyz))*visibility(in.world,normal);
-    if scene.shadow.w > 0.5 { shade = floor(shade * 4.0 + 0.5) / 4.0; }
-    return vec4<f32>(apply_grain(in.color*shade, in.position.xy),coverage);
+    return material_output(in, coverage);
 }
-@fragment fn fs_transparent(in: Output) -> @location(0) vec4<f32> {
+@fragment fn fs_cutout(in: Output) -> FragmentOutput {
+    let mask_alpha=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a;
+    if mask_alpha*in.opacity<0.5 { discard; }
+    return FragmentOutput(scene.background,vec4<f32>(0.0));
+}
+@fragment fn fs_transparent(in: Output) -> FragmentOutput {
     let mask_alpha=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a;
     if mask_alpha<0.001 { discard; }
-    var shade=1.0;
-    if length(in.normal)>=0.1 {
-        let normal=normalize(in.normal);
-        shade=scene.light.w+scene.settings.x*abs(dot(normal,scene.light.xyz))*visibility(in.world,normal);
-        if scene.shadow.w > 0.5 { shade = floor(shade * 4.0 + 0.5) / 4.0; }
-    }
-    return vec4<f32>(apply_grain(in.color*shade, in.position.xy),in.opacity*mask_alpha);
+    return material_output(in, in.opacity*mask_alpha);
 }

@@ -24,17 +24,26 @@ impl Default for MirrorUi {
 
 impl SketchApp {
     fn mirror_plane(&self) -> Result<crate::mirror::MirrorPlane, String> {
-        if self.use_cylinder || self.use_revolved {
-            return Err("Live mirror drawing currently requires a plane guide.".into());
-        }
-        let (u, v, _) = self.guide.basis();
+        let (origin, rotation) = if let Some(plane) = self.planar_drawing_target() {
+            (plane.plane.origin(), plane.plane.rotation())
+        } else if let Some((origin, rotation, _)) = self.saved_guide_camera_frame() {
+            (origin, rotation)
+        } else if self.use_cylinder {
+            (self.cylinder.center, self.cylinder.rotation())
+        } else if self.use_revolved {
+            (self.revolved.center, self.revolved.rotation())
+        } else {
+            return Err("Live mirror needs an active plane or curved drawing guide.".into());
+        };
+        let u = rotation * Vec3::X;
+        let v = rotation * Vec3::Y;
         let normal = if self.mirror_ui.axis == NormalAxis::U {
             u
         } else {
             v
         };
         Ok(crate::mirror::MirrorPlane {
-            point: self.guide.origin() + normal * self.mirror_ui.offset,
+            point: origin + normal * self.mirror_ui.offset,
             normal,
         })
     }
@@ -56,32 +65,47 @@ impl SketchApp {
                 Some(-10000.0..=10000.0),
                 "wu",
             );
-            ui.small("The mirror plane follows the active planar guide. Curved guide mirroring is not enabled yet.");
+            ui.small("On curved guides, the reflected ink follows a world-space symmetry plane and does not snap back to the guide.");
         }
     }
 
-    pub(super) fn commit_drawn_stroke(&mut self, source: Stroke, already_present: bool) {
-        let mut mirrored = None;
+    pub(super) fn commit_drawn_stroke(
+        &mut self,
+        source: Stroke,
+        already_present: bool,
+        duration_ms: u64,
+    ) {
+        let recorded_stroke = source.clone();
+        let mut mirrored = Vec::new();
         let mut mirror_warning = None;
         if self.mirror_ui.enabled {
             match self.mirror_plane().and_then(|plane| {
-                crate::mirror::mirror_stroke(&source, plane, self.next_id, 0.0001)
+                crate::mirror::mirror_stroke_runs(&source, plane, self.next_id, 0.0001)
             }) {
-                Ok(copy) => mirrored = copy,
+                Ok(copies) => mirrored = copies,
                 Err(error) => mirror_warning = Some(error),
             }
         }
 
-        if let Some(copy) = mirrored {
-            if self.next_id == u64::MAX
-                || self.doc.strokes.len() + usize::from(!already_present) + 1 > 100_000
-                || self
-                    .doc
-                    .strokes
-                    .iter()
-                    .map(|stroke| stroke.points.len())
-                    .sum::<usize>()
-                    + copy.points.len()
+        if !mirrored.is_empty() {
+            let copy_count = mirrored.len();
+            let added_strokes = copy_count + usize::from(!already_present);
+            let added_points: usize = mirrored.iter().map(|copy| copy.points.len()).sum();
+            let current_points: usize = self
+                .doc
+                .strokes
+                .iter()
+                .map(|stroke| stroke.points.len())
+                .sum();
+            let id_end = self
+                .next_id
+                .checked_add(copy_count as u64)
+                .filter(|_| self.next_id != u64::MAX);
+            if id_end.is_none()
+                || self.next_id == u64::MAX
+                || self.doc.strokes.len() + added_strokes > 100_000
+                || current_points
+                    + added_points
                     + usize::from(!already_present) * source.points.len()
                     > 2_000_000
             {
@@ -96,19 +120,29 @@ impl SketchApp {
                 } else {
                     self.doc.strokes.len()
                 };
-                let after = vec![(index, source), (index + 1, copy)];
+                let mut after = Vec::with_capacity(added_strokes);
+                if !already_present {
+                    after.push((index, source));
+                }
+                for (copy_index, copy) in mirrored.into_iter().enumerate() {
+                    after.push((index + usize::from(!already_present) + copy_index, copy));
+                }
                 let edit = Edit::Change {
                     before: Vec::new(),
                     after,
                 };
                 edit.apply(&mut self.doc, true);
-                self.next_id += 1;
+                if let Some(id_end) = id_end {
+                    self.next_id = id_end;
+                }
                 self.undo.push(edit);
                 self.redo.clear();
                 self.dirty = true;
-                self.record_recovery_edit();
+                self.record_recovery_stroke_labeled("Draw", &recorded_stroke, duration_ms);
                 self.renderer.invalidate();
-                self.status = "Stroke and mirror committed together. One undo removes both.".into();
+                self.status = format!(
+                    "Stroke and {copy_count} mirrored run(s) committed together. One undo removes them all."
+                );
                 return;
             }
         }
@@ -122,7 +156,7 @@ impl SketchApp {
         }
         self.redo.clear();
         self.dirty = true;
-        self.record_recovery_edit();
+        self.record_recovery_stroke_labeled("Draw", &recorded_stroke, duration_ms);
         self.renderer.invalidate();
         self.status = mirror_warning.unwrap_or_else(|| "Stroke created as editable ink.".into());
     }
@@ -134,28 +168,29 @@ impl SketchApp {
         let Ok(plane) = self.mirror_plane() else {
             return;
         };
-        let Ok(Some(mirrored)) = crate::mirror::mirror_stroke(source, plane, self.next_id, 0.0001)
+        let Ok(mirrored) = crate::mirror::mirror_stroke_runs(source, plane, self.next_id, 0.0001)
         else {
             return;
         };
-        let points: Vec<_> = mirrored
-            .points
-            .iter()
-            .filter_map(|point| {
-                crate::gizmo::project(&self.camera, rect, point.position).map(|(screen, _)| screen)
-            })
-            .collect();
-        if points.len() < 2 {
-            return;
-        }
         let painter = ui.painter().with_clip_rect(rect);
-        let color = Color32::from_rgba_unmultiplied(94, 222, 192, 170);
-        for pair in points.windows(2) {
-            painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.0_f32, color));
-        }
-        if mirrored.fill.is_some() {
-            if let (Some(first), Some(last)) = (points.first(), points.last()) {
-                painter.line_segment([*last, *first], egui::Stroke::new(2.0_f32, color));
+        let color =
+            ui_style::canvas_accent(self.presentation.preferences.background).linear_multiply(0.72);
+        for mirrored in mirrored {
+            let points: Vec<_> = mirrored
+                .points
+                .iter()
+                .filter_map(|point| {
+                    crate::gizmo::project(&self.camera, rect, point.position)
+                        .map(|(screen, _)| screen)
+                })
+                .collect();
+            for pair in points.windows(2) {
+                painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.0_f32, color));
+            }
+            if mirrored.fill.is_some() {
+                if let (Some(first), Some(last)) = (points.first(), points.last()) {
+                    painter.line_segment([*last, *first], egui::Stroke::new(2.0_f32, color));
+                }
             }
         }
     }

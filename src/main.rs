@@ -1,8 +1,10 @@
 #![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]
 
 mod app;
+mod atomic_file;
 mod brush_selection;
 mod camera_bookmarks;
+mod construction_history;
 mod curve_geometry;
 mod document;
 mod drawing_library;
@@ -18,6 +20,7 @@ mod input;
 mod lighting;
 mod liquify;
 mod mirror;
+mod mixed_resources;
 mod obj_export;
 mod obj_mesh_index;
 #[allow(dead_code)]

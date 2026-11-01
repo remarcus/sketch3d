@@ -1,4 +1,5 @@
 //! Bounded planar circle and ellipse geometry for ordinary editable strokes.
+#![allow(clippy::too_many_arguments)] // Explicit geometry parameters keep the public builders unambiguous.
 use crate::{
     document::{Brush, Point, Stroke},
     geometry::DrawingPlane,
@@ -212,6 +213,7 @@ pub fn create_ellipse(
         return Err("Shape geometry exceeds the valid document bounds".into());
     }
     Ok(Stroke {
+        material: Default::default(),
         fill: None,
         group_id: None,
         layer_id,

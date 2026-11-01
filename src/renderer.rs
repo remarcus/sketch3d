@@ -2,7 +2,7 @@ use crate::lighting::{self, Lighting, SHADOW_SIZE};
 use crate::surface::GuidePreview;
 use crate::texture::{self, TextureKind, TextureSettings};
 use crate::{
-    document::{Document, Stroke},
+    document::{Document, Stroke, StrokeMaterial},
     geometry::{self, Camera, Vertex},
 };
 use eframe::{
@@ -22,12 +22,27 @@ struct SceneUniform {
     settings: [f32; 4],
     shadow: [f32; 4],
     camera: [f32; 4],
+    background: [f32; 4],
+}
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct PostEffectUniform {
+    effects: [f32; 4],
+    camera: [f32; 4],
+    size: [f32; 2],
+    pad: [f32; 2],
 }
 struct CanvasTarget {
     color: wgpu::Texture,
     view: wgpu::TextureView,
+    _scene_color: wgpu::Texture,
+    scene_view: wgpu::TextureView,
+    _emission_color: wgpu::Texture,
+    emission_view: wgpu::TextureView,
     multisample_color: Option<wgpu::TextureView>,
+    multisample_emission: Option<wgpu::TextureView>,
     depth: wgpu::TextureView,
+    _depth_texture: wgpu::Texture,
     id: egui::TextureId,
     size: [u32; 2],
     sample_count: u32,
@@ -38,6 +53,7 @@ struct Mesh {
     capacity: usize,
     count: u32,
     points: usize,
+    material: StrokeMaterial,
     bounds: Option<(Vec3, Vec3)>,
 }
 
@@ -107,6 +123,9 @@ fn canvas_sample_count(adapter: &wgpu::Adapter) -> u32 {
 }
 
 fn is_translucent(stroke: &Stroke) -> bool {
+    if stroke.material == StrokeMaterial::Cutout {
+        return false;
+    }
     stroke.brush.opacity < 0.999_999
         || (stroke.brush.dynamics.opacity.enabled
             && stroke.brush.dynamics.opacity.minimum < 0.999_999)
@@ -114,7 +133,8 @@ fn is_translucent(stroke: &Stroke) -> bool {
 }
 
 fn unpremultiply_rgba(pixels: &mut [u8]) {
-    for pixel in pixels.chunks_exact_mut(4) {
+    let (pixels, _) = pixels.as_chunks_mut::<4>();
+    for pixel in pixels {
         let alpha = f32::from(pixel[3]) / 255.0;
         if alpha <= 0.0 {
             pixel[..3].fill(0);
@@ -223,11 +243,15 @@ fn back_to_front<'a>(
 pub struct SceneRenderer {
     state: egui_wgpu::RenderState,
     triangles: wgpu::RenderPipeline,
+    cutout_triangles: wgpu::RenderPipeline,
     coverage_triangles: wgpu::RenderPipeline,
     transparent_triangles: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
     screen_background_pipeline: wgpu::RenderPipeline,
     image_planes_pipeline: wgpu::RenderPipeline,
+    post_effects_pipeline: wgpu::RenderPipeline,
+    post_effects_layout: wgpu::BindGroupLayout,
+    post_effects_sampler: wgpu::Sampler,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
     texture_layout: wgpu::BindGroupLayout,
@@ -250,6 +274,7 @@ pub struct SceneRenderer {
     pub background: [f32; 3],
     pub grain: f32,
     pub toon_shading: bool,
+    pub post_effects: crate::presentation::PostEffects,
     pub adapter: String,
 }
 impl SceneRenderer {
@@ -268,6 +293,7 @@ impl SceneRenderer {
                 settings: [0.0; 4],
                 shadow: [0.0; 4],
                 camera: [0.0; 4],
+                background: [0.0; 4],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -381,7 +407,7 @@ impl SceneRenderer {
         });
         let shadow_pipeline=device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:Some("Masked shadow casters"),layout:Some(&depth_layout),
-            vertex:wgpu::VertexState {module:&shadow_shader,entry_point:Some("vs_shadow"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2]}]},
+            vertex:wgpu::VertexState {module:&shadow_shader,entry_point:Some("vs_shadow"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32]}]},
             fragment:Some(wgpu::FragmentState {module:&shadow_shader,entry_point:Some("fs_shadow"),compilation_options:Default::default(),targets:&[]}),
             primitive:wgpu::PrimitiveState {cull_mode:None,..Default::default()},
             depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:true,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:wgpu::DepthBiasState {constant:1,slope_scale:1.0,clamp:0.0}}),
@@ -393,20 +419,25 @@ impl SceneRenderer {
             push_constant_ranges: &[],
         });
         let sample_count = canvas_sample_count(&state.adapter);
-        let create = |topology, transparent: bool, alpha_blend: bool| {
+        let create = |topology, transparent: bool, alpha_blend: bool, cutout: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:Some("3D strokes"),layout:Some(&pipeline_layout),
-            vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32]}]},
-            fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some(if transparent {"fs_transparent"} else {"fs_main"}),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:alpha_blend.then_some(wgpu::BlendState::ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})]}),
+            vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32]}]},
+            fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some(if cutout {"fs_cutout"} else if transparent {"fs_transparent"} else {"fs_main"}),compilation_options:Default::default(),targets:&[
+                Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:if cutout {Some(wgpu::BlendState::REPLACE)} else {alpha_blend.then_some(wgpu::BlendState::ALPHA_BLENDING)},write_mask:wgpu::ColorWrites::ALL}),
+                Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8Unorm,blend:Some(wgpu::BlendState {color:wgpu::BlendComponent {src_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},dst_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},operation:wgpu::BlendOperation::Add},alpha:wgpu::BlendComponent {src_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},dst_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},operation:wgpu::BlendOperation::Add}}),write_mask:wgpu::ColorWrites::ALL})
+            ]}),
             primitive:wgpu::PrimitiveState {topology,cull_mode:None,..Default::default()},
-            depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:!transparent && topology != wgpu::PrimitiveTopology::LineList,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
+            depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:(!transparent || cutout) && topology != wgpu::PrimitiveTopology::LineList,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
             multisample:wgpu::MultisampleState {count:sample_count,mask:!0,alpha_to_coverage_enabled:sample_count > 1 && !transparent && !alpha_blend},multiview:None,cache:None,
         })
         };
-        let triangles = create(wgpu::PrimitiveTopology::TriangleList, false, false);
-        let coverage_triangles = create(wgpu::PrimitiveTopology::TriangleList, false, true);
-        let transparent_triangles = create(wgpu::PrimitiveTopology::TriangleList, true, true);
-        let lines = create(wgpu::PrimitiveTopology::LineList, false, false);
+        let triangles = create(wgpu::PrimitiveTopology::TriangleList, false, false, false);
+        let cutout_triangles = create(wgpu::PrimitiveTopology::TriangleList, false, false, true);
+        let coverage_triangles = create(wgpu::PrimitiveTopology::TriangleList, false, true, false);
+        let transparent_triangles =
+            create(wgpu::PrimitiveTopology::TriangleList, true, true, false);
+        let lines = create(wgpu::PrimitiveTopology::LineList, false, false, false);
         let image_plane_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Image plane texture layout"),
@@ -504,11 +535,18 @@ impl SceneRenderer {
                 module: &image_shader,
                 entry_point: Some("fs_image"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::empty(),
+                    }),
+                ],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -526,16 +564,120 @@ impl SceneRenderer {
             multiview: None,
             cache: None,
         });
+        let effects_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Post-processing effects layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let effects_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Canvas post-processing shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("post_effects.wgsl").into()),
+        });
+        let effects_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Post-processing effects pipeline layout"),
+                bind_group_layouts: &[&effects_layout],
+                push_constant_ranges: &[],
+            });
+        let post_effects_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Canvas post-processing effects"),
+                layout: Some(&effects_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &effects_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &effects_shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+        let post_effects_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Post-processing sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
         let info = state.adapter.get_info();
         let adapter = format!("{} / {:?}", info.name, info.backend);
         Self {
             state,
             triangles,
+            cutout_triangles,
             coverage_triangles,
             transparent_triangles,
             lines,
             screen_background_pipeline,
             image_planes_pipeline,
+            post_effects_pipeline,
+            post_effects_layout: effects_layout,
+            post_effects_sampler,
             uniform,
             bind,
             texture_layout,
@@ -558,6 +700,7 @@ impl SceneRenderer {
             background: crate::presentation::Preferences::default().background,
             grain: 0.0,
             toon_shading: false,
+            post_effects: crate::presentation::PostEffects::default(),
             adapter,
         }
     }
@@ -839,6 +982,10 @@ impl SceneRenderer {
         self.image_plane_meshes.remove(&id);
     }
 
+    pub fn has_image_plane_asset(&self, id: u64) -> bool {
+        self.image_plane_textures.contains_key(&id)
+    }
+
     pub fn clear_image_plane_assets(&mut self) {
         self.image_plane_textures.clear();
         self.image_plane_meshes.clear();
@@ -878,6 +1025,7 @@ impl SceneRenderer {
                     return Err("Transformed OBJ geometry exceeds document bounds".into());
                 }
                 target.push(Vertex {
+                    material: 0.0,
                     position: position.to_array(),
                     normal: (rotation * source.normal).normalize_or_zero().to_array(),
                     uv: source.texcoord.map_or([0.0; 2], |uv| uv.to_array()),
@@ -889,8 +1037,9 @@ impl SceneRenderer {
         self.obj_reference_meshes.insert(
             id,
             ObjReferenceMeshes {
-                opaque: (!opaque.is_empty()).then(|| self.mesh(&opaque, 0)),
-                translucent: (!translucent.is_empty()).then(|| self.mesh(&translucent, 0)),
+                opaque: (!opaque.is_empty()).then(|| self.mesh(&opaque, 0, StrokeMaterial::Shaded)),
+                translucent: (!translucent.is_empty())
+                    .then(|| self.mesh(&translucent, 0, StrokeMaterial::Shaded)),
             },
         );
         Ok(())
@@ -966,11 +1115,14 @@ impl SceneRenderer {
                 for vertex in &mut vertices {
                     vertex.color = [0.12, 0.78, 0.92];
                 }
-                (stroke.clone(), self.mesh(&vertices, stroke.points.len()))
+                (
+                    stroke.clone(),
+                    self.mesh(&vertices, stroke.points.len(), stroke.material),
+                )
             })
             .collect();
     }
-    fn mesh(&self, vertices: &[Vertex], points: usize) -> Mesh {
+    fn mesh(&self, vertices: &[Vertex], points: usize, material: StrokeMaterial) -> Mesh {
         let data = bytemuck::cast_slice(vertices);
         let capacity = data.len().max(4).next_power_of_two();
         let buffer = self.state.device.create_buffer(&wgpu::BufferDescriptor {
@@ -987,9 +1139,103 @@ impl SceneRenderer {
             capacity,
             count: vertices.len() as u32,
             points,
+            material,
             bounds: vertex_bounds(vertices),
         }
     }
+    #[allow(clippy::too_many_arguments)]
+    fn record_post_effects(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        emission: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        destination: &wgpu::TextureView,
+        size: [u32; 2],
+        camera: &Camera,
+    ) {
+        let effects = self.post_effects;
+        let orthographic = camera.projection == crate::geometry::Projection::Orthographic;
+        let uniform = PostEffectUniform {
+            effects: [
+                effects.glow.clamp(0.0, 1.0),
+                effects.focus_distance.clamp(0.0, 1000.0),
+                effects.depth_of_field.clamp(0.0, 16.0),
+                effects.pixel_size.clamp(1.0, 16.0),
+            ],
+            camera: [
+                camera.distance,
+                f32::from(orthographic),
+                if orthographic {
+                    camera.distance - 500.0
+                } else {
+                    0.01
+                },
+                if orthographic {
+                    camera.distance + 500.0
+                } else {
+                    1000.0
+                },
+            ],
+            size: [size[0] as f32, size[1] as f32],
+            pad: [0.0; 2],
+        };
+        let buffer = self
+            .state
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Post-processing parameters"),
+                contents: bytemuck::bytes_of(&uniform),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let bind = self
+            .state
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Post-processing inputs"),
+                layout: &self.post_effects_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(source),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.post_effects_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(depth),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(emission),
+                    },
+                ],
+            });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Canvas post-processing"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: destination,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.post_effects_pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
     pub fn render(
         &mut self,
         doc: &Document,
@@ -999,7 +1245,19 @@ impl SceneRenderer {
     ) -> egui::TextureId {
         let limit = self.state.device.limits().max_texture_dimension_2d;
         let size = [size[0].clamp(1, limit), size[1].clamp(1, limit)];
-        if self.target.as_ref().is_none_or(|t| t.size != size) {
+        let effects = self.post_effects;
+        let effects_enabled =
+            effects.glow > 0.0 || effects.depth_of_field > 0.0 || effects.pixel_size > 1.0;
+        let requested_samples = if effects_enabled {
+            1
+        } else {
+            canvas_sample_count(&self.state.adapter)
+        };
+        if self
+            .target
+            .as_ref()
+            .is_none_or(|t| t.size != size || t.sample_count != requested_samples)
+        {
             if let Some(target) = self.target.take() {
                 self.state.renderer.write().free_texture(&target.id);
             }
@@ -1008,9 +1266,9 @@ impl SceneRenderer {
                 height: size[1],
                 depth_or_array_layers: 1,
             };
-            let sample_count = canvas_sample_count(&self.state.adapter);
+            let sample_count = requested_samples;
             let color = self.state.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("3D canvas"),
+                label: Some("3D canvas post-processing output"),
                 size: extent,
                 mip_level_count: 1,
                 sample_count: 1,
@@ -1021,6 +1279,30 @@ impl SceneRenderer {
                     | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
+            let scene_color = self.state.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("3D canvas scene color"),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let scene_view = scene_color.create_view(&Default::default());
+            let emission_color = self.state.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Canvas emissive contribution"),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let emission_view = emission_color.create_view(&Default::default());
             let multisample_color = (sample_count > 1).then(|| {
                 self.state
                     .device
@@ -1036,6 +1318,21 @@ impl SceneRenderer {
                     })
                     .create_view(&Default::default())
             });
+            let multisample_emission = (sample_count > 1).then(|| {
+                self.state
+                    .device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("Canvas multisample emissive contribution"),
+                        size: extent,
+                        mip_level_count: 1,
+                        sample_count,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            });
             let depth = self.state.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("Canvas depth"),
                 size: extent,
@@ -1043,7 +1340,12 @@ impl SceneRenderer {
                 sample_count,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Depth32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | if sample_count == 1 {
+                        wgpu::TextureUsages::TEXTURE_BINDING
+                    } else {
+                        wgpu::TextureUsages::empty()
+                    },
                 view_formats: &[],
             });
             let view = color.create_view(&Default::default());
@@ -1056,8 +1358,14 @@ impl SceneRenderer {
             self.target = Some(CanvasTarget {
                 color,
                 view,
+                _scene_color: scene_color,
+                scene_view,
+                _emission_color: emission_color,
+                emission_view,
                 multisample_color,
+                multisample_emission,
                 depth: depth_view,
+                _depth_texture: depth,
                 id,
                 size,
                 sample_count,
@@ -1092,7 +1400,7 @@ impl SceneRenderer {
             if self
                 .meshes
                 .get(&stroke.id)
-                .is_some_and(|m| m.points == stroke.points.len())
+                .is_some_and(|m| m.points == stroke.points.len() && m.material == stroke.material)
             {
                 continue;
             }
@@ -1113,9 +1421,10 @@ impl SceneRenderer {
                 }
                 mesh.count = vertices.len() as u32;
                 mesh.points = stroke.points.len();
+                mesh.material = stroke.material;
                 mesh.bounds = vertex_bounds(&vertices);
             } else {
-                let mesh = self.mesh(&vertices, stroke.points.len());
+                let mesh = self.mesh(&vertices, stroke.points.len(), stroke.material);
                 self.meshes.insert(stroke.id, mesh);
             }
         }
@@ -1143,7 +1452,7 @@ impl SceneRenderer {
         self.obj_reference_meshes
             .retain(|id, _| reference_ids.contains(id));
         if self.grid.as_ref().is_none_or(|g| g.0 != plane) {
-            let mesh = self.mesh(&plane.vertices(), 0);
+            let mesh = self.mesh(&plane.vertices(), 0, StrokeMaterial::Shaded);
             self.grid = Some((plane, mesh));
         }
         let settings = self.lighting;
@@ -1166,9 +1475,10 @@ impl SceneRenderer {
                 color: settings.ground_color,
                 uv: [0.0; 2],
                 opacity: 1.0,
+                material: 0.0,
             })
             .collect();
-            self.ground = Some((settings, self.mesh(&vertices, 0)));
+            self.ground = Some((settings, self.mesh(&vertices, 0, StrokeMaterial::Shaded)));
         }
         let bounds = doc
             .strokes
@@ -1201,6 +1511,12 @@ impl SceneRenderer {
                 f32::from(self.toon_shading),
             ],
             camera: camera.eye().extend(self.grain.clamp(0.0, 0.12)).to_array(),
+            background: [
+                crate::presentation::srgb_to_linear(self.background[0]),
+                crate::presentation::srgb_to_linear(self.background[1]),
+                crate::presentation::srgb_to_linear(self.background[2]),
+                1.0,
+            ],
         };
         self.state
             .queue
@@ -1264,19 +1580,48 @@ impl SceneRenderer {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Canvas pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target.multisample_color.as_ref().unwrap_or(&target.view),
-                    resolve_target: target.multisample_color.as_ref().map(|_| &target.view),
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: crate::presentation::srgb_to_linear(self.background[0]) as f64,
-                            g: crate::presentation::srgb_to_linear(self.background[1]) as f64,
-                            b: crate::presentation::srgb_to_linear(self.background[2]) as f64,
-                            a: 1.0,
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: target
+                            .multisample_color
+                            .as_ref()
+                            .unwrap_or(if effects_enabled {
+                                &target.scene_view
+                            } else {
+                                &target.view
+                            }),
+                        resolve_target: target.multisample_color.as_ref().map(|_| {
+                            if effects_enabled {
+                                &target.scene_view
+                            } else {
+                                &target.view
+                            }
                         }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: crate::presentation::srgb_to_linear(self.background[0]) as f64,
+                                g: crate::presentation::srgb_to_linear(self.background[1]) as f64,
+                                b: crate::presentation::srgb_to_linear(self.background[2]) as f64,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: target
+                            .multisample_emission
+                            .as_ref()
+                            .unwrap_or(&target.emission_view),
+                        resolve_target: target
+                            .multisample_emission
+                            .as_ref()
+                            .map(|_| &target.emission_view),
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                ],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &target.depth,
                     depth_ops: Some(wgpu::Operations {
@@ -1328,13 +1673,17 @@ impl SceneRenderer {
                     }
                 }
             }
-            pass.set_pipeline(&self.triangles);
             for stroke in doc
                 .strokes
                 .iter()
                 .filter(|s| doc.visible(s) && !is_translucent(s))
             {
                 if let Some(mesh) = self.meshes.get(&stroke.id) {
+                    pass.set_pipeline(if stroke.material == StrokeMaterial::Cutout {
+                        &self.cutout_triangles
+                    } else {
+                        &self.triangles
+                    });
                     pass.set_bind_group(
                         1,
                         &self.textures[&texture::key(stroke.brush.texture)],
@@ -1348,7 +1697,9 @@ impl SceneRenderer {
             for (stroke, mesh) in back_to_front(
                 doc.strokes
                     .iter()
-                    .filter(|s| doc.visible(s) && is_translucent(s))
+                    .filter(|s| {
+                        doc.visible(s) && is_translucent(s) && s.material != StrokeMaterial::Cutout
+                    })
                     .filter_map(|s| self.meshes.get(&s.id).map(|m| (s, m)))
                     .collect(),
                 camera,
@@ -1358,6 +1709,11 @@ impl SceneRenderer {
                 pass.draw(0..mesh.count, 0..1);
             }
             for (stroke, mesh) in &self.repeat_preview {
+                pass.set_pipeline(if stroke.material == StrokeMaterial::Cutout {
+                    &self.cutout_triangles
+                } else {
+                    &self.transparent_triangles
+                });
                 pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
@@ -1384,6 +1740,17 @@ impl SceneRenderer {
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..6, 0..1);
             }
+        }
+        if effects_enabled {
+            self.record_post_effects(
+                &mut encoder,
+                &target.scene_view,
+                &target.emission_view,
+                &target.depth,
+                &target.view,
+                size,
+                camera,
+            );
         }
         self.state.queue.submit(Some(encoder.finish()));
         target.id
@@ -1447,7 +1814,14 @@ impl SceneRenderer {
             height: size[1],
             depth_or_array_layers: 1,
         };
-        let sample_count = canvas_sample_count(&self.state.adapter);
+        let effects_enabled = self.post_effects.glow > 0.0
+            || self.post_effects.depth_of_field > 0.0
+            || self.post_effects.pixel_size > 1.0;
+        let sample_count = if effects_enabled {
+            1
+        } else {
+            canvas_sample_count(&self.state.adapter)
+        };
         let color = self.state.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Artwork PNG export target"),
             size: extent,
@@ -1459,6 +1833,28 @@ impl SceneRenderer {
             view_formats: &[],
         });
         let color_view = color.create_view(&Default::default());
+        let scene_color = self.state.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Artwork PNG post-processing source"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let scene_view = scene_color.create_view(&Default::default());
+        let emission_texture = self.state.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Artwork PNG emissive contribution"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let emission_view = emission_texture.create_view(&Default::default());
         let multisample_color = (sample_count > 1).then(|| {
             self.state
                 .device
@@ -1474,6 +1870,21 @@ impl SceneRenderer {
                 })
                 .create_view(&Default::default())
         });
+        let multisample_emission = (sample_count > 1).then(|| {
+            self.state
+                .device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Artwork PNG multisample emissive contribution"),
+                    size: extent,
+                    mip_level_count: 1,
+                    sample_count,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        });
         let depth_texture = self.state.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Artwork PNG depth"),
             size: extent,
@@ -1481,7 +1892,12 @@ impl SceneRenderer {
             sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | if effects_enabled {
+                    wgpu::TextureUsages::TEXTURE_BINDING
+                } else {
+                    wgpu::TextureUsages::empty()
+                },
             view_formats: &[],
         });
         let depth = depth_texture.create_view(&Default::default());
@@ -1505,7 +1921,10 @@ impl SceneRenderer {
             .filter(|stroke| doc.visible(stroke))
             .map(|stroke| {
                 let vertices = geometry::stroke_mesh(stroke);
-                (stroke, self.mesh(&vertices, stroke.points.len()))
+                (
+                    stroke,
+                    self.mesh(&vertices, stroke.points.len(), stroke.material),
+                )
             })
             .collect();
         let image_plane_meshes: Vec<_> = if background.is_some() {
@@ -1546,6 +1965,14 @@ impl SceneRenderer {
                 f32::from(self.toon_shading),
             ],
             camera: camera.eye().extend(self.grain.clamp(0.0, 0.12)).to_array(),
+            background: background.map_or([0.0, 0.0, 0.0, 0.0], |color| {
+                [
+                    crate::presentation::srgb_to_linear(color[0]),
+                    crate::presentation::srgb_to_linear(color[1]),
+                    crate::presentation::srgb_to_linear(color[2]),
+                    1.0,
+                ]
+            }),
         };
         self.state
             .queue
@@ -1600,22 +2027,42 @@ impl SceneRenderer {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Artwork PNG color"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: multisample_color.as_ref().unwrap_or(&color_view),
-                    resolve_target: multisample_color.as_ref().map(|_| &color_view),
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(background.map_or(
-                            wgpu::Color::TRANSPARENT,
-                            |background| wgpu::Color {
-                                r: crate::presentation::srgb_to_linear(background[0]) as f64,
-                                g: crate::presentation::srgb_to_linear(background[1]) as f64,
-                                b: crate::presentation::srgb_to_linear(background[2]) as f64,
-                                a: 1.0,
-                            },
-                        )),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: multisample_color.as_ref().unwrap_or(if effects_enabled {
+                            &scene_view
+                        } else {
+                            &color_view
+                        }),
+                        resolve_target: multisample_color.as_ref().map(|_| {
+                            if effects_enabled {
+                                &scene_view
+                            } else {
+                                &color_view
+                            }
+                        }),
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(background.map_or(
+                                wgpu::Color::TRANSPARENT,
+                                |background| wgpu::Color {
+                                    r: crate::presentation::srgb_to_linear(background[0]) as f64,
+                                    g: crate::presentation::srgb_to_linear(background[1]) as f64,
+                                    b: crate::presentation::srgb_to_linear(background[2]) as f64,
+                                    a: 1.0,
+                                },
+                            )),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: multisample_emission.as_ref().unwrap_or(&emission_view),
+                        resolve_target: multisample_emission.as_ref().map(|_| &emission_view),
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                ],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth,
                     depth_ops: Some(wgpu::Operations {
@@ -1645,25 +2092,29 @@ impl SceneRenderer {
                     }
                 }
             }
-            pass.set_pipeline(if background.is_none() {
-                &self.coverage_triangles
-            } else {
-                &self.triangles
-            });
             for (stroke, mesh) in meshes.iter().filter(|(stroke, _)| !is_translucent(stroke)) {
+                pass.set_pipeline(if stroke.material == StrokeMaterial::Cutout {
+                    &self.cutout_triangles
+                } else if background.is_none() {
+                    &self.coverage_triangles
+                } else {
+                    &self.triangles
+                });
                 pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
-            pass.set_pipeline(&self.transparent_triangles);
             for (stroke, mesh) in back_to_front(
                 meshes
                     .iter()
-                    .filter(|(stroke, _)| is_translucent(stroke))
+                    .filter(|(stroke, _)| {
+                        is_translucent(stroke) && stroke.material != StrokeMaterial::Cutout
+                    })
                     .map(|(stroke, mesh)| (*stroke, mesh))
                     .collect(),
                 camera,
             ) {
+                pass.set_pipeline(&self.transparent_triangles);
                 pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
@@ -1681,6 +2132,17 @@ impl SceneRenderer {
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..6, 0..1);
             }
+        }
+        if effects_enabled {
+            self.record_post_effects(
+                &mut encoder,
+                &scene_view,
+                &emission_view,
+                &depth,
+                &color_view,
+                size,
+                camera,
+            );
         }
         let row = (size[0] * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
             * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;

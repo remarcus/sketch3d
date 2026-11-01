@@ -1,6 +1,6 @@
 //! Wavefront OBJ/MTL export for visible editable stroke geometry.
 use crate::{
-    document::{Document, Stroke},
+    document::{Document, Stroke, StrokeMaterial},
     export,
     texture::{self, TextureKind, TextureSettings},
 };
@@ -12,7 +12,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-type MaterialKey = (u32, u32, u32, u32, TextureKind, u32, u32);
+type MaterialKey = (u32, u32, u32, u32, TextureKind, u32, u32, StrokeMaterial);
 
 struct Material {
     name: String,
@@ -20,6 +20,7 @@ struct Material {
     opacity: f32,
     texture: TextureSettings,
     mask_file: Option<String>,
+    mode: StrokeMaterial,
 }
 
 /// Write the OBJ last so consumers never see a main file whose companions are
@@ -49,19 +50,25 @@ pub fn write_obj_bundle(
     for stroke in &strokes {
         export::stroke_mesh(stroke)?;
         let key = material_key(stroke);
-        if !material_ids.contains_key(&key) {
+        let textured = key.4 != TextureKind::Solid;
+        if let std::collections::hash_map::Entry::Vacant(entry) = material_ids.entry(key) {
             if materials.len() >= 65_536 {
                 return Err("OBJ export exceeds the 65,536 material limit".into());
             }
             let index = materials.len();
-            let mask_file = (key.4 != TextureKind::Solid).then(|| format!("mask-{index:05}.png"));
-            material_ids.insert(key, index);
+            let mask_file = textured.then(|| format!("mask-{index:05}.png"));
+            entry.insert(index);
             materials.push(Material {
                 name: format!("material_{index:05}"),
                 diffuse: stroke.color,
-                opacity: stroke.brush.opacity,
+                opacity: if stroke.material == StrokeMaterial::Cutout {
+                    0.0
+                } else {
+                    stroke.brush.opacity
+                },
                 texture: stroke.brush.texture,
                 mask_file,
+                mode: stroke.material,
             });
         }
     }
@@ -76,6 +83,7 @@ pub fn write_obj_bundle(
     let mtl_path = parent.join(&mtl_name);
     let mut companion_files = Vec::<(PathBuf, Vec<u8>)>::new();
     let mut mtl = String::new();
+    mtl.push_str("# Spatial Sketch cutout strokes export as fully transparent geometry; destination erasure is not represented by OBJ/MTL.\n");
     for material in &materials {
         writeln!(mtl, "newmtl {}", material.name).unwrap();
         writeln!(
@@ -85,6 +93,27 @@ pub fn write_obj_bundle(
         )
         .unwrap();
         writeln!(mtl, "d {:.6}", material.opacity).unwrap();
+        if material.mode == StrokeMaterial::Emissive {
+            writeln!(
+                mtl,
+                "Ke {:.6} {:.6} {:.6}",
+                material.diffuse[0], material.diffuse[1], material.diffuse[2]
+            )
+            .unwrap();
+        }
+        writeln!(
+            mtl,
+            "illum {}",
+            if matches!(
+                material.mode,
+                StrokeMaterial::Shaded | StrokeMaterial::Cutout
+            ) {
+                2
+            } else {
+                0
+            }
+        )
+        .unwrap();
         if let Some(mask_file) = &material.mask_file {
             writeln!(mtl, "map_d spatial-sketch-{nonce}-{mask_file}").unwrap();
         }
@@ -180,7 +209,7 @@ pub fn write_obj_bundle(
                 )
                 .map_err(|error| error.to_string())?;
             }
-            for triangle in mesh.indices.chunks_exact(3) {
+            for triangle in mesh.indices.as_chunks::<3>().0 {
                 let index = |local: u32| vertex_offset + local as usize + 1;
                 writeln!(
                     writer,
@@ -195,9 +224,10 @@ pub fn write_obj_bundle(
                 .checked_add(mesh.vertices.len())
                 .ok_or("OBJ vertex index overflow")?;
         }
-        let budget = writer.into_inner().map_err(|error| error.to_string())?;
-        let output_size = export::MAX_BINARY_BYTES - total_companion_bytes - budget.remaining;
-        drop(budget);
+        let output_size = {
+            let budget = writer.into_inner().map_err(|error| error.to_string())?;
+            export::MAX_BINARY_BYTES - total_companion_bytes - budget.remaining
+        };
         temporary
             .as_file()
             .sync_all()
@@ -231,6 +261,7 @@ fn material_key(stroke: &Stroke) -> MaterialKey {
         texture.0,
         texture.1,
         texture.2,
+        stroke.material,
     )
 }
 

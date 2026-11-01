@@ -77,15 +77,15 @@ impl LoftSurface {
                 );
             }
 
-            for control_index in 0..4 {
-                let z = section.controls[control_index].z;
-                if section_index > 0 && z - previous_z[control_index] < MIN_SECTION_SPACING {
+            for (control, previous) in section.controls.iter().zip(previous_z.iter_mut()) {
+                let z = control.z;
+                if section_index > 0 && z - *previous < MIN_SECTION_SPACING {
                     return Err(
                         "Loft sections must progress along local +Z without crossing or folding"
                             .into(),
                     );
                 }
-                previous_z[control_index] = z;
+                *previous = z;
             }
 
             for (sample_index, u) in [0.0_f32, 0.25, 0.5, 0.75, 1.0].into_iter().enumerate() {

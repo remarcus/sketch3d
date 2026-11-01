@@ -537,7 +537,7 @@ impl CameraBookmarkStore {
         temp.as_file()
             .sync_all()
             .map_err(|error| error.to_string())?;
-        temp.persist(path).map_err(|error| error.to_string())?;
+        crate::atomic_file::replace(temp, path).map_err(|error| error.to_string())?;
         Ok(())
     }
 }
@@ -579,4 +579,157 @@ fn smoothstep(t: f32) -> f32 {
 fn shortest_angle(from: f32, to: f32) -> f32 {
     let tau = std::f32::consts::TAU;
     (to - from + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn camera_at(yaw: f32, projection: Projection, target: Vec3) -> Camera {
+        Camera {
+            projection,
+            yaw,
+            pitch: 0.25,
+            roll: -0.1,
+            distance: 8.0,
+            target,
+        }
+    }
+
+    #[test]
+    fn bookmark_roundtrip_restores_full_camera_view() {
+        let saved = camera_at(1.2, Projection::Orthographic, Vec3::new(1.0, -2.0, 3.0));
+        let bookmark = CameraBookmark::new(1, "Detail", &saved).unwrap();
+        let mut restored = Camera::default();
+
+        bookmark.view.apply(&mut restored).unwrap();
+
+        assert_eq!(restored.projection, saved.projection);
+        assert_eq!(restored.yaw, saved.yaw);
+        assert_eq!(restored.pitch, saved.pitch);
+        assert_eq!(restored.roll, saved.roll);
+        assert_eq!(restored.distance, saved.distance);
+        assert_eq!(restored.target, saved.target);
+    }
+
+    #[test]
+    fn sequence_sampling_is_deterministic_shortest_angle_and_projection_safe() {
+        let mut store = CameraBookmarkStore::default();
+        let first = store
+            .add_bookmark(
+                "Start",
+                &camera_at(6.2, Projection::Perspective, Vec3::ZERO),
+            )
+            .unwrap();
+        let last = store
+            .add_bookmark("End", &camera_at(0.1, Projection::Orthographic, Vec3::X))
+            .unwrap();
+        let sequence = store
+            .add_sequence(
+                "Orbit",
+                vec![
+                    SequenceFrame {
+                        bookmark_id: first,
+                        transition_seconds: 2.0,
+                    },
+                    SequenceFrame {
+                        bookmark_id: last,
+                        transition_seconds: 0.0,
+                    },
+                ],
+            )
+            .unwrap();
+
+        let midpoint = store.sample_sequence(sequence, 1.0).unwrap();
+        let repeated = store.sample_sequence(sequence, 1.0).unwrap();
+        assert_eq!(midpoint, repeated);
+        assert_eq!(midpoint.projection, SavedProjection::Perspective);
+        assert!(midpoint.yaw > std::f32::consts::TAU);
+        let completed = store.sample_sequence(sequence, 3.0).unwrap();
+        assert_eq!(completed.projection, SavedProjection::Orthographic);
+        assert_eq!(completed.yaw, 0.1);
+        assert_eq!(completed.target, Vec3::X.to_array());
+    }
+
+    #[test]
+    fn bookmark_store_persists_and_rejects_corrupt_or_invalid_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("camera-bookmarks.json");
+        let mut store = CameraBookmarkStore::default();
+        let first = store
+            .add_bookmark(
+                "Front",
+                &camera_at(0.0, Projection::Perspective, Vec3::ZERO),
+            )
+            .unwrap();
+        let last = store
+            .add_bookmark("Side", &camera_at(1.0, Projection::Orthographic, Vec3::X))
+            .unwrap();
+        store
+            .add_sequence(
+                "Views",
+                vec![
+                    SequenceFrame {
+                        bookmark_id: first,
+                        transition_seconds: 1.5,
+                    },
+                    SequenceFrame {
+                        bookmark_id: last,
+                        transition_seconds: 0.0,
+                    },
+                ],
+            )
+            .unwrap();
+
+        store.save(&path).unwrap();
+        assert_eq!(CameraBookmarkStore::load(&path).unwrap(), store);
+        let invalid = serde_json::to_vec(&CameraBookmarkStore {
+            version: FORMAT_VERSION + 1,
+            ..CameraBookmarkStore::default()
+        })
+        .unwrap();
+        std::fs::write(&path, invalid).unwrap();
+        assert!(CameraBookmarkStore::load(&path).is_err());
+        std::fs::write(&path, b"broken").unwrap();
+        assert!(CameraBookmarkStore::load(&path).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), b"broken");
+    }
+
+    #[test]
+    fn deleting_bookmark_removes_invalid_sequences_and_repairs_final_duration() {
+        let mut store = CameraBookmarkStore::default();
+        let ids: Vec<_> = [0.0, 1.0, 2.0]
+            .into_iter()
+            .enumerate()
+            .map(|(index, yaw)| {
+                store
+                    .add_bookmark(
+                        ["A", "B", "C"][index],
+                        &camera_at(yaw, Projection::Perspective, Vec3::ZERO),
+                    )
+                    .unwrap()
+            })
+            .collect();
+        let sequence = store
+            .add_sequence(
+                "Path",
+                ids.iter()
+                    .enumerate()
+                    .map(|(index, id)| SequenceFrame {
+                        bookmark_id: *id,
+                        transition_seconds: if index == 2 { 0.0 } else { 1.0 },
+                    })
+                    .collect(),
+            )
+            .unwrap();
+
+        store.remove_bookmark(ids[1]).unwrap();
+
+        assert_eq!(store.sequences[0].id, sequence);
+        assert_eq!(store.sequences[0].frames.len(), 2);
+        assert_eq!(store.sequences[0].frames[1].transition_seconds, 0.0);
+        store.remove_bookmark(ids[0]).unwrap();
+        assert!(store.sequences.is_empty());
+        assert!(store.validate().is_ok());
+    }
 }

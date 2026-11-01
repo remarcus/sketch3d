@@ -137,7 +137,9 @@ impl FreeformSurface {
         }
         let s = (v_low + v_high) * 0.5;
         let v = s + 0.5;
-        (v >= -1e-4 && v <= 1.0001).then_some((u, v.clamp(0.0, 1.0)))
+        (-1e-4..=1.0001)
+            .contains(&v)
+            .then_some((u, v.clamp(0.0, 1.0)))
     }
 
     /// Nearest positive ray hit against a deterministic, bounded triangle grid.

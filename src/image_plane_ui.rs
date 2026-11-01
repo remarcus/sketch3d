@@ -19,6 +19,7 @@ impl SketchApp {
             Option<u64>,
             Option<u64>,
         ),
+        label: &str,
     ) {
         let after = (
             self.doc.image_planes.clone(),
@@ -40,7 +41,7 @@ impl SketchApp {
         self.undo.push(Edit::ImagePlanes { before, after });
         self.redo.clear();
         self.dirty = true;
-        self.record_recovery_edit();
+        self.record_recovery_edit_labeled(label);
         self.renderer.invalidate();
     }
 
@@ -73,7 +74,8 @@ impl SketchApp {
     pub(super) fn install_recovery_image_assets(
         &mut self,
         assets: &[crate::recovery_store::RecoveryAsset],
-    ) {
+    ) -> Result<usize, String> {
+        let mut installed_images = 0;
         for saved in assets {
             if let Some(plane) = self
                 .doc
@@ -82,27 +84,25 @@ impl SketchApp {
                 .find(|plane| plane.asset_file == saved.asset_file)
             {
                 let path = self.image_asset_root.join(&plane.asset_file);
-                if std::fs::create_dir_all(&self.image_asset_root).is_err() {
-                    continue;
-                }
-                let Ok(mut temp) = tempfile::NamedTempFile::new_in(&self.image_asset_root) else {
-                    continue;
-                };
-                if std::io::Write::write_all(&mut temp, &saved.bytes).is_err()
-                    || temp.as_file().sync_all().is_err()
-                    || temp.persist(&path).is_err()
-                {
-                    continue;
-                }
-                if let Ok(asset) = crate::image_planes::decode_asset(&path) {
-                    if self
-                        .renderer
-                        .set_image_plane_asset(plane.id, &asset)
-                        .is_ok()
-                    {
-                        self.image_plane_assets.insert(plane.id, asset);
-                    }
-                }
+                std::fs::create_dir_all(&self.image_asset_root).map_err(|error| {
+                    format!("Could not create recovered image asset folder: {error}")
+                })?;
+                let mut temp = tempfile::NamedTempFile::new_in(&self.image_asset_root)
+                    .map_err(|error| format!("Could not stage recovered image asset: {error}"))?;
+                std::io::Write::write_all(&mut temp, &saved.bytes)
+                    .map_err(|error| format!("Could not write recovered image asset: {error}"))?;
+                temp.as_file()
+                    .sync_all()
+                    .map_err(|error| format!("Could not sync recovered image asset: {error}"))?;
+                crate::atomic_file::replace(temp, &path)
+                    .map_err(|error| format!("Could not install recovered image asset: {error}"))?;
+                let asset = crate::image_planes::decode_asset(&path)
+                    .map_err(|error| format!("Could not decode recovered image asset: {error}"))?;
+                self.renderer
+                    .set_image_plane_asset(plane.id, &asset)
+                    .map_err(|error| format!("Could not upload recovered image asset: {error}"))?;
+                self.image_plane_assets.insert(plane.id, asset);
+                installed_images += 1;
                 continue;
             }
             let Some(resource) = self.doc.model_references.iter().find(|resource| {
@@ -137,7 +137,7 @@ impl SketchApp {
             };
             if std::io::Write::write_all(&mut temp, &saved.bytes).is_err()
                 || temp.as_file().sync_all().is_err()
-                || temp.persist(&path).is_err()
+                || crate::atomic_file::replace(temp, &path).is_err()
             {
                 continue;
             }
@@ -146,6 +146,7 @@ impl SketchApp {
             self.obj_reference_models = models;
             self.refresh_obj_reference_meshes();
         }
+        Ok(installed_images)
     }
 
     pub(super) fn image_plane_hit(
@@ -191,7 +192,7 @@ impl SketchApp {
                 crate::image_planes::MAX_IMAGE_PLANES
             ));
         });
-        ui.small("Image planes are saved with the drawing and shown in PNG renders. GLB export contains strokes only.");
+        ui.small("Image planes are saved with the drawing and shown in PNG renders. Whole scene GLB exports include visible planes; selected stroke exports contain ink only.");
         if self.doc.image_planes.is_empty() {
             ui.add_space(8.0);
             ui.label("Import a PNG or JPEG to place it as a reference in 3D space.");
@@ -214,7 +215,10 @@ impl SketchApp {
                     }
                 });
                 if !loaded {
-                    ui.colored_label(Color32::YELLOW, "Image file is missing or unreadable");
+                    ui.colored_label(
+                        ui_style::colors(ui.ctx()).warning,
+                        "Image file is missing or unreadable",
+                    );
                 }
                 ui.horizontal(|ui| {
                     plane_changed |= ui.checkbox(&mut plane.visible, "Visible").changed();
@@ -349,7 +353,7 @@ impl SketchApp {
             }
         }
         if changed_any {
-            self.commit_image_plane_edit(before);
+            self.commit_image_plane_edit(before, "Image-plane edit");
         }
     }
 
@@ -444,7 +448,7 @@ impl SketchApp {
         self.image_plane_assets.insert(id, asset);
         self.doc.image_planes.push(plane);
         self.next_id += 1;
-        self.commit_image_plane_edit(before);
+        self.commit_image_plane_edit(before, "Import image plane");
         self.status =
             "Image plane imported. Position and size it, then enable Draw here to ink on it."
                 .into();

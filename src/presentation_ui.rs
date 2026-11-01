@@ -9,6 +9,8 @@ pub(super) struct PresentationUi {
     pub verification_frame: Option<u32>,
     layout_save_due: Option<Instant>,
     remembered_background: [f32; 3],
+    applied_theme: Option<presentation::UiTheme>,
+    applied_system_theme: Option<egui::Theme>,
 }
 impl PresentationUi {
     pub fn new() -> Self {
@@ -42,10 +44,26 @@ impl PresentationUi {
             verification_frame: own_verify.then_some(0),
             layout_save_due: None,
             remembered_background,
+            applied_theme: None,
+            applied_system_theme: None,
+        }
+    }
+    pub fn apply_theme(&mut self, ctx: &egui::Context) {
+        let preference = self.preferences.ui_theme;
+        let system_theme = (preference == presentation::UiTheme::System)
+            .then(|| ctx.system_theme())
+            .flatten();
+        if self.applied_theme != Some(preference)
+            || (preference == presentation::UiTheme::System
+                && self.applied_system_theme != system_theme)
+        {
+            super::ui_style::apply(ctx, preference);
+            self.applied_theme = Some(preference);
+            self.applied_system_theme = system_theme;
         }
     }
     pub fn remember(&mut self) {
-        self.preferences.version = 5;
+        self.preferences.version = 7;
         self.remembered_background = self.preferences.background;
         self.notice = Some(
             match self
@@ -61,6 +79,26 @@ impl PresentationUi {
             },
         );
     }
+    pub fn set_ui_theme(&mut self, theme: presentation::UiTheme) {
+        if self.preferences.ui_theme == theme {
+            return;
+        }
+        self.preferences.ui_theme = theme;
+        self.preferences.version = 7;
+        let mut persisted = self.preferences.clone();
+        persisted.background = self.remembered_background;
+        self.notice = Some(
+            match self
+                .path
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|path| persisted.save(path))
+            {
+                Ok(()) => "Appearance preference saved.".into(),
+                Err(error) => format!("Cannot save appearance preference: {error}"),
+            },
+        );
+    }
     pub fn schedule_layout_save(&mut self) {
         self.layout_save_due = Some(Instant::now() + Duration::from_millis(350));
     }
@@ -70,7 +108,7 @@ impl PresentationUi {
             .is_some_and(|due| Instant::now() >= due)
         {
             self.layout_save_due = None;
-            self.preferences.version = 5;
+            self.preferences.version = 7;
             let mut persisted = self.preferences.clone();
             persisted.background = self.remembered_background;
             self.notice = Some(
@@ -107,9 +145,9 @@ impl PresentationUi {
         });
         ui.horizontal(|ui| {
             for (label, color) in [
-                ("Dark", Preferences::default().background),
+                ("Dark studio", Preferences::default().background),
                 ("Blue", presentation::BLUE),
-                ("Light", presentation::LIGHT),
+                ("Light paper", presentation::LIGHT),
             ] {
                 if ui.button(label).clicked() {
                     self.preferences.background = color;
@@ -211,7 +249,10 @@ impl SketchApp {
                             ui.small("Unsaved changes");
                         }
                         if self.recovery.last_error.is_some() {
-                            ui.colored_label(Color32::LIGHT_RED, "Recovery issue");
+                            ui.colored_label(
+                                super::ui_style::colors(ui.ctx()).error,
+                                "Recovery issue",
+                            );
                         }
                     });
                 });

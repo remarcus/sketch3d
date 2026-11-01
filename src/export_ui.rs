@@ -16,23 +16,38 @@ pub(super) struct ExportSnapshot {
 }
 impl SketchApp {
     pub(super) fn can_export(&self, selected: bool) -> bool {
+        self.can_export_scope(selected, false)
+    }
+    fn can_export_scope(&self, selected: bool, include_images: bool) -> bool {
         !self.liquify_active()
             && self.export_job.is_none()
             && self.active.is_none()
             && self.drag.is_none()
             && !self.confirm
-            && self
+            && (self
                 .doc
                 .strokes
                 .iter()
                 .any(|s| !s.points.is_empty() && (!selected || self.selected.contains(&s.id)))
+                || (include_images
+                    && !selected
+                    && (self.doc.image_planes.iter().any(|plane| plane.visible)
+                        || self.doc.model_references.iter().any(|model| model.visible))))
     }
     pub(super) fn export_dialog(&mut self, selected: bool, ctx: &egui::Context) {
+        self.export_dialog_with_images(selected, false, ctx);
+    }
+    pub(super) fn export_dialog_with_images(
+        &mut self,
+        selected: bool,
+        include_images: bool,
+        ctx: &egui::Context,
+    ) {
         if self.fills.draft.is_some() || self.line.draft.is_some() {
             self.status = "Close or cancel the draft contour before exporting.".into();
             return;
         }
-        if !self.can_export(selected) {
+        if !self.can_export_scope(selected, include_images) {
             self.status = "Finish editing and select drawable strokes before exporting.".into();
             return;
         }
@@ -49,7 +64,14 @@ impl SketchApp {
             } else {
                 "drawing"
             });
-        let filename = format!("{}{}.glb", name, if selected { "-selection" } else { "" });
+        let suffix = if selected {
+            "-selection"
+        } else if include_images {
+            "-scene"
+        } else {
+            ""
+        };
+        let filename = format!("{name}{suffix}.glb");
         let Some(path) = rfd::FileDialog::new()
             .add_filter("glTF Binary", &["glb"])
             .set_file_name(filename)
@@ -64,10 +86,19 @@ impl SketchApp {
             self.status = "Choose an export filename ending in .glb.".into();
             return;
         }
-        self.start_export(path, selected, ctx);
+        self.start_export_with_images(path, selected, include_images, ctx);
     }
     pub(super) fn start_export(&mut self, path: PathBuf, selected: bool, ctx: &egui::Context) {
-        if !self.can_export(selected) {
+        self.start_export_with_images(path, selected, false, ctx);
+    }
+    pub(super) fn start_export_with_images(
+        &mut self,
+        path: PathBuf,
+        selected: bool,
+        include_images: bool,
+        ctx: &egui::Context,
+    ) {
+        if !self.can_export_scope(selected, include_images) {
             self.status = "No drawable strokes available, or another export is running.".into();
             return;
         }
@@ -87,11 +118,19 @@ impl SketchApp {
             layers: self.doc.layers.clone(),
             active_layer: self.doc.active_layer,
             version: self.doc.version,
-            image_planes: self.doc.image_planes.clone(),
+            image_planes: if include_images {
+                self.doc.image_planes.clone()
+            } else {
+                Vec::new()
+            },
             active_image_plane: self.doc.active_image_plane,
             guide_resources: Vec::new(),
             active_guide: None,
-            model_references: Vec::new(),
+            model_references: if include_images {
+                self.doc.model_references.clone()
+            } else {
+                Vec::new()
+            },
             active_model_reference: None,
             strokes: self
                 .doc
@@ -104,11 +143,21 @@ impl SketchApp {
         let (sender, receiver) = mpsc::channel();
         let context = ctx.clone();
         let destination = path.clone();
+        let image_root = self.image_asset_root.clone();
         self.last_export_result = None;
         match std::thread::Builder::new()
             .name("glb-export".into())
             .spawn(move || {
-                let result = export::write_glb(&snapshot, selection.as_ref(), &destination);
+                let result = if include_images {
+                    export::write_glb_with_images(
+                        &snapshot,
+                        selection.as_ref(),
+                        &image_root,
+                        &destination,
+                    )
+                } else {
+                    export::write_glb(&snapshot, selection.as_ref(), &destination)
+                };
                 let _ = sender.send(result);
                 context.request_repaint();
             }) {
@@ -144,8 +193,10 @@ impl SketchApp {
         self.export_job = None;
         self.status = match &result {
             Ok(summary) => format!(
-                "Exported {} strokes / {} triangles to {}",
+                "Exported {} strokes, {} image planes, {} OBJ models / {} triangles to {}",
                 summary.strokes,
+                summary.image_planes,
+                summary.model_references,
                 summary.triangles,
                 destination.display()
             ),

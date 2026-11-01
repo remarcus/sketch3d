@@ -1,10 +1,13 @@
 //! Rebuildable index of recently saved or opened native drawings.
+use eframe::egui;
+use glam::Vec3;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver, Sender},
 };
 
 const MAX_RECENT: usize = 40;
@@ -12,6 +15,25 @@ const MAX_INDEX_BYTES: u64 = 64 * 1024;
 const MAX_DRAWING_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ASSET_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ASSET_FILES: usize = 4096;
+const THUMBNAIL_SIZE: [u32; 2] = [192, 120];
+const MAX_THUMBNAIL_BYTES: u64 = 128 * 1024;
+const MAX_TRASH_ENTRIES: usize = 1000;
+const MAX_THUMBNAIL_WORKERS: usize = 2;
+const MAX_THUMBNAIL_SEGMENTS: usize = 20_000;
+const MAX_CACHED_THUMBNAILS: usize = 128;
+
+struct ThumbnailResult {
+    path: PathBuf,
+    generation: u64,
+    rgba: Result<Vec<u8>, String>,
+}
+
+pub struct TrashDrawing {
+    pub path: PathBuf,
+    pub name: String,
+    pub deleted: Option<std::time::SystemTime>,
+    pub issue: Option<String>,
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,11 +51,20 @@ pub struct DrawingLibrary {
     recent: Vec<PathBuf>,
     folders: Vec<String>,
     assignments: HashMap<String, String>,
+    thumbnail_dir: Option<PathBuf>,
+    thumbnail_tx: Sender<ThumbnailResult>,
+    thumbnail_rx: Receiver<ThumbnailResult>,
+    thumbnail_pending: HashSet<PathBuf>,
+    thumbnail_failed: HashSet<PathBuf>,
+    thumbnail_textures: HashMap<PathBuf, egui::TextureHandle>,
+    thumbnail_generations: HashMap<PathBuf, u64>,
+    pub trash_open: bool,
     pub notice: Option<String>,
 }
 
 impl DrawingLibrary {
     pub fn new() -> Self {
+        let (thumbnail_tx, thumbnail_rx) = mpsc::channel();
         let path = match crate::presets::path() {
             Ok(path) => path.with_file_name("drawing-library.json"),
             Err(error) => {
@@ -42,15 +73,31 @@ impl DrawingLibrary {
                     recent: Vec::new(),
                     folders: Vec::new(),
                     assignments: HashMap::new(),
+                    thumbnail_dir: None,
+                    thumbnail_tx,
+                    thumbnail_rx,
+                    thumbnail_pending: HashSet::new(),
+                    thumbnail_failed: HashSet::new(),
+                    thumbnail_textures: HashMap::new(),
+                    thumbnail_generations: HashMap::new(),
+                    trash_open: false,
                     notice: Some(format!("Drawing library: {error}")),
                 };
             }
         };
         let mut library = Self {
-            path: Some(path),
+            path: Some(path.clone()),
             recent: Vec::new(),
             folders: Vec::new(),
             assignments: HashMap::new(),
+            thumbnail_dir: Some(path.with_file_name("drawing-thumbnails")),
+            thumbnail_tx,
+            thumbnail_rx,
+            thumbnail_pending: HashSet::new(),
+            thumbnail_failed: HashSet::new(),
+            thumbnail_textures: HashMap::new(),
+            thumbnail_generations: HashMap::new(),
+            trash_open: false,
             notice: None,
         };
         match Self::load(library.path.as_deref().unwrap()) {
@@ -118,6 +165,87 @@ impl DrawingLibrary {
 
     pub fn recent(&self) -> &[PathBuf] {
         &self.recent
+    }
+
+    /// Return a cached thumbnail or queue its bounded generation on a worker.
+    /// Parsing and rasterization never run in the canvas/UI frame.
+    pub fn thumbnail(&mut self, ctx: &egui::Context, path: &Path) -> Option<egui::TextureHandle> {
+        self.poll_thumbnails(ctx);
+        let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if !self.thumbnail_textures.contains_key(&key)
+            && !self.thumbnail_pending.contains(&key)
+            && !self.thumbnail_failed.contains(&key)
+            && self.thumbnail_pending.len() < MAX_THUMBNAIL_WORKERS
+        {
+            self.thumbnail_pending.insert(key.clone());
+            let sender = self.thumbnail_tx.clone();
+            let repaint = ctx.clone();
+            let cache_dir = self.thumbnail_dir.clone();
+            let worker_path = key.clone();
+            let generation = *self.thumbnail_generations.entry(key.clone()).or_default();
+            if let Err(error) = std::thread::Builder::new()
+                .name("drawing-thumbnail".into())
+                .spawn(move || {
+                    let rgba = generate_thumbnail(&worker_path, cache_dir.as_deref());
+                    let _ = sender.send(ThumbnailResult {
+                        path: worker_path,
+                        generation,
+                        rgba,
+                    });
+                    repaint.request_repaint();
+                })
+            {
+                self.thumbnail_pending.remove(&key);
+                self.thumbnail_failed.insert(key.clone());
+                self.notice = Some(format!("Cannot start thumbnail worker: {error}"));
+            }
+        }
+        self.thumbnail_textures.get(&key).cloned()
+    }
+
+    fn poll_thumbnails(&mut self, ctx: &egui::Context) {
+        while let Ok(result) = self.thumbnail_rx.try_recv() {
+            if self
+                .thumbnail_generations
+                .get(&result.path)
+                .copied()
+                .unwrap_or_default()
+                != result.generation
+            {
+                continue;
+            }
+            self.thumbnail_pending.remove(&result.path);
+            match result.rgba {
+                Ok(rgba) => {
+                    let image = egui::ColorImage::from_rgba_unmultiplied(
+                        THUMBNAIL_SIZE.map(|dimension| dimension as usize),
+                        &rgba,
+                    );
+                    let texture = ctx.load_texture(
+                        format!("drawing-thumbnail-{}", stable_path_hash(&result.path)),
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    self.thumbnail_textures.insert(result.path, texture);
+                }
+                Err(_) => {
+                    self.thumbnail_failed.insert(result.path);
+                }
+            }
+        }
+    }
+
+    /// Clear stale preview state after a successful save/import/rename so the
+    /// next library view renders the new document contents.
+    pub fn invalidate_thumbnail(&mut self, path: &Path) {
+        let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.thumbnail_textures.remove(&key);
+        self.thumbnail_failed.remove(&key);
+        self.thumbnail_pending.remove(&key);
+        *self.thumbnail_generations.entry(key.clone()).or_default() += 1;
+        if let Some(directory) = &self.thumbnail_dir {
+            remove_thumbnail_files(directory, stable_path_hash(&key), None);
+        }
     }
 
     pub fn folders(&self) -> &[String] {
@@ -279,6 +407,8 @@ impl DrawingLibrary {
         };
         let new_path = destination.canonicalize().unwrap_or(destination);
         let new_key = path_key(&new_path);
+        self.invalidate_thumbnail(source);
+        self.invalidate_thumbnail(&new_path);
         self.recent.retain(|path| path_key(path) != old_key);
         self.recent.insert(0, new_path.clone());
         self.recent.truncate(MAX_RECENT);
@@ -296,11 +426,26 @@ impl DrawingLibrary {
 
     pub fn record(&mut self, path: &Path) {
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.invalidate_thumbnail(&path);
+        let previous_recent = self.recent.clone();
         self.recent.retain(|recent| recent != &path);
         self.recent.insert(0, path);
         self.recent.truncate(MAX_RECENT);
+        for old_path in previous_recent {
+            if !self.recent.contains(&old_path) {
+                self.invalidate_thumbnail(&old_path);
+            }
+        }
         let known: HashSet<_> = self.recent.iter().map(|path| path_key(path)).collect();
         self.assignments.retain(|key, _| known.contains(key));
+        self.save_index();
+    }
+
+    pub fn forget(&mut self, path: &Path) {
+        let key = path_key(path);
+        self.recent.retain(|recent| path_key(recent) != key);
+        self.assignments.remove(&key);
+        self.invalidate_thumbnail(path);
         self.save_index();
     }
 
@@ -495,6 +640,231 @@ pub fn copy_native_drawing(source: &Path, destination: &Path) -> Result<(), Stri
     Ok(())
 }
 
+/// Create a self-contained, portable directory backup. The final directory is
+/// installed with one rename after the drawing and its complete asset bundle
+/// have been validated and copied into a staging directory.
+pub fn backup_native_drawing(source: &Path, destination: &Path) -> Result<(), String> {
+    if fs::symlink_metadata(destination).is_ok() {
+        return Err("The backup destination already exists".into());
+    }
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or("Invalid backup destination")?;
+    if !parent.is_dir() {
+        return Err("The backup parent folder does not exist".into());
+    }
+    let stage = tempfile::Builder::new()
+        .prefix(".sketch-backup-")
+        .tempdir_in(parent)
+        .map_err(|error| format!("Cannot create backup staging folder: {error}"))?;
+    let drawing_path = stage.path().join("drawing.sketch.json");
+    copy_native_drawing(source, &drawing_path)?;
+    let original_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("drawing.sketch.json");
+    let manifest = serde_json::json!({"format":"spatial-sketch-backup", "version":1, "original_file":original_name});
+    let mut manifest_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(stage.path().join("manifest.json"))
+        .map_err(|error| error.to_string())?;
+    serde_json::to_writer_pretty(&mut manifest_file, &manifest)
+        .map_err(|error| error.to_string())?;
+    manifest_file
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    let stage_path = stage.keep();
+    if let Err(error) = fs::rename(&stage_path, destination) {
+        let cleanup = fs::remove_dir_all(&stage_path)
+            .err()
+            .map(|error| format!("; staging cleanup failed: {error}"))
+            .unwrap_or_default();
+        return Err(format!("Cannot install backup: {error}{cleanup}"));
+    }
+    Ok(())
+}
+
+/// Restore a portable backup into a new native drawing. Validation and asset
+/// checks are shared with the regular copy path; destination creation is
+/// no-clobber and rolls back its asset folder if installation fails.
+pub fn restore_native_backup(bundle: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(bundle).map_err(|error| error.to_string())?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("Choose a regular backup folder".into());
+    }
+    let manifest_path = bundle.join("manifest.json");
+    let manifest_metadata = fs::symlink_metadata(&manifest_path)
+        .map_err(|_| "Backup manifest is missing or unreadable")?;
+    if !manifest_metadata.is_file() || manifest_metadata.file_type().is_symlink() {
+        return Err("Backup manifest must be a regular file".into());
+    }
+    let manifest_file =
+        File::open(&manifest_path).map_err(|_| "Backup manifest is missing or unreadable")?;
+    if manifest_file
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .len()
+        > 4096
+    {
+        return Err("Backup manifest exceeds its size limit".into());
+    }
+    let manifest: serde_json::Value = serde_json::from_reader(manifest_file)
+        .map_err(|error| format!("Invalid backup manifest: {error}"))?;
+    if manifest.get("format").and_then(serde_json::Value::as_str) != Some("spatial-sketch-backup")
+        || manifest.get("version").and_then(serde_json::Value::as_u64) != Some(1)
+    {
+        return Err("Unsupported backup format".into());
+    }
+    copy_native_drawing(&bundle.join("drawing.sketch.json"), destination)
+}
+
+/// Move a saved drawing into the local recoverable trash after creating and
+/// validating a self-contained backup. The original remains untouched if the
+/// backup cannot be completed.
+pub fn trash_native_drawing(source: &Path) -> Result<PathBuf, String> {
+    let trash_root = crate::presets::path()
+        .map_err(|error| error.to_string())?
+        .join("drawing-trash");
+    fs::create_dir_all(&trash_root)
+        .map_err(|error| format!("Cannot create drawing trash: {error}"))?;
+    let stem = source
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("drawing");
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_secs();
+    let mut destination = trash_root.join(format!("{stem}-{timestamp}.sketch-backup"));
+    let mut suffix = 1;
+    while fs::symlink_metadata(&destination).is_ok() {
+        destination = trash_root.join(format!("{stem}-{timestamp}-{suffix}.sketch-backup"));
+        suffix += 1;
+    }
+    backup_native_drawing(source, &destination)?;
+    let assets = crate::image_plane_storage::asset_root(source)?;
+    if let Err(error) = fs::remove_file(source) {
+        return Err(format!(
+            "Drawing was backed up to {} but could not be removed: {error}",
+            destination.display()
+        ));
+    }
+    match fs::symlink_metadata(&assets) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            if let Err(error) = fs::remove_dir_all(&assets) {
+                return Err(format!("Drawing was moved to trash, but its original resource folder could not be removed: {error}"));
+            }
+        }
+        Ok(_) => {
+            return Err(
+                "Drawing moved to trash, but its resource folder is not a regular directory".into(),
+            )
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Drawing moved to trash, but its resource folder could not be inspected: {error}"
+            ))
+        }
+    }
+    Ok(destination)
+}
+
+fn trash_root() -> Result<PathBuf, String> {
+    Ok(crate::presets::path()
+        .map_err(|error| error.to_string())?
+        .join("drawing-trash"))
+}
+
+/// List recoverable backups, retaining unreadable entries in the view with an
+/// issue label so corruption is visible instead of silently hiding data.
+pub fn list_trash() -> Result<Vec<TrashDrawing>, String> {
+    let root = trash_root()?;
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("Cannot read drawing trash: {error}")),
+    };
+    let mut results = Vec::new();
+    for entry in entries.take(MAX_TRASH_ENTRIES) {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => metadata,
+            _ => continue,
+        };
+        let deleted = metadata.modified().ok();
+        match read_backup_name(&path) {
+            Ok(name) => results.push(TrashDrawing {
+                path,
+                name,
+                deleted,
+                issue: None,
+            }),
+            Err(error) => results.push(TrashDrawing {
+                path,
+                name: "Unreadable backup".into(),
+                deleted,
+                issue: Some(error),
+            }),
+        }
+    }
+    results.sort_by_key(|result| std::cmp::Reverse(result.deleted));
+    Ok(results)
+}
+
+fn read_backup_name(bundle: &Path) -> Result<String, String> {
+    let manifest_path = bundle.join("manifest.json");
+    let metadata = fs::symlink_metadata(&manifest_path)
+        .map_err(|_| "Backup manifest is missing".to_owned())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 4096 {
+        return Err("Backup manifest is invalid or exceeds its 4 KiB limit".into());
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_reader(File::open(manifest_path).map_err(|error| error.to_string())?)
+            .map_err(|error| format!("Backup manifest is corrupt: {error}"))?;
+    if manifest.get("format").and_then(serde_json::Value::as_str) != Some("spatial-sketch-backup")
+        || manifest.get("version").and_then(serde_json::Value::as_u64) != Some(1)
+    {
+        return Err("Backup format is unsupported".into());
+    }
+    let name = manifest
+        .get("original_file")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Backup manifest has no source file name")?;
+    if name.is_empty()
+        || name.len() > 255
+        || Path::new(name).file_name().and_then(|part| part.to_str()) != Some(name)
+    {
+        return Err("Backup source file name is invalid".into());
+    }
+    Ok(name.to_owned())
+}
+
+/// Restore a trash item without overwriting existing work, then remove the
+/// backup only after the restored drawing and managed resources are installed.
+pub fn restore_from_trash(bundle: &Path, destination: &Path) -> Result<(), String> {
+    let root = trash_root()?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("Cannot locate drawing trash: {error}"))?;
+    let canonical_bundle = bundle
+        .canonicalize()
+        .map_err(|error| format!("Cannot locate trash item: {error}"))?;
+    if !canonical_bundle.starts_with(&canonical_root) {
+        return Err("Selected backup is outside the recoverable drawing trash".into());
+    }
+    restore_native_backup(&canonical_bundle, destination)?;
+    if let Err(error) = fs::remove_dir_all(&canonical_bundle) {
+        return Err(format!(
+            "Drawing restored, but its trash copy could not be removed: {error}"
+        ));
+    }
+    Ok(())
+}
+
 fn copy_asset_tree(
     source: &Path,
     destination: &Path,
@@ -537,4 +907,317 @@ fn copy_asset_tree(
         }
     }
     Ok(())
+}
+
+fn generate_thumbnail(path: &Path, cache_dir: Option<&Path>) -> Result<Vec<u8>, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err("Drawing is missing or is not a regular file".into());
+    }
+    if metadata.len() > MAX_DRAWING_BYTES {
+        return Err("Drawing exceeds the thumbnail size limit".into());
+    }
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_nanos() as u64);
+    let mut fingerprint = stable_path_hash(path) ^ metadata.len().rotate_left(17) ^ modified;
+    fingerprint ^= fingerprint >> 30;
+    fingerprint = fingerprint.wrapping_mul(0xbf58476d1ce4e5b9);
+    fingerprint ^= fingerprint >> 27;
+    let cache_path = cache_dir.map(|directory| {
+        directory.join(format!(
+            "{:016x}-{:016x}.png",
+            stable_path_hash(path),
+            fingerprint
+        ))
+    });
+    if let Some(cache_path) = &cache_path {
+        if let Ok(metadata) = fs::symlink_metadata(cache_path) {
+            if metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.len() <= MAX_THUMBNAIL_BYTES
+            {
+                if let Ok(bytes) = fs::read(cache_path) {
+                    if valid_thumbnail_png(&bytes) {
+                        if let Some(directory) = cache_dir {
+                            prune_thumbnail_cache(directory);
+                        }
+                        return png_to_rgba(&bytes);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut text = String::with_capacity(metadata.len() as usize);
+    File::open(path)
+        .map_err(|error| error.to_string())?
+        .take(MAX_DRAWING_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|error| format!("Cannot read drawing for preview: {error}"))?;
+    if text.len() as u64 > MAX_DRAWING_BYTES {
+        return Err("Drawing grew beyond the 64 MiB thumbnail limit".into());
+    }
+    let document = crate::document::Document::from_json(&text)
+        .map_err(|error| format!("Cannot preview invalid drawing: {error}"))?;
+    let image = raster_thumbnail(&document);
+    let rgba = image.as_raw().clone();
+    let mut encoded = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .map_err(|error| format!("Cannot encode drawing preview: {error}"))?;
+    let bytes = encoded.into_inner();
+    if bytes.len() as u64 > MAX_THUMBNAIL_BYTES {
+        return Err("Generated preview exceeded its cache limit".into());
+    }
+    if let (Some(cache_dir), Some(cache_path)) = (cache_dir, cache_path.as_deref()) {
+        if fs::create_dir_all(cache_dir).is_ok() {
+            if let Ok(mut temporary) = tempfile::NamedTempFile::new_in(cache_dir) {
+                if temporary.write_all(&bytes).is_ok() && temporary.as_file().sync_all().is_ok() {
+                    let _ = temporary.persist_noclobber(cache_path);
+                }
+            }
+            remove_thumbnail_files(
+                cache_dir,
+                stable_path_hash(path),
+                cache_path.file_name().and_then(|name| name.to_str()),
+            );
+            prune_thumbnail_cache(cache_dir);
+        }
+    }
+    Ok(rgba)
+}
+
+fn valid_thumbnail_png(bytes: &[u8]) -> bool {
+    let Ok(reader) = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format() else {
+        return false;
+    };
+    reader
+        .into_dimensions()
+        .is_ok_and(|(width, height)| width == THUMBNAIL_SIZE[0] && height == THUMBNAIL_SIZE[1])
+}
+
+fn png_to_rgba(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    image::load_from_memory(bytes)
+        .map(|image| image.to_rgba8().into_raw())
+        .map_err(|error| format!("Cached drawing preview is corrupt: {error}"))
+}
+
+fn raster_thumbnail(document: &crate::document::Document) -> image::RgbaImage {
+    let mut image = image::RgbaImage::from_pixel(
+        THUMBNAIL_SIZE[0],
+        THUMBNAIL_SIZE[1],
+        image::Rgba([21, 31, 39, 255]),
+    );
+    let strokes: Vec<_> = document
+        .strokes
+        .iter()
+        .filter(|stroke| document.visible(stroke) && !stroke.points.is_empty())
+        .collect();
+    let Some(first) = strokes.iter().flat_map(|stroke| &stroke.points).next() else {
+        return image;
+    };
+    let (mut min, mut max) = (first.position, first.position);
+    for point in strokes.iter().flat_map(|stroke| &stroke.points) {
+        min = min.min(point.position);
+        max = max.max(point.position);
+    }
+    let spans = max - min;
+    let pairs = [(0_usize, 1_usize), (0, 2), (1, 2)];
+    let (axis_x, axis_y) = pairs
+        .into_iter()
+        .max_by(|(ax, ay), (bx, by)| {
+            (spans[*ax] * spans[*ay]).total_cmp(&(spans[*bx] * spans[*by]))
+        })
+        .unwrap_or((0, 1));
+    let span_x = spans[axis_x].max(0.001);
+    let span_y = spans[axis_y].max(0.001);
+    let scale = ((THUMBNAIL_SIZE[0] as f32 - 20.0) / span_x)
+        .min((THUMBNAIL_SIZE[1] as f32 - 20.0) / span_y);
+    let center_x = (min[axis_x] + max[axis_x]) * 0.5;
+    let center_y = (min[axis_y] + max[axis_y]) * 0.5;
+    let project = |position: Vec3| -> (f32, f32) {
+        (
+            THUMBNAIL_SIZE[0] as f32 * 0.5 + (position[axis_x] - center_x) * scale,
+            THUMBNAIL_SIZE[1] as f32 * 0.5 - (position[axis_y] - center_y) * scale,
+        )
+    };
+    let mut segment_count = 0;
+    for stroke in strokes {
+        let color = image::Rgba([
+            linear_to_byte(stroke.color[0]),
+            linear_to_byte(stroke.color[1]),
+            linear_to_byte(stroke.color[2]),
+            255,
+        ]);
+        let thickness = (stroke.radius * scale * 2.0).round().clamp(1.0, 5.0) as i32;
+        for segment in stroke.points.windows(2) {
+            if segment_count >= MAX_THUMBNAIL_SEGMENTS {
+                return image;
+            }
+            segment_count += 1;
+            let (x0, y0) = project(segment[0].position);
+            let (x1, y1) = project(segment[1].position);
+            draw_preview_line(&mut image, x0, y0, x1, y1, color, thickness);
+        }
+        if stroke.points.len() == 1 {
+            let (x, y) = project(stroke.points[0].position);
+            draw_preview_line(&mut image, x, y, x, y, color, thickness);
+        }
+    }
+    image
+}
+
+fn draw_preview_line(
+    image: &mut image::RgbaImage,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    color: image::Rgba<u8>,
+    thickness: i32,
+) {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let steps = dx.abs().max(dy.abs()).ceil().max(1.0) as usize;
+    let radius = (thickness / 2).max(0);
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let x = (x0 + dx * t).round() as i32;
+        let y = (y0 + dy * t).round() as i32;
+        for oy in -radius..=radius {
+            for ox in -radius..=radius {
+                let px = x + ox;
+                let py = y + oy;
+                if px >= 0 && py >= 0 && (px as u32) < image.width() && (py as u32) < image.height()
+                {
+                    image.put_pixel(px as u32, py as u32, color);
+                }
+            }
+        }
+    }
+}
+
+fn linear_to_byte(value: f32) -> u8 {
+    let value = value.clamp(0.0, 1.0);
+    let srgb = if value <= 0.0031308 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    };
+    (srgb * 255.0).round() as u8
+}
+
+fn stable_path_hash(path: &Path) -> u64 {
+    path.to_string_lossy()
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        })
+}
+
+fn remove_thumbnail_files(directory: &Path, path_hash: u64, keep: Option<&str>) {
+    let prefix = format!("{path_hash:016x}-");
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with(&prefix)
+            && keep.is_none_or(|keep| name.to_string_lossy() != keep)
+        {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn prune_thumbnail_cache(directory: &Path) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut files: Vec<_> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let text = name.to_str()?;
+            let metadata = fs::symlink_metadata(entry.path()).ok()?;
+            (metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && text.ends_with(".png")
+                && text.len() == 37)
+                .then(|| (metadata.modified().ok(), entry.path()))
+        })
+        .collect();
+    if files.len() <= MAX_CACHED_THUMBNAILS {
+        return;
+    }
+    files.sort_by_key(|entry| entry.0);
+    let remove_count = files.len() - MAX_CACHED_THUMBNAILS;
+    for (_, path) in files.into_iter().take(remove_count) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drawing_thumbnail_is_bounded_and_cached_as_a_fixed_size_png() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let drawing = root.path().join("thumbnail.sketch.json");
+        let cache = root.path().join("thumbnails");
+        fs::write(
+            &drawing,
+            serde_json::to_vec(&crate::document::Document::default()).unwrap(),
+        )
+        .unwrap();
+
+        let first = generate_thumbnail(&drawing, Some(&cache)).unwrap();
+        assert_eq!(
+            first.len(),
+            THUMBNAIL_SIZE[0] as usize * THUMBNAIL_SIZE[1] as usize * 4
+        );
+        let cached: Vec<_> = fs::read_dir(&cache).unwrap().map(Result::unwrap).collect();
+        assert_eq!(cached.len(), 1);
+        let bytes = fs::read(cached[0].path()).unwrap();
+        assert!(bytes.len() as u64 <= MAX_THUMBNAIL_BYTES);
+        assert!(valid_thumbnail_png(&bytes));
+        let second = generate_thumbnail(&drawing, Some(&cache)).unwrap();
+        assert_eq!(second, first);
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn portable_backup_restore_roundtrips_native_file_without_overwrite() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source = root.path().join("source.sketch.json");
+        let backup = root.path().join("source.sketch-backup");
+        let restored = root.path().join("restored.sketch.json");
+        let original = crate::document::Document::default();
+        fs::write(&source, serde_json::to_vec(&original).unwrap()).unwrap();
+        fs::create_dir(&backup).unwrap();
+        fs::copy(&source, backup.join("drawing.sketch.json")).unwrap();
+        fs::write(
+            backup.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "format": "spatial-sketch-backup",
+                "version": 1,
+                "original_file": "source.sketch.json"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        restore_native_backup(&backup, &restored).unwrap();
+        let reopened = fs::read_to_string(&restored).unwrap();
+        assert_eq!(
+            serde_json::to_value(crate::document::Document::from_json(&reopened).unwrap()).unwrap(),
+            serde_json::to_value(original).unwrap()
+        );
+        assert!(restore_native_backup(&backup, &restored).is_err());
+        assert!(restored.is_file());
+    }
 }

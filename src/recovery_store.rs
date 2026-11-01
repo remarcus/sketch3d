@@ -106,7 +106,7 @@ mod base64_bytes {
             return Err(serde::de::Error::custom("image payload exceeds 32 MiB"));
         }
         let mut decoded = Vec::with_capacity(estimated);
-        for (index, chunk) in encoded.as_bytes().chunks_exact(4).enumerate() {
+        for (index, chunk) in encoded.as_bytes().as_chunks::<4>().0.iter().enumerate() {
             let last = index + 1 == encoded.len() / 4;
             let a = sextet(chunk[0])
                 .ok_or_else(|| serde::de::Error::custom("invalid base64 image payload"))?;
@@ -404,8 +404,7 @@ pub fn write(dir: &Path, snapshot: &RecoverySnapshot) -> Result<PathBuf, String>
         .as_file()
         .sync_all()
         .map_err(|e| format!("Cannot sync recovery snapshot: {e}"))?;
-    temporary
-        .persist(&destination)
+    crate::atomic_file::replace(temporary, &destination)
         .map_err(|e| format!("Cannot replace recovery snapshot: {e}"))?;
     Ok(destination)
 }
@@ -610,7 +609,7 @@ mod tests {
         document::{Brush, BrushKind, Point, Stroke},
         texture::TextureKind,
     };
-    use glam::Vec3;
+    use glam::{Quat, Vec3};
     fn sample(session: &str) -> RecoverySnapshot {
         let mut brush = Brush {
             kind: BrushKind::Chisel,
@@ -626,6 +625,7 @@ mod tests {
             None,
             Document {
                 strokes: vec![Stroke {
+                    material: Default::default(),
                     id: 123,
                     fill: None,
                     group_id: None,
@@ -676,6 +676,40 @@ mod tests {
             .unwrap()
             .candidates
             .is_empty());
+    }
+    #[test]
+    fn image_plane_assets_survive_recovery_snapshot_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let plane = crate::image_planes::ImagePlane::from_asset(
+            7,
+            "Facade",
+            "image-7.png".into(),
+            [2, 1],
+            Vec3::new(1.0, 2.0, 3.0),
+            Quat::from_rotation_y(0.35),
+            2.0,
+        )
+        .unwrap();
+        let bytes = vec![137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3];
+        let snapshot = RecoverySnapshot::new_with_assets(
+            "image-session".into(),
+            None,
+            Document {
+                image_planes: vec![plane.clone()],
+                ..Document::default()
+            },
+            vec![RecoveryAsset {
+                asset_file: plane.asset_file.clone(),
+                bytes: bytes.clone(),
+            }],
+        );
+        write(dir.path(), &snapshot).unwrap();
+        let scan = scan(dir.path(), "another-session").unwrap();
+        assert_eq!(scan.candidates.len(), 1);
+        let recovered = &scan.candidates[0].snapshot;
+        assert_eq!(recovered.document.image_planes, vec![plane]);
+        assert_eq!(recovered.assets[0].asset_file, "image-7.png");
+        assert_eq!(recovered.assets[0].bytes, bytes);
     }
     #[test]
     fn failed_replacement_retains_complete_previous_snapshot() {
@@ -818,7 +852,7 @@ mod tests {
             .remove("texture");
         fs::write(dir.path().join("recovery-legacy.json"), old.to_string()).unwrap();
         let result = scan(dir.path(), "other").unwrap();
-        assert_eq!(result.candidates[0].snapshot.document.version, 8);
+        assert_eq!(result.candidates[0].snapshot.document.version, 13);
         assert_eq!(
             result.candidates[0].snapshot.document.strokes[0]
                 .brush
