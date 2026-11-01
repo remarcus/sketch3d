@@ -1,0 +1,11 @@
+{
+  "bookmark_count": 2,
+  "checks": [
+    "first process saved two full camera views and a timed ordered sequence through CameraBookmarkStore::save",
+    "second application process loaded the exact saved library through SketchApp startup",
+    "bookmark projection, framing, target, sequence order, and transition duration survived restart"
+  ],
+  "passed": true,
+  "physical_hardware_tested": false,
+  "sequence_count": 1
+}

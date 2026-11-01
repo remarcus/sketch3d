@@ -135,6 +135,22 @@ fn reveal_target_count(stroke_count: usize, frame_index: usize, frame_count: usi
         .min(stroke_count)
 }
 
+fn append_reveal_prefix(
+    document: &mut Document,
+    strokes: &[crate::document::Stroke],
+    revealed_stroke_count: &mut usize,
+    frame_index: usize,
+    frame_count: usize,
+) {
+    let target_count = reveal_target_count(strokes.len(), frame_index, frame_count);
+    document.strokes.extend(
+        strokes[*revealed_stroke_count..target_count]
+            .iter()
+            .cloned(),
+    );
+    *revealed_stroke_count = target_count;
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ExportMode {
     Turntable,
@@ -863,14 +879,13 @@ impl VideoExportUi {
             }
             if job.request.mode == ExportMode::ReconstructedReveal {
                 if let Some(strokes) = &job.reveal_strokes {
-                    let target_count =
-                        reveal_target_count(strokes.len(), job.next_frame, job.frame_count);
-                    job.document.strokes.extend(
-                        strokes[job.revealed_stroke_count..target_count]
-                            .iter()
-                            .cloned(),
+                    append_reveal_prefix(
+                        &mut job.document,
+                        strokes,
+                        &mut job.revealed_stroke_count,
+                        job.next_frame,
+                        job.frame_count,
                     );
-                    job.revealed_stroke_count = target_count;
                 }
             }
             if valid_camera {
@@ -1262,6 +1277,168 @@ mod tests {
                 "changed_pixels_first_to_half_turn": changed_pixels,
                 "physical_hardware_tested": false,
                 "artifacts": ["turntable.gif", "turntable-contact.png"],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn production_renderer_reconstructed_reveal_gif_decodes_in_visible_stroke_order() {
+        use image::AnimationDecoder;
+
+        const SIZE: [u32; 2] = [320, 240];
+        const FRAME_COUNT: usize = 4;
+        const FPS: u32 = 4;
+        let config = eframe::egui_wgpu::WgpuConfiguration::default();
+        let instance = block_on(config.wgpu_setup.new_instance());
+        let state = block_on(eframe::egui_wgpu::RenderState::create(
+            &config, &instance, None, None, 1, false,
+        ))
+        .expect("headless WGPU render state initializes");
+        let adapter = state.adapter.get_info();
+        let mut renderer = crate::renderer::SceneRenderer::new(state);
+        let lighting = crate::lighting::Lighting {
+            ground: false,
+            shadows: false,
+            ..Default::default()
+        };
+        let mut source = crate::export_check::brush_fixture();
+        let mut hidden_layer = source.layers[0].clone();
+        hidden_layer.id = 2;
+        hidden_layer.name = "Hidden".into();
+        hidden_layer.visible = false;
+        source.layers.push(hidden_layer);
+        source.strokes.push(reveal_stroke(99, 2));
+        let visible_strokes = visible_reveal_strokes(&source)
+            .expect("visible source strokes are available")
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(visible_strokes.len(), source.strokes.len() - 1);
+        assert!(
+            visible_strokes.iter().all(|stroke| stroke.layer_id != 2),
+            "hidden-layer strokes are excluded"
+        );
+
+        let mut document = source.clone();
+        document.strokes.clear();
+        let mut revealed = 0;
+        let camera = crate::geometry::Camera {
+            projection: crate::geometry::Projection::Orthographic,
+            distance: 7.0,
+            pitch: 0.38,
+            ..Default::default()
+        };
+        let background = [0.08, 0.12, 0.2];
+        let mut rendered = Vec::with_capacity(FRAME_COUNT);
+        let mut prefix_counts = Vec::with_capacity(FRAME_COUNT);
+        for frame_index in 0..FRAME_COUNT {
+            append_reveal_prefix(
+                &mut document,
+                &visible_strokes,
+                &mut revealed,
+                frame_index,
+                FRAME_COUNT,
+            );
+            prefix_counts.push(document.strokes.len());
+            rendered.push(
+                renderer
+                    .render_png_pixels(&document, &camera, SIZE, background, lighting)
+                    .expect("reconstructed reveal frame renders through production renderer"),
+            );
+        }
+        assert_eq!(prefix_counts, [2, 3, 5, visible_strokes.len()]);
+
+        let output = std::env::current_dir()
+            .unwrap()
+            .join("verification/construction-reveal-check");
+        std::fs::create_dir_all(&output).unwrap();
+        let gif_path = output.join("reconstructed-reveal.gif");
+        let (sender, receiver) = mpsc::channel();
+        for frame in &rendered {
+            sender.send(Some(frame.clone())).unwrap();
+        }
+        encode_gif(
+            receiver,
+            &gif_path,
+            SIZE,
+            FPS,
+            FRAME_COUNT,
+            &AtomicBool::new(false),
+        )
+        .expect("production GIF encoder writes reconstructed reveal frames");
+
+        let frames = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(
+            std::fs::File::open(&gif_path).unwrap(),
+        ))
+        .unwrap()
+        .into_frames()
+        .collect_frames()
+        .unwrap();
+        assert_eq!(frames.len(), FRAME_COUNT, "playback retains every frame");
+        assert!(frames.iter().all(|frame| {
+            frame.buffer().width() == SIZE[0] && frame.buffer().height() == SIZE[1]
+        }));
+        let (numerator, denominator) = frames[0].delay().numer_denom_ms();
+        assert!((numerator as f64 / denominator as f64 - 1000.0 / FPS as f64).abs() <= 5.0);
+        let frame_changed_pixels = |left: usize, right: usize| {
+            frames[left]
+                .buffer()
+                .pixels()
+                .zip(frames[right].buffer().pixels())
+                .filter(|(a, b)| a.0 != b.0)
+                .count()
+        };
+        let first_to_second_changed = frame_changed_pixels(0, 1);
+        let second_to_third_changed = frame_changed_pixels(1, 2);
+        assert!(first_to_second_changed > 100);
+        assert!(second_to_third_changed > 100);
+        let third_to_fourth_changed = frame_changed_pixels(2, 3);
+        assert!(
+            third_to_fourth_changed > 100,
+            "final prefix completes the reveal"
+        );
+        let full_scene_pixels = renderer
+            .render_png_pixels(&source, &camera, SIZE, background, lighting)
+            .expect("complete visible source renders through production renderer");
+        assert_eq!(
+            rendered.last(),
+            Some(&full_scene_pixels),
+            "final reveal frame matches the complete visible source"
+        );
+
+        let mut contact_sheet = RgbaImage::new(SIZE[0] * 2, SIZE[1] * 2);
+        for (index, frame) in frames.iter().enumerate() {
+            let x = (index % 2) as i64 * i64::from(SIZE[0]);
+            let y = (index / 2) as i64 * i64::from(SIZE[1]);
+            image::imageops::replace(&mut contact_sheet, frame.buffer(), x, y);
+        }
+        contact_sheet
+            .save(output.join("reconstructed-reveal-contact.png"))
+            .unwrap();
+        std::fs::write(
+            output.join("reconstructed-reveal-report.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "passed": true,
+                "adapter": adapter.name,
+                "backend": format!("{:?}", adapter.backend),
+                "checks": [
+                    "each frame renders through the production offscreen renderer with the visible stroke prefix",
+                    "hidden-layer strokes are omitted",
+                    "GIF decoding preserves four frames, output dimensions, and requested frame delay",
+                    "decoded frames change as strokes are revealed and the complete scene remains visible",
+                ],
+                "frame_count": frames.len(),
+                "visible_prefix_counts": prefix_counts,
+                "hidden_stroke_excluded": true,
+                "size": SIZE,
+                "fps": FPS,
+                "frame_delay_ms": numerator / denominator,
+                "changed_pixels_first_to_second": first_to_second_changed,
+                "changed_pixels_second_to_third": second_to_third_changed,
+                "changed_pixels_third_to_fourth": third_to_fourth_changed,
+                "physical_hardware_tested": false,
+                "artifacts": ["reconstructed-reveal.gif", "reconstructed-reveal-contact.png"],
             }))
             .unwrap(),
         )

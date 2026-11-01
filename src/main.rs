@@ -3,6 +3,7 @@
 mod app;
 mod atomic_file;
 mod brush_selection;
+mod camera_bookmark_restart_check;
 mod camera_bookmarks;
 mod construction_history;
 mod curve_geometry;
@@ -54,6 +55,25 @@ mod tutorial;
 
 fn main() -> eframe::Result {
     let args: Vec<_> = std::env::args().collect();
+    if args
+        .iter()
+        .any(|argument| argument == "--verify-camera-bookmarks-seed")
+    {
+        if let Err(error) = camera_bookmark_restart_check::seed() {
+            eprintln!("Camera bookmark restart seed failed: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--verify-camera-bookmarks")
+    {
+        if args.get(index + 1).is_none() {
+            eprintln!("Usage: sketch3d --verify-camera-bookmarks <report-path>");
+            std::process::exit(2);
+        }
+    }
     if let Some(index) = args
         .iter()
         .position(|argument| argument == "--verify-drawing-trash-seed")
@@ -222,7 +242,10 @@ fn main() -> eframe::Result {
     let hidden_verification = args.iter().any(|argument| {
         matches!(
             argument.as_str(),
-            "--verify-model-surfaces" | "--verify-liquify-brush" | "--verify-obj-references"
+            "--verify-model-surfaces"
+                | "--verify-liquify-brush"
+                | "--verify-obj-references"
+                | "--verify-camera-bookmarks"
         )
     });
     let options = eframe::NativeOptions {

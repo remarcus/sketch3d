@@ -177,6 +177,7 @@ pub struct SketchApp {
     camera_bookmarks: crate::camera_bookmarks::CameraBookmarkStore,
     camera_bookmark_path: Option<PathBuf>,
     camera_bookmark_error: Option<String>,
+    camera_bookmark_restart_report: Option<PathBuf>,
     camera_ui: camera_ui::CameraBookmarkUi,
     camera_playback: Option<camera_ui::CameraPlayback>,
     liquify_ui: liquify_ui::LiquifyUi,
@@ -510,6 +511,11 @@ impl SketchApp {
             let arguments = std::env::args().collect::<Vec<_>>();
             let relative = if arguments.iter().any(|arg| arg == "--verify-presentation") {
                 "verification/presentation/recovery"
+            } else if arguments
+                .iter()
+                .any(|arg| arg == "--verify-camera-bookmarks")
+            {
+                "verification/camera-bookmarks-recovery"
             } else if arguments.iter().any(|arg| arg == "--verify-obj-references") {
                 "verification/obj-reference/recovery"
             } else if arguments.iter().any(|arg| arg == "--verify") {
@@ -575,6 +581,10 @@ impl SketchApp {
             camera_bookmarks,
             camera_bookmark_path,
             camera_bookmark_error,
+            camera_bookmark_restart_report: std::env::args()
+                .position(|argument| argument == "--verify-camera-bookmarks")
+                .and_then(|index| std::env::args().nth(index + 1))
+                .map(PathBuf::from),
             camera_ui: Default::default(),
             camera_playback: None,
             liquify_ui: Default::default(),
@@ -3433,6 +3443,17 @@ impl eframe::App for SketchApp {
         self.presentation.poll_layout_save();
         self.poll_recovery(ctx);
         self.ensure_workspace();
+        if let Some(report_path) = self.camera_bookmark_restart_report.take() {
+            if let Err(error) = crate::camera_bookmark_restart_check::verify_loaded(
+                &self.camera_bookmarks,
+                &report_path,
+            ) {
+                eprintln!("Camera bookmark restart verification failed: {error}");
+            }
+            self.allow_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
         self.poll_export(ctx);
         if let Some(status) = self.video_export.render_next(&mut self.renderer, ctx) {
             self.status = status;

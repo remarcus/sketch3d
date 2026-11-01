@@ -1,0 +1,33 @@
+{
+  "adapter": "test GPU",
+  "artifacts": [
+    "reconstructed-reveal.gif",
+    "reconstructed-reveal-contact.png"
+  ],
+  "backend": "Vulkan",
+  "changed_pixels_first_to_second": 1326,
+  "changed_pixels_second_to_third": 1671,
+  "changed_pixels_third_to_fourth": 929,
+  "checks": [
+    "each frame renders through the production offscreen renderer with the visible stroke prefix",
+    "hidden-layer strokes are omitted",
+    "GIF decoding preserves four frames, output dimensions, and requested frame delay",
+    "decoded frames change as strokes are revealed and the complete scene remains visible"
+  ],
+  "fps": 4,
+  "frame_count": 4,
+  "frame_delay_ms": 250,
+  "hidden_stroke_excluded": true,
+  "passed": true,
+  "physical_hardware_tested": false,
+  "size": [
+    320,
+    240
+  ],
+  "visible_prefix_counts": [
+    2,
+    3,
+    5,
+    6
+  ]
+}
