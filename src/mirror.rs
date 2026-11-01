@@ -380,6 +380,18 @@ mod tests {
                 .unwrap();
         assert_eq!(reopened.strokes, doc.strokes);
 
+        let recovery_dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let snapshot = crate::recovery_store::RecoverySnapshot::new(
+            "mirror-session".into(),
+            None,
+            reopened.clone(),
+        );
+        crate::recovery_store::write(recovery_dir.path(), &snapshot).unwrap();
+        let recovered =
+            crate::recovery_store::scan(recovery_dir.path(), "another-session").unwrap();
+        assert_eq!(recovered.candidates.len(), 1);
+        assert_eq!(recovered.candidates[0].snapshot.document.strokes, committed);
+
         let glb = crate::export::encode(&doc, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&glb.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 2);
