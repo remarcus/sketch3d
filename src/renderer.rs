@@ -1249,6 +1249,7 @@ impl SceneRenderer {
         destination: &wgpu::TextureView,
         size: [u32; 2],
         camera: &Camera,
+        timestamp_queries: Option<&wgpu::QuerySet>,
     ) {
         let effects = self.post_effects;
         let orthographic = camera.projection == crate::geometry::Projection::Orthographic;
@@ -1324,7 +1325,11 @@ impl SceneRenderer {
                 },
             })],
             depth_stencil_attachment: None,
-            timestamp_writes: None,
+            timestamp_writes: timestamp_queries.map(|query_set| wgpu::RenderPassTimestampWrites {
+                query_set,
+                beginning_of_pass_write_index: None,
+                end_of_pass_write_index: Some(1),
+            }),
             occlusion_query_set: None,
         });
         pass.set_pipeline(&self.post_effects_pipeline);
@@ -1882,6 +1887,7 @@ impl SceneRenderer {
                 &target.view,
                 size,
                 camera,
+                None,
             );
         }
         self.state.queue.submit(Some(encoder.finish()));
@@ -1897,7 +1903,21 @@ impl SceneRenderer {
         background: [f32; 3],
         settings: Lighting,
     ) -> Result<Vec<u8>, String> {
-        self.render_artwork_pixels(doc, camera, size, Some(background), settings)
+        self.render_artwork_pixels(doc, camera, size, Some(background), settings, false)
+            .map(|(pixels, _)| pixels)
+    }
+
+    /// Render artwork and, when the adapter supports timestamp queries, return
+    /// the GPU time from the scene pass through the final post-effect pass.
+    pub fn render_png_pixels_with_gpu_time(
+        &mut self,
+        doc: &Document,
+        camera: &Camera,
+        size: [u32; 2],
+        background: [f32; 3],
+        settings: Lighting,
+    ) -> Result<(Vec<u8>, Option<std::time::Duration>), String> {
+        self.render_artwork_pixels(doc, camera, size, Some(background), settings, true)
     }
 
     /// Render artwork over transparency, excluding image planes and the ground.
@@ -1908,7 +1928,8 @@ impl SceneRenderer {
         size: [u32; 2],
         settings: Lighting,
     ) -> Result<Vec<u8>, String> {
-        self.render_artwork_pixels(doc, camera, size, None, settings)
+        self.render_artwork_pixels(doc, camera, size, None, settings, false)
+            .map(|(pixels, _)| pixels)
     }
 
     fn render_artwork_pixels(
@@ -1918,7 +1939,8 @@ impl SceneRenderer {
         size: [u32; 2],
         background: Option<[f32; 3]>,
         settings: Lighting,
-    ) -> Result<Vec<u8>, String> {
+        measure_gpu_time: bool,
+    ) -> Result<(Vec<u8>, Option<std::time::Duration>), String> {
         let limit = self.state.device.limits().max_texture_dimension_2d;
         let pixel_count = (size[0] as u64)
             .checked_mul(size[1] as u64)
@@ -2166,6 +2188,21 @@ impl SceneRenderer {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Artwork PNG export"),
                 });
+        let timestamp_queries = (measure_gpu_time
+            && self
+                .state
+                .device
+                .features()
+                .contains(wgpu::Features::TIMESTAMP_QUERY))
+        .then(|| {
+            self.state
+                .device
+                .create_query_set(&wgpu::QuerySetDescriptor {
+                    label: Some("Post-effects GPU timing"),
+                    ty: wgpu::QueryType::Timestamp,
+                    count: 2,
+                })
+        });
         if shadow_enabled {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Artwork PNG shadows"),
@@ -2236,7 +2273,13 @@ impl SceneRenderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: timestamp_queries.as_ref().map(|query_set| {
+                    wgpu::RenderPassTimestampWrites {
+                        query_set,
+                        beginning_of_pass_write_index: Some(0),
+                        end_of_pass_write_index: (!effects_enabled).then_some(1),
+                    }
+                }),
                 occlusion_query_set: None,
             });
             if let (Some(image), Some(buffer)) = (&self.screen_background, &screen_background) {
@@ -2307,6 +2350,7 @@ impl SceneRenderer {
                 &color_view,
                 size,
                 camera,
+                timestamp_queries.as_ref(),
             );
         }
         let row = (size[0] * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
@@ -2334,6 +2378,23 @@ impl SceneRenderer {
             },
             extent,
         );
+        let timestamp_readback = timestamp_queries.as_ref().map(|queries| {
+            let resolved = self.state.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Post-effects GPU timing resolve"),
+                size: 16,
+                usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let readback = self.state.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Post-effects GPU timing readback"),
+                size: 16,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.resolve_query_set(queries, 0..2, &resolved, 0);
+            encoder.copy_buffer_to_buffer(&resolved, 0, &readback, 0, 16);
+            (resolved, readback)
+        });
         self.state.queue.submit(Some(encoder.finish()));
         let (sender, receiver) = std::sync::mpsc::channel();
         buffer
@@ -2356,7 +2417,32 @@ impl SceneRenderer {
         if background.is_none() {
             unpremultiply_rgba(&mut pixels);
         }
-        Ok(pixels)
+        let gpu_duration = if let Some((resolved, readback)) = timestamp_readback {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            readback
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    let _ = sender.send(result);
+                });
+            self.state.device.poll(wgpu::Maintain::Wait);
+            receiver
+                .recv()
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+            let mapped = readback.slice(..).get_mapped_range();
+            let values: &[u64] = bytemuck::cast_slice(&mapped);
+            let ticks = values[1].saturating_sub(values[0]);
+            let nanos = ticks as f64 * f64::from(self.state.queue.get_timestamp_period());
+            drop(mapped);
+            readback.unmap();
+            drop(resolved);
+            Some(std::time::Duration::from_nanos(
+                nanos.min(u64::MAX as f64) as u64
+            ))
+        } else {
+            None
+        };
+        Ok((pixels, gpu_duration))
     }
 
     /// Verification-only readback; normal frames never wait for GPU pixels.

@@ -112,6 +112,50 @@ fn main() -> eframe::Result {
     }
     if let Some(index) = args
         .iter()
+        .position(|argument| argument == "--verify-library-backup-interrupt-child")
+    {
+        let Some(source) = args.get(index + 1) else {
+            eprintln!("Usage: sketch3d --verify-library-backup-interrupt-child <source-drawing>");
+            std::process::exit(2);
+        };
+        if let Err(error) =
+            drawing_library_restart_check::interrupt_backup_copy(std::path::Path::new(source))
+        {
+            eprintln!("Library backup interruption child failed: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--verify-library-backup-interrupt-reopen")
+    {
+        let (Some(source), Some(destination), Some(report)) = (
+            args.get(index + 1),
+            args.get(index + 2),
+            args.get(index + 3),
+        ) else {
+            eprintln!("Usage: sketch3d --verify-library-backup-interrupt-reopen <source-drawing> <restore-destination> <report-path>");
+            std::process::exit(2);
+        };
+        let result = presets::path()
+            .map(|path| path.join("drawing-trash"))
+            .and_then(|trash_root| {
+                drawing_library_restart_check::reopen_after_interrupted_copy(
+                    std::path::Path::new(source),
+                    &trash_root,
+                    std::path::Path::new(destination),
+                    std::path::Path::new(report),
+                )
+            });
+        if let Err(error) = result {
+            eprintln!("Library backup interruption verification failed: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(index) = args
+        .iter()
         .position(|argument| argument == "--write-capability-fixtures")
     {
         let Some(directory) = args.get(index + 1) else {

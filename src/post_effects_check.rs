@@ -140,7 +140,7 @@ fn measure(
     camera: &Camera,
     size: [u32; 2],
     effects_on: bool,
-) -> Result<Duration, String> {
+) -> Result<(Duration, Option<Duration>), String> {
     renderer.grain = if effects_on { 0.12 } else { 0.0 };
     renderer.toon_shading = effects_on;
     renderer.post_effects = if effects_on {
@@ -157,16 +157,42 @@ fn measure(
         let _ = render(renderer, doc, camera, size)?;
     }
     let mut durations = Vec::with_capacity(7);
+    let mut gpu_durations = Vec::with_capacity(7);
     for _ in 0..7 {
         let started = Instant::now();
-        let _ = render(renderer, doc, camera, size)?;
+        let (_, gpu_duration) = renderer.render_png_pixels_with_gpu_time(
+            doc,
+            camera,
+            size,
+            BACKGROUND,
+            renderer.lighting,
+        )?;
         durations.push(started.elapsed());
+        if let Some(gpu_duration) = gpu_duration {
+            gpu_durations.push(gpu_duration);
+        }
     }
-    Ok(median(durations))
+    Ok((
+        median(durations),
+        (!gpu_durations.is_empty()).then(|| median(gpu_durations)),
+    ))
 }
 
 pub fn run(output: &Path) -> Result<(), String> {
-    let config = egui_wgpu::WgpuConfiguration::default();
+    let mut config = egui_wgpu::WgpuConfiguration::default();
+    if let egui_wgpu::WgpuSetup::CreateNew(setup) = &mut config.wgpu_setup {
+        let base_descriptor = setup.device_descriptor.clone();
+        setup.device_descriptor = Arc::new(move |adapter| {
+            let mut descriptor = base_descriptor(adapter);
+            if adapter
+                .features()
+                .contains(egui_wgpu::wgpu::Features::TIMESTAMP_QUERY)
+            {
+                descriptor.required_features |= egui_wgpu::wgpu::Features::TIMESTAMP_QUERY;
+            }
+            descriptor
+        });
+    }
     let instance = block_on(config.wgpu_setup.new_instance());
     let state = block_on(egui_wgpu::RenderState::create(
         &config, &instance, None, None, 1, false,
@@ -327,8 +353,10 @@ pub fn run(output: &Path) -> Result<(), String> {
         )
         .map_err(|error| error.to_string())?;
 
-        let baseline_time = measure(&mut renderer, &document, &camera, size, false)?;
-        let effects_time = measure(&mut renderer, &document, &camera, size, true)?;
+        let (baseline_time, baseline_gpu_time) =
+            measure(&mut renderer, &document, &camera, size, false)?;
+        let (effects_time, effects_gpu_time) =
+            measure(&mut renderer, &document, &camera, size, true)?;
         let delta_us = effects_time.as_micros() as i128 - baseline_time.as_micros() as i128;
         let percent = if baseline_time.is_zero() {
             0.0
@@ -344,6 +372,10 @@ pub fn run(output: &Path) -> Result<(), String> {
             "render_readback_median_us_effects_on": effects_time.as_micros(),
             "render_readback_delta_us": delta_us,
             "render_readback_delta_percent": percent,
+            "gpu_render_median_us_effects_off": baseline_gpu_time.map(|duration| duration.as_secs_f64() * 1_000_000.0),
+            "gpu_render_median_us_effects_on": effects_gpu_time.map(|duration| duration.as_secs_f64() * 1_000_000.0),
+            "gpu_render_delta_us": baseline_gpu_time.zip(effects_gpu_time).map(|(off, on)| (on.as_secs_f64() - off.as_secs_f64()) * 1_000_000.0),
+            "gpu_timestamp_queries_available": baseline_gpu_time.is_some() && effects_gpu_time.is_some(),
         }));
     }
 
@@ -355,15 +387,15 @@ pub fn run(output: &Path) -> Result<(), String> {
             "each individual effect produces deterministic repeat output at both sizes",
             "effect-off and effect-on canvas pixels exactly match artwork PNG pixels at both sizes",
             "combined effects produce deterministic output at both sizes",
-            "GPU-backed render and readback latency is measured at two resolutions with effects off and on",
+            "GPU timestamps measure the scene and post-effect render passes without CPU setup or pixel readback when supported",
         ],
         "adapter": adapter.name,
         "backend": format!("{:?}", adapter.backend),
-        "measurement_method": "Median CPU wall time around render_png_pixels, including render setup, GPU queue work, and synchronous pixel readback; hardware-specific end-to-end latency, not isolated GPU shader time.",
+        "measurement_method": "Median GPU timestamp interval from the start of the artwork scene render pass through the end of the post-effect pass (or end of the scene pass when effects are off); excludes CPU resource setup, texture copy, and synchronous pixel readback. Timestamp query support is optional; null GPU timings mean the adapter/device did not support the feature.",
         "samples_per_measurement": 7,
         "warmup_renders_per_measurement": 2,
-        "timing_note": "Effect-on rendering enables grain/toon shading, disables the baseline multisample target, and adds a screen-space pass, so the measured delta reflects the actual renderer configuration rather than the isolated cost of only the screen-space pass.",
-        "physical_hardware_tested": false,
+        "timing_note": "The GPU delta compares the full scene render configuration with all effects off against the actual combined-effect configuration. It includes changed sampling configuration plus grain/toon shading and the screen-space effects pass; it is GPU render cost, not the isolated cost of one individual shader.",
+        "physical_tablet_tested": false,
         "sizes": size_reports,
     });
     std::fs::write(

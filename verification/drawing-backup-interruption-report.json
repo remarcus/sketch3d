@@ -1,0 +1,13 @@
+{
+  "checks": [
+    "the parent terminated a child process after it wrote eight asset bytes into the real backup staging directory",
+    "the source drawing remained intact and the partial stage survived process termination",
+    "a fresh process ignored the partial stage in the trash list",
+    "retry completed the production trash backup before removing the source drawing",
+    "restoring the retried backup recovered the complete 1 MiB managed asset byte-for-byte"
+  ],
+  "partial_asset_bytes_before_termination": 8,
+  "passed": true,
+  "physical_hardware_tested": false,
+  "restored_asset_bytes": 1048576
+}

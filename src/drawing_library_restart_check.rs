@@ -124,3 +124,131 @@ pub fn reopen(
     .map_err(|error| format!("Cannot write restart verification report: {error}"))?;
     Ok(())
 }
+
+/// Child process: create a valid drawing with a managed asset, then begin the
+/// actual trash backup. The debug-only copy hook pauses after the first bytes
+/// have reached the staging asset file so the parent can terminate this process.
+pub fn interrupt_backup_copy(source_path: &Path) -> Result<(), String> {
+    if !cfg!(debug_assertions) {
+        return Err("The deterministic copy interruption verifier requires a debug build".into());
+    }
+    if std::env::var_os("SKETCH3D_VERIFY_COPY_PAUSE_MARKER").is_none_or(|marker| marker.is_empty())
+    {
+        return Err("The copy interruption marker is not configured".into());
+    }
+    let parent = source_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or("Interruption fixture drawing must have a parent folder")?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    fs::write(
+        source_path,
+        serde_json::to_vec_pretty(&Document::default()).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("Cannot create interruption fixture drawing: {error}"))?;
+    let source_assets = crate::image_plane_storage::asset_root(source_path)?;
+    fs::create_dir_all(&source_assets).map_err(|error| error.to_string())?;
+    fs::write(
+        source_assets.join("interrupt-probe.bin"),
+        vec![0x5a; 1024 * 1024],
+    )
+    .map_err(|error| format!("Cannot create interruption fixture asset: {error}"))?;
+
+    let _ = crate::drawing_library::trash_native_drawing(source_path)?;
+    Err("The copy interruption hook did not pause the backup process".into())
+}
+
+/// Fresh process: confirm the killed copy left an ignored partial stage, retry
+/// the real trash operation, and verify restore recovers the full asset bytes.
+pub fn reopen_after_interrupted_copy(
+    source_path: &Path,
+    trash_root: &Path,
+    destination_path: &Path,
+    report_path: &Path,
+) -> Result<(), String> {
+    if !source_path.is_file() {
+        return Err("The original drawing was removed before its backup completed".into());
+    }
+    let stages = fs::read_dir(trash_root)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".sketch-backup-")
+                && entry.path().is_dir()
+        })
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    if stages.len() != 1 {
+        return Err(format!(
+            "Expected one abandoned backup stage after process termination, found {}",
+            stages.len()
+        ));
+    }
+    let partial_asset = stages[0]
+        .join("drawing.sketch.json.assets")
+        .join("interrupt-probe.bin");
+    let partial_metadata = fs::metadata(&partial_asset)
+        .map_err(|error| format!("Interrupted partial asset is missing: {error}"))?;
+    if partial_metadata.len() != 8 {
+        return Err(format!(
+            "Expected exactly 8 bytes written before termination, found {}",
+            partial_metadata.len()
+        ));
+    }
+    if crate::drawing_library::list_trash()?
+        .iter()
+        .any(|entry| entry.path == stages[0])
+    {
+        return Err("The fresh process listed an abandoned partial stage as a backup".into());
+    }
+
+    let backup = crate::drawing_library::trash_native_drawing(source_path)
+        .map_err(|error| format!("Retrying trash backup failed: {error}"))?;
+    if source_path.exists() || !backup.is_dir() {
+        return Err("Retry did not install a complete backup before removing the source".into());
+    }
+    fs::create_dir_all(
+        destination_path
+            .parent()
+            .ok_or("Restore destination must have a parent folder")?,
+    )
+    .map_err(|error| format!("Creating restore destination parent failed: {error}"))?;
+    crate::drawing_library::restore_from_trash(&backup, destination_path)
+        .map_err(|error| format!("Restoring retried backup failed: {error}"))?;
+    let restored = Document::from_json(
+        &fs::read_to_string(destination_path).map_err(|error| error.to_string())?,
+    )?;
+    if !restored.strokes.is_empty() || restored.layers != Document::default().layers {
+        return Err("The retried backup restored different drawing content".into());
+    }
+    let restored_asset_root = crate::image_plane_storage::asset_root(destination_path)?;
+    let restored_bytes = fs::read(restored_asset_root.join("interrupt-probe.bin"))
+        .map_err(|error| format!("Restored asset is missing: {error}"))?;
+    if restored_bytes.len() != 1024 * 1024 || restored_bytes.iter().any(|byte| *byte != 0x5a) {
+        return Err("Retry/restore did not recover the complete managed asset bytes".into());
+    }
+    fs::remove_dir_all(&stages[0]).map_err(|error| error.to_string())?;
+
+    let report = serde_json::json!({
+        "passed": true,
+        "checks": [
+            "the parent terminated a child process after it wrote eight asset bytes into the real backup staging directory",
+            "the source drawing remained intact and the partial stage survived process termination",
+            "a fresh process ignored the partial stage in the trash list",
+            "retry completed the production trash backup before removing the source drawing",
+            "restoring the retried backup recovered the complete 1 MiB managed asset byte-for-byte"
+        ],
+        "partial_asset_bytes_before_termination": partial_metadata.len(),
+        "restored_asset_bytes": restored_bytes.len(),
+        "physical_hardware_tested": false
+    });
+    fs::write(
+        report_path,
+        serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("Cannot write interruption verification report: {error}"))?;
+    Ok(())
+}

@@ -521,19 +521,25 @@ fn valid_file_stem(name: &str) -> bool {
 /// Installs assets first and the JSON file last, so a failed copy never leaves
 /// a discoverable drawing that points at a partial bundle.
 pub fn copy_native_drawing(source: &Path, destination: &Path) -> Result<(), String> {
-    let source_metadata = fs::symlink_metadata(source).map_err(|error| error.to_string())?;
+    let source_metadata = fs::symlink_metadata(source).map_err(|error| {
+        format!(
+            "Cannot inspect source drawing {}: {error}",
+            source.display()
+        )
+    })?;
     if !source_metadata.is_file() || source_metadata.file_type().is_symlink() {
         return Err("The source drawing must be a regular file".into());
     }
     if source_metadata.len() > MAX_DRAWING_BYTES {
         return Err("The source drawing exceeds the 64 MiB document limit".into());
     }
-    let source_file = File::open(source).map_err(|error| error.to_string())?;
+    let source_file = File::open(source)
+        .map_err(|error| format!("Cannot open source drawing {}: {error}", source.display()))?;
     let mut bytes = Vec::with_capacity(source_metadata.len() as usize);
     source_file
         .take(MAX_DRAWING_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("Cannot read source drawing {}: {error}", source.display()))?;
     if bytes.len() as u64 > MAX_DRAWING_BYTES {
         return Err("The source drawing exceeds the 64 MiB document limit".into());
     }
@@ -550,17 +556,29 @@ pub fn copy_native_drawing(source: &Path, destination: &Path) -> Result<(), Stri
     if !parent.is_dir() {
         return Err("The copy destination folder does not exist".into());
     }
-    let source = source.canonicalize().map_err(|error| error.to_string())?;
-    let destination_root = crate::image_plane_storage::asset_root(destination)?;
+    let source = source.canonicalize().map_err(|error| {
+        format!(
+            "Cannot canonicalize source drawing {}: {error}",
+            source.display()
+        )
+    })?;
+    let destination_root = crate::image_plane_storage::asset_root(destination)
+        .map_err(|error| format!("Cannot resolve copy asset destination: {error}"))?;
     let destination_normalized = parent
         .canonicalize()
-        .map_err(|error| error.to_string())?
+        .map_err(|error| {
+            format!(
+                "Cannot canonicalize copy destination folder {}: {error}",
+                parent.display()
+            )
+        })?
         .join(destination.file_name().ok_or("Invalid copy destination")?);
     if source == destination_normalized {
         return Err("Choose a different destination from the source drawing".into());
     }
 
-    let source_root = crate::image_plane_storage::asset_root(&source)?;
+    let source_root = crate::image_plane_storage::asset_root(&source)
+        .map_err(|error| format!("Cannot resolve source asset folder: {error}"))?;
     for plane in &document.image_planes {
         let Some(path) = plane.resolve_asset(&source_root)? else {
             return Err(format!("Image resource for '{}' is missing", plane.name));
@@ -580,7 +598,12 @@ pub fn copy_native_drawing(source: &Path, destination: &Path) -> Result<(), Stri
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => true,
         Ok(_) => return Err("The source resource folder is not a regular directory".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(error) => return Err(error.to_string()),
+        Err(error) => {
+            return Err(format!(
+                "Cannot inspect source asset folder {}: {error}",
+                source_root.display()
+            ))
+        }
     };
     if fs::symlink_metadata(&destination_root).is_ok() {
         return Err("The destination resource folder already exists".into());
@@ -658,7 +681,8 @@ pub fn backup_native_drawing(source: &Path, destination: &Path) -> Result<(), St
         .tempdir_in(parent)
         .map_err(|error| format!("Cannot create backup staging folder: {error}"))?;
     let drawing_path = stage.path().join("drawing.sketch.json");
-    copy_native_drawing(source, &drawing_path)?;
+    copy_native_drawing(source, &drawing_path)
+        .map_err(|error| format!("Copying drawing into backup staging failed: {error}"))?;
     let original_name = source
         .file_name()
         .and_then(|name| name.to_str())
@@ -897,15 +921,24 @@ fn copy_asset_tree(
     bytes_total: &mut u64,
     files_total: &mut usize,
 ) -> Result<(), String> {
-    for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+    for entry in fs::read_dir(source)
+        .map_err(|error| format!("Cannot read asset folder {}: {error}", source.display()))?
+    {
         let entry = entry.map_err(|error| error.to_string())?;
-        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| {
+            format!(
+                "Cannot inspect copied asset {}: {error}",
+                entry.path().display()
+            )
+        })?;
         if metadata.file_type().is_symlink() {
             return Err("Resource folders cannot contain symbolic links".into());
         }
         let target = destination.join(entry.file_name());
         if metadata.is_dir() {
-            fs::create_dir(&target).map_err(|error| error.to_string())?;
+            fs::create_dir(&target).map_err(|error| {
+                format!("Cannot create asset folder {}: {error}", target.display())
+            })?;
             copy_asset_tree(&entry.path(), &target, bytes_total, files_total)?;
         } else if metadata.is_file() {
             *files_total = files_total.saturating_add(1);
@@ -913,15 +946,36 @@ fn copy_asset_tree(
             if *files_total > MAX_ASSET_FILES || *bytes_total > MAX_ASSET_BYTES {
                 return Err("Resource folder exceeds the copy limits".into());
             }
-            let input = File::open(entry.path()).map_err(|error| error.to_string())?;
+            let input = File::open(entry.path()).map_err(|error| {
+                format!(
+                    "Cannot open source asset {}: {error}",
+                    entry.path().display()
+                )
+            })?;
             let mut output = OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(target)
-                .map_err(|error| error.to_string())?;
+                .open(&target)
+                .map_err(|error| {
+                    format!("Cannot create copied asset {}: {error}", target.display())
+                })?;
             let remaining =
                 MAX_ASSET_BYTES.saturating_sub(bytes_total.saturating_sub(metadata.len()));
             let mut bounded = input.take(remaining.saturating_add(1));
+            #[cfg(debug_assertions)]
+            let copied = if let Some(marker) = std::env::var_os("SKETCH3D_VERIFY_COPY_PAUSE_MARKER")
+                .filter(|marker| !marker.is_empty())
+            {
+                let mut writer = PauseAfterFirstCopyWrite {
+                    output: &mut output,
+                    marker: marker.into(),
+                    paused: false,
+                };
+                std::io::copy(&mut bounded, &mut writer).map_err(|error| error.to_string())?
+            } else {
+                std::io::copy(&mut bounded, &mut output).map_err(|error| error.to_string())?
+            };
+            #[cfg(not(debug_assertions))]
             let copied =
                 std::io::copy(&mut bounded, &mut output).map_err(|error| error.to_string())?;
             if copied > remaining {
@@ -933,6 +987,36 @@ fn copy_asset_tree(
         }
     }
     Ok(())
+}
+
+#[cfg(debug_assertions)]
+struct PauseAfterFirstCopyWrite<'a> {
+    output: &'a mut File,
+    marker: PathBuf,
+    paused: bool,
+}
+
+#[cfg(debug_assertions)]
+impl std::io::Write for PauseAfterFirstCopyWrite<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let count = if self.paused {
+            self.output.write(buffer)?
+        } else {
+            self.output.write(&buffer[..buffer.len().min(8)])?
+        };
+        if count > 0 && !self.paused {
+            fs::write(&self.marker, b"partial asset bytes written")?;
+            self.paused = true;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.output.flush()
+    }
 }
 
 fn generate_thumbnail(path: &Path, cache_dir: Option<&Path>) -> Result<Vec<u8>, String> {

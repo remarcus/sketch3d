@@ -7,11 +7,11 @@
     "each individual effect produces deterministic repeat output at both sizes",
     "effect-off and effect-on canvas pixels exactly match artwork PNG pixels at both sizes",
     "combined effects produce deterministic output at both sizes",
-    "GPU-backed render and readback latency is measured at two resolutions with effects off and on"
+    "GPU timestamps measure the scene and post-effect render passes without CPU setup or pixel readback when supported"
   ],
-  "measurement_method": "Median CPU wall time around render_png_pixels, including render setup, GPU queue work, and synchronous pixel readback; hardware-specific end-to-end latency, not isolated GPU shader time.",
+  "measurement_method": "Median GPU timestamp interval from the start of the artwork scene render pass through the end of the post-effect pass (or end of the scene pass when effects are off); excludes CPU resource setup, texture copy, and synchronous pixel readback. Timestamp query support is optional; null GPU timings mean the adapter/device did not support the feature.",
   "passed": true,
-  "physical_hardware_tested": false,
+  "physical_tablet_tested": false,
   "samples_per_measurement": 7,
   "sizes": [
     {
@@ -49,10 +49,14 @@
           "repeat_exact": true
         }
       ],
-      "render_readback_delta_percent": 3.3752746155382463,
-      "render_readback_delta_us": 169,
-      "render_readback_median_us_effects_off": 5007,
-      "render_readback_median_us_effects_on": 5176,
+      "gpu_render_delta_us": 2.2079999999999997,
+      "gpu_render_median_us_effects_off": 10.08,
+      "gpu_render_median_us_effects_on": 12.288,
+      "gpu_timestamp_queries_available": true,
+      "render_readback_delta_percent": -3.463203463203463,
+      "render_readback_delta_us": -184,
+      "render_readback_median_us_effects_off": 5313,
+      "render_readback_median_us_effects_on": 5129,
       "size": [
         384,
         256
@@ -93,16 +97,20 @@
           "repeat_exact": true
         }
       ],
-      "render_readback_delta_percent": -7.8519145847196175,
-      "render_readback_delta_us": -1298,
-      "render_readback_median_us_effects_off": 16531,
-      "render_readback_median_us_effects_on": 15233,
+      "gpu_render_delta_us": 13.472000000000003,
+      "gpu_render_median_us_effects_off": 16.224,
+      "gpu_render_median_us_effects_on": 29.696,
+      "gpu_timestamp_queries_available": true,
+      "render_readback_delta_percent": -7.8590624066885635,
+      "render_readback_delta_us": -1316,
+      "render_readback_median_us_effects_off": 16745,
+      "render_readback_median_us_effects_on": 15429,
       "size": [
         768,
         512
       ]
     }
   ],
-  "timing_note": "Effect-on rendering enables grain/toon shading, disables the baseline multisample target, and adds a screen-space pass, so the measured delta reflects the actual renderer configuration rather than the isolated cost of only the screen-space pass.",
+  "timing_note": "The GPU delta compares the full scene render configuration with all effects off against the actual combined-effect configuration. It includes changed sampling configuration plus grain/toon shading and the screen-space effects pass; it is GPU render cost, not the isolated cost of one individual shader.",
   "warmup_renders_per_measurement": 2
 }
