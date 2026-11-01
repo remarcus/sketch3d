@@ -16,6 +16,10 @@ fn mirror_tool_supported(
     !(selecting || erasing || filling || shaping || curving)
 }
 
+fn mirror_target_supported(drawing_on_model_surface: bool) -> bool {
+    !drawing_on_model_surface
+}
+
 pub(super) struct MirrorUi {
     pub enabled: bool,
     axis: NormalAxis,
@@ -59,6 +63,9 @@ impl SketchApp {
     }
 
     fn mirror_availability(&self) -> Result<crate::mirror::MirrorPlane, String> {
+        if !mirror_target_supported(self.doc.active_model_reference.is_some()) {
+            return Err("Live mirror is unavailable while drawing on a model surface.".into());
+        }
         if !mirror_tool_supported(
             self.select_mode,
             self.eraser,
@@ -239,7 +246,7 @@ impl SketchApp {
 
 #[cfg(test)]
 mod tests {
-    use super::mirror_tool_supported;
+    use super::{mirror_target_supported, mirror_tool_supported};
 
     #[test]
     fn live_mirror_is_limited_to_brush_and_line_modes() {
@@ -252,5 +259,11 @@ mod tests {
                 "mode {unsupported_mode} must disable live mirror"
             );
         }
+    }
+
+    #[test]
+    fn live_mirror_is_disabled_for_model_surface_strokes() {
+        assert!(mirror_target_supported(false));
+        assert!(!mirror_target_supported(true));
     }
 }
