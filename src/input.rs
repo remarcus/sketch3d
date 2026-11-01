@@ -19,6 +19,77 @@ pub struct PenSample {
     pub phase: Phase,
 }
 
+#[cfg(any(target_os = "linux", test))]
+mod pen_mapping {
+    pub(super) fn valuator_value(mask: &[u32], values: &[f64], number: u16) -> Option<f64> {
+        let axis = usize::from(number);
+        let word = axis / 32;
+        let bit = axis % 32;
+        if !mask.get(word).is_some_and(|value| value & (1 << bit) != 0) {
+            return None;
+        }
+        let value_index = mask
+            .iter()
+            .take(word)
+            .map(|value| value.count_ones() as usize)
+            .sum::<usize>()
+            + (mask[word] & ((1 << bit) - 1)).count_ones() as usize;
+        values.get(value_index).copied()
+    }
+
+    pub(super) fn normalize_axis(value: f64, min: f64, max: f64) -> f32 {
+        if max <= min {
+            return 0.0;
+        }
+        ((value - min) / (max - min)).clamp(0.0, 1.0) as f32
+    }
+
+    pub(super) fn normalize_tilt(value: f64, min: f64, max: f64) -> f32 {
+        if max <= min {
+            return 0.0;
+        }
+        (value.clamp(min, max) as f32).clamp(-90.0, 90.0)
+    }
+
+    pub(super) fn fixed_16_16(value: i32) -> f32 {
+        value as f32 / 65_536.0
+    }
+}
+
+#[cfg(test)]
+mod pen_mapping_tests {
+    use super::pen_mapping::*;
+
+    #[test]
+    fn maps_sparse_valuator_masks_to_pressure_and_tilt_values() {
+        let mask = [0b1010];
+        let values = [20.0, -30.0];
+
+        assert_eq!(
+            normalize_axis(valuator_value(&mask, &values, 1).unwrap(), 0.0, 100.0),
+            0.2
+        );
+        assert_eq!(
+            normalize_tilt(valuator_value(&mask, &values, 3).unwrap(), -60.0, 60.0),
+            -30.0
+        );
+        assert_eq!(valuator_value(&mask, &values, 0), None);
+    }
+
+    #[test]
+    fn clamps_pressure_and_tilt_and_handles_invalid_axis_ranges() {
+        assert_eq!(normalize_axis(125.0, 0.0, 100.0), 1.0);
+        assert_eq!(normalize_axis(5.0, 7.0, 7.0), 0.0);
+        assert_eq!(normalize_tilt(120.0, -120.0, 120.0), 90.0);
+    }
+
+    #[test]
+    fn converts_xinput_window_coordinates_from_fixed_point() {
+        assert_eq!(fixed_16_16(1 << 16), 1.0);
+        assert_eq!(fixed_16_16(-(2 << 16)), -2.0);
+    }
+}
+
 #[cfg(windows)]
 mod native {
     use super::*;
@@ -182,6 +253,9 @@ pub use native::PenInput;
 
 #[cfg(target_os = "linux")]
 mod linux_x11 {
+    use super::pen_mapping::{
+        fixed_16_16, normalize_axis, normalize_tilt, valuator_value as map_valuator_value,
+    };
     use super::*;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use std::{
@@ -482,19 +556,20 @@ mod linux_x11 {
         axes: Axes,
         state: SampleState,
     ) -> PenSample {
+        let values = axis_values.iter().copied().map(fp3232).collect::<Vec<_>>();
         PenSample {
             position,
             pressure: axes.pressure.and_then(|axis| {
-                valuator_value(valuator_mask, axis_values, axis.0)
+                map_valuator_value(valuator_mask, &values, axis.0)
                     .map(|value| normalize_axis(value, axis.1, axis.2))
             }),
             tilt: [
                 axes.tilt_x.and_then(|axis| {
-                    valuator_value(valuator_mask, axis_values, axis.0)
+                    map_valuator_value(valuator_mask, &values, axis.0)
                         .map(|value| normalize_tilt(value, axis.1, axis.2))
                 }),
                 axes.tilt_y.and_then(|axis| {
-                    valuator_value(valuator_mask, axis_values, axis.0)
+                    map_valuator_value(valuator_mask, &values, axis.0)
                         .map(|value| normalize_tilt(value, axis.1, axis.2))
                 }),
             ],
@@ -505,47 +580,12 @@ mod linux_x11 {
         }
     }
 
-    fn valuator_value(mask: &[u32], values: &[xinput::Fp3232], number: u16) -> Option<f64> {
-        let axis = usize::from(number);
-        let word = axis / 32;
-        let bit = axis % 32;
-        let is_set = mask.get(word).is_some_and(|value| value & (1 << bit) != 0);
-        if !is_set {
-            return None;
-        }
-        let value_index = mask
-            .iter()
-            .take(word)
-            .map(|value| value.count_ones() as usize)
-            .sum::<usize>()
-            + (mask[word] & ((1 << bit) - 1)).count_ones() as usize;
-        values.get(value_index).copied().map(fp3232)
-    }
-
     fn fp3232(value: xinput::Fp3232) -> f64 {
         f64::from(value.integral) + f64::from(value.frac) / 4_294_967_296.0
     }
 
-    fn normalize_axis(value: f64, min: f64, max: f64) -> f32 {
-        if max <= min {
-            return 0.0;
-        }
-        ((value - min) / (max - min)).clamp(0.0, 1.0) as f32
-    }
-
-    fn normalize_tilt(value: f64, min: f64, max: f64) -> f32 {
-        if max <= min {
-            return 0.0;
-        }
-        (value.clamp(min, max) as f32).clamp(-90.0, 90.0)
-    }
-
     fn event_position(x: xinput::Fp1616, y: xinput::Fp1616) -> egui::Pos2 {
         egui::pos2(fixed_16_16(x), fixed_16_16(y))
-    }
-
-    fn fixed_16_16(value: xinput::Fp1616) -> f32 {
-        value as f32 / 65_536.0
     }
 
     fn button_is_down(mask: &[u32], button: usize) -> bool {
@@ -575,61 +615,6 @@ mod linux_x11 {
             barrel: false,
             contact: false,
             phase: Phase::Cancel,
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn maps_sparse_xinput_valuators_and_pressure_range() {
-            let sample = sample_from_event(
-                egui::pos2(24.5, 11.25),
-                &[0b1010],
-                &[
-                    xinput::Fp3232 {
-                        integral: 20,
-                        frac: 0,
-                    },
-                    xinput::Fp3232 {
-                        integral: -30,
-                        frac: 0,
-                    },
-                ],
-                Axes {
-                    pressure: Some((1, 0.0, 100.0)),
-                    tilt_x: Some((3, -60.0, 60.0)),
-                    ..Axes::default()
-                },
-                SampleState {
-                    eraser: false,
-                    barrel: false,
-                    contact: true,
-                    phase: Phase::Move,
-                },
-            );
-
-            assert_eq!(sample.position, egui::pos2(24.5, 11.25));
-            assert_eq!(sample.pressure, Some(0.2));
-            assert_eq!(sample.tilt[0], Some(-30.0));
-            assert_eq!(sample.phase, Phase::Move);
-            assert!(sample.contact);
-        }
-
-        #[test]
-        fn normalizes_out_of_range_pressure_and_rejects_missing_axes() {
-            assert_eq!(normalize_axis(125.0, 0.0, 100.0), 1.0);
-            assert_eq!(normalize_axis(5.0, 7.0, 7.0), 0.0);
-            assert_eq!(
-                valuator_value(&[0b10], &[xinput::Fp3232::default()], 0),
-                None
-            );
-        }
-
-        #[test]
-        fn maps_xinput_fixed_point_window_coordinates() {
-            assert_eq!(event_position(1 << 16, -(2 << 16)), egui::pos2(1.0, -2.0));
         }
     }
 }
