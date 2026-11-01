@@ -119,6 +119,12 @@ impl SketchApp {
         self.finish_partial_erase(false);
     }
 
+    pub(super) fn partial_eraser_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.partial_erase_active() && ctx.input(|input| input.key_pressed(Key::Escape)) {
+            self.cancel_partial_erase();
+        }
+    }
+
     pub(super) fn partial_eraser_controls(&mut self, ui: &mut egui::Ui) {
         if !self.eraser {
             return;

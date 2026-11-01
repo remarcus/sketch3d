@@ -1454,6 +1454,155 @@ impl SketchApp {
             }
             ctx.input_mut(|input| input.events.clear());
         }
+        fn verify_partial_eraser_input(app: &mut SketchApp, ctx: &egui::Context, rect: Rect) {
+            let original_doc = app.doc.clone();
+            let original_selection = app.selected.clone();
+            let original_camera = app.camera;
+            let original_undo = app.undo.clone();
+            let original_redo = app.redo.clone();
+            let original_next_id = app.next_id;
+            let original_dirty = app.dirty;
+            let original_eraser = app.eraser;
+            let original_select_mode = app.select_mode;
+            let original_enabled = app.partial_eraser.enabled;
+            let original_radius = app.partial_eraser.radius;
+            let original_last_pen = app.last_pen;
+            let original_last_pen_at = app.last_pen_at;
+            let original_pen_previous = app.pen_previous;
+            let original_mouse_down = app.mouse_down;
+            let original_status = app.status.clone();
+            let source = Stroke {
+                material: Default::default(),
+                fill: None,
+                group_id: None,
+                layer_id: 1,
+                id: 1,
+                color: [0.3, 0.65, 0.8],
+                radius: 0.02,
+                brush: Default::default(),
+                points: (0..=32)
+                    .map(|index| {
+                        let t = index as f32 / 32.0;
+                        Point {
+                            position: Vec3::new(-2.0 + 4.0 * t, 0.0, 0.0),
+                            pressure: 0.2 + 0.8 * t,
+                            tilt: Some(Vec3::new(0.0, 0.25, 1.0).normalize()),
+                        }
+                    })
+                    .collect(),
+            };
+            app.doc = Document {
+                strokes: vec![source.clone()],
+                ..Document::default()
+            };
+            app.selected.clear();
+            app.undo.clear();
+            app.redo.clear();
+            app.next_id = 2;
+            app.camera = Camera {
+                projection: crate::geometry::Projection::Perspective,
+                yaw: 0.0,
+                pitch: 0.0,
+                ..Camera::default()
+            };
+            app.eraser = true;
+            app.select_mode = false;
+            app.partial_eraser.enabled = true;
+            app.partial_eraser.radius = 8.0;
+            let original_strokes = app.doc.strokes.clone();
+            let start = gizmo::project(&app.camera, rect, Vec3::new(0.0, -0.45, 0.0))
+                .unwrap()
+                .0;
+            let end = gizmo::project(&app.camera, rect, Vec3::new(0.0, 0.45, 0.0))
+                .unwrap()
+                .0;
+
+            replay(app, ctx, rect, start, Some(end), false, false);
+            assert!(
+                app.partial_erase_active(),
+                "mouse drag starts an erase preview"
+            );
+            assert_ne!(app.doc.strokes, original_strokes);
+            ctx.input_mut(|input| {
+                input.events = vec![egui::Event::Key {
+                    key: Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }]
+            });
+            app.partial_eraser_shortcuts(ctx);
+            ctx.input_mut(|input| {
+                input.events = vec![egui::Event::PointerButton {
+                    pos: end,
+                    button: PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }]
+            });
+            app.canvas_input(ctx, rect, Vec::new());
+            ctx.input_mut(|input| input.events.clear());
+            assert_eq!(app.doc.strokes, original_strokes);
+            assert!(
+                app.undo.is_empty(),
+                "Escape cancellation creates no undo step"
+            );
+
+            replay(app, ctx, rect, start, Some(end), false, true);
+            assert_eq!(
+                app.doc.strokes.len(),
+                2,
+                "mouse release keeps both fragments"
+            );
+            assert_eq!(app.undo.len(), 1, "one mouse release creates one undo step");
+            let mouse_after = app.doc.strokes.clone();
+            assert_eq!(mouse_after[0].id, source.id);
+            assert_ne!(mouse_after[0].id, mouse_after[1].id);
+            assert!(
+                mouse_after[0].points.last().unwrap().position.x
+                    < mouse_after[1].points.first().unwrap().position.x
+            );
+            app.undo();
+            assert_eq!(app.doc.strokes, original_strokes);
+            app.redo();
+            assert_eq!(app.doc.strokes, mouse_after);
+
+            app.undo.clear();
+            app.redo.clear();
+            app.doc.strokes = original_strokes.clone();
+            app.next_id = 2;
+            replay_pen(app, ctx, rect, start, end);
+            assert_eq!(app.doc.strokes.len(), 2, "pen release keeps both fragments");
+            assert_eq!(app.undo.len(), 1, "one pen release creates one undo step");
+            let pen_after = app.doc.strokes.clone();
+            assert!(
+                pen_after[0].points.last().unwrap().position.x
+                    < pen_after[1].points.first().unwrap().position.x
+            );
+            app.undo();
+            assert_eq!(app.doc.strokes, original_strokes);
+            app.redo();
+            assert_eq!(app.doc.strokes, pen_after);
+
+            app.doc = original_doc;
+            app.selected = original_selection;
+            app.camera = original_camera;
+            app.undo = original_undo;
+            app.redo = original_redo;
+            app.next_id = original_next_id;
+            app.dirty = original_dirty;
+            app.eraser = original_eraser;
+            app.select_mode = original_select_mode;
+            app.partial_eraser.enabled = original_enabled;
+            app.partial_eraser.radius = original_radius;
+            app.last_pen = original_last_pen;
+            app.last_pen_at = original_last_pen_at;
+            app.pen_previous = original_pen_previous;
+            app.mouse_down = original_mouse_down;
+            app.status = original_status;
+            app.renderer.invalidate();
+        }
         fn verify_mouse_pen_brush_selection(app: &mut SketchApp, ctx: &egui::Context, rect: Rect) {
             let original_doc = app.doc.clone();
             let original_selection = app.selected.clone();
@@ -1670,6 +1819,7 @@ impl SketchApp {
             app.undo();
             assert_eq!(app.doc.strokes, original);
         }
+        verify_partial_eraser_input(self, ctx, rect);
         verify_mouse_pen_brush_selection(self, ctx, rect);
         self.select_mode = true;
         self.eraser = false;
