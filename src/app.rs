@@ -467,7 +467,7 @@ impl CapabilityReplay {
 
     fn paint_cursor_cue(&self, painter: &egui::Painter, canvas: Rect) {
         let disclosure = Rect::from_min_size(
-            canvas.left_top() + egui::vec2(12.0, 12.0),
+            egui::pos2(canvas.right() - 300.0, canvas.top() + 12.0),
             egui::vec2(288.0, 28.0),
         );
         painter.rect_filled(disclosure, 4.0, Color32::from_black_alpha(210));
@@ -617,6 +617,15 @@ impl CapabilityReplay {
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
             .filter(|commit| !commit.is_empty())
             .unwrap_or_else(|| "unknown".into());
+        let mp4_backend = if std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
+            "FFmpeg H.264"
+        } else {
+            "Blender H.264 fallback"
+        };
         let source_tree_dirty = std::process::Command::new("git")
             .args([
                 "status",
@@ -660,7 +669,7 @@ impl CapabilityReplay {
             ],
             "cursor_cue": "A synthetic pointer ring is labeled DRAW or ORBIT while the corresponding input is active.",
             "encoding": {
-                "mp4": "Captured full-viewport RGBA frames; FFmpeg H.264 or Blender H.264 fallback; 10 fps.",
+                "mp4": format!("Captured full-viewport RGBA frames; {mp4_backend}; 10 fps."),
                 "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder; 10 fps; 6 seconds; <=5 MiB.",
                 "poster": "First full-resolution app frame encoded as PNG."
             },
