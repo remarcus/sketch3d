@@ -20,14 +20,14 @@ No hosting provider is selected. The service needs bounded object storage, HTTPS
 
 ### Cost candidate reviewed 2026-11-01 — Cloudflare Workers + R2 (not selected)
 
-This is a pricing candidate for the existing static viewer plus an upload/delete API and object storage; it is not authorization to create an account, attach billing, or deploy the service.
+This is a pricing candidate for the existing static viewer plus an upload/delete API and object storage. User direction is to keep publishing deferred; this comparison is informational only and does not authorize an account, billing, or deployment.
 
 - Workers Free includes 100,000 requests per day and 10 ms CPU time per invocation. The current Workers Paid plan starts at $5/month per account and includes 10 million requests and 30 million CPU milliseconds per month; excess usage is $0.30 per million requests and $0.02 per million CPU milliseconds. Static asset requests are free and unlimited. See [Cloudflare Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/) and [limits](https://developers.cloudflare.com/workers/platform/limits/).
 - R2 Standard includes 10 GB-month of storage, 1 million Class A operations, and 10 million Class B operations per month, with no internet egress charge. Above those allowances, listed rates are $0.015 per GB-month, $4.50 per million Class A operations, and $0.36 per million Class B operations. See [Cloudflare R2 pricing](https://developers.cloudflare.com/r2/pricing/).
 - These rates do not include a custom domain, billing administration, monitoring, abuse handling, or support. R2 usage above its free allowance is billable, so the service would need hard per-model and aggregate storage quotas, expiration, deletion accounting, and usage monitoring before launch. The Workers Free request limit stops excess requests with an error; that does not cap accumulated R2 storage.
 - The $5 Workers plan is a possible baseline if the free request/CPU limits prove too small; it is not a total monthly-cost ceiling. No budget, account owner, retention period, or billing account has been approved.
 
-Pricing changes over time. Recheck the official pages and estimate costs against the agreed quotas immediately before implementation and deployment.
+Pricing changes over time. If publishing is resumed later, recheck the official pages and estimate costs against the agreed quotas before implementation and deployment.
 
 ## Validation before implementation
 
