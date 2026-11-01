@@ -649,6 +649,39 @@ mod tests {
         assert_eq!(gltf.images().count(), 1);
         assert_eq!(gltf.meshes().count(), 2);
 
+        let mut recovery_assets = vec![crate::recovery_store::RecoveryAsset {
+            asset_file: inserted_plane.asset_file.clone(),
+            bytes: fs::read(destination_assets.join(&inserted_plane.asset_file)).unwrap(),
+        }];
+        let model_bundle = destination_assets.join(&inserted_model.asset.bundle_dir);
+        for entry in fs::read_dir(&model_bundle).unwrap() {
+            let entry = entry.unwrap();
+            let relative = Path::new(&inserted_model.asset.bundle_dir).join(entry.file_name());
+            recovery_assets.push(crate::recovery_store::RecoveryAsset {
+                asset_file: relative.to_string_lossy().replace('\\', "/"),
+                bytes: fs::read(entry.path()).unwrap(),
+            });
+        }
+        let recovery_dir = root.path().join("recovery");
+        let snapshot = crate::recovery_store::RecoverySnapshot::new_with_assets(
+            "insert-session".into(),
+            None,
+            reloaded.clone(),
+            recovery_assets,
+        );
+        crate::recovery_store::write(&recovery_dir, &snapshot).unwrap();
+        let scan = crate::recovery_store::scan(&recovery_dir, "another-session").unwrap();
+        assert_eq!(scan.candidates.len(), 1);
+        assert_eq!(
+            scan.candidates[0].snapshot.document.image_planes,
+            reloaded.image_planes
+        );
+        assert_eq!(
+            scan.candidates[0].snapshot.document.model_references,
+            reloaded.model_references
+        );
+        assert_eq!(scan.candidates[0].snapshot.assets.len(), 3);
+
         edit.apply(&mut merged, false);
         assert!(merged.image_planes.is_empty());
         assert!(merged.model_references.is_empty());
