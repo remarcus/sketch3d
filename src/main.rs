@@ -293,11 +293,28 @@ fn main() -> eframe::Result {
                 | "--verify-appearance-layout"
         )
     });
+    let viewport_size = args
+        .iter()
+        .position(|argument| argument == "--verify-appearance-layout")
+        .map(|index| {
+            let width = args
+                .get(index + 3)
+                .and_then(|value| value.parse::<u32>().ok())
+                .filter(|dimension| (640..=3840).contains(dimension))
+                .unwrap_or(1440);
+            let height = args
+                .get(index + 4)
+                .and_then(|value| value.parse::<u32>().ok())
+                .filter(|dimension| (480..=2160).contains(dimension))
+                .unwrap_or(940);
+            [width as f32, height as f32]
+        })
+        .unwrap_or([1440.0, 940.0]);
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Sketch3D")
-            .with_inner_size([1440.0, 940.0])
+            .with_inner_size(viewport_size)
             .with_min_inner_size([960.0, 640.0])
             .with_visible(!hidden_verification),
         ..Default::default()

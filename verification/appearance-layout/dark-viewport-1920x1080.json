@@ -1,0 +1,19 @@
+{
+  "checks": [
+    "hidden app rendered the complete editing workspace at the requested egui zoom factor",
+    "the requested appearance theme was applied in memory without saving user preferences"
+  ],
+  "egui_zoom_percent": 100,
+  "passed": true,
+  "physical_tablet_tested": false,
+  "requested_viewport_points": [
+    1920,
+    1080
+  ],
+  "screenshot": "dark-viewport-1920x1080.png",
+  "screenshot_size_pixels": [
+    1920,
+    1080
+  ],
+  "theme": "dark"
+}

@@ -309,6 +309,7 @@ struct AppearanceLayoutVerification {
     theme: crate::presentation::UiTheme,
     zoom_factor: f32,
     zoom_percent: u32,
+    viewport_size: [u32; 2],
     screenshot_requested: bool,
 }
 
@@ -754,6 +755,18 @@ impl SketchApp {
                 .and_then(|value| value.parse::<f32>().ok())
                 .filter(|zoom| zoom.is_finite() && (0.5..=2.0).contains(zoom))
                 .expect("--verify-appearance-layout requires a zoom between 0.5 and 2.0");
+            let viewport_size = [
+                arguments
+                    .get(index + 3)
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .filter(|dimension| (640..=3840).contains(dimension))
+                    .unwrap_or(1440),
+                arguments
+                    .get(index + 4)
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .filter(|dimension| (480..=2160).contains(dimension))
+                    .unwrap_or(940),
+            ];
             app.presentation.preferences.ui_theme = match theme {
                 "dark" => crate::presentation::UiTheme::Dark,
                 "light" => crate::presentation::UiTheme::Light,
@@ -763,6 +776,7 @@ impl SketchApp {
                 theme: app.presentation.preferences.ui_theme,
                 zoom_factor,
                 zoom_percent: (zoom_factor * 100.0).round() as u32,
+                viewport_size,
                 screenshot_requested: false,
             });
         } else if std::env::args().any(|a| a == "--verify-mixed-resources") {
@@ -4789,7 +4803,14 @@ impl SketchApp {
                 };
                 let output = path.join("appearance-layout");
                 std::fs::create_dir_all(&output).expect("appearance screenshot folder");
-                let filename = format!("{theme}-{}-percent.png", verification.zoom_percent);
+                let filename = if verification.viewport_size == [1440, 940] {
+                    format!("{theme}-{}-percent.png", verification.zoom_percent)
+                } else {
+                    format!(
+                        "{theme}-viewport-{}x{}.png",
+                        verification.viewport_size[0], verification.viewport_size[1]
+                    )
+                };
                 let screenshot_path = output.join(&filename);
                 image::save_buffer(
                     &screenshot_path,
@@ -4803,6 +4824,7 @@ impl SketchApp {
                     "passed": true,
                     "theme": theme,
                     "egui_zoom_percent": verification.zoom_percent,
+                    "requested_viewport_points": verification.viewport_size,
                     "screenshot": filename,
                     "screenshot_size_pixels": image.size,
                     "checks": [
@@ -4812,10 +4834,7 @@ impl SketchApp {
                     "physical_tablet_tested": false
                 });
                 std::fs::write(
-                    output.join(format!(
-                        "{theme}-{}-percent.json",
-                        verification.zoom_percent
-                    )),
+                    output.join(filename.replace(".png", ".json")),
                     serde_json::to_vec_pretty(&report).unwrap(),
                 )
                 .expect("appearance report writes");

@@ -1,76 +1,167 @@
 {
-  "passed": true,
-  "checks": [
-    "the full editing workspace rendered in Dark and Light themes at 80%, 150%, and 200% egui zoom",
-    "all six hidden app processes used settings separate from the user profile and saved 1440x940 screenshots",
-    "the Color control remains visible at 150% and wraps to a second row at 200%",
-    "the empty-canvas message remains legible within the reduced canvas width at 200%"
-  ],
-  "limitations": [
-    "egui zoom checks do not replace operating-system DPI scaling walkthroughs",
-    "Windows Narrator announcements still require direct assistive-technology testing"
-  ],
-  "physical_tablet_tested": false,
-  "screenshots": [
-    {
-      "theme": "dark",
-      "egui_zoom_percent": 80,
-      "screenshot": "dark-80-percent.png",
-      "report": "dark-80-percent.json",
-      "screenshot_size_pixels": [
-        1440,
-        940
-      ]
-    },
-    {
-      "theme": "dark",
-      "egui_zoom_percent": 150,
-      "screenshot": "dark-150-percent.png",
-      "report": "dark-150-percent.json",
-      "screenshot_size_pixels": [
-        1440,
-        940
-      ]
-    },
-    {
-      "theme": "dark",
-      "egui_zoom_percent": 200,
-      "screenshot": "dark-200-percent.png",
-      "report": "dark-200-percent.json",
-      "screenshot_size_pixels": [
-        1440,
-        940
-      ]
-    },
-    {
-      "theme": "light",
-      "egui_zoom_percent": 80,
-      "screenshot": "light-80-percent.png",
-      "report": "light-80-percent.json",
-      "screenshot_size_pixels": [
-        1440,
-        940
-      ]
-    },
-    {
-      "theme": "light",
-      "egui_zoom_percent": 150,
-      "screenshot": "light-150-percent.png",
-      "report": "light-150-percent.json",
-      "screenshot_size_pixels": [
-        1440,
-        940
-      ]
-    },
-    {
-      "theme": "light",
-      "egui_zoom_percent": 200,
-      "screenshot": "light-200-percent.png",
-      "report": "light-200-percent.json",
-      "screenshot_size_pixels": [
-        1440,
-        940
-      ]
-    }
-  ]
+    "passed":  true,
+    "checks":  [
+                   "the full editing workspace rendered in Dark and Light themes at 80%, 150%, and 200% egui zoom",
+                   "all hidden app processes used settings separate from the user profile and saved fresh screenshots at their requested dimensions",
+                   "the workspace rendered in Dark and Light at 1280x720 and 1920x1080 viewport sizes",
+                   "the Color control remains visible at 150% and wraps to a second row at 200%",
+                   "the empty-canvas message remains legible within the reduced canvas width at 200%"
+               ],
+    "limitations":  [
+                        "viewport and egui zoom checks do not replace operating-system DPI scaling walkthroughs",
+                        "Windows Narrator announcements still require direct assistive-technology testing"
+                    ],
+    "physical_tablet_tested":  false,
+    "screenshots":  [
+                        {
+                            "theme":  "dark",
+                            "capture_kind":  "zoom",
+                            "egui_zoom_percent":  80,
+                            "requested_viewport_points":  [
+                                                              1440,
+                                                              940
+                                                          ],
+                            "screenshot":  "dark-80-percent.png",
+                            "report":  "dark-80-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1440,
+                                                           940
+                                                       ]
+                        },
+                        {
+                            "theme":  "dark",
+                            "capture_kind":  "zoom",
+                            "egui_zoom_percent":  150,
+                            "requested_viewport_points":  [
+                                                              1440,
+                                                              940
+                                                          ],
+                            "screenshot":  "dark-150-percent.png",
+                            "report":  "dark-150-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1440,
+                                                           940
+                                                       ]
+                        },
+                        {
+                            "theme":  "dark",
+                            "capture_kind":  "zoom",
+                            "egui_zoom_percent":  200,
+                            "requested_viewport_points":  [
+                                                              1440,
+                                                              940
+                                                          ],
+                            "screenshot":  "dark-200-percent.png",
+                            "report":  "dark-200-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1440,
+                                                           940
+                                                       ]
+                        },
+                        {
+                            "theme":  "dark",
+                            "capture_kind":  "viewport",
+                            "egui_zoom_percent":  100,
+                            "requested_viewport_points":  [
+                                                              1280,
+                                                              720
+                                                          ],
+                            "screenshot":  "dark-viewport-1280x720.png",
+                            "report":  "dark-viewport-1280x720.json",
+                            "screenshot_size_pixels":  [
+                                                           1280,
+                                                           720
+                                                       ]
+                        },
+                        {
+                            "theme":  "dark",
+                            "capture_kind":  "viewport",
+                            "egui_zoom_percent":  100,
+                            "requested_viewport_points":  [
+                                                              1920,
+                                                              1080
+                                                          ],
+                            "screenshot":  "dark-viewport-1920x1080.png",
+                            "report":  "dark-viewport-1920x1080.json",
+                            "screenshot_size_pixels":  [
+                                                           1920,
+                                                           1080
+                                                       ]
+                        },
+                        {
+                            "theme":  "light",
+                            "capture_kind":  "zoom",
+                            "egui_zoom_percent":  80,
+                            "requested_viewport_points":  [
+                                                              1440,
+                                                              940
+                                                          ],
+                            "screenshot":  "light-80-percent.png",
+                            "report":  "light-80-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1440,
+                                                           940
+                                                       ]
+                        },
+                        {
+                            "theme":  "light",
+                            "capture_kind":  "zoom",
+                            "egui_zoom_percent":  150,
+                            "requested_viewport_points":  [
+                                                              1440,
+                                                              940
+                                                          ],
+                            "screenshot":  "light-150-percent.png",
+                            "report":  "light-150-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1440,
+                                                           940
+                                                       ]
+                        },
+                        {
+                            "theme":  "light",
+                            "capture_kind":  "zoom",
+                            "egui_zoom_percent":  200,
+                            "requested_viewport_points":  [
+                                                              1440,
+                                                              940
+                                                          ],
+                            "screenshot":  "light-200-percent.png",
+                            "report":  "light-200-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1440,
+                                                           940
+                                                       ]
+                        },
+                        {
+                            "theme":  "light",
+                            "capture_kind":  "viewport",
+                            "egui_zoom_percent":  100,
+                            "requested_viewport_points":  [
+                                                              1280,
+                                                              720
+                                                          ],
+                            "screenshot":  "light-viewport-1280x720.png",
+                            "report":  "light-viewport-1280x720.json",
+                            "screenshot_size_pixels":  [
+                                                           1280,
+                                                           720
+                                                       ]
+                        },
+                        {
+                            "theme":  "light",
+                            "capture_kind":  "viewport",
+                            "egui_zoom_percent":  100,
+                            "requested_viewport_points":  [
+                                                              1920,
+                                                              1080
+                                                          ],
+                            "screenshot":  "light-viewport-1920x1080.png",
+                            "report":  "light-viewport-1920x1080.json",
+                            "screenshot_size_pixels":  [
+                                                           1920,
+                                                           1080
+                                                       ]
+                        }
+                    ]
 }
