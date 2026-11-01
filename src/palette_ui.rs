@@ -170,14 +170,19 @@ impl PaletteUi {
             ui.small("Saved swatches are available in each color editor. Recent colors last for this session only.");
             ui.horizontal_wrapped(|ui| {
                 for (index, swatch) in self.palette.swatches.iter().enumerate() {
-                    if ui
-                        .add(
-                            egui::Button::new("  ")
-                                .fill(super::color_editor::color32_from_linear(swatch.color))
-                                .selected(self.selected == Some(index)),
-                        )
-                        .on_hover_text(format!("Select {} for palette management", swatch.name))
-                        .clicked()
+                    let selected = self.selected == Some(index);
+                    let response = ui.add(
+                        egui::Button::new("  ")
+                            .fill(super::color_editor::color32_from_linear(swatch.color))
+                            .selected(selected),
+                    );
+                    if super::ui_style::accessible_button(
+                        response,
+                        &format!("Select {} for palette management", swatch.name),
+                        Some(selected),
+                    )
+                    .on_hover_text(format!("Select {} for palette management", swatch.name))
+                    .clicked()
                     {
                         self.selected = Some(index);
                         self.rename_name = swatch.name.clone();

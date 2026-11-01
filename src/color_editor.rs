@@ -326,10 +326,14 @@ trait SwatchButton {
 impl SwatchButton for Ui {
     fn add_swatch(&mut self, name: &str, color: [f32; 3]) -> egui::Response {
         let fill = color32_from_linear(color);
-        self.add(
-            egui::Button::new("  ")
-                .fill(fill)
-                .min_size(egui::vec2(34.0, 30.0)),
+        ui_style::accessible_button(
+            self.add(
+                egui::Button::new("  ")
+                    .fill(fill)
+                    .min_size(egui::vec2(34.0, 30.0)),
+            ),
+            &format!("Select color {name}"),
+            None,
         )
         .on_hover_text(name)
     }

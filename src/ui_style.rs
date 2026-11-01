@@ -182,12 +182,27 @@ pub fn section(ui: &mut Ui, title: &str) {
 }
 
 fn label_icon_button(response: Response, accessible_name: &str) -> Response {
-    response.widget_info(|| {
-        WidgetInfo::labeled(
+    accessible_button(response, accessible_name, None)
+}
+
+/// Gives a custom button an explicit name for assistive technology.
+pub fn accessible_button(
+    response: Response,
+    accessible_name: &str,
+    selected: Option<bool>,
+) -> Response {
+    response.widget_info(|| match selected {
+        Some(selected) => WidgetInfo::selected(
+            egui::WidgetType::Button,
+            response.enabled(),
+            selected,
+            accessible_name,
+        ),
+        None => WidgetInfo::labeled(
             egui::WidgetType::Button,
             response.enabled(),
             accessible_name,
-        )
+        ),
     });
     response
 }
@@ -830,6 +845,61 @@ mod tests {
         assert_eq!(named_nodes.get("Move bookmark up"), Some(&false));
         assert_eq!(named_nodes.get("Zoom in reference board"), Some(&false));
         assert_eq!(named_nodes.get("Remove revolved profile 1"), Some(&true));
+    }
+
+    #[test]
+    fn custom_buttons_emit_accesskit_names_and_selected_state() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let output = context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(420.0, 180.0),
+                )),
+                focused: true,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    accessible_button(ui.add(egui::Button::new("  ")), "Select color Coral", None);
+                    accessible_button(
+                        ui.add(egui::Button::new("  ").selected(true)),
+                        "Select Coral for palette management",
+                        Some(true),
+                    );
+                    accessible_button(
+                        ui.add(egui::Button::new("  ").selected(false)),
+                        "Select Teal for palette management",
+                        Some(false),
+                    );
+                });
+            },
+        );
+        let update = output
+            .platform_output
+            .accesskit_update
+            .expect("AccessKit update is enabled for this context");
+        let named_nodes = update
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| {
+                node.label()
+                    .map(|label| (label.to_owned(), format!("{:?}", node.toggled())))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            named_nodes.get("Select color Coral"),
+            Some(&"None".to_owned())
+        );
+        assert_eq!(
+            named_nodes.get("Select Coral for palette management"),
+            Some(&"Some(True)".to_owned())
+        );
+        assert_eq!(
+            named_nodes.get("Select Teal for palette management"),
+            Some(&"Some(False)".to_owned())
+        );
     }
 
     #[test]
