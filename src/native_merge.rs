@@ -484,6 +484,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(serde_json::to_value(&destination).unwrap(), original_json);
+        assert_eq!(inserted.edit.layers[0].id, 10);
+        assert_eq!(inserted.edit.layers[0].name, "Layer 1 (import 2)");
 
         let edit = crate::editing::Edit::Merge(inserted.edit.clone());
         let mut merged = destination.clone();
@@ -531,6 +533,53 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(serde_json::to_value(&destination).unwrap(), original_json);
         assert_eq!(fs::read_dir(&asset_root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn missing_or_corrupt_image_asset_rejects_insert_without_mutation() {
+        for corrupt in [false, true] {
+            let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+            let source_path = root.path().join("source.sketch.json");
+            let source_assets = crate::image_plane_storage::asset_root(&source_path).unwrap();
+            fs::create_dir_all(&source_assets).unwrap();
+            if corrupt {
+                fs::write(source_assets.join("image-7.png"), b"not a PNG image").unwrap();
+            }
+            let mut source = Document::default();
+            source.image_planes.push(
+                ImagePlane::from_asset(
+                    7,
+                    "Referenced image",
+                    "image-7.png".into(),
+                    [1, 1],
+                    Vec3::ZERO,
+                    Quat::IDENTITY,
+                    1.0,
+                )
+                .unwrap(),
+            );
+            fs::write(&source_path, serde_json::to_vec(&source).unwrap()).unwrap();
+
+            let destination = Document::default();
+            let original_json = serde_json::to_value(&destination).unwrap();
+            let destination_assets = root.path().join("destination-assets");
+            fs::create_dir_all(&destination_assets).unwrap();
+            let result = prepare_insert(
+                &destination,
+                &source_path,
+                &destination_assets,
+                100,
+                10,
+                200,
+                Vec3::ZERO,
+                false,
+                &HashMap::new(),
+            );
+
+            assert!(result.is_err(), "corrupt={corrupt}");
+            assert_eq!(serde_json::to_value(&destination).unwrap(), original_json);
+            assert_eq!(fs::read_dir(&destination_assets).unwrap().count(), 0);
+        }
     }
 
     #[test]
