@@ -1382,11 +1382,6 @@ mod tests {
             1.0,
         )
         .unwrap();
-        let document = crate::document::Document {
-            image_planes: vec![image.clone()],
-            ..Default::default()
-        };
-        fs::write(&source, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
         let source_assets = crate::image_plane_storage::asset_root(&source).unwrap();
         fs::create_dir_all(&source_assets).unwrap();
         let mut png = Vec::new();
@@ -1394,6 +1389,38 @@ mod tests {
             .write_image(&[43, 87, 129, 255], 1, 1, image::ExtendedColorType::Rgba8)
             .unwrap();
         fs::write(source_assets.join("image-19.png"), png).unwrap();
+
+        let external_model = root.path().join("external-model");
+        fs::create_dir(&external_model).unwrap();
+        let obj_path = external_model.join("source.obj");
+        let mtl_path = external_model.join("source.mtl");
+        fs::write(
+            &obj_path,
+            "mtllib source.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl red\nf 1 2 3\n",
+        )
+        .unwrap();
+        fs::write(&mtl_path, "newmtl red\nKd 0.8 0.1 0.2\nd 0.7\n").unwrap();
+        let parsed_model = crate::obj_reference::load(&obj_path).unwrap();
+        let model_asset =
+            crate::obj_reference_storage::import_bundle(&parsed_model, &source_assets, 23).unwrap();
+        fs::remove_file(&obj_path).unwrap();
+        fs::remove_file(&mtl_path).unwrap();
+        let model_reference = crate::document::model_references::ObjReferenceResource {
+            id: 23,
+            name: "Garden study model".into(),
+            visible: true,
+            locked: false,
+            center: glam::Vec3::ZERO,
+            rotation: glam::Quat::IDENTITY,
+            scale: 1.0,
+            asset: model_asset,
+        };
+        let document = crate::document::Document {
+            image_planes: vec![image.clone()],
+            model_references: vec![model_reference.clone()],
+            ..Default::default()
+        };
+        fs::write(&source, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
 
         let bundle = trash_native_drawing_in(&source, &trash).unwrap();
         assert!(!source.exists());
@@ -1426,9 +1453,18 @@ mod tests {
             crate::document::Document::from_json(&fs::read_to_string(&destination).unwrap())
                 .unwrap();
         assert_eq!(restored.image_planes, vec![image]);
+        assert_eq!(restored.model_references, vec![model_reference.clone()]);
         let restored_assets = crate::image_plane_storage::asset_root(&destination).unwrap();
         let restored_image =
             crate::image_planes::decode_asset(&restored_assets.join("image-19.png")).unwrap();
         assert_eq!(restored_image.pixels, [43, 87, 129, 255]);
+        let restored_model = crate::obj_reference_storage::load_bundle(
+            &restored_assets,
+            &restored.model_references[0].asset,
+        )
+        .unwrap();
+        assert_eq!(restored_model.positions, parsed_model.positions);
+        assert_eq!(restored_model.triangles, parsed_model.triangles);
+        assert_eq!(restored_model.materials, parsed_model.materials);
     }
 }
