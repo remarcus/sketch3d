@@ -193,6 +193,7 @@ pub struct SketchApp {
     obj_reference_verification_source: Option<PathBuf>,
     obj_reference_verification_source_root: Option<tempfile::TempDir>,
     obj_reference_verification_asset_root: Option<tempfile::TempDir>,
+    appearance_layout_verification: Option<AppearanceLayoutVerification>,
     image_asset_root: PathBuf,
     guide_name: String,
     loft_preview: Option<crate::document::guide_resources::LoftSurface>,
@@ -302,6 +303,13 @@ pub struct SketchApp {
     construction_history: crate::construction_history::ConstructionHistory,
     obj_export: obj_export_ui::ObjExportUi,
     png_verification_frame: Option<u32>,
+}
+
+struct AppearanceLayoutVerification {
+    theme: crate::presentation::UiTheme,
+    zoom_factor: f32,
+    zoom_percent: u32,
+    screenshot_requested: bool,
 }
 
 struct InsertedDrawingTarget<'a> {
@@ -518,6 +526,11 @@ impl SketchApp {
                 "verification/camera-bookmarks-recovery"
             } else if arguments.iter().any(|arg| arg == "--verify-obj-references") {
                 "verification/obj-reference/recovery"
+            } else if arguments
+                .iter()
+                .any(|arg| arg == "--verify-appearance-layout")
+            {
+                "verification/appearance-layout/recovery"
             } else if arguments.iter().any(|arg| arg == "--verify") {
                 "verification/smoke/recovery"
             } else {
@@ -600,6 +613,7 @@ impl SketchApp {
             obj_reference_verification_source: None,
             obj_reference_verification_source_root: None,
             obj_reference_verification_asset_root: None,
+            appearance_layout_verification: None,
             image_asset_root,
             guide_name: String::new(),
             loft_preview: None,
@@ -727,6 +741,30 @@ impl SketchApp {
             app.camera.align(crate::geometry::Plane::Front);
             app.camera.target = Vec3::ZERO;
             app.camera.distance = 6.0;
+        } else if let Some(index) =
+            std::env::args().position(|argument| argument == "--verify-appearance-layout")
+        {
+            let arguments = std::env::args().collect::<Vec<_>>();
+            let theme = arguments
+                .get(index + 1)
+                .map(String::as_str)
+                .expect("--verify-appearance-layout requires a theme");
+            let zoom_factor = arguments
+                .get(index + 2)
+                .and_then(|value| value.parse::<f32>().ok())
+                .filter(|zoom| zoom.is_finite() && (0.5..=2.0).contains(zoom))
+                .expect("--verify-appearance-layout requires a zoom between 0.5 and 2.0");
+            app.presentation.preferences.ui_theme = match theme {
+                "dark" => crate::presentation::UiTheme::Dark,
+                "light" => crate::presentation::UiTheme::Light,
+                _ => panic!("Appearance verification theme must be dark or light"),
+            };
+            app.appearance_layout_verification = Some(AppearanceLayoutVerification {
+                theme: app.presentation.preferences.ui_theme,
+                zoom_factor,
+                zoom_percent: (zoom_factor * 100.0).round() as u32,
+                screenshot_requested: false,
+            });
         } else if std::env::args().any(|a| a == "--verify-mixed-resources") {
             app.verification_frame = None;
             app.mixed_resources_verification_frame = Some(0);
@@ -1800,57 +1838,62 @@ impl SketchApp {
     }
 
     fn tool_rail(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-        ui.label(
-            RichText::new("TOOLS")
-                .small()
-                .color(ui_style::colors(ui.ctx()).muted_text),
-        );
-        for (tool, label, selected) in [
-            (
-                "Brush",
-                "Brush [B]",
-                !self.eraser
-                    && !self.select_mode
-                    && !self.fills.enabled
-                    && !self.line.enabled
-                    && !self.curve_tool.enabled
-                    && self.shape_tool.mode.is_none(),
-            ),
-            ("Line", "Line [L]", self.line.enabled && !self.select_mode),
-            (
-                "Curve",
-                "Curve [C]",
-                self.curve_tool.enabled && !self.select_mode,
-            ),
-            (
-                "Circle",
-                "Circle",
-                self.shape_tool.mode == Some(shape_tool::ShapeMode::Circle),
-            ),
-            (
-                "Ellipse",
-                "Ellipse",
-                self.shape_tool.mode == Some(shape_tool::ShapeMode::Ellipse),
-            ),
-            ("Fill", "Fill [P]", self.fills.enabled && !self.select_mode),
-            ("Erase", "Erase [E]", self.eraser && !self.select_mode),
-            ("Select", "Select [V]", self.select_mode),
-        ] {
-            if ui
-                .add_sized(
-                    [ui.available_width(), 38.0],
-                    egui::Button::new(label).selected(selected),
-                )
-                .clicked()
-            {
-                self.choose_tool(tool);
-            }
-        }
-        ui.add_space(8.0);
-        if ui.button("Artwork [Tab]").clicked() {
-            self.toggle_artwork();
-        }
+        egui::ScrollArea::vertical()
+            .id_salt("tool-rail-scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("TOOLS")
+                        .small()
+                        .color(ui_style::colors(ui.ctx()).muted_text),
+                );
+                for (tool, label, selected) in [
+                    (
+                        "Brush",
+                        "Brush [B]",
+                        !self.eraser
+                            && !self.select_mode
+                            && !self.fills.enabled
+                            && !self.line.enabled
+                            && !self.curve_tool.enabled
+                            && self.shape_tool.mode.is_none(),
+                    ),
+                    ("Line", "Line [L]", self.line.enabled && !self.select_mode),
+                    (
+                        "Curve",
+                        "Curve [C]",
+                        self.curve_tool.enabled && !self.select_mode,
+                    ),
+                    (
+                        "Circle",
+                        "Circle",
+                        self.shape_tool.mode == Some(shape_tool::ShapeMode::Circle),
+                    ),
+                    (
+                        "Ellipse",
+                        "Ellipse",
+                        self.shape_tool.mode == Some(shape_tool::ShapeMode::Ellipse),
+                    ),
+                    ("Fill", "Fill [P]", self.fills.enabled && !self.select_mode),
+                    ("Erase", "Erase [E]", self.eraser && !self.select_mode),
+                    ("Select", "Select [V]", self.select_mode),
+                ] {
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), 38.0],
+                            egui::Button::new(label).selected(selected),
+                        )
+                        .clicked()
+                    {
+                        self.choose_tool(tool);
+                    }
+                }
+                ui.add_space(8.0);
+                if ui.button("Artwork [Tab]").clicked() {
+                    self.toggle_artwork();
+                }
+            });
     }
 
     fn contextual_options(&mut self, ui: &mut egui::Ui) {
@@ -1890,28 +1933,48 @@ impl SketchApp {
             } else {
                 ui.label(RichText::new(if self.eraser { "Eraser" } else { "Brush" }).strong());
                 if !self.eraser {
-                    ui_style::slider_row(
-                        ui,
-                        "Radius",
-                        "workspace-radius",
-                        &mut self.radius,
-                        0.001..=1.0,
-                        1.0,
-                        "wu",
+                    let compact_width = (ui.available_width() * 0.30).clamp(250.0, 360.0);
+                    let control_height = ui.spacing().interact_size.y;
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(compact_width, control_height),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui_style::slider_row(
+                                ui,
+                                "Radius",
+                                "workspace-radius",
+                                &mut self.radius,
+                                0.001..=1.0,
+                                1.0,
+                                "wu",
+                            );
+                        },
                     );
-                    ui_style::slider_row(
-                        ui,
-                        "Stabilize",
-                        "workspace-stabilization",
-                        &mut self.stabilization,
-                        0.0..=1.0,
-                        100.0,
-                        "%",
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(compact_width, control_height),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui_style::slider_row(
+                                ui,
+                                "Stabilize",
+                                "workspace-stabilization",
+                                &mut self.stabilization,
+                                0.0..=1.0,
+                                100.0,
+                                "%",
+                            );
+                        },
                     );
-                    ui_style::field_row(ui, "Color", |ui| {
-                        self.palette_ui
-                            .color_button(ui, ColorTarget::Brush, &self.color)
-                    });
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(220.0, control_height),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui_style::field_row(ui, "Color", |ui| {
+                                self.palette_ui
+                                    .color_button(ui, ColorTarget::Brush, &self.color)
+                            });
+                        },
+                    );
                 } else {
                     ui.label("Erase whole strokes");
                 }
@@ -3439,6 +3502,9 @@ impl SketchApp {
 impl eframe::App for SketchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let start = Instant::now();
+        if let Some(verification) = &self.appearance_layout_verification {
+            ctx.set_zoom_factor(verification.zoom_factor);
+        }
         self.presentation.apply_theme(ctx);
         self.presentation.poll_layout_save();
         self.poll_recovery(ctx);
@@ -3465,6 +3531,14 @@ impl eframe::App for SketchApp {
             self.status = status;
         }
         self.capture_verification(ctx);
+        if let Some(verification) = &mut self.appearance_layout_verification {
+            if !verification.screenshot_requested
+                && (ctx.zoom_factor() - verification.zoom_factor).abs() < 0.001
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                verification.screenshot_requested = true;
+            }
+        }
         if ctx.input(|i| i.viewport().close_requested()) {
             self.leave_artwork();
         }
@@ -3886,11 +3960,13 @@ impl eframe::App for SketchApp {
                         );
                     }
                     if self.doc.strokes.is_empty() {
+                        let heading_size = (rect.width() * 0.075).clamp(14.0, 25.0);
+                        let instruction_size = (rect.width() * 0.05).clamp(10.0, 14.0);
                         ui.painter().text(
                             rect.center() + egui::vec2(0.0, -35.0),
                             egui::Align2::CENTER_CENTER,
                             "Your next idea starts here.",
-                            egui::FontId::proportional(25.0),
+                            egui::FontId::proportional(heading_size),
                             ui_style::contrasting_canvas_text(
                                 self.presentation.preferences.background,
                             ),
@@ -3899,7 +3975,7 @@ impl eframe::App for SketchApp {
                             rect.center(),
                             egui::Align2::CENTER_CENTER,
                             "Pen to draw   /   Space + drag to explore",
-                            egui::FontId::proportional(14.0),
+                            egui::FontId::proportional(instruction_size),
                             ui_style::contrasting_canvas_text(
                                 self.presentation.preferences.background,
                             ),
@@ -4689,6 +4765,7 @@ impl SketchApp {
             && self.mixed_resources_verification_frame.is_none()
             && self.vase_verification_frame.is_none()
             && self.group_verification_frame.is_none()
+            && self.appearance_layout_verification.is_none()
         {
             return;
         }
@@ -4704,6 +4781,48 @@ impl SketchApp {
         if let Some(image) = screenshot {
             let path = std::env::current_dir().unwrap().join("verification");
             let pixels: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+            if let Some(verification) = self.appearance_layout_verification.take() {
+                let theme = match verification.theme {
+                    crate::presentation::UiTheme::Dark => "dark",
+                    crate::presentation::UiTheme::Light => "light",
+                    crate::presentation::UiTheme::System => unreachable!(),
+                };
+                let output = path.join("appearance-layout");
+                std::fs::create_dir_all(&output).expect("appearance screenshot folder");
+                let filename = format!("{theme}-{}-percent.png", verification.zoom_percent);
+                let screenshot_path = output.join(&filename);
+                image::save_buffer(
+                    &screenshot_path,
+                    &pixels,
+                    image.size[0] as u32,
+                    image.size[1] as u32,
+                    image::ColorType::Rgba8,
+                )
+                .expect("appearance screenshot saves");
+                let report = serde_json::json!({
+                    "passed": true,
+                    "theme": theme,
+                    "egui_zoom_percent": verification.zoom_percent,
+                    "screenshot": filename,
+                    "screenshot_size_pixels": image.size,
+                    "checks": [
+                        "hidden app rendered the complete editing workspace at the requested egui zoom factor",
+                        "the requested appearance theme was applied in memory without saving user preferences"
+                    ],
+                    "physical_tablet_tested": false
+                });
+                std::fs::write(
+                    output.join(format!(
+                        "{theme}-{}-percent.json",
+                        verification.zoom_percent
+                    )),
+                    serde_json::to_vec_pretty(&report).unwrap(),
+                )
+                .expect("appearance report writes");
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
             if self.recovery_offer_capture {
                 image::save_buffer(
                     path.join("recovery-offer.png"),

@@ -1,0 +1,76 @@
+{
+  "passed": true,
+  "checks": [
+    "the full editing workspace rendered in Dark and Light themes at 80%, 150%, and 200% egui zoom",
+    "all six hidden app processes used settings separate from the user profile and saved 1440x940 screenshots",
+    "the Color control remains visible at 150% and wraps to a second row at 200%",
+    "the empty-canvas message remains legible within the reduced canvas width at 200%"
+  ],
+  "limitations": [
+    "egui zoom checks do not replace operating-system DPI scaling walkthroughs",
+    "Windows Narrator announcements still require direct assistive-technology testing"
+  ],
+  "physical_tablet_tested": false,
+  "screenshots": [
+    {
+      "theme": "dark",
+      "egui_zoom_percent": 80,
+      "screenshot": "dark-80-percent.png",
+      "report": "dark-80-percent.json",
+      "screenshot_size_pixels": [
+        1440,
+        940
+      ]
+    },
+    {
+      "theme": "dark",
+      "egui_zoom_percent": 150,
+      "screenshot": "dark-150-percent.png",
+      "report": "dark-150-percent.json",
+      "screenshot_size_pixels": [
+        1440,
+        940
+      ]
+    },
+    {
+      "theme": "dark",
+      "egui_zoom_percent": 200,
+      "screenshot": "dark-200-percent.png",
+      "report": "dark-200-percent.json",
+      "screenshot_size_pixels": [
+        1440,
+        940
+      ]
+    },
+    {
+      "theme": "light",
+      "egui_zoom_percent": 80,
+      "screenshot": "light-80-percent.png",
+      "report": "light-80-percent.json",
+      "screenshot_size_pixels": [
+        1440,
+        940
+      ]
+    },
+    {
+      "theme": "light",
+      "egui_zoom_percent": 150,
+      "screenshot": "light-150-percent.png",
+      "report": "light-150-percent.json",
+      "screenshot_size_pixels": [
+        1440,
+        940
+      ]
+    },
+    {
+      "theme": "light",
+      "egui_zoom_percent": 200,
+      "screenshot": "light-200-percent.png",
+      "report": "light-200-percent.json",
+      "screenshot_size_pixels": [
+        1440,
+        940
+      ]
+    }
+  ]
+}

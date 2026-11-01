@@ -290,6 +290,7 @@ fn main() -> eframe::Result {
                 | "--verify-liquify-brush"
                 | "--verify-obj-references"
                 | "--verify-camera-bookmarks"
+                | "--verify-appearance-layout"
         )
     });
     let options = eframe::NativeOptions {
