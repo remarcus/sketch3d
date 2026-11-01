@@ -286,6 +286,79 @@ mod appearance_tests {
         );
     }
 
+    fn show_focused_dialog(
+        context: &egui::Context,
+        open: &mut bool,
+        draft: &mut String,
+        input_id: egui::Id,
+        request_focus: bool,
+    ) {
+        let _ = context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                focused: true,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::Window::new("Appearance settings")
+                    .id(egui::Id::new("appearance-settings-dialog"))
+                    .open(open)
+                    .show(ctx, |ui| {
+                        let input = ui.add(
+                            egui::TextEdit::singleline(draft)
+                                .id(input_id)
+                                .hint_text("Unsaved preference draft"),
+                        );
+                        if request_focus {
+                            input.request_focus();
+                        }
+                    });
+            },
+        );
+    }
+
+    #[test]
+    fn live_theme_change_keeps_open_dialog_focus_and_unsaved_draft() {
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let mut presentation = PresentationUi {
+            preferences: Preferences::default(),
+            artwork: false,
+            path: Ok(directory.path().join("presentation.json")),
+            notice: None,
+            verification_frame: None,
+            layout_save_due: None,
+            remembered_background: Preferences::default().background,
+            applied_theme: None,
+            applied_system_theme: None,
+        };
+        let context = egui::Context::default();
+        let input_id = egui::Id::new("appearance-settings-draft");
+        let mut open = true;
+        let mut draft = "unsaved light-theme choice".to_owned();
+
+        show_focused_dialog(&context, &mut open, &mut draft, input_id, true);
+        assert!(
+            open,
+            "the appearance dialog should be open before switching"
+        );
+        assert!(context.memory(|memory| memory.has_focus(input_id)));
+        assert_eq!(draft, "unsaved light-theme choice");
+
+        presentation.set_ui_theme(presentation::UiTheme::Light);
+        presentation.apply_theme(&context);
+        assert!(!context.style().visuals.dark_mode);
+        assert!(context.memory(|memory| memory.has_focus(input_id)));
+        assert!(open, "changing the theme must not close the dialog");
+
+        show_focused_dialog(&context, &mut open, &mut draft, input_id, false);
+        assert!(open, "the same dialog remains open after the light redraw");
+        assert!(context.memory(|memory| memory.has_focus(input_id)));
+        assert_eq!(draft, "unsaved light-theme choice");
+    }
+
     #[test]
     fn invalid_appearance_preferences_fall_back_to_dark_without_overwriting_file() {
         let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
