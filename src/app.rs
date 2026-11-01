@@ -317,6 +317,149 @@ fn apply_inserted_drawing_state(
     stroke_count
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InsertPreviewAction {
+    Apply,
+    Cancel,
+}
+
+struct InsertPreviewUiResponse {
+    action: Option<InsertPreviewAction>,
+    #[cfg(test)]
+    preview_rect: Rect,
+    #[cfg(test)]
+    insert_button_rect: Rect,
+    #[cfg(test)]
+    cancel_button_rect: Rect,
+}
+
+fn show_insert_preview_window(
+    ctx: &egui::Context,
+    path: &std::path::Path,
+    source: &Document,
+    offset: &mut [f32; 3],
+    insert_as_group: &mut bool,
+) -> Option<InsertPreviewUiResponse> {
+    egui::Window::new("Insert drawing")
+        .collapsible(false)
+        .resizable(false)
+        .default_width(360.0)
+        .show(ctx, |ui| {
+            ui.label(
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Native drawing"),
+            );
+            let point_count: usize = source.strokes.iter().map(|stroke| stroke.points.len()).sum();
+            ui.label(format!(
+                "{} strokes · {} control points · {} layers",
+                source.strokes.len(),
+                point_count,
+                source.layers.len()
+            ));
+            let (mut minimum, mut maximum) =
+                (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+            for point in source.strokes.iter().flat_map(|stroke| &stroke.points) {
+                minimum = minimum.min(point.position);
+                maximum = maximum.max(point.position);
+            }
+            let (preview_rect, _) =
+                ui.allocate_exact_size(Vec2::new(320.0, 150.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(preview_rect, 4.0, Color32::from_gray(27));
+            ui.painter().rect_stroke(
+                preview_rect,
+                4.0,
+                egui::Stroke::new(1.0_f32, Color32::from_gray(82)),
+                egui::StrokeKind::Inside,
+            );
+            if minimum.is_finite() {
+                let world_offset = Vec3::from_array(*offset);
+                minimum += world_offset;
+                maximum += world_offset;
+                let span = (maximum - minimum).max(Vec3::splat(0.01));
+                let scale = ((preview_rect.width() - 20.0) / span.x)
+                    .min((preview_rect.height() - 20.0) / span.y)
+                    .max(0.001);
+                let center = (minimum + maximum) * 0.5;
+                let to_screen = |world: Vec3| {
+                    egui::pos2(
+                        preview_rect.center().x + (world.x - center.x) * scale,
+                        preview_rect.center().y - (world.y - center.y) * scale,
+                    )
+                };
+                let painter = ui.painter().with_clip_rect(preview_rect);
+                for stroke in &source.strokes {
+                    let color = Color32::from_rgb(
+                        (stroke.color[0].clamp(0.0, 1.0) * 255.0) as u8,
+                        (stroke.color[1].clamp(0.0, 1.0) * 255.0) as u8,
+                        (stroke.color[2].clamp(0.0, 1.0) * 255.0) as u8,
+                    );
+                    for pair in stroke.points.windows(2) {
+                        let start = to_screen(pair[0].position + world_offset);
+                        let end = to_screen(pair[1].position + world_offset);
+                        painter.line_segment(
+                            [start, end],
+                            egui::Stroke::new((stroke.radius * scale).clamp(1.0, 5.0), color),
+                        );
+                    }
+                }
+            } else {
+                ui.painter().text(
+                    preview_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "No stroke geometry",
+                    egui::FontId::proportional(13.0),
+                    Color32::GRAY,
+                );
+            }
+            ui.small("Top-view placement preview; guides and reference models retain their saved transforms.");
+            for (index, axis) in ["X", "Y", "Z"].iter().enumerate() {
+                ui.add(
+                    egui::DragValue::new(&mut offset[index])
+                        .speed(0.05)
+                        .range(-10000.0..=10000.0)
+                        .prefix(format!("{axis} offset "))
+                        .suffix(" wu"),
+                );
+            }
+            let can_group = source.layers.len() == 1
+                && source.strokes.iter().all(|stroke| stroke.group_id.is_none());
+            ui.add_enabled_ui(can_group, |ui| {
+                ui.checkbox(insert_as_group, "Wrap inserted strokes in one group");
+            });
+            if !can_group {
+                ui.small("Single-group insertion is available only for a single-layer source with no existing groups; native group structure is preserved otherwise.");
+            }
+            let (insert_button_rect, cancel_button_rect, action) = ui
+                .horizontal(|ui| {
+                    let insert = ui.button("Insert");
+                    let cancel = ui.button("Cancel");
+                    let action = if insert.clicked() {
+                        Some(InsertPreviewAction::Apply)
+                    } else if cancel.clicked() {
+                        Some(InsertPreviewAction::Cancel)
+                    } else {
+                        None
+                    };
+                    (insert.rect, cancel.rect, action)
+                })
+                .inner;
+            #[cfg(not(test))]
+            let _ = (insert_button_rect, cancel_button_rect);
+            InsertPreviewUiResponse {
+                action,
+                #[cfg(test)]
+                preview_rect,
+                #[cfg(test)]
+                insert_button_rect,
+                #[cfg(test)]
+                cancel_button_rect,
+            }
+        })
+        .and_then(|response| response.inner)
+}
+
 impl SketchApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui_style::apply(&cc.egui_ctx, crate::presentation::UiTheme::Dark);
@@ -2346,70 +2489,17 @@ impl SketchApp {
         };
         let path = path.clone();
         let source = source.clone();
-        let mut apply = false;
-        let mut cancel = false;
-        egui::Window::new("Insert drawing")
-            .collapsible(false)
-            .resizable(false)
-            .default_width(360.0)
-            .show(ctx, |ui| {
-                ui.label(path.file_name().and_then(|name| name.to_str()).unwrap_or("Native drawing"));
-                let point_count: usize = source.strokes.iter().map(|stroke| stroke.points.len()).sum();
-                ui.label(format!("{} strokes · {} control points · {} layers", source.strokes.len(), point_count, source.layers.len()));
-                let (mut minimum, mut maximum) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
-                for point in source.strokes.iter().flat_map(|stroke| &stroke.points) {
-                    minimum = minimum.min(point.position);
-                    maximum = maximum.max(point.position);
-                }
-                let (preview, response) = ui.allocate_exact_size(Vec2::new(320.0, 150.0), egui::Sense::hover());
-                ui.painter().rect_filled(preview, 4.0, Color32::from_gray(27));
-                ui.painter().rect_stroke(preview, 4.0, egui::Stroke::new(1.0_f32, Color32::from_gray(82)), egui::StrokeKind::Inside);
-                if minimum.is_finite() {
-                    let offset = Vec3::from_array(self.insert_offset);
-                    minimum += offset;
-                    maximum += offset;
-                    let span = (maximum - minimum).max(Vec3::splat(0.01));
-                    let scale = ((preview.width() - 20.0) / span.x).min((preview.height() - 20.0) / span.y).max(0.001);
-                    let center = (minimum + maximum) * 0.5;
-                    let to_screen = |world: Vec3| {
-                        egui::pos2(preview.center().x + (world.x - center.x) * scale, preview.center().y - (world.y - center.y) * scale)
-                    };
-                    let painter = ui.painter().with_clip_rect(preview);
-                    for stroke in &source.strokes {
-                        let color = Color32::from_rgb(
-                            (stroke.color[0].clamp(0.0, 1.0) * 255.0) as u8,
-                            (stroke.color[1].clamp(0.0, 1.0) * 255.0) as u8,
-                            (stroke.color[2].clamp(0.0, 1.0) * 255.0) as u8,
-                        );
-                        for pair in stroke.points.windows(2) {
-                            let start = to_screen(pair[0].position + offset);
-                            let end = to_screen(pair[1].position + offset);
-                            painter.line_segment([start, end], egui::Stroke::new((stroke.radius * scale).clamp(1.0, 5.0), color));
-                        }
-                    }
-                } else {
-                    ui.painter().text(preview.center(), egui::Align2::CENTER_CENTER, "No stroke geometry", egui::FontId::proportional(13.0), Color32::GRAY);
-                }
-                let _ = response;
-                ui.small("Top-view placement preview; guides and reference models retain their saved transforms.");
-                for (index, axis) in ["X", "Y", "Z"].iter().enumerate() {
-                    ui.add(egui::DragValue::new(&mut self.insert_offset[index]).speed(0.05).range(-10000.0..=10000.0).prefix(format!("{axis} offset ")).suffix(" wu"));
-                }
-                let can_group = source.layers.len() == 1 && source.strokes.iter().all(|stroke| stroke.group_id.is_none());
-                ui.add_enabled_ui(can_group, |ui| {
-                    ui.checkbox(&mut self.insert_as_group, "Wrap inserted strokes in one group");
-                });
-                if !can_group {
-                    ui.small("Single-group insertion is available only for a single-layer source with no existing groups; native group structure is preserved otherwise.");
-                }
-                ui.horizontal(|ui| {
-                    apply = ui.button("Insert").clicked();
-                    cancel = ui.button("Cancel").clicked();
-                });
-            });
-        if cancel {
+        let response = show_insert_preview_window(
+            ctx,
+            &path,
+            &source,
+            &mut self.insert_offset,
+            &mut self.insert_as_group,
+        );
+        let action = response.and_then(|response| response.action);
+        if action == Some(InsertPreviewAction::Cancel) {
             self.insert_preview = None;
-        } else if apply {
+        } else if action == Some(InsertPreviewAction::Apply) {
             if self.liquify_active()
                 || self.line.draft.is_some()
                 || self.curve_draft_active()
@@ -4715,6 +4805,133 @@ mod native_merge_apply_tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn insert_preview_renders_placement_and_routes_cancel_and_apply_clicks() {
+        fn frame(
+            context: &egui::Context,
+            path: &std::path::Path,
+            source: &Document,
+            offset: &mut [f32; 3],
+            insert_as_group: &mut bool,
+            events: Vec<egui::Event>,
+        ) -> Option<InsertPreviewUiResponse> {
+            let mut response = None;
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                    focused: true,
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    response =
+                        show_insert_preview_window(ctx, path, source, offset, insert_as_group);
+                },
+            );
+            response
+        }
+
+        fn click(
+            context: &egui::Context,
+            path: &std::path::Path,
+            source: &Document,
+            offset: &mut [f32; 3],
+            insert_as_group: &mut bool,
+            position: Pos2,
+        ) -> Option<InsertPreviewUiResponse> {
+            let _ = frame(
+                context,
+                path,
+                source,
+                offset,
+                insert_as_group,
+                vec![egui::Event::PointerMoved(position)],
+            );
+            let _ = frame(
+                context,
+                path,
+                source,
+                offset,
+                insert_as_group,
+                vec![egui::Event::PointerButton {
+                    pos: position,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                }],
+            );
+            frame(
+                context,
+                path,
+                source,
+                offset,
+                insert_as_group,
+                vec![egui::Event::PointerButton {
+                    pos: position,
+                    button: PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+            )
+        }
+
+        let source = Document {
+            strokes: vec![stroke(1, 1, -0.5)],
+            ..Document::default()
+        };
+        let path = std::path::Path::new("insert-source.sketch.json");
+
+        let context = egui::Context::default();
+        let mut offset = [0.0; 3];
+        let mut insert_as_group = false;
+        let first = frame(
+            &context,
+            path,
+            &source,
+            &mut offset,
+            &mut insert_as_group,
+            Vec::new(),
+        )
+        .expect("insert preview should render");
+        assert!(first.preview_rect.width() >= 300.0);
+        assert!(first.insert_button_rect.is_positive());
+        assert!(first.cancel_button_rect.is_positive());
+        assert_eq!(offset, [0.0; 3]);
+        let canceled = click(
+            &context,
+            path,
+            &source,
+            &mut offset,
+            &mut insert_as_group,
+            first.cancel_button_rect.center(),
+        )
+        .expect("insert preview should remain visible until its action is handled");
+        assert_eq!(canceled.action, Some(InsertPreviewAction::Cancel));
+
+        let context = egui::Context::default();
+        let mut offset = [0.0; 3];
+        let mut insert_as_group = false;
+        let first = frame(
+            &context,
+            path,
+            &source,
+            &mut offset,
+            &mut insert_as_group,
+            Vec::new(),
+        )
+        .expect("insert preview should render");
+        let applied = click(
+            &context,
+            path,
+            &source,
+            &mut offset,
+            &mut insert_as_group,
+            first.insert_button_rect.center(),
+        )
+        .expect("insert preview should remain visible until its action is handled");
+        assert_eq!(applied.action, Some(InsertPreviewAction::Apply));
     }
 
     #[test]
