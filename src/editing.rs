@@ -669,6 +669,103 @@ mod tests {
         assert!((scaled_width[0].1.radius - before[0].1.radius * 6.0_f32.sqrt()).abs() < 1e-6);
         assert_eq!(before[0].1.points[0].position, Vec3::new(2.0, 0.0, 0.0));
     }
+
+    #[test]
+    fn non_uniform_group_scale_preserves_fill_frame_tilt_bounds_and_undo() {
+        let mut filled = stroke(1, 0.0);
+        filled.group_id = Some(19);
+        filled.fill = Some(crate::document::PlanarFill { offset: 0.2 });
+        filled.points = vec![
+            Point {
+                position: Vec3::ZERO,
+                pressure: 0.2,
+                tilt: Some(Vec3::X),
+            },
+            Point {
+                position: Vec3::X,
+                pressure: 0.6,
+                tilt: Some(Vec3::Y),
+            },
+            Point {
+                position: Vec3::Y,
+                pressure: 1.0,
+                tilt: None,
+            },
+        ];
+        let mut sibling = stroke(2, 2.0);
+        sibling.group_id = Some(19);
+        let mut doc = Document {
+            strokes: vec![filled, sibling],
+            ..Document::default()
+        };
+        let ids = HashSet::from([1, 2]);
+        let before = snapshot(&doc, &ids);
+        let pivot = Vec3::new(0.5, -0.25, 0.0);
+        let scale = Vec3::new(2.0, 0.5, 1.25);
+        let basis = Quat::from_rotation_z(0.3);
+        let rotation = Quat::from_rotation_x(-0.2);
+        let translation = Vec3::new(0.1, 0.3, -0.2);
+        let after =
+            transformed_with_scale(&before, pivot, translation, rotation, scale, basis, true)
+                .unwrap();
+
+        assert_eq!(after[0].1.group_id, Some(19));
+        assert_eq!(after[1].1.group_id, Some(19));
+        assert_eq!(
+            after[0].1.points[0].pressure,
+            before[0].1.points[0].pressure
+        );
+        let basis_matrix = Mat3::from_quat(basis);
+        let linear = Mat3::from_quat(rotation)
+            * basis_matrix
+            * Mat3::from_diagonal(scale)
+            * basis_matrix.transpose();
+        let expected_tilt = (linear * Vec3::X).normalize();
+        assert_eq!(after[0].1.points[0].tilt, Some(expected_tilt));
+        assert!((after[0].1.brush.normal.length() - 1.0).abs() < 1e-6);
+        assert!((after[0].1.brush.tangent.length() - 1.0).abs() < 1e-6);
+        assert!(after[0].1.brush.normal.dot(after[0].1.brush.tangent).abs() < 1e-5);
+
+        let normal_factor = (linear.inverse().transpose() * Vec3::Z).length();
+        assert!((after[0].1.fill.unwrap().offset - 0.2 / normal_factor).abs() < 1e-6);
+        let expected_first = pivot + linear * (Vec3::ZERO - pivot) + translation;
+        assert!(after[0].1.points[0].position.distance(expected_first) < 1e-6);
+
+        let edit = Edit::Change {
+            before: before.clone(),
+            after: after.clone(),
+        };
+        edit.apply(&mut doc, true);
+        let bounds = bounds(&doc, &ids).unwrap();
+        let fill_offset = after[0].1.fill.unwrap().offset;
+        let filled_positions = after[0]
+            .1
+            .points
+            .iter()
+            .map(|point| point.position - after[0].1.brush.normal * fill_offset);
+        let sibling_extent = crate::geometry::stroke_extent(&after[1].1);
+        let sibling_position = after[1].1.points[0].position;
+        let mut expected_min = Vec3::splat(f32::INFINITY);
+        let mut expected_max = Vec3::splat(f32::NEG_INFINITY);
+        for position in filled_positions {
+            expected_min = expected_min.min(position);
+            expected_max = expected_max.max(position);
+        }
+        expected_min = expected_min.min(sibling_position - Vec3::splat(sibling_extent));
+        expected_max = expected_max.max(sibling_position + Vec3::splat(sibling_extent));
+        assert!(bounds.0.distance(expected_min) < 1e-6);
+        assert!(bounds.1.distance(expected_max) < 1e-6);
+        edit.apply(&mut doc, false);
+        assert_eq!(
+            doc.strokes,
+            before
+                .iter()
+                .map(|(_, stroke)| stroke.clone())
+                .collect::<Vec<_>>()
+        );
+        edit.apply(&mut doc, true);
+        assert_eq!(snapshot(&doc, &ids), after);
+    }
     #[test]
     fn brush_shape_orientation_and_undo_survive_transforms() {
         for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
