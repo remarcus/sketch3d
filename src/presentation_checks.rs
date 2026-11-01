@@ -10,6 +10,7 @@ impl SketchApp {
             let history = (self.undo.len(), self.redo.len());
             let dirty = self.dirty;
             let lighting = self.renderer.lighting;
+            let camera = self.camera;
             for color in [
                 crate::presentation::BLUE,
                 crate::presentation::LIGHT,
@@ -39,6 +40,50 @@ impl SketchApp {
             self.fills.enabled = true;
             self.fill_corner(rect.center(), rect);
             assert!(self.fills.draft.is_some());
+            let fill_draft = self
+                .fills
+                .draft
+                .as_ref()
+                .map(|draft| serde_json::to_vec(&draft.mark).unwrap())
+                .unwrap();
+            let canvas_background = self.presentation.preferences.background;
+            let scene_background = self.renderer.background;
+            self.presentation
+                .set_ui_theme(crate::presentation::UiTheme::Light);
+            self.presentation.apply_theme(ctx);
+            assert!(!ctx.style().visuals.dark_mode, "Light is applied live");
+            assert_eq!(serde_json::to_vec(&self.doc).unwrap(), original);
+            assert_eq!(
+                crate::export::encode(&self.doc, None).unwrap().bytes,
+                export
+            );
+            assert_eq!((self.undo.len(), self.redo.len()), history);
+            assert_eq!(self.dirty, dirty);
+            assert_eq!(self.camera.yaw, camera.yaw);
+            assert_eq!(self.camera.pitch, camera.pitch);
+            assert_eq!(self.camera.roll, camera.roll);
+            assert_eq!(self.camera.distance, camera.distance);
+            assert_eq!(self.camera.target, camera.target);
+            assert_eq!(self.camera.projection, camera.projection);
+            assert_eq!(
+                serde_json::to_vec(&self.fills.draft.as_ref().unwrap().mark).unwrap(),
+                fill_draft
+            );
+            assert_eq!(self.presentation.preferences.background, canvas_background);
+            assert_eq!(self.renderer.background, scene_background);
+            assert_eq!(self.renderer.lighting, lighting);
+            self.presentation
+                .set_ui_theme(crate::presentation::UiTheme::Dark);
+            self.presentation.apply_theme(ctx);
+            assert!(ctx.style().visuals.dark_mode, "Dark is restored live");
+            assert_eq!(serde_json::to_vec(&self.doc).unwrap(), original);
+            assert_eq!((self.undo.len(), self.redo.len()), history);
+            assert_eq!(self.dirty, dirty);
+            assert_eq!(self.camera.distance, camera.distance);
+            assert_eq!(
+                serde_json::to_vec(&self.fills.draft.as_ref().unwrap().mark).unwrap(),
+                fill_draft
+            );
             self.toggle_artwork();
             assert!(!self.presentation.artwork);
             self.cancel_fill_tool();
@@ -93,7 +138,7 @@ impl SketchApp {
             );
             self.renderer.invalidate();
             self.toggle_artwork();
-            self.status="Presentation passed: sRGB backgrounds, explicit restart preference, read-only focus, workspace restore and recovery/unsaved guards.".into();
+            self.status="Presentation passed: live theme switching preserves camera, fill draft, history, unsaved artwork and export; sRGB backgrounds, restart preference, artwork-only focus, workspace restore and recovery guards also pass.".into();
         }
         if frame == 22 {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
@@ -119,7 +164,7 @@ impl SketchApp {
                 image::ColorType::Rgba8,
             )
             .unwrap();
-            let report = serde_json::json!({"passed":true,"checks":["blue light dark sRGB GPU colors","explicit background preference survives restart","focus never persisted","draft and preview entry guards","read-only focus and selection/guide/history restoration","recovery and unsaved prompts leave focus","native ink GLB materials and lighting unchanged","GPU artwork-only canvas and return controls"],"gpu":self.renderer.adapter,"benchmarks_deferred":true});
+            let report = serde_json::json!({"passed":true,"checks":["live Dark/Light application switching preserves camera, fill draft, undo/redo, unsaved document and GLB output","scene background and renderer lighting remain independent from UI theme","blue light dark sRGB GPU colors","explicit background preference survives restart","focus never persisted","draft and preview entry guards","read-only focus and selection/guide/history restoration","recovery and unsaved prompts leave focus","native ink GLB materials and lighting unchanged","GPU artwork-only canvas and return controls"],"gpu":self.renderer.adapter,"benchmarks_deferred":true});
             std::fs::write(
                 root.join("presentation-report.json"),
                 serde_json::to_vec_pretty(&report).unwrap(),
