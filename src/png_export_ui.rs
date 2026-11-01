@@ -516,7 +516,7 @@ fn append_storefront_details(doc: &mut Document) {
     }
 }
 
-fn write_png_atomic(path: &Path, size: [u32; 2], pixels: &[u8]) -> Result<(), String> {
+pub(crate) fn write_png_atomic(path: &Path, size: [u32; 2], pixels: &[u8]) -> Result<(), String> {
     if size.contains(&0)
         || size[0] > 8192
         || size[1] > 8192

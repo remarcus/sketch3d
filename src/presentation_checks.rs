@@ -1,4 +1,61 @@
 use super::*;
+
+fn presentation_still_exports(
+    app: &mut SketchApp,
+    ctx: &egui::Context,
+    theme: crate::presentation::UiTheme,
+    output: &std::path::Path,
+) -> std::collections::BTreeMap<String, Vec<u8>> {
+    app.presentation.set_ui_theme(theme);
+    app.presentation.apply_theme(ctx);
+
+    let size = [192, 144];
+    let camera = app.camera;
+    let lighting = app.renderer.lighting;
+    let canvas = app.presentation.preferences.background;
+    let mut outputs = std::collections::BTreeMap::new();
+
+    let png = app
+        .renderer
+        .render_png_pixels(&app.doc, &camera, size, canvas, lighting)
+        .expect("theme-invariance PNG render");
+    let png_path = output.join(format!("{theme:?}-opaque.png"));
+    super::png_export_ui::write_png_atomic(&png_path, size, &png)
+        .expect("theme-invariance production PNG encoder");
+    outputs.insert(
+        "opaque-png".into(),
+        std::fs::read(png_path).expect("read theme-invariance PNG"),
+    );
+
+    let transparent = app
+        .renderer
+        .render_transparent_png_pixels(&app.doc, &camera, size, lighting)
+        .expect("theme-invariance transparent PNG render");
+    let transparent_path = output.join(format!("{theme:?}-transparent.png"));
+    super::png_export_ui::write_png_atomic(&transparent_path, size, &transparent)
+        .expect("theme-invariance transparent PNG encoder");
+    outputs.insert(
+        "transparent-png".into(),
+        std::fs::read(transparent_path).expect("read theme-invariance transparent PNG"),
+    );
+
+    for (name, background) in [("canvas", canvas), ("white", [1.0; 3]), ("black", [0.0; 3])] {
+        let pixels = app
+            .renderer
+            .render_png_pixels(&app.doc, &camera, size, background, lighting)
+            .expect("theme-invariance JPEG render");
+        let path = output.join(format!("{theme:?}-{name}.jpg"));
+        super::png_export_ui::write_jpeg_atomic(&path, size, &pixels)
+            .expect("theme-invariance production JPEG encoder");
+        outputs.insert(
+            format!("jpeg-{name}"),
+            std::fs::read(path).expect("read theme-invariance JPEG"),
+        );
+    }
+
+    outputs
+}
+
 impl SketchApp {
     pub(super) fn verify_presentation(&mut self, ctx: &egui::Context, rect: Rect) {
         let Some(frame) = self.presentation.verification_frame else {
@@ -7,6 +64,33 @@ impl SketchApp {
         if frame == 1 {
             let original = serde_json::to_vec(&self.doc).unwrap();
             let export = crate::export::encode(&self.doc, None).unwrap().bytes;
+            let still_output = tempfile::tempdir_in(
+                std::env::current_dir()
+                    .expect("workspace directory")
+                    .join("verification"),
+            )
+            .expect("theme-invariance export folder");
+            let dark_stills = presentation_still_exports(
+                self,
+                ctx,
+                crate::presentation::UiTheme::Dark,
+                still_output.path(),
+            );
+            let light_stills = presentation_still_exports(
+                self,
+                ctx,
+                crate::presentation::UiTheme::Light,
+                still_output.path(),
+            );
+            assert_eq!(
+                dark_stills.len(),
+                5,
+                "all expected still formats are covered"
+            );
+            assert_eq!(
+                dark_stills, light_stills,
+                "opaque/transparent PNG and Canvas/White/Black JPEG outputs are independent of UI theme"
+            );
             let history = (self.undo.len(), self.redo.len());
             let dirty = self.dirty;
             let lighting = self.renderer.lighting;
@@ -157,7 +241,7 @@ impl SketchApp {
             );
             self.renderer.invalidate();
             self.toggle_artwork();
-            self.status="Presentation passed: live theme switching preserves camera, fill draft, history, unsaved artwork and export; sRGB backgrounds, restart preference, artwork-only focus, workspace restore and recovery guards also pass.".into();
+            self.status="Presentation passed: live theme switching preserves camera, fill draft, history, unsaved artwork, PNG/JPEG/GLB exports, and stored artwork colors; GIF frame invariance, sRGB backgrounds, restart preference, artwork-only focus, workspace restore and recovery guards also pass.".into();
         }
         if frame == 22 {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
@@ -183,7 +267,7 @@ impl SketchApp {
                 image::ColorType::Rgba8,
             )
             .unwrap();
-            let report = serde_json::json!({"passed":true,"checks":["live Dark/Light application switching preserves camera, fill draft, undo/redo, unsaved document and GLB output","scene background and renderer lighting remain independent from UI theme","blue light dark sRGB GPU colors","explicit background preference survives restart","focus never persisted","draft and preview entry guards","read-only focus and selection/guide/history restoration","recovery and unsaved prompts leave focus","native ink GLB materials and lighting unchanged","GPU artwork-only canvas and return controls"],"gpu":self.renderer.adapter,"benchmarks_deferred":true});
+            let report = serde_json::json!({"passed":true,"checks":["live Dark/Light application switching preserves camera, fill draft, undo/redo, unsaved document and GLB output","opaque and transparent PNG files from the production encoders are byte-identical across Dark/Light UI themes","Canvas, White, and Black JPEG files from the production encoder are byte-identical across Dark/Light UI themes","scene background and renderer lighting remain independent from UI theme","blue light dark sRGB GPU colors","explicit background preference survives restart","focus never persisted","draft and preview entry guards","read-only focus and selection/guide/history restoration","recovery and unsaved prompts leave focus","native ink GLB materials and lighting unchanged","GPU artwork-only canvas and return controls"],"gpu":self.renderer.adapter,"benchmarks_deferred":true});
             std::fs::write(
                 root.join("presentation-report.json"),
                 serde_json::to_vec_pretty(&report).unwrap(),

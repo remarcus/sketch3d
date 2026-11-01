@@ -1370,17 +1370,30 @@ mod tests {
             pitch: 0.38,
             ..Default::default()
         };
-        let mut rendered = Vec::with_capacity(FRAME_COUNT);
-        for frame_index in 0..FRAME_COUNT {
-            let mut camera = start_camera;
-            camera.yaw =
-                start_camera.yaw + std::f32::consts::TAU * frame_index as f32 / FRAME_COUNT as f32;
-            rendered.push(
-                renderer
-                    .render_png_pixels(&document, &camera, SIZE, background, lighting)
-                    .expect("turntable frame renders through the production renderer"),
-            );
-        }
+        let ui_context = egui::Context::default();
+        let render_turntable =
+            |renderer: &mut crate::renderer::SceneRenderer, theme: crate::presentation::UiTheme| {
+                crate::app::ui_style::apply(&ui_context, theme);
+                let mut rendered = Vec::with_capacity(FRAME_COUNT);
+                for frame_index in 0..FRAME_COUNT {
+                    let mut camera = start_camera;
+                    camera.yaw = start_camera.yaw
+                        + std::f32::consts::TAU * frame_index as f32 / FRAME_COUNT as f32;
+                    rendered.push(
+                        renderer
+                            .render_png_pixels(&document, &camera, SIZE, background, lighting)
+                            .expect("turntable frame renders through the production renderer"),
+                    );
+                }
+                rendered
+            };
+        let rendered = render_turntable(&mut renderer, crate::presentation::UiTheme::Dark);
+        let light_theme_rendered =
+            render_turntable(&mut renderer, crate::presentation::UiTheme::Light);
+        assert_eq!(
+            rendered, light_theme_rendered,
+            "fixed video frames are independent of the live Dark/Light UI theme"
+        );
 
         let output = std::env::current_dir()
             .unwrap()
@@ -1402,6 +1415,23 @@ mod tests {
         )
         .expect("production GIF encoder writes rendered turntable frames");
 
+        let light_theme_output = tempfile::tempdir_in(&output).unwrap();
+        let light_gif_path = light_theme_output.path().join("turntable.gif");
+        let (sender, receiver) = mpsc::channel();
+        for frame in &light_theme_rendered {
+            sender.send(Some(frame.clone())).unwrap();
+        }
+        drop(sender);
+        encode_gif(
+            receiver,
+            &light_gif_path,
+            SIZE,
+            FPS,
+            FRAME_COUNT,
+            &AtomicBool::new(false),
+        )
+        .expect("production GIF encoder writes the Light-theme comparison frames");
+
         let frames = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(
             std::fs::File::open(&gif_path).unwrap(),
         ))
@@ -1410,6 +1440,21 @@ mod tests {
         .collect_frames()
         .unwrap();
         assert_eq!(frames.len(), FRAME_COUNT, "playback retains every frame");
+        let light_theme_frames = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(
+            std::fs::File::open(&light_gif_path).unwrap(),
+        ))
+        .unwrap()
+        .into_frames()
+        .collect_frames()
+        .unwrap();
+        assert_eq!(light_theme_frames.len(), FRAME_COUNT);
+        for (dark, light) in frames.iter().zip(&light_theme_frames) {
+            assert_eq!(
+                dark.buffer(),
+                light.buffer(),
+                "decoded GIF playback frames are identical across Dark/Light themes"
+            );
+        }
         assert!(frames.iter().all(|frame| {
             frame.buffer().width() == SIZE[0] && frame.buffer().height() == SIZE[1]
         }));
@@ -1454,6 +1499,7 @@ mod tests {
                     "all turntable frames render through the production offscreen PNG renderer",
                     "production GIF encoder emits all requested frames at the requested dimensions",
                     "GIF playback decoding preserves visible camera motion between opposing views",
+                    "production turntable GIF decoded frames are identical across Dark and Light UI themes",
                 ],
                 "frame_count": frames.len(),
                 "size": SIZE,

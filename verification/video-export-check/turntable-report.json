@@ -9,7 +9,8 @@
   "checks": [
     "all turntable frames render through the production offscreen PNG renderer",
     "production GIF encoder emits all requested frames at the requested dimensions",
-    "GIF playback decoding preserves visible camera motion between opposing views"
+    "GIF playback decoding preserves visible camera motion between opposing views",
+    "production turntable GIF decoded frames are identical across Dark and Light UI themes"
   ],
   "fps": 8,
   "frame_count": 8,
