@@ -834,20 +834,48 @@ mod tests {
                 bytes: mtl.clone(),
             },
         ];
+        let surface_stroke = crate::document::Stroke {
+            material: Default::default(),
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id: 7,
+            color: [0.2, 0.6, 0.9],
+            radius: 0.01,
+            brush: crate::document::Brush {
+                normal: Vec3::Z,
+                tangent: Vec3::X,
+                ..Default::default()
+            },
+            points: [Vec3::new(0.2, 0.2, 0.0), Vec3::new(0.6, 0.2, 0.0)]
+                .into_iter()
+                .map(|position| crate::document::Point {
+                    position: resource.center + resource.rotation * (position * resource.scale),
+                    pressure: 0.8,
+                    tilt: None,
+                })
+                .collect(),
+        };
+        let document = Document {
+            strokes: vec![surface_stroke.clone()],
+            model_references: vec![resource.clone()],
+            active_model_reference: Some(42),
+            ..Document::default()
+        };
+        let native_reloaded = Document::from_json(&serde_json::to_string(&document).unwrap())
+            .expect("native document reload preserves model surface ink");
+        assert_eq!(native_reloaded.strokes, vec![surface_stroke.clone()]);
         let snapshot = RecoverySnapshot::new_with_assets(
             "model-session".into(),
             None,
-            Document {
-                model_references: vec![resource.clone()],
-                active_model_reference: Some(42),
-                ..Document::default()
-            },
+            native_reloaded,
             assets,
         );
         write(dir.path(), &snapshot).unwrap();
         let scan = scan(dir.path(), "another-session").unwrap();
         assert_eq!(scan.candidates.len(), 1);
         let recovered = &scan.candidates[0].snapshot;
+        assert_eq!(recovered.document.strokes, vec![surface_stroke]);
         assert_eq!(recovered.document.model_references, vec![resource.clone()]);
         assert_eq!(recovered.document.active_model_reference, Some(42));
         assert_eq!(recovered.assets.len(), 2);
