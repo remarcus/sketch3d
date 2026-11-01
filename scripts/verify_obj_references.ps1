@@ -47,6 +47,7 @@ try {
     $requiredChecks = @(
         'OBJ References window displays its import control',
         "synthetic pointer move, press, and release clicks the window's import control",
+        'canceling the picker leaves the document, history, and dirty state unchanged and keeps the source fixture available',
         'the clicked control invokes the production import handler with an injected file-picker result',
         'the imported drawing-local bundle reloads',
         'imported model is registered with the scene renderer',

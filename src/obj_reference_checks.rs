@@ -78,10 +78,29 @@ impl SketchApp {
                     "o Viewport fixture\nv 2 1 0\nv 6 1 0\nv 4 5 0\nf 1 2 3\n",
                 )
                 .expect("OBJ source fixture writes");
-                self.obj_reference_verification_source = Some(source);
                 self.obj_reference_verification_source_root = Some(source_root);
                 self.obj_reference_window_open = true;
 
+                let document_before = serde_json::to_vec(&self.doc).unwrap();
+                let history_before = (self.undo.len(), self.redo.len());
+                let dirty_before = self.dirty;
+                let status_before = self.status.clone();
+                self.obj_reference_verification_source = Some(None);
+                self.verify_obj_reference_window_import_click(ctx.input(|input| input.screen_rect));
+                assert_eq!(serde_json::to_vec(&self.doc).unwrap(), document_before);
+                assert_eq!((self.undo.len(), self.redo.len()), history_before);
+                assert_eq!(self.dirty, dirty_before);
+                assert_eq!(self.status, status_before);
+                assert!(self.doc.model_references.is_empty());
+                assert!(self.obj_reference_models.is_empty());
+                assert!(self.obj_reference_window_open);
+                assert!(self.obj_reference_verification_source.is_none());
+                assert!(
+                    self.obj_reference_verification_source_root.is_some(),
+                    "canceling the picker leaves its source fixture available for the retry"
+                );
+                self.obj_reference_verification_button_clicked = false;
+                self.obj_reference_verification_source = Some(Some(source));
                 self.verify_obj_reference_window_import_click(ctx.input(|input| input.screen_rect));
             }
             1 => {

@@ -165,11 +165,14 @@ impl SketchApp {
     }
 
     pub(super) fn import_obj_reference(&mut self) {
-        let path = self.obj_reference_verification_source.take().or_else(|| {
-            rfd::FileDialog::new()
-                .add_filter("Wavefront OBJ", &["obj"])
-                .pick_file()
-        });
+        let path = self
+            .obj_reference_verification_source
+            .take()
+            .unwrap_or_else(|| {
+                rfd::FileDialog::new()
+                    .add_filter("Wavefront OBJ", &["obj"])
+                    .pick_file()
+            });
         let Some(path) = path else {
             return;
         };
