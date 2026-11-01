@@ -1310,3 +1310,148 @@ mod large_group_tests {
             .all(|s| s.layer_id == 2 && s.group_id == Some(original)));
     }
 }
+
+#[cfg(test)]
+mod appearance_tests {
+    use super::*;
+    use crate::document::{Brush, PlanarFill, Point};
+
+    fn sample_document() -> Document {
+        let first = Stroke {
+            material: StrokeMaterial::Shaded,
+            id: 1,
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            color: [0.2, 0.3, 0.4],
+            radius: 0.02,
+            brush: Brush {
+                opacity: 0.6,
+                ..Brush::default()
+            },
+            points: vec![
+                Point {
+                    position: Vec3::X,
+                    pressure: 0.4,
+                    tilt: None,
+                },
+                Point {
+                    position: Vec3::new(1.0, 0.6, 0.25),
+                    pressure: 0.8,
+                    tilt: None,
+                },
+            ],
+        };
+        let mut second = first.clone();
+        second.id = 2;
+        second.color = [0.8, 0.7, 0.6];
+        second.radius = 0.05;
+        second.brush.opacity = 0.9;
+        second.brush.kind = BrushKind::Chisel;
+        Document {
+            strokes: vec![first, second],
+            ..Document::default()
+        }
+    }
+
+    #[test]
+    fn appearance_apply_changes_only_patched_values_and_is_one_reversible_edit() {
+        let mut doc = sample_document();
+        let original = doc.strokes.clone();
+        let ids = HashSet::from([1, 2]);
+        let color = [0.1, 0.5, 0.9];
+        let edit = appearance_edit(
+            &doc,
+            &ids,
+            AppearancePatch {
+                color: Some(color),
+                brush_kind: Some(BrushKind::Ribbon),
+                ..AppearancePatch::default()
+            },
+        )
+        .unwrap();
+
+        // Building an edit is non-mutating; its single Change applies to the
+        // complete selection while retaining every untouched mixed property.
+        assert_eq!(doc.strokes, original);
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes.len(), 2);
+        for (actual, before) in doc.strokes.iter().zip(&original) {
+            assert_eq!(actual.color, color);
+            assert_eq!(actual.radius, before.radius);
+            assert_eq!(actual.brush.kind, BrushKind::Ribbon);
+            assert_eq!(actual.brush.opacity, before.brush.opacity);
+            assert_eq!(actual.brush.texture, before.brush.texture);
+            assert_eq!(actual.points, before.points);
+            assert_eq!(actual.material, before.material);
+        }
+
+        let original_mesh = crate::geometry::stroke_mesh(&original[0]);
+        let edited_mesh = crate::geometry::stroke_mesh(&doc.strokes[0]);
+        assert_ne!(
+            bytemuck::cast_slice::<_, u8>(&original_mesh),
+            bytemuck::cast_slice::<_, u8>(&edited_mesh),
+            "brush-kind edit must rebuild stroke geometry"
+        );
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let encoded = serde_json::to_vec_pretty(&doc).unwrap();
+        std::fs::write(file.path(), encoded).unwrap();
+        let saved = std::fs::read_to_string(file.path()).unwrap();
+        assert_eq!(Document::from_json(&saved).unwrap().strokes, doc.strokes);
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes, original);
+        edit.apply(&mut doc, true);
+        assert!(doc.strokes.iter().all(|stroke| stroke.color == color));
+    }
+
+    #[test]
+    fn appearance_rejects_protected_selections_and_keeps_fill_contours() {
+        let mut doc = sample_document();
+        let original = doc.strokes.clone();
+        let ids = HashSet::from([1, 2]);
+        for (visible, locked) in [(false, false), (true, true)] {
+            doc.layers[0].visible = visible;
+            doc.layers[0].locked = locked;
+            assert!(appearance_edit(
+                &doc,
+                &ids,
+                AppearancePatch {
+                    color: Some([0.9, 0.1, 0.2]),
+                    ..AppearancePatch::default()
+                },
+            )
+            .is_err());
+            assert_eq!(doc.strokes, original);
+            doc.layers[0].visible = true;
+            doc.layers[0].locked = false;
+        }
+
+        doc.strokes[0].fill = Some(PlanarFill { offset: 0.03 });
+        let filled_before = snapshot(&doc, &ids);
+        assert!(appearance_edit(
+            &doc,
+            &ids,
+            AppearancePatch {
+                radius: Some(0.1),
+                ..AppearancePatch::default()
+            },
+        )
+        .is_err());
+        let color = [0.7, 0.2, 0.4];
+        let recolor = appearance_edit(
+            &doc,
+            &ids,
+            AppearancePatch {
+                color: Some(color),
+                ..AppearancePatch::default()
+            },
+        )
+        .unwrap();
+        recolor.apply(&mut doc, true);
+        assert!(doc.strokes.iter().all(|stroke| stroke.color == color));
+        assert_eq!(doc.strokes[0].fill, Some(PlanarFill { offset: 0.03 }));
+        recolor.apply(&mut doc, false);
+        assert_eq!(snapshot(&doc, &ids), filled_before);
+    }
+}

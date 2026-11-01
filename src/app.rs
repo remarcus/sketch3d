@@ -3195,6 +3195,14 @@ impl SketchApp {
                             pressed: false,
                             ..
                         } => {
+                            // Inspector and toolbar clicks also produce a
+                            // primary-button release event. Only finish a
+                            // canvas gesture when its press began inside the
+                            // canvas; otherwise this can cancel staged edits
+                            // such as the selected-stroke appearance editor.
+                            if !self.mouse_down {
+                                continue;
+                            }
                             if self.liquify_brush_active() {
                                 self.liquify_brush_input(pos, 1.0, rect, Phase::Up);
                                 self.mouse_down = false;

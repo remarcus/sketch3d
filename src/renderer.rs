@@ -2,7 +2,7 @@ use crate::lighting::{self, Lighting, SHADOW_SIZE};
 use crate::surface::GuidePreview;
 use crate::texture::{self, TextureKind, TextureSettings};
 use crate::{
-    document::{Document, Stroke, StrokeMaterial},
+    document::{BrushKind, Document, Stroke, StrokeMaterial},
     geometry::{self, Camera, Vertex},
 };
 use eframe::{
@@ -53,6 +53,7 @@ struct Mesh {
     capacity: usize,
     count: u32,
     points: usize,
+    brush_kind: BrushKind,
     material: StrokeMaterial,
     bounds: Option<(Vec3, Vec3)>,
 }
@@ -1037,9 +1038,10 @@ impl SceneRenderer {
         self.obj_reference_meshes.insert(
             id,
             ObjReferenceMeshes {
-                opaque: (!opaque.is_empty()).then(|| self.mesh(&opaque, 0, StrokeMaterial::Shaded)),
+                opaque: (!opaque.is_empty())
+                    .then(|| self.mesh(&opaque, 0, BrushKind::Round, StrokeMaterial::Shaded)),
                 translucent: (!translucent.is_empty())
-                    .then(|| self.mesh(&translucent, 0, StrokeMaterial::Shaded)),
+                    .then(|| self.mesh(&translucent, 0, BrushKind::Round, StrokeMaterial::Shaded)),
             },
         );
         Ok(())
@@ -1117,12 +1119,23 @@ impl SceneRenderer {
                 }
                 (
                     stroke.clone(),
-                    self.mesh(&vertices, stroke.points.len(), stroke.material),
+                    self.mesh(
+                        &vertices,
+                        stroke.points.len(),
+                        stroke.brush.kind,
+                        stroke.material,
+                    ),
                 )
             })
             .collect();
     }
-    fn mesh(&self, vertices: &[Vertex], points: usize, material: StrokeMaterial) -> Mesh {
+    fn mesh(
+        &self,
+        vertices: &[Vertex],
+        points: usize,
+        brush_kind: BrushKind,
+        material: StrokeMaterial,
+    ) -> Mesh {
         let data = bytemuck::cast_slice(vertices);
         let capacity = data.len().max(4).next_power_of_two();
         let buffer = self.state.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1139,6 +1152,7 @@ impl SceneRenderer {
             capacity,
             count: vertices.len() as u32,
             points,
+            brush_kind,
             material,
             bounds: vertex_bounds(vertices),
         }
@@ -1397,11 +1411,11 @@ impl SceneRenderer {
         let ids: HashSet<u64> = doc.strokes.iter().map(|s| s.id).collect();
         self.meshes.retain(|id, _| ids.contains(id));
         for stroke in doc.strokes.iter().filter(|s| doc.visible(s)) {
-            if self
-                .meshes
-                .get(&stroke.id)
-                .is_some_and(|m| m.points == stroke.points.len() && m.material == stroke.material)
-            {
+            if self.meshes.get(&stroke.id).is_some_and(|m| {
+                m.points == stroke.points.len()
+                    && m.brush_kind == stroke.brush.kind
+                    && m.material == stroke.material
+            }) {
                 continue;
             }
             let mut vertices = geometry::stroke_mesh(stroke);
@@ -1424,7 +1438,12 @@ impl SceneRenderer {
                 mesh.material = stroke.material;
                 mesh.bounds = vertex_bounds(&vertices);
             } else {
-                let mesh = self.mesh(&vertices, stroke.points.len(), stroke.material);
+                let mesh = self.mesh(
+                    &vertices,
+                    stroke.points.len(),
+                    stroke.brush.kind,
+                    stroke.material,
+                );
                 self.meshes.insert(stroke.id, mesh);
             }
         }
@@ -1452,7 +1471,12 @@ impl SceneRenderer {
         self.obj_reference_meshes
             .retain(|id, _| reference_ids.contains(id));
         if self.grid.as_ref().is_none_or(|g| g.0 != plane) {
-            let mesh = self.mesh(&plane.vertices(), 0, StrokeMaterial::Shaded);
+            let mesh = self.mesh(
+                &plane.vertices(),
+                0,
+                BrushKind::Round,
+                StrokeMaterial::Shaded,
+            );
             self.grid = Some((plane, mesh));
         }
         let settings = self.lighting;
@@ -1478,7 +1502,10 @@ impl SceneRenderer {
                 material: 0.0,
             })
             .collect();
-            self.ground = Some((settings, self.mesh(&vertices, 0, StrokeMaterial::Shaded)));
+            self.ground = Some((
+                settings,
+                self.mesh(&vertices, 0, BrushKind::Round, StrokeMaterial::Shaded),
+            ));
         }
         let bounds = doc
             .strokes
@@ -1923,7 +1950,12 @@ impl SceneRenderer {
                 let vertices = geometry::stroke_mesh(stroke);
                 (
                     stroke,
-                    self.mesh(&vertices, stroke.points.len(), stroke.material),
+                    self.mesh(
+                        &vertices,
+                        stroke.points.len(),
+                        stroke.brush.kind,
+                        stroke.material,
+                    ),
                 )
             })
             .collect();

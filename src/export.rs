@@ -849,6 +849,62 @@ mod tests {
     }
 
     #[test]
+    fn edited_stroke_color_opacity_and_radius_survive_glb_export() {
+        let mut doc = Document {
+            strokes: vec![stroke(9, [0.2, 0.4, 0.6])],
+            ..Document::default()
+        };
+        let color = [0.85, 0.15, 0.35];
+        let edit = crate::editing::appearance_edit(
+            &doc,
+            &HashSet::from([9]),
+            crate::editing::AppearancePatch {
+                color: Some(color),
+                radius: Some(0.06),
+                opacity: Some(0.75),
+                ..crate::editing::AppearancePatch::default()
+            },
+        )
+        .unwrap();
+        edit.apply(&mut doc, true);
+
+        let encoded = encode(&doc, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
+        let primitive = gltf.meshes().next().unwrap().primitives().next().unwrap();
+        assert_eq!(
+            primitive
+                .material()
+                .pbr_metallic_roughness()
+                .base_color_factor(),
+            [color[0], color[1], color[2], 1.0]
+        );
+        assert_eq!(
+            primitive.material().alpha_mode(),
+            gltf::material::AlphaMode::Blend
+        );
+        let reader = primitive.reader(|_| gltf.blob.as_deref());
+        let vertex_alpha: Vec<_> = reader
+            .read_colors(0)
+            .unwrap()
+            .into_rgba_f32()
+            .map(|rgba| rgba[3])
+            .collect();
+        assert!(vertex_alpha
+            .iter()
+            .all(|alpha| (*alpha - 0.75).abs() < 0.00001));
+        let positions: Vec<Vec3> = primitive
+            .reader(|_| gltf.blob.as_deref())
+            .read_positions()
+            .unwrap()
+            .map(Vec3::from)
+            .collect();
+        assert!(positions
+            .iter()
+            .filter(|position| (position.y - 1.0).abs() < 0.00001)
+            .any(|position| (position.x.hypot(position.z) - 0.06).abs() < 0.00001));
+    }
+
+    #[test]
     fn material_modes_export_with_explicit_cutout_fallback_metadata() {
         let materials = [
             StrokeMaterial::Shaded,

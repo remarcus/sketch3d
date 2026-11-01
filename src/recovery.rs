@@ -598,6 +598,35 @@ mod tests {
         );
         assert_eq!(recovery.protected_revision, 1);
     }
+
+    #[test]
+    fn appearance_edit_is_restored_from_recovery_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut recovery = Recovery::new(Ok(dir.path().into()), egui::Context::default());
+        let mut doc = document();
+        let edit = crate::editing::appearance_edit(
+            &doc,
+            &std::collections::HashSet::from([1]),
+            crate::editing::AppearancePatch {
+                color: Some([0.9, 0.25, 0.1]),
+                radius: Some(0.08),
+                opacity: Some(0.65),
+                ..crate::editing::AppearancePatch::default()
+            },
+        )
+        .unwrap();
+        edit.apply(&mut doc, true);
+        let expected = doc.strokes.clone();
+
+        recovery.mark_edit();
+        assert!(recovery.force_snapshot(&doc, None));
+        wait(&mut recovery);
+        drop(recovery);
+        let scan = recovery_store::scan(dir.path(), "another-session").unwrap();
+        assert_eq!(scan.candidates.len(), 1);
+        assert_eq!(scan.candidates[0].snapshot.document.strokes, expected);
+    }
+
     #[test]
     fn failed_background_write_never_claims_protection_and_retries_are_bounded() {
         let dir = tempfile::tempdir().unwrap();
