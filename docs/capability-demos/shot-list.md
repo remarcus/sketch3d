@@ -20,7 +20,7 @@ Record only after the associated task's checks pass. Suggested timings are edit 
 | `curved-guides` | Cylinder/ring guides (SKETCH-001/063) | Activate guide; draw across a periodic seam; orbit. | Guide documentation and a static wireframe image. |
 | `mirror-shapes` | Live mirror and editable ellipse (SKETCH-038/039/062) | Enable mirror; draw a line; place an ellipse on the front guide. The deterministic replay prepares the reflected line and ellipse through production handlers before capture, then records the orbit. Circle and image-plane drawing are separate verified capabilities, but are not shown in this clip. | Tool-specific README steps and fixture. |
 | `edit-erase` | Selection, appearance, and partial erasing (SKETCH-035–037) | Select; change appearance; erase a segment; undo. The deterministic replay prepares the editable mark before capture, then performs the partial erase and undo through production handlers. | Keyboard/control table and before/after stills. |
-| `reference-export` | Reference/model import and export (SKETCH-033/044/059/061) | Import a reference; insert a saved drawing; export a scene. | Import/export docs and sample files. |
+| `reference-export` | Reference/model import and export (SKETCH-033/044/059/061/068) | Before capture, generate and import a reference image and OBJ through production asset/render paths, insert the saved lantern through native merge, and export the combined scene through the production GLB exporter; then record a synthetic orbit of the staged result. | Import/export docs and sample files. |
 
 If a listed feature has not passed its interaction/persistence checks, omit it or use the static alternative. Never substitute synthetic pressure samples for tablet evidence.
 

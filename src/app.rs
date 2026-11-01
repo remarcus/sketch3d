@@ -96,6 +96,8 @@ mod preset_checks;
 mod recovery_ui;
 #[path = "reference_board.rs"]
 mod reference_board;
+#[path = "reference_export_checks.rs"]
+mod reference_export_checks;
 #[path = "revolved_ui.rs"]
 mod revolved_ui;
 #[path = "ring_checks.rs"]
@@ -320,6 +322,7 @@ enum CapabilityClip {
     CurvedGuides,
     MirrorShapes,
     EditErase,
+    ReferenceExport,
 }
 
 impl CapabilityClip {
@@ -329,6 +332,7 @@ impl CapabilityClip {
             "curved-guides" => Some(Self::CurvedGuides),
             "mirror-shapes" => Some(Self::MirrorShapes),
             "edit-erase" => Some(Self::EditErase),
+            "reference-export" => Some(Self::ReferenceExport),
             _ => None,
         }
     }
@@ -339,6 +343,7 @@ impl CapabilityClip {
             Self::CurvedGuides => "curved-guides",
             Self::MirrorShapes => "mirror-shapes",
             Self::EditErase => "edit-erase",
+            Self::ReferenceExport => "reference-export",
         }
     }
 
@@ -353,6 +358,10 @@ impl CapabilityClip {
     fn is_mirror_shapes(self) -> bool {
         self == Self::MirrorShapes
     }
+
+    fn is_reference_export(self) -> bool {
+        self == Self::ReferenceExport
+    }
 }
 
 pub(crate) fn prepare_capability_demo_output(name: &str) -> Result<PathBuf, String> {
@@ -364,7 +373,7 @@ pub(crate) fn prepare_capability_demo_output(name: &str) -> Result<PathBuf, Stri
         .join("capability-demos")
         .join("drafts");
     std::fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
-    for extension in ["gif", "mp4", "png", "en.vtt", "recording.json"] {
+    for extension in ["gif", "mp4", "png", "en.vtt", "recording.json", "scene.glb"] {
         let path = output_dir.join(format!("{}.{}", clip.name(), extension));
         if path.exists() {
             return Err(format!(
@@ -372,6 +381,12 @@ pub(crate) fn prepare_capability_demo_output(name: &str) -> Result<PathBuf, Stri
                 path.display()
             ));
         }
+    }
+    if clip.is_reference_export() && output_dir.join("reference-export").exists() {
+        return Err(format!(
+            "Refusing to overwrite reference-export fixture directory: {}",
+            output_dir.join("reference-export").display()
+        ));
     }
     Ok(output_dir)
 }
@@ -397,6 +412,7 @@ struct CapabilityReplay {
     gesture_start: Option<Pos2>,
     gesture_end: Option<Pos2>,
     expected_undo_strokes: Option<Vec<Stroke>>,
+    reference_export_artifact: Option<serde_json::Value>,
     sender: Option<SyncSender<Option<Vec<u8>>>>,
     encoder: Option<JoinHandle<Result<(), String>>>,
     mp4_sender: Option<SyncSender<Option<Vec<u8>>>>,
@@ -410,7 +426,7 @@ impl CapabilityReplay {
     }
 
     fn remove_draft_outputs(&self) {
-        for extension in ["gif", "mp4", "png", "en.vtt", "recording.json"] {
+        for extension in ["gif", "mp4", "png", "en.vtt", "recording.json", "scene.glb"] {
             let _ = std::fs::remove_file(self.path(extension));
         }
     }
@@ -460,7 +476,10 @@ impl CapabilityReplay {
         self.canvas_rect = Some(rect);
         self.wait_updates = 0;
         let frame = self.captured_frames;
-        let orbit_sample = if self.clip.is_curved_guides() || self.clip.is_mirror_shapes() {
+        let orbit_sample = if self.clip.is_curved_guides()
+            || self.clip.is_mirror_shapes()
+            || self.clip.is_reference_export()
+        {
             let start = rect.center() + egui::vec2(0.0, 12.0);
             let end = start + egui::vec2(270.0, -55.0);
             match frame {
@@ -735,6 +754,16 @@ impl CapabilityReplay {
                 "00:00:05.200 --> 00:00:06.000\n",
                 "The replay uses synthetic input with no pressure data.\n"
             )
+        } else if self.clip.is_reference_export() {
+            concat!(
+                "WEBVTT\n\n",
+                "00:00:00.000 --> 00:00:00.500\n",
+                "The reference image, imported OBJ, and saved drawing are staged before capture.\n\n",
+                "00:00:00.500 --> 00:00:05.200\n",
+                "The whole scene was exported as an editable GLB; orbit to inspect the combined resources.\n\n",
+                "00:00:05.200 --> 00:00:06.000\n",
+                "This replay uses synthetic input; no tablet pressure was measured.\n"
+            )
         } else if self.clip.is_mirror_shapes() {
             concat!(
                 "WEBVTT\n\n",
@@ -785,7 +814,9 @@ impl CapabilityReplay {
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
             .as_secs();
-        let captions_timing_checked = self.clip.is_curved_guides() || self.clip.is_mirror_shapes();
+        let captions_timing_checked = self.clip.is_curved_guides()
+            || self.clip.is_mirror_shapes()
+            || self.clip.is_reference_export();
         let app_commit = std::process::Command::new("git")
             .args(["rev-parse", "HEAD"])
             .output()
@@ -815,6 +846,7 @@ impl CapabilityReplay {
                 "src/tutorial_ui.rs",
                 "src/presentation_ui.rs",
                 "src/video_export_ui.rs",
+                "src/reference_export_checks.rs",
             ])
             .output()
             .map(|output| !output.stdout.is_empty())
@@ -823,7 +855,21 @@ impl CapabilityReplay {
             .frame_size
             .ok_or_else(|| "Capability demo did not capture any frames".to_owned())?;
         let clip_name = self.clip.name();
-        let (fixture, fixture_provenance, shot_steps, poster_alt) = if self.clip.is_edit_erase() {
+        let (fixture, fixture_provenance, shot_steps, poster_alt) = if self
+            .clip
+            .is_reference_export()
+        {
+            (
+                    "Imported reference, inserted lantern, and exported scene",
+                    "The garden-house and lantern drawings are generated from built-in original editable artwork. The reference image and OBJ mesh are generated procedurally for this clip; no external artwork or assets.",
+                    vec![
+                        "Import a procedural reference image and OBJ model through production storage and renderer paths before capture.",
+                        "Insert the saved cylindrical-lantern drawing using the production native-merge path.",
+                        "Export the combined visible scene as GLB, then orbit the camera using synthetic canvas input.",
+                    ],
+                    "A garden-house scene with an inserted cylindrical lantern, a reference image plane, and a small OBJ model.",
+                )
+        } else if self.clip.is_edit_erase() {
             (
                 "Selected editable stroke",
                 "Procedurally generated from an empty Sketch3D document by the production pointer-action handler; no external artwork or assets.",
@@ -885,7 +931,7 @@ impl CapabilityReplay {
             "dpi_percent": (self.pixels_per_point * 100.0).round() as u32,
             "theme": "Dark",
             "capture_mode": "deterministic hidden in-app replay through canvas_input",
-            "input_note": if self.clip.is_edit_erase() { "The fixture stroke is created through the production pointer-action handler and its appearance edit through the production selection handler. Captured PenSample input uses pressure=None and no tilt; no tablet pressure or latency was measured." } else if self.clip.is_mirror_shapes() { "The mirrored line and ellipse are prepared by production handlers before capture. Captured PenSample orbit input uses pressure=None and no tilt; no tablet pressure or latency was measured." } else { "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured." },
+            "input_note": if self.clip.is_reference_export() { "The reference image and OBJ are generated, the saved lantern drawing is inserted, and the combined scene is GLB-exported before capture through production code paths. Captured PenSample orbit input uses pressure=None and no tilt; no tablet pressure or latency was measured." } else if self.clip.is_edit_erase() { "The fixture stroke is created through the production pointer-action handler and its appearance edit through the production selection handler. Captured PenSample input uses pressure=None and no tilt; no tablet pressure or latency was measured." } else if self.clip.is_mirror_shapes() { "The mirrored line and ellipse are prepared by production handlers before capture. Captured PenSample orbit input uses pressure=None and no tilt; no tablet pressure or latency was measured." } else { "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured." },
             "window_visible": false,
             "frame_rate": CAPABILITY_REPLAY_FPS,
             "shot_steps": shot_steps,
@@ -910,6 +956,7 @@ impl CapabilityReplay {
                     "timing_reviewed": captions_timing_checked
                 }
             },
+            "prepared_scene_export": self.reference_export_artifact,
             "review": {
                 "reviewed": false,
                 "loop_boundary_checked": false,
@@ -917,7 +964,7 @@ impl CapabilityReplay {
                 "private_content_checked": false,
                 "captions_timing_checked": captions_timing_checked,
                 "reviewer": null,
-                "notes": if self.clip.is_edit_erase() { "Synthetic edit-erase draft. The selected stroke and appearance are prepared by production handlers before the captured eraser and undo sequence; review playback and readability before use." } else if self.clip.is_mirror_shapes() { "Synthetic mirror-shapes draft. The mirrored line and ellipse are prepared through production handlers before the captured orbit; review playback and readability before use." } else if self.clip.is_curved_guides() { "Synthetic curved-guide draft. The strokes are scripted through production handlers before the captured orbit; review playback and visual readability before use." } else { "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use." }
+                "notes": if self.clip.is_reference_export() { "Synthetic reference-export draft. The image/model references, inserted lantern, and GLB export are prepared before the captured camera orbit; review playback and readability before use." } else if self.clip.is_edit_erase() { "Synthetic edit-erase draft. The selected stroke and appearance are prepared by production handlers before the captured eraser and undo sequence; review playback and readability before use." } else if self.clip.is_mirror_shapes() { "Synthetic mirror-shapes draft. The mirrored line and ellipse are prepared through production handlers before the captured orbit; review playback and readability before use." } else if self.clip.is_curved_guides() { "Synthetic curved-guide draft. The strokes are scripted through production handlers before the captured orbit; review playback and visual readability before use." } else { "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use." }
             }
         });
         let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
@@ -1384,11 +1431,13 @@ impl SketchApp {
                 eraser: false,
                 setup_verified: !clip.is_curved_guides()
                     && !clip.is_mirror_shapes()
+                    && !clip.is_reference_export()
                     && !clip.is_edit_erase(),
                 undo_applied: false,
                 gesture_start: None,
                 gesture_end: None,
                 expected_undo_strokes: None,
+                reference_export_artifact: None,
                 sender: None,
                 encoder: None,
                 mp4_sender: None,
@@ -1397,7 +1446,10 @@ impl SketchApp {
             app.stabilization = 0.0;
             if clip.is_curved_guides() {
                 app.mirror_verification_frame = Some(0);
-            } else if !clip.is_edit_erase() && !clip.is_mirror_shapes() {
+            } else if !clip.is_edit_erase()
+                && !clip.is_mirror_shapes()
+                && !clip.is_reference_export()
+            {
                 app.load_house();
                 app.guide = DrawingPlane::from_preset(Plane::Front);
                 app.guide.depth = app.camera.target.z;
@@ -4871,6 +4923,34 @@ impl eframe::App for SketchApp {
                         "mirror-shapes setup retains mirrored line pair and editable ellipse"
                     );
                 }
+                let reference_export_output = self
+                    .capability_replay
+                    .as_ref()
+                    .filter(|replay| {
+                        replay.clip.is_reference_export() && !replay.setup_verified
+                    })
+                    .map(|replay| replay.output_dir.clone());
+                if let Some(output_dir) = reference_export_output {
+                    let artifact = self
+                        .prepare_capability_reference_export(rect, &output_dir)
+                        .unwrap_or_else(|error| {
+                            eprintln!("Could not prepare reference-export demo: {error}");
+                            std::process::exit(1);
+                        });
+                    let artifact_value = serde_json::to_value(&artifact)
+                        .expect("reference-export artifact serializes into its manifest");
+                    let replay = self.capability_replay.as_mut().unwrap();
+                    replay.initial_stroke_count = self.doc.strokes.len();
+                    replay.initial_camera = self.camera;
+                    replay.reference_export_artifact = Some(artifact_value);
+                    replay.setup_verified = !self.doc.strokes.is_empty()
+                        && self.doc.image_planes.iter().any(|plane| plane.visible)
+                        && self.doc.model_references.iter().any(|model| model.visible);
+                    assert!(
+                        replay.setup_verified,
+                        "reference-export setup keeps inserted ink, image plane, and OBJ reference visible"
+                    );
+                }
                 let prepare_edit_erase = self
                     .capability_replay
                     .as_ref()
@@ -6292,6 +6372,11 @@ impl SketchApp {
                 replay.setup_verified
                     && self.doc.strokes.len() == replay.initial_stroke_count
                     && self.mirror_ui.enabled
+            } else if replay.clip.is_reference_export() {
+                replay.setup_verified
+                    && self.doc.strokes.len() == replay.initial_stroke_count
+                    && self.doc.image_planes.iter().any(|plane| plane.visible)
+                    && self.doc.model_references.iter().any(|model| model.visible)
             } else if replay.clip.is_edit_erase() {
                 let split_strokes = self.doc.strokes.as_slice();
                 replay.setup_verified

@@ -38,6 +38,14 @@ cargo run --locked -j1 -- --record-capability-demo mirror-shapes
 
 Before capture, production line-mirror and ellipse handlers create an editable reflected line pair and an ellipse on the front guide. The recorded section sends a synthetic barrel orbit through `canvas_input`; its captions and manifest disclose the scripted setup and the lack of pressure data. The `mirror-shapes.*` output set is independent and refuses to overwrite existing files.
 
+The reference/import/export preview stages a mixed-resource scene through the production paths before recording:
+
+```powershell
+cargo run --locked -j1 -- --record-capability-demo reference-export
+```
+
+It generates an original reference image and OBJ mesh, imports both through managed asset storage and renderer setup, inserts the saved lantern with native merge, and writes a whole-scene GLB through the production exporter. The six-second capture then records only a synthetic camera orbit over the staged scene; it does not show live menu or file-picker operations. The manifest records the editable native fixture, embedded-resource counts, geometry summary, and export byte size. GIF, MP4, poster, VTT, manifest, fixture, and GLB outputs refuse overwrite and remain under ignored `verification/capability-demos/drafts/` until reviewed.
+
 ## Capture a clip
 
 1. Build the application and stage the exact fixture and UI state listed in [shot-list.md](shot-list.md).
