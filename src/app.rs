@@ -4176,6 +4176,10 @@ impl SketchApp {
         match frame {
             0 | 1 => {
                 if frame == 0 {
+                    // Keep unrelated recovery offers out of this isolated
+                    // verification workflow without changing stored snapshots.
+                    self.recovery_scan_seen = true;
+                    self.recovery_prompt = false;
                     self.liquify_brush_verification_before = Some(self.doc.strokes.clone());
                     let selected = &self.doc.strokes[0];
                     let center = selected
@@ -4207,30 +4211,38 @@ impl SketchApp {
                     .map(|point| point.position)
                     .sum::<Vec3>()
                     / stroke.points.len() as f32;
-                let start = crate::gizmo::project(&self.camera, rect, center - Vec3::X * 0.25)
+                let start_world = center - Vec3::X * 0.25;
+                let end_world = start_world + Vec3::Y * 0.6;
+                let start = crate::gizmo::project(&self.camera, rect, start_world)
                     .unwrap()
                     .0;
-                let end = crate::gizmo::project(&self.camera, rect, center + Vec3::X * 0.35)
+                let end = crate::gizmo::project(&self.camera, rect, end_world)
                     .unwrap()
                     .0;
                 assert!(rect.contains(start) && rect.contains(end));
-                ctx.input_mut(|input| {
-                    input.events = vec![
-                        egui::Event::PointerButton {
-                            pos: start,
-                            button: PointerButton::Primary,
-                            pressed: true,
-                            modifiers: Default::default(),
-                        },
-                        egui::Event::PointerMoved(end),
-                        egui::Event::PointerButton {
-                            pos: end,
-                            button: PointerButton::Primary,
-                            pressed: false,
-                            modifiers: Default::default(),
-                        },
-                    ];
-                });
+                if frame == 0 {
+                    ctx.input_mut(|input| {
+                        input.events = vec![
+                            egui::Event::PointerButton {
+                                pos: start,
+                                button: PointerButton::Primary,
+                                pressed: true,
+                                modifiers: Default::default(),
+                            },
+                            egui::Event::PointerMoved(end),
+                            egui::Event::PointerButton {
+                                pos: end,
+                                button: PointerButton::Primary,
+                                pressed: false,
+                                modifiers: Default::default(),
+                            },
+                        ];
+                    });
+                } else {
+                    self.liquify_brush_input(start, 1.0, rect, crate::input::Phase::Down);
+                    self.liquify_brush_input(end, 1.0, rect, crate::input::Phase::Move);
+                    self.liquify_brush_input(end, 1.0, rect, crate::input::Phase::Up);
+                }
             }
             2 => {
                 let before = self
@@ -4241,6 +4253,28 @@ impl SketchApp {
                 let applied = self.doc.strokes.clone();
                 assert_ne!(applied, before, "Second drag previews deformation");
                 assert!(self.undo.is_empty());
+                let original_selected = before
+                    .iter()
+                    .find(|stroke| self.selected.contains(&stroke.id))
+                    .expect("Liquify source selection exists");
+                let deformed_selected = applied
+                    .iter()
+                    .find(|stroke| self.selected.contains(&stroke.id))
+                    .expect("Liquify preview selection exists");
+                let (moved_point_index, maximum_displacement) = original_selected
+                    .points
+                    .iter()
+                    .zip(&deformed_selected.points)
+                    .enumerate()
+                    .map(|(index, (original, deformed))| {
+                        (index, original.position.distance(deformed.position))
+                    })
+                    .max_by(|left, right| left.1.total_cmp(&right.1))
+                    .expect("Liquify source contains points");
+                assert!(
+                    maximum_displacement > 0.05,
+                    "Canvas drag moves selected geometry"
+                );
                 self.finish_liquify(true);
                 assert_eq!(self.undo.len(), 1, "Brush gesture is one undo step");
                 assert_eq!(self.doc.strokes, applied, "Commit matches the preview");
@@ -4253,6 +4287,24 @@ impl SketchApp {
                 assert_eq!(
                     self.doc.strokes, applied,
                     "Redo restores committed deformation"
+                );
+                let moved_before = original_selected.points[moved_point_index].position;
+                let moved_after = deformed_selected.points[moved_point_index].position;
+                let new_screen = crate::gizmo::project(&self.camera, rect, moved_after)
+                    .expect("deformed point projects")
+                    .0;
+                let old_screen = crate::gizmo::project(&self.camera, rect, moved_before)
+                    .expect("original point projects")
+                    .0;
+                assert_eq!(
+                    crate::gizmo::pick(&self.doc, &self.camera, rect, new_screen),
+                    Some(deformed_selected.id),
+                    "Updated geometry remains pickable at the deformed position"
+                );
+                assert_ne!(
+                    crate::gizmo::pick(&self.doc, &self.camera, rect, old_screen),
+                    Some(deformed_selected.id),
+                    "Picking no longer follows the original geometry"
                 );
 
                 let native = Document::from_json(&serde_json::to_string(&self.doc).unwrap())
@@ -4661,7 +4713,7 @@ impl SketchApp {
             } else if self.model_surface_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["synthetic pointer samples cross a shared manifold triangle edge in one model-surface stroke","world-space samples remain on the OBJ surface","model-surface commit creates one ordinary undo edit","undo and redo preserve exact model-surface samples","a pointer miss commits the first surface run","recontact after a miss starts a second surface run without bridging the gap","split model-surface runs undo and redo independently"],"stroke_count":self.doc.strokes.len(),"point_count":self.doc.strokes.iter().map(|stroke|stroke.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.liquify_brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic canvas drag creates a non-destructive preview","front, side, and ground camera views preserve the working-plane depth","unselected and occluding strokes remain unchanged","cancel restores exact source strokes","navigation interruption cancels brush preview without history","apply commits preview as one history edit","undo restores source geometry","redo restores committed deformation","native serialization and recovery scan preserve the deformed geometry","whole-scene and selected-stroke GLB encode the committed result","brush cursor indicates radius and working-plane depth"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic canvas drag creates a non-destructive preview","front, side, and ground camera views preserve the working-plane depth","unselected and occluding strokes remain unchanged","cancel restores exact source strokes","navigation interruption cancels brush preview without history","apply commits preview as one history edit","undo restores source geometry","redo restores committed deformation","updated stroke remains pickable at the deformed position and is no longer picked at its original position","native serialization and recovery scan preserve the deformed geometry","whole-scene and selected-stroke GLB encode the committed result","brush cursor indicates radius and working-plane depth"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.mixed_resources_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["mixed stroke, image plane, OBJ reference, and guide translation preview","preview does not enter history","cancel restores all exact source records","apply commits one mixed-resource history edit","undo restores every selected record","redo reapplies every selected record","active image-plane drawable binding is preserved","mixed-resource UI enables translation and disables rotation and scale","rotation and scaling are rejected before mutation"],"resource_counts":{"strokes":self.doc.strokes.len(),"image_planes":self.doc.image_planes.len(),"obj_references":self.doc.model_references.len(),"guides":self.doc.guide_resources.len()},"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.vase_verification_frame.is_some() {
