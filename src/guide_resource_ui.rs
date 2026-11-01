@@ -946,6 +946,11 @@ fn edit_transform(ui: &mut egui::Ui, center: &mut Vec3, rotation: &mut glam::Qua
 #[cfg(test)]
 mod planar_target_tests {
     use super::*;
+    use crate::{
+        curve_geometry::{tessellate_stroke, CubicBezier, PressureSegment},
+        document::{Brush, Point, Stroke, StrokeMaterial},
+        shape_geometry,
+    };
 
     #[test]
     fn rotated_bounded_planar_target_accepts_edges_and_rejects_outside_rays() {
@@ -976,5 +981,123 @@ mod planar_target_tests {
         assert!(infinite_guide
             .hit(outside + normal * 2.0, -normal)
             .is_some());
+    }
+
+    #[test]
+    fn planar_tool_geometry_respects_rotated_image_bounds() {
+        let target = PlanarTarget {
+            plane: DrawingPlane {
+                anchor: Vec3::new(-0.7, 0.4, 1.2),
+                rotation_degrees: Vec3::new(23.0, -31.0, 42.0),
+                depth: 0.0,
+            },
+            half_extent: Some(glam::Vec2::new(1.5, 0.75)),
+        };
+        let (u, v, normal) = target.plane.basis();
+        let origin = target.plane.origin();
+
+        let fill_positions = [
+            origin - u * 0.5 - v * 0.25,
+            origin + u * 0.5 - v * 0.25,
+            origin + u * 0.5 + v * 0.25,
+            origin - u * 0.5 + v * 0.25,
+        ];
+        let fill = Stroke {
+            material: StrokeMaterial::default(),
+            fill: Some(crate::document::PlanarFill { offset: 0.01 }),
+            group_id: None,
+            layer_id: 1,
+            id: 1,
+            color: [0.3, 0.5, 0.7],
+            radius: 0.02,
+            brush: Brush {
+                normal,
+                tangent: u,
+                ..Brush::default()
+            },
+            points: fill_positions
+                .iter()
+                .map(|position| Point {
+                    position: *position,
+                    pressure: 1.0,
+                    tilt: None,
+                })
+                .collect(),
+        };
+        assert!(fill
+            .points
+            .iter()
+            .all(|point| target.contains(point.position)));
+        assert!(crate::polygon::triangulate(&fill).is_ok());
+
+        let circle = shape_geometry::circle_from_center(
+            target.plane,
+            origin + u * 0.2 + v * 0.1,
+            0.25,
+            2,
+            1,
+            [0.2, 0.4, 0.6],
+            0.02,
+            0.7,
+            Brush::default(),
+        )
+        .unwrap();
+        assert!(circle
+            .points
+            .iter()
+            .all(|point| target.contains(point.position)));
+
+        let outside_ellipse = shape_geometry::ellipse_from_center(
+            target.plane,
+            origin + u * 1.4,
+            0.25,
+            0.2,
+            3,
+            1,
+            [0.2, 0.4, 0.6],
+            0.02,
+            0.7,
+            Brush::default(),
+        )
+        .unwrap();
+        assert!(outside_ellipse
+            .points
+            .iter()
+            .any(|point| !target.contains(point.position)));
+
+        let prototype = Stroke {
+            material: StrokeMaterial::default(),
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id: 4,
+            color: [0.2, 0.4, 0.6],
+            radius: 0.02,
+            brush: Brush::default(),
+            points: Vec::new(),
+        };
+        let curve = CubicBezier {
+            p0: origin + u * 1.2,
+            p1: origin + u * 2.4,
+            p2: origin + u * 2.4 + v * 0.1,
+            p3: origin + u * 1.2 + v * 0.1,
+        };
+        let curve = tessellate_stroke(
+            &[PressureSegment {
+                curve,
+                pressure_start: 0.5,
+                pressure_end: 0.8,
+            }],
+            &prototype,
+            0.005,
+            4096,
+        )
+        .unwrap();
+        assert!(target.contains(curve.points.first().unwrap().position));
+        assert!(target.contains(curve.points.last().unwrap().position));
+        assert!(curve
+            .points
+            .iter()
+            .any(|point| !target.contains(point.position)));
     }
 }
