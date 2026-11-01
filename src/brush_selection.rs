@@ -352,8 +352,10 @@ mod tests {
                 let inside = center + right * (scale * 4.0);
                 let outside = center + right * (scale * 12.0);
                 let path = [screen_point(&camera, canvas, center)];
-                let mut doc = Document::default();
-                doc.strokes = vec![stroke(1, 1, None, inside), stroke(2, 1, None, outside)];
+                let doc = Document {
+                    strokes: vec![stroke(1, 1, None, inside), stroke(2, 1, None, outside)],
+                    ..Document::default()
+                };
 
                 assert_eq!(
                     hit_ids(&doc, &camera, canvas, &path, 6.0, true, true).unwrap(),
@@ -366,11 +368,13 @@ mod tests {
 
     #[test]
     fn select_deselect_and_repeated_previews_only_change_ids_from_the_starting_set() {
-        let mut doc = Document::default();
-        doc.strokes = vec![
-            stroke(1, 1, Some(7), Vec3::ZERO),
-            stroke(2, 1, Some(7), Vec3::X),
-        ];
+        let doc = Document {
+            strokes: vec![
+                stroke(1, 1, Some(7), Vec3::ZERO),
+                stroke(2, 1, Some(7), Vec3::X),
+            ],
+            ..Document::default()
+        };
         let before = doc.strokes.clone();
         let starting = HashSet::from([9]);
         let hits = HashSet::from([1, 2]);

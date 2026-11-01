@@ -1302,8 +1302,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let destination = dir.path().join("preview.gif");
         let (sender, receiver) = mpsc::channel();
-        sender.send(Some(vec![255, 0, 0, 255].repeat(4))).unwrap();
-        sender.send(Some(vec![0, 255, 0, 255].repeat(4))).unwrap();
+        sender.send(Some([255, 0, 0, 255].repeat(4))).unwrap();
+        sender.send(Some([0, 255, 0, 255].repeat(4))).unwrap();
         encode_gif(
             receiver,
             &destination,
@@ -1325,7 +1325,7 @@ mod tests {
 
         std::fs::write(&destination, b"previous export").unwrap();
         let (sender, receiver) = mpsc::channel();
-        sender.send(Some(vec![0, 0, 255, 255].repeat(4))).unwrap();
+        sender.send(Some([0, 0, 255, 255].repeat(4))).unwrap();
         assert!(encode_gif(receiver, &destination, [2, 2], 2, 1, &AtomicBool::new(true),).is_err());
         assert_eq!(std::fs::read(destination).unwrap(), b"previous export");
 

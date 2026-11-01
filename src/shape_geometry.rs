@@ -325,7 +325,7 @@ mod tests {
                 <= 1.0e-12,
             "closed marker must repeat the first point within the geometry seam tolerance"
         );
-        assert!(stroke.points.len() >= MIN_SEGMENTS + 1);
+        assert!(stroke.points.len() > MIN_SEGMENTS);
         assert!(stroke.points.iter().all(|point| {
             ((point.position - origin).dot(normal)).abs() < 0.0001 && point.pressure == pressure
         }));
