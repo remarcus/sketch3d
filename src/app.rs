@@ -30,6 +30,8 @@ mod color_editor;
 mod curve_tool;
 #[path = "cylinders.rs"]
 mod cylinders;
+#[path = "drawing_trash_ui.rs"]
+mod drawing_trash_ui;
 #[path = "export_ui.rs"]
 mod export_ui;
 #[path = "fills_checks.rs"]
@@ -2380,55 +2382,18 @@ impl SketchApp {
         if !self.drawing_library.trash_open || self.presentation.artwork {
             return;
         }
-        let mut open = self.drawing_library.trash_open;
-        let mut restore = None;
-        let mut read_error = None;
-        let entries = match crate::drawing_library::list_trash() {
-            Ok(entries) => entries,
-            Err(error) => {
-                read_error = Some(error);
-                Vec::new()
-            }
+        let (entries, read_error) = match crate::drawing_library::list_trash() {
+            Ok(entries) => (entries, None),
+            Err(error) => (Vec::new(), Some(error)),
         };
-        egui::Window::new("Recoverable drawing trash")
-            .open(&mut open)
-            .default_width(420.0)
-            .show(ctx, |ui| {
-                ui.label("Deleted drawings remain here until restored. Restoring never overwrites an existing file.");
-                if let Some(error) = &read_error {
-                    ui.colored_label(ui_style::colors(ui.ctx()).error, error);
-                }
-                if entries.is_empty() && read_error.is_none() {
-                    ui.weak("Trash is empty.");
-                }
-                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                    for entry in &entries {
-                        ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                ui.label(&entry.name);
-                                if let Some(deleted) = entry.deleted {
-                                    let age = std::time::SystemTime::now()
-                                        .duration_since(deleted)
-                                        .unwrap_or_default();
-                                    ui.small(format!("Deleted {} days ago", age.as_secs() / 86_400));
-                                }
-                                if let Some(issue) = &entry.issue {
-                                    ui.colored_label(ui_style::colors(ui.ctx()).error, issue);
-                                }
-                            });
-                            if ui
-                                .add_enabled(entry.issue.is_none(), egui::Button::new("Restore…"))
-                                .clicked()
-                            {
-                                restore = Some((entry.path.clone(), entry.name.clone()));
-                            }
-                        });
-                        ui.separator();
-                    }
-                });
-            });
-        self.drawing_library.trash_open = open;
-        if let Some((bundle, original_name)) = restore {
+        let output = drawing_trash_ui::show(
+            ctx,
+            self.drawing_library.trash_open,
+            &entries,
+            read_error.as_deref(),
+        );
+        self.drawing_library.trash_open = output.open;
+        if let Some((bundle, original_name)) = output.restore {
             let destination = rfd::FileDialog::new()
                 .add_filter("Sketch3D", &["json"])
                 .set_file_name(original_name)
