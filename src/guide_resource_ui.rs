@@ -297,16 +297,11 @@ impl SketchApp {
                 let was_active = self.doc.active_guide == Some(id);
                 let row = ui.group(|ui| {
                     let guide = &mut self.doc.guide_resources[index];
-                    let original_geometry = guide.geometry.clone();
                     let mut action = guide_row_controls(ui, guide, was_active);
                     ui.add_enabled_ui(!guide.locked, |ui| {
-                        action.changed |= edit_geometry(ui, &mut guide.geometry);
+                        let edit = edit_geometry_with_feedback(ui, &mut guide.geometry);
+                        action.changed |= edit.changed;
                     });
-                    if action.changed && guide.validate().is_err() {
-                        guide.geometry = original_geometry;
-                        action.changed = false;
-                        ui.colored_label(ui_style::colors(ui.ctx()).error, "Invalid guide geometry; the last valid values were restored.");
-                    }
                     action
                 }).inner;
                 if row.remove { remove = Some(index); }
@@ -812,8 +807,45 @@ fn geometry_frame(geometry: &GuideGeometry, world: Vec3) -> Option<(Vec3, Vec3)>
     })
 }
 
-fn edit_geometry(ui: &mut egui::Ui, geometry: &mut GuideGeometry) -> bool {
+#[derive(Default)]
+struct GeometryEditResponse {
+    changed: bool,
+    invalid_input: bool,
+    bend_rect: Option<Rect>,
+    directrix_x_rects: [Option<Rect>; 4],
+}
+
+fn edit_geometry_with_feedback(
+    ui: &mut egui::Ui,
+    geometry: &mut GuideGeometry,
+) -> GeometryEditResponse {
+    let before = geometry.clone();
+    let mut response = edit_geometry(ui, geometry);
+    let is_valid = || {
+        GuideResource {
+            id: 1,
+            name: "Inspector validation".into(),
+            visible: true,
+            locked: false,
+            geometry: geometry.clone(),
+        }
+        .validate()
+    };
+    if response.changed && is_valid().is_err() {
+        *geometry = before;
+        response.changed = false;
+        response.invalid_input = true;
+        ui.colored_label(
+            ui_style::colors(ui.ctx()).error,
+            "Invalid guide geometry; the last valid values were restored.",
+        );
+    }
+    response
+}
+
+fn edit_geometry(ui: &mut egui::Ui, geometry: &mut GuideGeometry) -> GeometryEditResponse {
     let mut changed = false;
+    let mut response = GeometryEditResponse::default();
     match geometry {
         GuideGeometry::Plane { origin, rotation } => {
             changed |= edit_transform(ui, origin, rotation);
@@ -913,21 +945,21 @@ fn edit_geometry(ui: &mut egui::Ui, geometry: &mut GuideGeometry) -> bool {
             changed |= ui
                 .add(egui::Slider::new(&mut surface.depth, 0.02..=10000.0).text("Sweep depth (wu)"))
                 .changed();
-            changed |= ui
-                .add(egui::Slider::new(&mut surface.bend, -0.9..=0.9).text("Sweep bend"))
-                .changed();
+            let bend = ui.add(egui::Slider::new(&mut surface.bend, -0.9..=0.9).text("Sweep bend"));
+            response.bend_rect = Some(bend.rect);
+            changed |= bend.changed();
             ui.small("Edit the four monotone directrix control points in local XY.");
             for (index, point) in surface.directrix.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     ui.label(format!("C{}", index + 1));
-                    changed |= ui
-                        .add(
-                            egui::DragValue::new(&mut point.x)
-                                .speed(0.01)
-                                .range(-10000.0..=10000.0)
-                                .prefix("X "),
-                        )
-                        .changed();
+                    let x = ui.add(
+                        egui::DragValue::new(&mut point.x)
+                            .speed(0.01)
+                            .range(-10000.0..=10000.0)
+                            .prefix("X "),
+                    );
+                    response.directrix_x_rects[index] = Some(x.rect);
+                    changed |= x.changed();
                     changed |= ui
                         .add(
                             egui::DragValue::new(&mut point.y)
@@ -950,7 +982,8 @@ fn edit_geometry(ui: &mut egui::Ui, geometry: &mut GuideGeometry) -> bool {
             ));
         }
     }
-    changed
+    response.changed = changed;
+    response
 }
 fn edit_transform(ui: &mut egui::Ui, center: &mut Vec3, rotation: &mut glam::Quat) -> bool {
     let mut changed = false;
@@ -1145,6 +1178,153 @@ mod guide_row_tests {
             controls.remove_rect.unwrap().center(),
         );
         assert!(remove_action.remove, "Remove dispatches a distinct action");
+    }
+}
+
+#[cfg(test)]
+mod freeform_inspector_tests {
+    use super::{edit_geometry_with_feedback, GeometryEditResponse};
+    use crate::document::guide_resources::{FreeformSurface, GuideGeometry};
+    use eframe::egui::{self, Event, PointerButton, Pos2, Rect, Vec2};
+    use glam::{Quat, Vec3};
+
+    fn surface_geometry() -> GuideGeometry {
+        GuideGeometry::Freeform {
+            surface: FreeformSurface {
+                center: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                directrix: [
+                    glam::Vec2::new(-1.5, 0.0),
+                    glam::Vec2::new(-0.5, 0.0),
+                    glam::Vec2::new(0.5, 0.0),
+                    glam::Vec2::new(1.5, 0.0),
+                ],
+                depth: 2.0,
+                bend: 0.0,
+            },
+        }
+    }
+
+    fn frame(
+        ctx: &egui::Context,
+        geometry: &mut GuideGeometry,
+        events: Vec<Event>,
+    ) -> GeometryEditResponse {
+        let mut result = None;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 720.0))),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    result = Some(edit_geometry_with_feedback(ui, geometry));
+                });
+            },
+        );
+        result.expect("freeform guide inspector controls render")
+    }
+
+    fn click(
+        ctx: &egui::Context,
+        geometry: &mut GuideGeometry,
+        position: Pos2,
+    ) -> GeometryEditResponse {
+        let _ = frame(ctx, geometry, vec![Event::PointerMoved(position)]);
+        let mut response = frame(
+            ctx,
+            geometry,
+            vec![Event::PointerButton {
+                pos: position,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+        );
+        let released = frame(
+            ctx,
+            geometry,
+            vec![Event::PointerButton {
+                pos: position,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        response.changed |= released.changed;
+        response.invalid_input |= released.invalid_input;
+        response
+    }
+
+    #[test]
+    fn freeform_inspector_edits_parameters_and_restores_invalid_directrix_with_feedback() {
+        let ctx = egui::Context::default();
+        let mut geometry = surface_geometry();
+        let controls = frame(&ctx, &mut geometry, Vec::new());
+        let bend_rect = controls.bend_rect.expect("freeform bend slider renders");
+        let bend_click = Pos2::new(
+            bend_rect.left() + bend_rect.width() * 0.4,
+            bend_rect.center().y,
+        );
+        let edit = click(&ctx, &mut geometry, bend_click);
+        let GuideGeometry::Freeform { surface } = &geometry else {
+            unreachable!()
+        };
+        assert!(
+            edit.changed,
+            "bend slider dispatches an edit (rect {bend_rect:?}, value {})",
+            surface.bend
+        );
+        assert!(
+            surface.bend > 0.1,
+            "bend slider changes the saved parameter"
+        );
+        assert!(
+            surface.validate().is_ok(),
+            "valid inspector values are retained"
+        );
+
+        let last_valid_geometry = geometry.clone();
+        let controls = frame(&ctx, &mut geometry, Vec::new());
+        let x_rect = controls.directrix_x_rects[1].expect("second directrix X control renders");
+        let start = x_rect.center();
+        let end = start + Vec2::new(-120.0, 0.0);
+        let _ = frame(&ctx, &mut geometry, vec![Event::PointerMoved(start)]);
+        let _ = frame(
+            &ctx,
+            &mut geometry,
+            vec![Event::PointerButton {
+                pos: start,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+        );
+        let invalid = frame(&ctx, &mut geometry, vec![Event::PointerMoved(end)]);
+        let _ = frame(
+            &ctx,
+            &mut geometry,
+            vec![Event::PointerButton {
+                pos: end,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert!(
+            invalid.invalid_input,
+            "crossing X controls displays validation feedback"
+        );
+        assert!(
+            !invalid.changed,
+            "rejected values do not enter the document edit"
+        );
+        assert_eq!(
+            geometry, last_valid_geometry,
+            "invalid input restores the last valid geometry"
+        );
     }
 }
 
