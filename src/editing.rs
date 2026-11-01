@@ -451,6 +451,110 @@ mod tests {
         }
     }
     #[test]
+    fn image_plane_import_edit_and_removal_undo_redo_restore_exact_state() {
+        let plane = crate::image_planes::ImagePlane::from_asset(
+            17,
+            "Facade",
+            "image-17.png".into(),
+            [4, 3],
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            2.0,
+        )
+        .unwrap();
+        let empty = (Vec::new(), None, None, None);
+        let mut imported_plane = plane.clone();
+        imported_plane.drawable = true;
+        let imported = (vec![imported_plane.clone()], Some(17), None, None);
+        let mut doc = Document::default();
+
+        let import = Edit::ImagePlanes {
+            before: empty.clone(),
+            after: imported.clone(),
+        };
+        import.apply(&mut doc, true);
+        assert_eq!(
+            (
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_guide,
+                doc.active_model_reference,
+            ),
+            imported
+        );
+        import.apply(&mut doc, false);
+        assert_eq!(
+            (
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_guide,
+                doc.active_model_reference,
+            ),
+            empty
+        );
+        import.apply(&mut doc, true);
+
+        let mut edited_plane = imported_plane;
+        edited_plane.origin = Vec3::new(1.25, -0.5, 2.0);
+        edited_plane.opacity = 0.35;
+        edited_plane.visible = false;
+        edited_plane.locked = true;
+        edited_plane.drawable = false;
+        let edited = (vec![edited_plane], None, None, None);
+        let edit = Edit::ImagePlanes {
+            before: imported.clone(),
+            after: edited.clone(),
+        };
+        edit.apply(&mut doc, true);
+        assert_eq!(
+            (
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_guide,
+                doc.active_model_reference,
+            ),
+            edited
+        );
+        edit.apply(&mut doc, false);
+        assert_eq!(
+            (
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_guide,
+                doc.active_model_reference,
+            ),
+            imported
+        );
+        edit.apply(&mut doc, true);
+
+        let remove = Edit::ImagePlanes {
+            before: edited.clone(),
+            after: empty.clone(),
+        };
+        remove.apply(&mut doc, true);
+        assert_eq!(
+            (
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_guide,
+                doc.active_model_reference,
+            ),
+            empty
+        );
+        remove.apply(&mut doc, false);
+        assert_eq!(
+            (
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_guide,
+                doc.active_model_reference,
+            ),
+            edited
+        );
+        remove.apply(&mut doc, true);
+        assert!(doc.image_planes.is_empty());
+    }
+    #[test]
     fn group_rotation_and_scale_preserve_pressure_and_color() {
         let before = vec![(0, stroke(1, 0.0)), (1, stroke(2, 2.0))];
         let after = transformed(
