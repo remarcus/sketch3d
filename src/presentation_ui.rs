@@ -1,6 +1,17 @@
 use super::*;
 use crate::presentation::{self, Preferences};
 use std::time::{Duration, Instant};
+
+fn preferences_or_default(loaded: Result<Preferences, String>) -> (Preferences, Option<String>) {
+    match loaded {
+        Ok(preferences) => (preferences, None),
+        Err(error) => (
+            Preferences::default(),
+            Some(format!("Presentation preferences: {error}")),
+        ),
+    }
+}
+
 pub(super) struct PresentationUi {
     pub preferences: Preferences,
     pub artwork: bool,
@@ -30,11 +41,7 @@ impl PresentationUi {
                 .map_err(Clone::clone)
                 .and_then(|p| Preferences::load(p))
         };
-        let notice = loaded
-            .as_ref()
-            .err()
-            .map(|e| format!("Presentation preferences: {e}"));
-        let preferences = loaded.unwrap_or_default();
+        let (preferences, notice) = preferences_or_default(loaded);
         let remembered_background = preferences.background;
         Self {
             preferences,
@@ -277,6 +284,22 @@ mod appearance_tests {
             },
             |ctx| presentation.apply_theme(ctx),
         );
+    }
+
+    #[test]
+    fn invalid_appearance_preferences_fall_back_to_dark_without_overwriting_file() {
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let preference_path = directory.path().join("presentation.json");
+        let invalid = br#"{"version":7,"ui_theme":"sepia","background":[0.1,0.2,0.3]}"#;
+        std::fs::write(&preference_path, invalid).unwrap();
+
+        let (preferences, notice) = preferences_or_default(Preferences::load(&preference_path));
+
+        assert_eq!(preferences.ui_theme, presentation::UiTheme::Dark);
+        assert!(notice
+            .as_deref()
+            .is_some_and(|notice| notice.starts_with("Presentation preferences:")));
+        assert_eq!(std::fs::read(&preference_path).unwrap(), invalid);
     }
 
     #[test]
