@@ -277,6 +277,69 @@ impl SketchApp {
                     std::fs::create_dir_all(&root).unwrap();
                     self.file = Some(source.clone());
                     assert!(self.save(false));
+                    let insert_source_path = root.join("recovery-insert-source.sketch.json");
+                    let mut insert_source = Document::default();
+                    insert_source.layers[0].name = "Recovery insert".into();
+                    let mut inserted_stroke = crate::polygon::study().strokes.remove(0);
+                    inserted_stroke.id = 1;
+                    inserted_stroke.layer_id = insert_source.layers[0].id;
+                    inserted_stroke.group_id = None;
+                    inserted_stroke.color = [0.91, 0.13, 0.77];
+                    insert_source.strokes.push(inserted_stroke);
+                    std::fs::write(
+                        &insert_source_path,
+                        serde_json::to_vec(&insert_source).unwrap(),
+                    )
+                    .unwrap();
+                    let next_layer_id = self
+                        .doc
+                        .layers
+                        .iter()
+                        .map(|layer| layer.id)
+                        .max()
+                        .unwrap_or(0)
+                        .saturating_add(1);
+                    let next_group_id = self
+                        .doc
+                        .strokes
+                        .iter()
+                        .filter_map(|stroke| stroke.group_id)
+                        .max()
+                        .unwrap_or(0)
+                        .saturating_add(1);
+                    let inserted = super::native_merge::prepare_insert(
+                        &self.doc,
+                        &insert_source_path,
+                        &self.image_asset_root,
+                        self.next_id,
+                        next_layer_id,
+                        next_group_id,
+                        Vec3::new(0.35, -0.2, 0.15),
+                        false,
+                        &self.obj_reference_models,
+                    )
+                    .unwrap();
+                    let insert_target = super::InsertedDrawingTarget {
+                        doc: &mut self.doc,
+                        selected: &mut self.selected,
+                        undo: &mut self.undo,
+                        redo: &mut self.redo,
+                        next_id: &mut self.next_id,
+                        dirty: &mut self.dirty,
+                        image_assets: &mut self.image_plane_assets,
+                        obj_models: &mut self.obj_reference_models,
+                    };
+                    assert_eq!(
+                        super::apply_inserted_drawing_state(insert_target, inserted),
+                        1
+                    );
+                    assert!(self
+                        .doc
+                        .layers
+                        .iter()
+                        .any(|layer| layer.name == "Recovery insert"));
+                    assert!(std::fs::remove_file(&insert_source_path).is_ok());
+                    self.record_recovery_edit_labeled("Insert drawing");
                     let image_fixture = root.join("image-plane-preview.png");
                     let image_bytes = std::fs::read(&image_fixture).unwrap();
                     let image_asset = crate::image_planes::decode_asset(&image_fixture).unwrap();
@@ -404,6 +467,16 @@ impl SketchApp {
                                 .unwrap();
                         assert_eq!(self.doc.strokes, expected.strokes);
                         assert_eq!(self.doc.image_planes, expected.image_planes);
+                        assert!(
+                            self.doc.layers.iter().any(|layer| {
+                                layer.name == "Recovery insert"
+                                    && self.doc.strokes.iter().any(|stroke| {
+                                        stroke.layer_id == layer.id
+                                            && stroke.color == [0.91, 0.13, 0.77]
+                                    })
+                            }),
+                            "inserted native drawing and remapped layer survived recovery"
+                        );
                         let recovered_plane_id = expected.image_planes[0].id;
                         assert!(
                             self.image_plane_assets.contains_key(&recovered_plane_id),
