@@ -948,7 +948,7 @@ mod planar_target_tests {
     use super::*;
     use crate::{
         curve_geometry::{tessellate_stroke, CubicBezier, PressureSegment},
-        document::{Brush, Point, Stroke, StrokeMaterial},
+        document::{Brush, Document, Point, Stroke, StrokeMaterial},
         shape_geometry,
     };
 
@@ -1099,5 +1099,84 @@ mod planar_target_tests {
             .points
             .iter()
             .any(|point| !target.contains(point.position)));
+
+        let ellipse = shape_geometry::ellipse_from_center(
+            target.plane,
+            origin - u * 0.2 - v * 0.1,
+            0.35,
+            0.2,
+            5,
+            1,
+            [0.2, 0.4, 0.6],
+            0.02,
+            0.7,
+            Brush::default(),
+        )
+        .unwrap();
+        assert!(ellipse
+            .points
+            .iter()
+            .all(|point| target.contains(point.position)));
+
+        let inside_curve = CubicBezier {
+            p0: origin - u * 0.5,
+            p1: origin - u * 0.2 + v * 0.3,
+            p2: origin + u * 0.2 + v * 0.3,
+            p3: origin + u * 0.5,
+        };
+        let inside_curve = tessellate_stroke(
+            &[PressureSegment {
+                curve: inside_curve,
+                pressure_start: 0.3,
+                pressure_end: 0.9,
+            }],
+            &prototype,
+            0.005,
+            4096,
+        )
+        .unwrap();
+        assert!(inside_curve
+            .points
+            .iter()
+            .all(|point| target.contains(point.position)));
+
+        let strokes = vec![fill, circle, ellipse, inside_curve];
+        let mut edit_document = Document::default();
+        for stroke in &strokes {
+            let before = edit_document.strokes.clone();
+            let edit = crate::editing::Edit::Add(stroke.clone());
+            edit.apply(&mut edit_document, true);
+            assert_eq!(edit_document.strokes.len(), before.len() + 1);
+            assert_eq!(edit_document.strokes.last(), Some(stroke));
+            edit.apply(&mut edit_document, false);
+            assert_eq!(edit_document.strokes, before);
+            edit.apply(&mut edit_document, true);
+        }
+        assert_eq!(edit_document.strokes, strokes);
+
+        let native = serde_json::to_string(&edit_document).unwrap();
+        let reloaded = Document::from_json(&native).unwrap();
+        assert_eq!(reloaded.strokes, strokes);
+        let recovery_dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let snapshot = crate::recovery_store::RecoverySnapshot::new(
+            "planar-tool-session".into(),
+            None,
+            reloaded.clone(),
+        );
+        crate::recovery_store::write(recovery_dir.path(), &snapshot).unwrap();
+        let recovered =
+            crate::recovery_store::scan(recovery_dir.path(), "another-session").unwrap();
+        assert_eq!(recovered.candidates.len(), 1);
+        assert_eq!(recovered.candidates[0].snapshot.document.strokes, strokes);
+
+        let export = crate::export::encode(&reloaded, None).unwrap();
+        assert_eq!(export.summary.strokes, strokes.len());
+        assert!(
+            gltf::Gltf::from_slice(&export.bytes)
+                .unwrap()
+                .meshes()
+                .count()
+                >= strokes.len()
+        );
     }
 }
