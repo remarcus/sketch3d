@@ -496,8 +496,11 @@ impl SketchApp {
             library_path,
         );
         let recovery_path = if std::env::args().any(|arg| arg.starts_with("--verify")) {
-            let relative = if std::env::args().any(|arg| arg == "--verify-presentation") {
+            let arguments = std::env::args().collect::<Vec<_>>();
+            let relative = if arguments.iter().any(|arg| arg == "--verify-presentation") {
                 "verification/presentation/recovery"
+            } else if arguments.iter().any(|arg| arg == "--verify") {
+                "verification/smoke/recovery"
             } else {
                 "verification/recovery"
             };
@@ -4621,7 +4624,7 @@ impl SketchApp {
                 image::ColorType::Rgba8,
             )
             .unwrap();
-            let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload","background GLB export preserves document state"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
+            let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","rotated-selection non-uniform X handle and numeric scale agree at a custom pivot with undo/redo","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload","background GLB export preserves document state"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
             let report = if self.group_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["house component grouping","group and individual selection","duplicate independent group","shared pivot transforms","ungroup undo and native persistence","layer protection","GPU groups"],"gpu":self.renderer.adapter})
             } else if self.image_plane_verification_frame.is_some() {
