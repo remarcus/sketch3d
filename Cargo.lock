@@ -2870,11 +2870,14 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 name = "sketch3d"
 version = "0.1.0"
 dependencies = [
+ "block2 0.6.2",
  "bytemuck",
  "eframe",
  "glam",
  "gltf",
  "image",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
  "raw-window-handle",
  "rfd",
  "serde",

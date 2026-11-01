@@ -11,7 +11,7 @@ Sketch3D is an open-source, tablet-first 3D sketching app written in Rust. Draw 
 - Automatic recovery and a local drawing library for organizing native drawings.
 - Artwork image, OBJ, and GLB exports, plus animated GIF and MP4 exports.
 
-Windows tablet input uses Windows Ink. Linux includes an XInput2 backend for X11; it passes a Linux cross-target check, but has not been runtime or device tested. Wayland and macOS currently support mouse input only. Physical-device behavior remains unverified.
+Windows tablet input uses Windows Ink. Linux X11 includes an XInput2 backend and macOS includes an AppKit event monitor; both pass cross-target compile checks, but neither has been runtime or device tested. Wayland currently supports mouse input only. Physical-device behavior remains unverified.
 
 ## Run
 
@@ -27,7 +27,7 @@ On Debian/Ubuntu, install the development packages used by winit, Wayland/X11, a
 
 ## Tablet setup
 
-On Windows, install your tablet manufacturer's driver and enable **Windows Ink** in its application profile. Linux pen input is limited to X11 and uses the tablet valuators exposed by XInput2; Wayland is not supported yet. Map the tablet to the intended monitor and preserve the correct aspect ratio. Sketch3D receives driver-mapped coordinates and does not provide its own tablet calibration. Linux pen behavior still needs runtime and device validation.
+On Windows, install your tablet manufacturer's driver and enable **Windows Ink** in its application profile. Linux pen input is limited to X11 and uses the tablet valuators exposed by XInput2; Wayland is not supported yet. macOS uses AppKit tablet events. Map the tablet to the intended monitor and preserve the correct aspect ratio. Sketch3D receives driver-mapped coordinates and does not provide its own tablet calibration. Linux and macOS pen behavior still needs runtime and device validation.
 
 Draw in the central canvas. The Input lab reports pen samples, pressure, and tilt. If it shows **WAITING FOR PEN**, input is arriving as mouse input and pressure is unavailable. Unsupported tilt is shown as not reported. Mouse drawing uses constant pressure.
 

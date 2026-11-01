@@ -636,9 +636,198 @@ mod linux_x11 {
 #[cfg(target_os = "linux")]
 pub use linux_x11::PenInput;
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(target_os = "macos")]
+mod macos_appkit {
+    use super::*;
+    use block2::RcBlock;
+    use objc2::{rc::Retained, runtime::AnyObject, MainThreadMarker};
+    use objc2_app_kit::{
+        NSEvent, NSEventMask, NSEventSubtype, NSEventType, NSPointingDeviceType, NSView,
+    };
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::{
+        marker::PhantomData,
+        ptr::NonNull,
+        rc::Rc,
+        sync::{Arc, Mutex},
+    };
+
+    pub struct PenInput {
+        monitor: Option<Retained<AnyObject>>,
+        samples: Arc<Mutex<Vec<PenSample>>>,
+        _main_thread_only: PhantomData<Rc<()>>,
+    }
+
+    impl PenInput {
+        pub fn install(cc: &eframe::CreationContext<'_>) -> Result<Self, String> {
+            let handle = cc.window_handle().map_err(|e| e.to_string())?;
+            let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+                return Err("Native pen input requires a macOS AppKit window.".into());
+            };
+            let _main_thread = MainThreadMarker::new().ok_or_else(|| {
+                "AppKit pen input must be installed on the main thread.".to_owned()
+            })?;
+            let view_ptr = handle.ns_view.cast::<NSView>();
+            // SAFETY: eframe's AppKit window handle guarantees this is a live NSView
+            // on the main thread; the app owns the view for at least the monitor's life.
+            let view = unsafe { view_ptr.as_ref() };
+            let window = view
+                .window()
+                .ok_or_else(|| "The AppKit view is not attached to a window.".to_owned())?;
+            let window_number = window.windowNumber();
+            let view_address = view_ptr.as_ptr() as usize;
+            let samples = Arc::new(Mutex::new(Vec::new()));
+            let contact = Arc::new(Mutex::new(false));
+            let output = samples.clone();
+            let contact_state = contact.clone();
+            let context = cc.egui_ctx.clone();
+            let mask = NSEventMask::LeftMouseDown
+                | NSEventMask::LeftMouseUp
+                | NSEventMask::LeftMouseDragged
+                | NSEventMask::TabletPoint
+                | NSEventMask::TabletProximity
+                | NSEventMask::MouseCancelled;
+            let handler = RcBlock::new(move |event_ptr: NonNull<NSEvent>| -> *mut NSEvent {
+                // AppKit invokes local monitors on the app's main event thread.
+                let event = unsafe { event_ptr.as_ref() };
+                if event.windowNumber() != window_number {
+                    return event_ptr.as_ptr();
+                }
+                let event_type = event.r#type();
+                if event_type == NSEventType::MouseCancelled
+                    || (event_type == NSEventType::TabletProximity && !event.isEnteringProximity())
+                {
+                    *contact_state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = false;
+                    push_sample(&output, canceled_sample());
+                    context.request_repaint();
+                    return event_ptr.as_ptr();
+                }
+
+                let tablet_event = event_type == NSEventType::TabletPoint
+                    || (event.subtype() == NSEventSubtype::TabletPoint
+                        && matches!(
+                            event.pointingDeviceType(),
+                            NSPointingDeviceType::Pen | NSPointingDeviceType::Eraser
+                        ));
+                if !tablet_event {
+                    return event_ptr.as_ptr();
+                }
+
+                let view = unsafe { &*(view_address as *const NSView) };
+                let bounds = view.bounds();
+                let point = view.convertPoint_fromView(event.locationInWindow(), None);
+                let position = egui::pos2(
+                    point.x as f32,
+                    (bounds.origin.y + bounds.size.height - point.y) as f32,
+                );
+                let buttons = event.buttonMask();
+                let tip_down = buttons.contains(objc2_app_kit::NSEventButtonMask::PenTip);
+                let mut in_contact = contact_state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let phase = if event_type == NSEventType::LeftMouseDown {
+                    *in_contact = true;
+                    Phase::Down
+                } else if event_type == NSEventType::LeftMouseUp {
+                    *in_contact = false;
+                    Phase::Up
+                } else if tip_down && !*in_contact {
+                    *in_contact = true;
+                    Phase::Down
+                } else if !tip_down && *in_contact && event_type == NSEventType::TabletPoint {
+                    *in_contact = false;
+                    Phase::Up
+                } else {
+                    Phase::Move
+                };
+                let tilt = event.tilt();
+                push_sample(
+                    &output,
+                    PenSample {
+                        position,
+                        pressure: Some(event.pressure().clamp(0.0, 1.0)),
+                        tilt: [
+                            Some((tilt.x as f32 * 90.0).clamp(-90.0, 90.0)),
+                            Some((tilt.y as f32 * 90.0).clamp(-90.0, 90.0)),
+                        ],
+                        eraser: event.pointingDeviceType() == NSPointingDeviceType::Eraser,
+                        barrel: buttons.contains(objc2_app_kit::NSEventButtonMask::PenLowerSide)
+                            || buttons.contains(objc2_app_kit::NSEventButtonMask::PenUpperSide),
+                        contact: *in_contact,
+                        phase,
+                    },
+                );
+                context.request_repaint();
+                event_ptr.as_ptr()
+            });
+            // SAFETY: the local monitor is installed on AppKit's main thread. The
+            // handler returns the original event so winit and widgets still receive it.
+            let monitor =
+                unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &handler) }
+                    .ok_or_else(|| {
+                        "AppKit could not install the tablet event monitor.".to_owned()
+                    })?;
+
+            Ok(Self {
+                monitor: Some(monitor),
+                samples,
+                _main_thread_only: PhantomData,
+            })
+        }
+
+        pub fn drain(&self) -> Vec<PenSample> {
+            self.samples
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .drain(..)
+                .collect()
+        }
+    }
+
+    impl Drop for PenInput {
+        fn drop(&mut self) {
+            if MainThreadMarker::new().is_some() {
+                if let Some(monitor) = self.monitor.take() {
+                    // SAFETY: the token came from this AppKit event monitor and Drop
+                    // normally runs on the same main thread as installation.
+                    unsafe { NSEvent::removeMonitor(&monitor) };
+                }
+            }
+        }
+    }
+
+    fn push_sample(samples: &Mutex<Vec<PenSample>>, sample: PenSample) {
+        let mut samples = samples
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if samples.len() >= 32_768 {
+            samples.clear();
+            samples.push(canceled_sample());
+        } else {
+            samples.push(sample);
+        }
+    }
+
+    fn canceled_sample() -> PenSample {
+        PenSample {
+            position: egui::Pos2::ZERO,
+            pressure: None,
+            tilt: [None, None],
+            eraser: false,
+            barrel: false,
+            contact: false,
+            phase: Phase::Cancel,
+        }
+    }
+}
+#[cfg(target_os = "macos")]
+pub use macos_appkit::PenInput;
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub struct PenInput;
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 impl PenInput {
     pub fn install(_: &eframe::CreationContext<'_>) -> Result<Self, String> {
         Err(
