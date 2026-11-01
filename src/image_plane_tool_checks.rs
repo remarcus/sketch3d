@@ -233,12 +233,78 @@ impl SketchApp {
         // Smooth curve anchor clicks at another zoom.
         self.camera.distance = 9.5;
         self.start_curve_tool();
+        self.curve_tool.tension = 0.0;
         let before = self.doc.strokes.len();
         for (x, y) in [(-0.85, -0.1), (-0.3, 0.45), (0.3, -0.4), (0.85, 0.1)] {
             click(self, ctx, rect, screen(self, x, y));
         }
         assert!(self.curve_draft_active(), "curve anchors build a preview");
-        self.commit_curve();
+        assert_eq!(self.curve_draft_anchor_count(), 4);
+        let inserted = target.plane.origin() + axis_u * -0.575 + axis_v * 0.175;
+        let inserted_screen = screen(self, -0.575, 0.175);
+        self.curve_input(inserted_screen, 0.65, rect, true);
+        assert_eq!(
+            self.curve_draft_anchor_count(),
+            5,
+            "mouse inserts a curve point on a segment"
+        );
+        let before_tangent = self
+            .curve_draft_preview()
+            .expect("inserted curve remains previewed")
+            .clone();
+        let tangent_screen = screen(self, -0.575, 0.34);
+        self.curve_input(tangent_screen, 0.65, rect, false);
+        self.curve_pointer_up();
+        assert!(
+            self.curve_draft_anchor_is_manual(1),
+            "drag adjusts the inserted tangent"
+        );
+        let after_tangent = self
+            .curve_draft_preview()
+            .expect("tangent edit refreshes the curve preview");
+        assert_ne!(
+            before_tangent.points, after_tangent.points,
+            "tangent drag changes preview geometry"
+        );
+        assert!(after_tangent
+            .points
+            .iter()
+            .any(|point| { (point.position - inserted).length() < 0.002 }));
+        ctx.input_mut(|input| {
+            input.events = vec![egui::Event::Key {
+                key: Key::Backspace,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }]
+        });
+        self.curve_shortcuts(ctx);
+        ctx.input_mut(|input| input.events.clear());
+        assert_eq!(
+            self.curve_draft_anchor_count(),
+            4,
+            "Backspace removes the last curve point"
+        );
+        assert!(
+            self.curve_draft_anchor_is_manual(1),
+            "removal preserves the edited point"
+        );
+        ctx.input_mut(|input| {
+            input.events = vec![egui::Event::Key {
+                key: Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }]
+        });
+        self.curve_shortcuts(ctx);
+        ctx.input_mut(|input| input.events.clear());
+        assert!(
+            !self.curve_draft_active(),
+            "Enter commits the curve preview"
+        );
         assert_eq!(
             self.doc.strokes.len(),
             before + 1,
@@ -250,7 +316,7 @@ impl SketchApp {
         self.redo();
         assert_eq!(self.doc.strokes.last(), Some(&curve));
         self.cancel_curve_tool();
-        checks.push("image-plane curve anchor clicks, clipping, and undo/redo");
+        checks.push("image-plane curve anchor clicks, insertion, tangent drag, Backspace removal, Enter commit, clipping, and undo/redo");
 
         // Tool previews cancel without creating document edits.
         let before = self.doc.strokes.len();
@@ -298,9 +364,20 @@ impl SketchApp {
         self.start_curve_tool();
         click(self, ctx, rect, screen(self, -0.5, 0.0));
         assert!(self.curve_draft_active());
-        self.cancel_curve_tool();
+        ctx.input_mut(|input| {
+            input.events = vec![egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }]
+        });
+        self.curve_shortcuts(ctx);
+        ctx.input_mut(|input| input.events.clear());
+        assert!(!self.curve_draft_active(), "Escape cancels the curve draft");
         assert_eq!(self.doc.strokes.len(), before);
-        checks.push("line, fill, circle, and curve cancel without document edits");
+        checks.push("line, fill, circle, and curve Escape cancel without document edits");
         checks.push("shape Escape cancels after camera orbit without document edits");
 
         // Hidden or locked image planes are rejected by each planar tool.

@@ -53,6 +53,28 @@ impl SketchApp {
         self.curve_tool.draft.is_some()
     }
 
+    pub(super) fn curve_draft_anchor_count(&self) -> usize {
+        self.curve_tool
+            .draft
+            .as_ref()
+            .map_or(0, |draft| draft.anchors.len())
+    }
+
+    pub(super) fn curve_draft_anchor_is_manual(&self, index: usize) -> bool {
+        self.curve_tool
+            .draft
+            .as_ref()
+            .and_then(|draft| draft.anchors.get(index))
+            .is_some_and(|anchor| anchor.manual)
+    }
+
+    pub(super) fn curve_draft_preview(&self) -> Option<&Stroke> {
+        self.curve_tool
+            .draft
+            .as_ref()
+            .and_then(|draft| draft.preview.as_ref())
+    }
+
     pub(super) fn start_curve_tool(&mut self) {
         if self.planar_drawing_target().is_none() {
             self.status =

@@ -44,8 +44,8 @@ try {
         'image-plane fill click-to-close, clipping, and undo/redo',
         'rotated image-plane circle drag, clipping, and undo/redo',
         'rotated image-plane ellipse drag, camera orbit, clipping, and undo/redo',
-        'image-plane curve anchor clicks, clipping, and undo/redo',
-        'line, fill, circle, and curve cancel without document edits',
+        'image-plane curve anchor clicks, insertion, tangent drag, Backspace removal, Enter commit, clipping, and undo/redo',
+        'line, fill, circle, and curve Escape cancel without document edits',
         'shape Escape cancels after camera orbit without document edits',
         'hidden and locked image planes reject all planar tools'
     )
