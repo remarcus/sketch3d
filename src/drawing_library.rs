@@ -205,6 +205,7 @@ impl DrawingLibrary {
 
     fn poll_thumbnails(&mut self, ctx: &egui::Context) {
         while let Ok(result) = self.thumbnail_rx.try_recv() {
+            self.thumbnail_pending.remove(&result.path);
             if self
                 .thumbnail_generations
                 .get(&result.path)
@@ -214,7 +215,6 @@ impl DrawingLibrary {
             {
                 continue;
             }
-            self.thumbnail_pending.remove(&result.path);
             match result.rgba {
                 Ok(rgba) => {
                     let image = egui::ColorImage::from_rgba_unmultiplied(
@@ -241,7 +241,6 @@ impl DrawingLibrary {
         let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         self.thumbnail_textures.remove(&key);
         self.thumbnail_failed.remove(&key);
-        self.thumbnail_pending.remove(&key);
         *self.thumbnail_generations.entry(key.clone()).or_default() += 1;
         if let Some(directory) = &self.thumbnail_dir {
             remove_thumbnail_files(directory, stable_path_hash(&key), None);
@@ -1184,6 +1183,61 @@ fn prune_thumbnail_cache(directory: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn drawing_library_for_test(thumbnail_dir: PathBuf) -> DrawingLibrary {
+        let (thumbnail_tx, thumbnail_rx) = mpsc::channel();
+        DrawingLibrary {
+            path: None,
+            recent: Vec::new(),
+            folders: Vec::new(),
+            assignments: HashMap::new(),
+            thumbnail_dir: Some(thumbnail_dir),
+            thumbnail_tx,
+            thumbnail_rx,
+            thumbnail_pending: HashSet::new(),
+            thumbnail_failed: HashSet::new(),
+            thumbnail_textures: HashMap::new(),
+            thumbnail_generations: HashMap::new(),
+            trash_open: false,
+            notice: None,
+        }
+    }
+
+    #[test]
+    fn invalidating_a_running_thumbnail_keeps_its_worker_slot_until_result_arrives() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let drawing = root.path().join("running.sketch.json");
+        fs::write(
+            &drawing,
+            serde_json::to_vec(&crate::document::Document::default()).unwrap(),
+        )
+        .unwrap();
+        let key = drawing.canonicalize().unwrap();
+        let mut library = drawing_library_for_test(root.path().join("thumbnails"));
+        library.thumbnail_pending.insert(key.clone());
+        library.thumbnail_generations.insert(key.clone(), 0);
+
+        library.invalidate_thumbnail(&drawing);
+        assert!(library.thumbnail_pending.contains(&key));
+        library
+            .thumbnail_tx
+            .send(ThumbnailResult {
+                path: key.clone(),
+                generation: 0,
+                rgba: Ok(vec![
+                    0;
+                    THUMBNAIL_SIZE[0] as usize
+                        * THUMBNAIL_SIZE[1] as usize
+                        * 4
+                ]),
+            })
+            .unwrap();
+        library.poll_thumbnails(&egui::Context::default());
+
+        assert!(!library.thumbnail_pending.contains(&key));
+        assert!(!library.thumbnail_textures.contains_key(&key));
+        assert_eq!(library.thumbnail_generations.get(&key), Some(&1));
+    }
 
     #[test]
     fn drawing_thumbnail_is_bounded_and_cached_as_a_fixed_size_png() {
