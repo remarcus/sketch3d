@@ -7,6 +7,7 @@
                    "Brush, Select, Layers, color picker, library, recovery error, PNG export, and light, dark, custom, and image scene backgrounds rendered in both themes at 1280x720 and 1920x1080 with 100%, 150%, and 200% egui zoom",
                    "production live line and mirror preview overlays rendered against dark, light, custom, and mixed image backgrounds",
                    "production brush-selection drag paths and radius cursors rendered against light and mixed image backgrounds after crossing a real fixture stroke",
+                   "mixed-resource translation inspector rendered with Rotate, Scale, and Apply disabled before preview movement",
                    "the painted Liquify radius cursor rendered at a synthetic in-canvas pointer location on light and image backgrounds",
                    "the Color control remains visible at 150% and wraps to a second row at 200%",
                    "the empty-canvas message remains legible within the reduced canvas width at 200%"
@@ -17,7 +18,7 @@
                         "OS-drawn Brush crosshair visibility is not present in screenshots and needs desktop review"
                     ],
     "physical_tablet_tested":  false,
-    "state_capture_count":  228,
+    "state_capture_count":  240,
     "screenshots":  [
                         {
                             "theme":  "dark",
@@ -1726,6 +1727,102 @@
                                                           ],
                             "screenshot":  "dark-scene-brush-selection-drag-image-viewport-1920x1080-200-percent.png",
                             "report":  "dark-scene-brush-selection-drag-image-viewport-1920x1080-200-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1920,
+                                                           1080
+                                                       ]
+                        },
+                        {
+                            "theme":  "dark",
+                            "capture_kind":  "state",
+                            "state":  "scene-mixed-resource-disabled",
+                            "egui_zoom_percent":  100,
+                            "requested_viewport_points":  [
+                                                              1280,
+                                                              720
+                                                          ],
+                            "screenshot":  "dark-scene-mixed-resource-disabled-viewport-1280x720-100-percent.png",
+                            "report":  "dark-scene-mixed-resource-disabled-viewport-1280x720-100-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1280,
+                                                           720
+                                                       ]
+                        },
+                        {
+                            "theme":  "dark",
+                            "capture_kind":  "state",
+                            "state":  "scene-mixed-resource-disabled",
+                            "egui_zoom_percent":  100,
+                            "requested_viewport_points":  [
+                                                              1920,
+                                                              1080
+                                                          ],
+                            "screenshot":  "dark-scene-mixed-resource-disabled-viewport-1920x1080-100-percent.png",
+                            "report":  "dark-scene-mixed-resource-disabled-viewport-1920x1080-100-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1920,
+                                                           1080
+                                                       ]
+                        },
+                        {
+                            "theme":  "dark",
+                            "capture_kind":  "state",
+                            "state":  "scene-mixed-resource-disabled",
+                            "egui_zoom_percent":  150,
+                            "requested_viewport_points":  [
+                                                              1280,
+                                                              720
+                                                          ],
+                            "screenshot":  "dark-scene-mixed-resource-disabled-viewport-1280x720-150-percent.png",
+                            "report":  "dark-scene-mixed-resource-disabled-viewport-1280x720-150-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1280,
+                                                           720
+                                                       ]
+                        },
+                        {
+                            "theme":  "dark",
+                            "capture_kind":  "state",
+                            "state":  "scene-mixed-resource-disabled",
+                            "egui_zoom_percent":  150,
+                            "requested_viewport_points":  [
+                                                              1920,
+                                                              1080
+                                                          ],
+                            "screenshot":  "dark-scene-mixed-resource-disabled-viewport-1920x1080-150-percent.png",
+                            "report":  "dark-scene-mixed-resource-disabled-viewport-1920x1080-150-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1920,
+                                                           1080
+                                                       ]
+                        },
+                        {
+                            "theme":  "dark",
+                            "capture_kind":  "state",
+                            "state":  "scene-mixed-resource-disabled",
+                            "egui_zoom_percent":  200,
+                            "requested_viewport_points":  [
+                                                              1280,
+                                                              720
+                                                          ],
+                            "screenshot":  "dark-scene-mixed-resource-disabled-viewport-1280x720-200-percent.png",
+                            "report":  "dark-scene-mixed-resource-disabled-viewport-1280x720-200-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1280,
+                                                           720
+                                                       ]
+                        },
+                        {
+                            "theme":  "dark",
+                            "capture_kind":  "state",
+                            "state":  "scene-mixed-resource-disabled",
+                            "egui_zoom_percent":  200,
+                            "requested_viewport_points":  [
+                                                              1920,
+                                                              1080
+                                                          ],
+                            "screenshot":  "dark-scene-mixed-resource-disabled-viewport-1920x1080-200-percent.png",
+                            "report":  "dark-scene-mixed-resource-disabled-viewport-1920x1080-200-percent.json",
                             "screenshot_size_pixels":  [
                                                            1920,
                                                            1080
@@ -3630,6 +3727,102 @@
                                                           ],
                             "screenshot":  "light-scene-brush-selection-drag-image-viewport-1920x1080-200-percent.png",
                             "report":  "light-scene-brush-selection-drag-image-viewport-1920x1080-200-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1920,
+                                                           1080
+                                                       ]
+                        },
+                        {
+                            "theme":  "light",
+                            "capture_kind":  "state",
+                            "state":  "scene-mixed-resource-disabled",
+                            "egui_zoom_percent":  100,
+                            "requested_viewport_points":  [
+                                                              1280,
+                                                              720
+                                                          ],
+                            "screenshot":  "light-scene-mixed-resource-disabled-viewport-1280x720-100-percent.png",
+                            "report":  "light-scene-mixed-resource-disabled-viewport-1280x720-100-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1280,
+                                                           720
+                                                       ]
+                        },
+                        {
+                            "theme":  "light",
+                            "capture_kind":  "state",
+                            "state":  "scene-mixed-resource-disabled",
+                            "egui_zoom_percent":  100,
+                            "requested_viewport_points":  [
+                                                              1920,
+                                                              1080
+                                                          ],
+                            "screenshot":  "light-scene-mixed-resource-disabled-viewport-1920x1080-100-percent.png",
+                            "report":  "light-scene-mixed-resource-disabled-viewport-1920x1080-100-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1920,
+                                                           1080
+                                                       ]
+                        },
+                        {
+                            "theme":  "light",
+                            "capture_kind":  "state",
+                            "state":  "scene-mixed-resource-disabled",
+                            "egui_zoom_percent":  150,
+                            "requested_viewport_points":  [
+                                                              1280,
+                                                              720
+                                                          ],
+                            "screenshot":  "light-scene-mixed-resource-disabled-viewport-1280x720-150-percent.png",
+                            "report":  "light-scene-mixed-resource-disabled-viewport-1280x720-150-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1280,
+                                                           720
+                                                       ]
+                        },
+                        {
+                            "theme":  "light",
+                            "capture_kind":  "state",
+                            "state":  "scene-mixed-resource-disabled",
+                            "egui_zoom_percent":  150,
+                            "requested_viewport_points":  [
+                                                              1920,
+                                                              1080
+                                                          ],
+                            "screenshot":  "light-scene-mixed-resource-disabled-viewport-1920x1080-150-percent.png",
+                            "report":  "light-scene-mixed-resource-disabled-viewport-1920x1080-150-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1920,
+                                                           1080
+                                                       ]
+                        },
+                        {
+                            "theme":  "light",
+                            "capture_kind":  "state",
+                            "state":  "scene-mixed-resource-disabled",
+                            "egui_zoom_percent":  200,
+                            "requested_viewport_points":  [
+                                                              1280,
+                                                              720
+                                                          ],
+                            "screenshot":  "light-scene-mixed-resource-disabled-viewport-1280x720-200-percent.png",
+                            "report":  "light-scene-mixed-resource-disabled-viewport-1280x720-200-percent.json",
+                            "screenshot_size_pixels":  [
+                                                           1280,
+                                                           720
+                                                       ]
+                        },
+                        {
+                            "theme":  "light",
+                            "capture_kind":  "state",
+                            "state":  "scene-mixed-resource-disabled",
+                            "egui_zoom_percent":  200,
+                            "requested_viewport_points":  [
+                                                              1920,
+                                                              1080
+                                                          ],
+                            "screenshot":  "light-scene-mixed-resource-disabled-viewport-1920x1080-200-percent.png",
+                            "report":  "light-scene-mixed-resource-disabled-viewport-1920x1080-200-percent.json",
                             "screenshot_size_pixels":  [
                                                            1920,
                                                            1080

@@ -42,7 +42,7 @@ foreach ($theme in @('dark', 'light')) {
             height = $size[1]
         })
     }
-    foreach ($state in @('brush', 'select', 'layers', 'color-picker', 'library', 'recovery-error', 'export', 'scene-dark-background', 'scene-light-background', 'scene-custom-background', 'scene-image-background', 'scene-mirror-preview-dark', 'scene-mirror-preview-light', 'scene-mirror-preview-custom', 'scene-mirror-preview-image', 'scene-brush-selection-drag-light', 'scene-brush-selection-drag-image', 'scene-liquify-cursor-light', 'scene-liquify-cursor-image')) {
+    foreach ($state in @('brush', 'select', 'layers', 'color-picker', 'library', 'recovery-error', 'export', 'scene-dark-background', 'scene-light-background', 'scene-custom-background', 'scene-image-background', 'scene-mirror-preview-dark', 'scene-mirror-preview-light', 'scene-mirror-preview-custom', 'scene-mirror-preview-image', 'scene-brush-selection-drag-light', 'scene-brush-selection-drag-image', 'scene-mixed-resource-disabled', 'scene-liquify-cursor-light', 'scene-liquify-cursor-image')) {
         foreach ($zoom in @(1.0, 1.5, 2.0)) {
             foreach ($size in @(@(1280, 720), @(1920, 1080))) {
                 $captureRequests.Add([pscustomobject]@{
@@ -94,14 +94,13 @@ try {
                 -RedirectStandardError $stderrPath `
                 -PassThru
             $captureTimedOut = $false
+            $captureExitCode = $null
             try {
                 if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
                     $captureTimedOut = $true
                 } else {
                     $process.Refresh()
-                }
-                if (-not $captureTimedOut -and $null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
-                    throw "Appearance capture failed for $theme at $width`x$height and $percent percent; see $stderrPath."
+                    $captureExitCode = $process.ExitCode
                 }
             } finally {
                 $process.Refresh()
@@ -113,6 +112,12 @@ try {
             if ($captureTimedOut) {
                 if ($attempt -eq 2) {
                     throw "Appearance capture timed out twice for $theme $state at $width`x$height and $percent percent."
+                }
+                continue
+            }
+            if ($null -ne $captureExitCode -and $captureExitCode -ne 0) {
+                if ($attempt -eq 2) {
+                    throw "Appearance capture failed twice for $theme $state at $width`x$height and $percent percent (exit $captureExitCode); see $stderrPath."
                 }
                 continue
             }
@@ -151,7 +156,7 @@ try {
 }
 
 $stateCaptures = @($captures | Where-Object { $_.capture_kind -eq 'state' })
-$expectedStateCaptureCount = 19 * 2 * 2 * 3
+$expectedStateCaptureCount = 20 * 2 * 2 * 3
 if ($stateCaptures.Count -ne $expectedStateCaptureCount) {
     throw "Expected $expectedStateCaptureCount named UI-state captures; found $($stateCaptures.Count)."
 }
@@ -168,6 +173,7 @@ $summary = [pscustomobject]@{
         'Brush, Select, Layers, color picker, library, recovery error, PNG export, and light, dark, custom, and image scene backgrounds rendered in both themes at 1280x720 and 1920x1080 with 100%, 150%, and 200% egui zoom',
         'production live line and mirror preview overlays rendered against dark, light, custom, and mixed image backgrounds',
         'production brush-selection drag paths and radius cursors rendered against light and mixed image backgrounds after crossing a real fixture stroke',
+        'mixed-resource translation inspector rendered with Rotate, Scale, and Apply disabled before preview movement',
         'the painted Liquify radius cursor rendered at a synthetic in-canvas pointer location on light and image backgrounds',
         'the Color control remains visible at 150% and wraps to a second row at 200%',
         'the empty-canvas message remains legible within the reduced canvas width at 200%'

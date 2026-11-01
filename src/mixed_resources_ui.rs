@@ -22,6 +22,13 @@ impl SketchApp {
         self.mixed_resources_ui.draft.is_some()
     }
 
+    pub(super) fn mixed_resource_has_preview(&self) -> bool {
+        self.mixed_resources_ui
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.has_preview)
+    }
+
     pub(super) fn mixed_resource_controls(&mut self, ui: &mut egui::Ui) {
         if self.mixed_resources_ui.draft.is_some() {
             ui.group(|ui| {

@@ -793,6 +793,7 @@ impl SketchApp {
                 "scene-mirror-preview-image",
                 "scene-brush-selection-drag-light",
                 "scene-brush-selection-drag-image",
+                "scene-mixed-resource-disabled",
                 "scene-liquify-cursor-light",
                 "scene-liquify-cursor-image",
             ];
@@ -856,6 +857,7 @@ impl SketchApp {
                 | "scene-mirror-preview-image"
                 | "scene-brush-selection-drag-light"
                 | "scene-brush-selection-drag-image"
+                | "scene-mixed-resource-disabled"
                 | "scene-liquify-cursor-light"
                 | "scene-liquify-cursor-image" => {
                     app.doc = crate::export_check::brush_fixture();
@@ -876,9 +878,54 @@ impl SketchApp {
                         app.brush_select_enabled = true;
                         app.brush_select_radius = 22.0;
                     }
+                    if state == "scene-mixed-resource-disabled" {
+                        app.doc.image_planes.push(crate::image_planes::ImagePlane {
+                            id: 9101,
+                            name: "Appearance verification image".into(),
+                            asset_file: "image-9101.png".into(),
+                            pixel_size: Some([2, 2]),
+                            origin: Vec3::new(0.0, 0.0, 0.25),
+                            rotation: glam::Quat::IDENTITY,
+                            size: glam::Vec2::ONE,
+                            opacity: 0.8,
+                            visible: true,
+                            locked: false,
+                            drawable: true,
+                        });
+                        app.doc.guide_resources.push(
+                            crate::document::guide_resources::GuideResource {
+                                id: 9301,
+                                name: "Appearance verification guide".into(),
+                                visible: true,
+                                locked: false,
+                                geometry: crate::document::guide_resources::GuideGeometry::Plane {
+                                    origin: Vec3::new(0.0, 0.0, 0.5),
+                                    rotation: glam::Quat::IDENTITY,
+                                },
+                            },
+                        );
+                        app.mixed_resources_ui.selection =
+                            crate::mixed_resources::ResourceSelection {
+                                stroke_ids: HashSet::new(),
+                                image_plane_ids: HashSet::from([9101]),
+                                obj_reference_ids: HashSet::new(),
+                                guide_ids: HashSet::from([9301]),
+                            };
+                        app.begin_mixed_resource_move();
+                        assert!(app.mixed_resource_preview_active());
+                        assert!(!app.mixed_resource_has_preview());
+                        assert!(app.undo.is_empty());
+                        assert!(!Self::mixed_transform_supported(
+                            crate::mixed_resources::TransformMode::Rotate
+                        ));
+                        assert!(!Self::mixed_transform_supported(
+                            crate::mixed_resources::TransformMode::Scale
+                        ));
+                    }
                     app.camera.align(Plane::Front);
                     app.presentation.preferences.background = match state {
                         "scene-dark-background"
+                        | "scene-mixed-resource-disabled"
                         | "scene-image-background"
                         | "scene-mirror-preview-dark"
                         | "scene-mirror-preview-image"
@@ -940,7 +987,10 @@ impl SketchApp {
                     ) {
                         app.line.enabled = true;
                         app.mirror_ui.enabled = true;
-                    } else {
+                    } else if matches!(
+                        state,
+                        "scene-liquify-cursor-light" | "scene-liquify-cursor-image"
+                    ) {
                         let stroke_id = app
                             .doc
                             .strokes
@@ -3771,7 +3821,14 @@ impl eframe::App for SketchApp {
         {
             self.finish_mixed_resource_move(false);
         }
-        if self.mixed_resource_preview_active() && !ctx.input(|input| input.focused) {
+        let keep_mixed_preview_for_appearance_capture = self
+            .appearance_layout_verification
+            .as_ref()
+            .is_some_and(|verification| verification.state == "scene-mixed-resource-disabled");
+        if self.mixed_resource_preview_active()
+            && !keep_mixed_preview_for_appearance_capture
+            && !ctx.input(|input| input.focused)
+        {
             self.finish_mixed_resource_move(false);
         }
         if !self.liquify_active() && self.camera_playback.is_none() {
@@ -5121,6 +5178,20 @@ impl SketchApp {
                 ) {
                     checks.push(
                         "production live line draft and mirror preview overlays were active for this capture".into(),
+                    );
+                }
+                if verification.state == "scene-mixed-resource-disabled" {
+                    assert!(self.mixed_resource_preview_active());
+                    assert!(!self.mixed_resource_has_preview());
+                    assert!(self.undo.is_empty());
+                    assert!(!Self::mixed_transform_supported(
+                        crate::mixed_resources::TransformMode::Rotate
+                    ));
+                    assert!(!Self::mixed_transform_supported(
+                        crate::mixed_resources::TransformMode::Scale
+                    ));
+                    checks.push(
+                        "mixed-resource controls show disabled Rotate and Scale plus disabled Apply before movement".into(),
                     );
                 }
                 if matches!(
