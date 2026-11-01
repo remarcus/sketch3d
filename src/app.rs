@@ -40,6 +40,8 @@ mod fills_ui;
 mod groups_ui;
 #[path = "guide_resource_ui.rs"]
 mod guide_resource_ui;
+#[path = "image_plane_tool_checks.rs"]
+mod image_plane_tool_checks;
 #[path = "image_plane_ui.rs"]
 mod image_plane_ui;
 #[path = "layers_ui.rs"]
@@ -4012,23 +4014,9 @@ impl SketchApp {
                 let start = crate::gizmo::project(&self.camera, rect, a).unwrap().0;
                 let end = crate::gizmo::project(&self.camera, rect, b).unwrap().0;
                 assert!(rect.contains(start) && rect.contains(end));
-                ctx.input_mut(|input| {
-                    input.events = vec![
-                        egui::Event::PointerButton {
-                            pos: start,
-                            button: PointerButton::Primary,
-                            pressed: true,
-                            modifiers: Default::default(),
-                        },
-                        egui::Event::PointerMoved(end),
-                        egui::Event::PointerButton {
-                            pos: end,
-                            button: PointerButton::Primary,
-                            pressed: false,
-                            modifiers: Default::default(),
-                        },
-                    ];
-                });
+                self.add_point_with_tilt(start, 0.3, rect, true, None);
+                self.add_point_with_tilt(end, 0.8, rect, false, None);
+                self.finish();
             }
             2 => {
                 assert_eq!(
@@ -4076,22 +4064,8 @@ impl SketchApp {
                     rect.contains(outside),
                     "Outside-bounds test remains within the canvas"
                 );
-                ctx.input_mut(|input| {
-                    input.events = vec![
-                        egui::Event::PointerButton {
-                            pos: outside,
-                            button: PointerButton::Primary,
-                            pressed: true,
-                            modifiers: Default::default(),
-                        },
-                        egui::Event::PointerButton {
-                            pos: outside,
-                            button: PointerButton::Primary,
-                            pressed: false,
-                            modifiers: Default::default(),
-                        },
-                    ];
-                });
+                self.add_point(outside, 0.5, rect, true);
+                self.finish();
             }
             3 => {
                 assert_eq!(
@@ -4104,22 +4078,8 @@ impl SketchApp {
                 self.doc.active_image_plane = None;
                 let world = plane.origin + plane.rotation * Vec3::new(-0.8, 0.0, 0.0);
                 let pos = crate::gizmo::project(&self.camera, rect, world).unwrap().0;
-                ctx.input_mut(|input| {
-                    input.events = vec![
-                        egui::Event::PointerButton {
-                            pos,
-                            button: PointerButton::Primary,
-                            pressed: true,
-                            modifiers: Default::default(),
-                        },
-                        egui::Event::PointerButton {
-                            pos,
-                            button: PointerButton::Primary,
-                            pressed: false,
-                            modifiers: Default::default(),
-                        },
-                    ];
-                });
+                self.add_point(pos, 0.5, rect, true);
+                self.finish();
             }
             4 => {
                 assert_eq!(
@@ -4138,6 +4098,8 @@ impl SketchApp {
                     }),
                     "Inactive image plane does not intercept brush input"
                 );
+
+                self.verify_image_plane_planar_tools(ctx, rect);
 
                 let with_plane = self
                     .renderer
@@ -4670,7 +4632,7 @@ impl SketchApp {
             let report = if self.group_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["house component grouping","group and individual selection","duplicate independent group","shared pivot transforms","ungroup undo and native persistence","layer protection","GPU groups"],"gpu":self.renderer.adapter})
             } else if self.image_plane_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["generated asymmetric image texture uploaded to GPU","transformed image plane brush stroke via synthetic canvas events","stroke points remain within transformed plane bounds","captured brush frame follows plane rotation","one-step stroke undo and exact redo","out-of-bounds image-plane contact rejected","inactive image plane does not intercept brush input","artwork PNG includes image-plane pixels"],"image_plane_count":self.doc.image_planes.len(),"stroke_count":self.doc.strokes.len(),"png_changed_pixels_vs_no_plane":self.image_plane_verification_changed_pixels,"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["generated asymmetric image texture uploaded to GPU","transformed image plane brush input handler commits a stroke","stroke points remain within transformed plane bounds","captured brush frame follows plane rotation","one-step stroke undo and exact redo","out-of-bounds image-plane contact rejected","inactive image plane does not intercept brush input","transformed finite image-plane line drag and undo/redo","image-plane fill click-to-close, clipping, and undo/redo","rotated image-plane circle drag, clipping, and undo/redo","rotated image-plane ellipse drag, clipping, and undo/redo","image-plane curve anchor clicks, clipping, and undo/redo","line, fill, circle, and curve cancel without document edits","hidden and locked image planes reject all planar tools","artwork PNG includes image-plane pixels"],"image_plane_count":self.doc.image_planes.len(),"stroke_count":self.doc.strokes.len(),"png_changed_pixels_vs_no_plane":self.image_plane_verification_changed_pixels,"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.liquify_brush_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["synthetic canvas drag creates a non-destructive preview","front, side, and ground camera views preserve the working-plane depth","unselected and occluding strokes remain unchanged","cancel restores exact source strokes","navigation interruption cancels brush preview without history","apply commits preview as one history edit","undo restores source geometry","redo restores committed deformation","native serialization and recovery scan preserve the deformed geometry","whole-scene and selected-stroke GLB encode the committed result","brush cursor indicates radius and working-plane depth"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.mixed_resources_verification_frame.is_some() {
@@ -4699,6 +4661,8 @@ impl SketchApp {
             std::fs::write(
                 path.join(if self.group_verification_frame.is_some() {
                     "group-report.json"
+                } else if self.image_plane_verification_frame.is_some() {
+                    "image-plane-report.json"
                 } else if self.vase_verification_frame.is_some() {
                     "vase-report.json"
                 } else if self.layer_verification_frame.is_some() {
