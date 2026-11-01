@@ -856,12 +856,54 @@ mod tests {
                 })
                 .collect(),
         };
-        let document = Document {
-            strokes: vec![surface_stroke.clone()],
+        let mut document = Document {
             model_references: vec![resource.clone()],
             active_model_reference: Some(42),
             ..Document::default()
         };
+        let stroke_edit = crate::editing::Edit::Change {
+            before: Vec::new(),
+            after: vec![(0, surface_stroke.clone())],
+        };
+        stroke_edit.apply(&mut document, true);
+        assert_eq!(document.strokes, vec![surface_stroke.clone()]);
+        stroke_edit.apply(&mut document, false);
+        assert!(document.strokes.is_empty());
+        stroke_edit.apply(&mut document, true);
+        assert_eq!(document.strokes, vec![surface_stroke.clone()]);
+
+        let before_model_edit = (
+            document.model_references.clone(),
+            document.active_model_reference,
+            document.image_planes.clone(),
+            document.active_image_plane,
+            document.guide_resources.clone(),
+            document.active_guide,
+        );
+        let mut moved_model = resource.clone();
+        moved_model.center += Vec3::new(0.5, -0.25, 0.75);
+        moved_model.rotation = Quat::from_rotation_y(0.3);
+        let after_model_edit = (
+            vec![moved_model],
+            document.active_model_reference,
+            document.image_planes.clone(),
+            document.active_image_plane,
+            document.guide_resources.clone(),
+            document.active_guide,
+        );
+        let transform_edit = crate::editing::Edit::ModelReferences {
+            before: before_model_edit.clone(),
+            after: after_model_edit.clone(),
+        };
+        transform_edit.apply(&mut document, true);
+        assert_eq!(document.strokes, vec![surface_stroke.clone()]);
+        transform_edit.apply(&mut document, false);
+        assert_eq!(document.model_references, vec![resource.clone()]);
+        assert_eq!(document.strokes, vec![surface_stroke.clone()]);
+        transform_edit.apply(&mut document, true);
+        assert_eq!(document.model_references, after_model_edit.0);
+        assert_eq!(document.strokes, vec![surface_stroke.clone()]);
+
         let native_reloaded = Document::from_json(&serde_json::to_string(&document).unwrap())
             .expect("native document reload preserves model surface ink");
         assert_eq!(native_reloaded.strokes, vec![surface_stroke.clone()]);
@@ -876,7 +918,7 @@ mod tests {
         assert_eq!(scan.candidates.len(), 1);
         let recovered = &scan.candidates[0].snapshot;
         assert_eq!(recovered.document.strokes, vec![surface_stroke]);
-        assert_eq!(recovered.document.model_references, vec![resource.clone()]);
+        assert_eq!(recovered.document.model_references, after_model_edit.0);
         assert_eq!(recovered.document.active_model_reference, Some(42));
         assert_eq!(recovered.assets.len(), 2);
         assert_eq!(recovered.assets[0].asset_file, "models/42/model.obj");
