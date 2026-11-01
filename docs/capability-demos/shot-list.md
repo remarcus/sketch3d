@@ -18,7 +18,7 @@ Record only after the associated task's checks pass. Suggested timings are edit 
 | --- | --- | --- | --- |
 | `draw-orbit` | Plane drawing and camera orbit (SKETCH-001/021) | Draw; orbit; pause on the 3D result. | Written Controls section and a reviewed still. |
 | `curved-guides` | Cylinder/ring guides (SKETCH-001/063) | Activate guide; draw across a periodic seam; orbit. | Guide documentation and a static wireframe image. |
-| `mirror-shapes` | Mirror, circles, and image tracing (SKETCH-038/039/060/062) | Enable mirror; draw a line; place an ellipse on a guide/image. | Tool-specific README steps and fixture. |
+| `mirror-shapes` | Mirror, circles, and image tracing (SKETCH-038/039/060/062) | Enable mirror; draw a line; place an ellipse on a guide/image. The deterministic replay prepares the reflected line and ellipse through production handlers before capture, then records the orbit. | Tool-specific README steps and fixture. |
 | `edit-erase` | Selection, appearance, and partial erasing (SKETCH-035–037) | Select; change appearance; erase a segment; undo. The deterministic replay prepares the editable mark before capture, then performs the partial erase and undo through production handlers. | Keyboard/control table and before/after stills. |
 | `reference-export` | Reference/model import and export (SKETCH-033/044/059/061) | Import a reference; insert a saved drawing; export a scene. | Import/export docs and sample files. |
 

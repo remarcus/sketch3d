@@ -318,6 +318,7 @@ const CAPABILITY_REPLAY_MAX_MP4_BYTES: u64 = 512 * 1024 * 1024;
 enum CapabilityClip {
     DrawOrbit,
     CurvedGuides,
+    MirrorShapes,
     EditErase,
 }
 
@@ -326,6 +327,7 @@ impl CapabilityClip {
         match name {
             "draw-orbit" => Some(Self::DrawOrbit),
             "curved-guides" => Some(Self::CurvedGuides),
+            "mirror-shapes" => Some(Self::MirrorShapes),
             "edit-erase" => Some(Self::EditErase),
             _ => None,
         }
@@ -335,6 +337,7 @@ impl CapabilityClip {
         match self {
             Self::DrawOrbit => "draw-orbit",
             Self::CurvedGuides => "curved-guides",
+            Self::MirrorShapes => "mirror-shapes",
             Self::EditErase => "edit-erase",
         }
     }
@@ -345,6 +348,10 @@ impl CapabilityClip {
 
     fn is_edit_erase(self) -> bool {
         self == Self::EditErase
+    }
+
+    fn is_mirror_shapes(self) -> bool {
+        self == Self::MirrorShapes
     }
 }
 
@@ -453,7 +460,7 @@ impl CapabilityReplay {
         self.canvas_rect = Some(rect);
         self.wait_updates = 0;
         let frame = self.captured_frames;
-        let orbit_sample = if self.clip.is_curved_guides() {
+        let orbit_sample = if self.clip.is_curved_guides() || self.clip.is_mirror_shapes() {
             let start = rect.center() + egui::vec2(0.0, 12.0);
             let end = start + egui::vec2(270.0, -55.0);
             match frame {
@@ -728,6 +735,16 @@ impl CapabilityReplay {
                 "00:00:05.200 --> 00:00:06.000\n",
                 "The replay uses synthetic input with no pressure data.\n"
             )
+        } else if self.clip.is_mirror_shapes() {
+            concat!(
+                "WEBVTT\n\n",
+                "00:00:00.000 --> 00:00:00.700\n",
+                "A mirrored line and ellipse were prepared on the front guide.\n\n",
+                "00:00:00.700 --> 00:00:05.200\n",
+                "A synthetic barrel gesture orbits to reveal the editable geometry.\n\n",
+                "00:00:05.200 --> 00:00:06.000\n",
+                "The replay uses synthetic input with no pressure data.\n"
+            )
         } else if self.clip.is_curved_guides() {
             concat!(
                 "WEBVTT\n\n",
@@ -795,6 +812,7 @@ impl CapabilityReplay {
                 "src/app.rs",
                 "src/main.rs",
                 "src/selection.rs",
+                "src/mirror_checks.rs",
                 "src/tutorial_ui.rs",
                 "src/presentation_ui.rs",
                 "src/video_export_ui.rs",
@@ -816,6 +834,17 @@ impl CapabilityReplay {
                     "Undo restores the edited source stroke; a short orbit reveals the result.",
                 ],
                 "An orange editable stroke on the Sketch3D front plane with a synthetic-input disclosure.",
+            )
+        } else if self.clip.is_mirror_shapes() {
+            (
+                "Mirrored front-guide line and ellipse",
+                "Procedurally generated from an empty Sketch3D document through the production line-mirror and shape handlers; no external artwork or assets.",
+                vec![
+                    "Create a straight line and its reflected run through the production live-mirror line handler.",
+                    "Create an editable ellipse on the front drawing guide through the production shape handler.",
+                    "Orbit the camera using synthetic barrel samples through canvas_input.",
+                ],
+                "An editable cyan mirrored line pair and ellipse on Sketch3D's front drawing guide.",
             )
         } else if self.clip.is_curved_guides() {
             (
@@ -857,11 +886,11 @@ impl CapabilityReplay {
             "dpi_percent": (self.pixels_per_point * 100.0).round() as u32,
             "theme": "Dark",
             "capture_mode": "deterministic hidden in-app replay through canvas_input",
-            "input_note": if self.clip.is_edit_erase() { "The fixture stroke is created through the production pointer-action handler and its appearance edit through the production selection handler. Captured PenSample input uses pressure=None and no tilt; no tablet pressure or latency was measured." } else { "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured." },
+            "input_note": if self.clip.is_edit_erase() { "The fixture stroke is created through the production pointer-action handler and its appearance edit through the production selection handler. Captured PenSample input uses pressure=None and no tilt; no tablet pressure or latency was measured." } else if self.clip.is_mirror_shapes() { "The mirrored line and ellipse are prepared by production handlers before capture. Captured PenSample orbit input uses pressure=None and no tilt; no tablet pressure or latency was measured." } else { "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured." },
             "window_visible": false,
             "frame_rate": CAPABILITY_REPLAY_FPS,
             "shot_steps": shot_steps,
-            "cursor_cue": if self.clip.is_edit_erase() { "A synthetic pointer ring is labeled ERASE or ORBIT during the captured workflow; the selected stroke and appearance are prepared by production handlers before capture, and a persistent banner discloses no pressure data." } else if self.clip.is_curved_guides() { "The curved-guide strokes are prepared by scripted production handlers before capture; playback shows a synthetic ORBIT cursor and a persistent no-pressure disclosure." } else { "A synthetic pointer ring is labeled DRAW or ORBIT while input is active; a persistent banner discloses synthetic replay and no pressure data." },
+            "cursor_cue": if self.clip.is_edit_erase() { "A synthetic pointer ring is labeled ERASE or ORBIT during the captured workflow; the selected stroke and appearance are prepared by production handlers before capture, and a persistent banner discloses no pressure data." } else if self.clip.is_mirror_shapes() { "The mirrored line and ellipse are prepared by production handlers before capture; playback shows a synthetic ORBIT cursor and persistent no-pressure disclosure." } else if self.clip.is_curved_guides() { "The curved-guide strokes are prepared by scripted production handlers before capture; playback shows a synthetic ORBIT cursor and a persistent no-pressure disclosure." } else { "A synthetic pointer ring is labeled DRAW or ORBIT while input is active; a persistent banner discloses synthetic replay and no pressure data." },
             "encoding": {
                 "mp4": format!("Captured full-viewport RGBA frames; {mp4_backend}; 10 fps."),
                 "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; 6 seconds; <=5 MiB.",
@@ -889,7 +918,7 @@ impl CapabilityReplay {
                 "private_content_checked": false,
                 "captions_timing_checked": false,
                 "reviewer": null,
-                "notes": if self.clip.is_edit_erase() { "Synthetic edit-erase draft. The selected stroke and appearance are prepared by production handlers before the captured eraser and undo sequence; review playback and readability before use." } else if self.clip.is_curved_guides() { "Synthetic curved-guide draft. The strokes are scripted through production handlers before the captured orbit; review playback and visual readability before use." } else { "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use." }
+                "notes": if self.clip.is_edit_erase() { "Synthetic edit-erase draft. The selected stroke and appearance are prepared by production handlers before the captured eraser and undo sequence; review playback and readability before use." } else if self.clip.is_mirror_shapes() { "Synthetic mirror-shapes draft. The mirrored line and ellipse are prepared through production handlers before the captured orbit; review playback and readability before use." } else if self.clip.is_curved_guides() { "Synthetic curved-guide draft. The strokes are scripted through production handlers before the captured orbit; review playback and visual readability before use." } else { "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use." }
             }
         });
         let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
@@ -1354,7 +1383,9 @@ impl SketchApp {
                 contact: false,
                 barrel: false,
                 eraser: false,
-                setup_verified: !clip.is_curved_guides() && !clip.is_edit_erase(),
+                setup_verified: !clip.is_curved_guides()
+                    && !clip.is_mirror_shapes()
+                    && !clip.is_edit_erase(),
                 undo_applied: false,
                 gesture_start: None,
                 gesture_end: None,
@@ -1367,7 +1398,7 @@ impl SketchApp {
             app.stabilization = 0.0;
             if clip.is_curved_guides() {
                 app.mirror_verification_frame = Some(0);
-            } else if !clip.is_edit_erase() {
+            } else if !clip.is_edit_erase() && !clip.is_mirror_shapes() {
                 app.load_house();
                 app.guide = DrawingPlane::from_preset(Plane::Front);
                 app.guide.depth = app.camera.target.z;
@@ -4820,6 +4851,27 @@ impl eframe::App for SketchApp {
                     replay.initial_camera = self.camera;
                     replay.setup_verified = true;
                 }
+                let prepare_mirror_shapes = self
+                    .capability_replay
+                    .as_ref()
+                    .is_some_and(|replay| {
+                        replay.clip.is_mirror_shapes() && !replay.setup_verified
+                    });
+                if prepare_mirror_shapes {
+                    let stroke_count = self.prepare_capability_mirror_shapes(rect);
+                    let replay = self.capability_replay.as_mut().unwrap();
+                    replay.initial_stroke_count = stroke_count;
+                    replay.initial_camera = self.camera;
+                    replay.setup_verified = stroke_count == 3
+                        && self.mirror_ui.enabled
+                        && self.doc.strokes.last().is_some_and(|stroke| {
+                            stroke.points.len() > 8 && stroke.fill.is_none()
+                        });
+                    assert!(
+                        replay.setup_verified,
+                        "mirror-shapes setup retains mirrored line pair and editable ellipse"
+                    );
+                }
                 let prepare_edit_erase = self
                     .capability_replay
                     .as_ref()
@@ -6237,6 +6289,10 @@ impl SketchApp {
                 replay.setup_verified
                     && self.doc.strokes.len() == replay.initial_stroke_count
                     && self.doc.active_guide.is_some()
+            } else if replay.clip.is_mirror_shapes() {
+                replay.setup_verified
+                    && self.doc.strokes.len() == replay.initial_stroke_count
+                    && self.mirror_ui.enabled
             } else if replay.clip.is_edit_erase() {
                 let split_strokes = self.doc.strokes.as_slice();
                 replay.setup_verified

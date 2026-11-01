@@ -30,6 +30,14 @@ cargo run --locked -j1 -- --record-capability-demo edit-erase
 
 Before capture, this replay creates an editable stroke through the production pointer handler, selects it, and applies an appearance change through the selection editor. The recorded section sends a pressure-free eraser gesture through `canvas_input`, verifies that the stroke splits, undoes the erase, and orbits to show the restored mark. Its manifest and captions disclose the pre-capture setup and synthetic input with no pressure data. It writes the corresponding `edit-erase.*` GIF, MP4, poster, WebVTT, and manifest files, refusing to overwrite an existing set.
 
+The mirrored line and shape preview uses the same hidden capture pipeline:
+
+```powershell
+cargo run --locked -j1 -- --record-capability-demo mirror-shapes
+```
+
+Before capture, production line-mirror and ellipse handlers create an editable reflected line pair and an ellipse on the front guide. The recorded section sends a synthetic barrel orbit through `canvas_input`; its captions and manifest disclose the scripted setup and the lack of pressure data. The `mirror-shapes.*` output set is independent and refuses to overwrite existing files.
+
 ## Capture a clip
 
 1. Build the application and stage the exact fixture and UI state listed in [shot-list.md](shot-list.md).

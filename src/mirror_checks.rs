@@ -2,6 +2,93 @@ use super::*;
 use crate::document::guide_resources::{GuideGeometry, GuideResource};
 
 impl SketchApp {
+    pub(super) fn prepare_capability_mirror_shapes(&mut self, rect: Rect) -> usize {
+        self.doc = Document::default();
+        self.next_id = 1;
+        self.camera = Camera {
+            projection: crate::geometry::Projection::Orthographic,
+            distance: 5.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            ..Camera::default()
+        };
+        self.guide = DrawingPlane::from_preset(Plane::Front);
+        self.guide.depth = 0.0;
+        self.selected.clear();
+        self.undo.clear();
+        self.redo.clear();
+        self.mirror_ui.enabled = true;
+        self.line.constraint = line_tool::Constraint::Free;
+        self.brush = Brush::default();
+        self.radius = 0.025;
+        self.color = [0.08, 0.72, 0.78];
+        self.stabilization = 0.0;
+        self.select_mode = false;
+        self.eraser = false;
+        self.line.enabled = false;
+        self.shape_tool.mode = None;
+        self.curve_tool.enabled = false;
+        self.fills.enabled = false;
+
+        let camera = self.camera;
+        let screen = |world: Vec3| {
+            crate::gizmo::project(&camera, rect, world)
+                .expect("mirror-shapes fixture projects into the canvas")
+                .0
+        };
+        let line_start_world = Vec3::new(-1.35, -0.55, 0.0);
+        let line_end_world = Vec3::new(-0.25, 0.5, 0.0);
+        let line_start = screen(line_start_world);
+        let line_end = screen(line_end_world);
+        self.start_line_tool();
+        self.line_input(line_start, 1.0, None, rect, true);
+        self.line_input(line_end, 1.0, None, rect, false);
+        self.release_line(line_end, rect);
+        assert_eq!(self.doc.strokes.len(), 2, "mirrored line commits both runs");
+        let mirror_plane = crate::mirror::MirrorPlane {
+            point: Vec3::ZERO,
+            normal: Vec3::X,
+        };
+        let (source, reflected) = (&self.doc.strokes[0], &self.doc.strokes[1]);
+        assert_eq!(source.points.len(), 2);
+        assert_eq!(reflected.points.len(), 2);
+        for (source_point, reflected_point) in source.points.iter().zip(&reflected.points) {
+            assert!(
+                reflected_point
+                    .position
+                    .distance(mirror_plane.reflect_point(source_point.position).unwrap())
+                    < 0.0001,
+                "captured mirror line matches production reflection geometry"
+            );
+        }
+
+        self.line.enabled = false;
+        self.start_shape_tool(shape_tool::ShapeMode::Ellipse);
+        let ellipse_start = screen(Vec3::new(0.48, -1.5, 0.0));
+        let ellipse_end = screen(Vec3::new(1.25, -0.65, 0.0));
+        self.shape_input(ellipse_start, 1.0, rect, true);
+        self.shape_input(ellipse_end, 1.0, rect, false);
+        assert!(self.shape_draft_active(), "ellipse creates a live preview");
+        self.release_shape(ellipse_end, 1.0, rect);
+        assert_eq!(
+            self.doc.strokes.len(),
+            3,
+            "ellipse commits after the mirror pair"
+        );
+        let ellipse = self.doc.strokes.last().unwrap();
+        assert!(ellipse.points.len() > 8);
+        assert!(ellipse
+            .points
+            .iter()
+            .all(|point| point.position.z.abs() < 0.001));
+        self.shape_tool.mode = None;
+        self.status =
+            "Mirrored line and editable ellipse prepared on the front guide; synthetic orbit reveals the layout.".into();
+        self.dirty = true;
+        self.renderer.invalidate();
+        self.doc.strokes.len()
+    }
+
     /// Exercise saved curved-guide live mirror through the canvas pointer handlers.
     pub(super) fn verify_mirror(&mut self, ctx: &egui::Context, rect: Rect) {
         fn replay_mouse(
