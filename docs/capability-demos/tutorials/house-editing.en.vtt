@@ -1,0 +1,22 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:06.000
+Start with the editable garden-house scene.
+
+00:00:06.000 --> 00:00:18.000
+Press V and select a roof stroke. Use G and drag to move it.
+
+00:00:18.000 --> 00:00:25.000
+Undo and redo to compare the original and moved geometry.
+
+00:00:25.000 --> 00:00:34.000
+Orbit to inspect the change in three dimensions.
+
+00:00:34.000 --> 00:00:46.000
+Press B and draw a short detail on the current plane.
+
+00:00:46.000 --> 00:00:52.000
+If the plane is edge-on, press F to align the view.
+
+00:00:52.000 --> 00:01:00.000
+Save a separate copy, then reopen it to confirm the strokes remain editable.

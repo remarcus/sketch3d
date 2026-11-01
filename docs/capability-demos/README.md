@@ -2,7 +2,7 @@
 
 This folder defines the capture recipe for SKETCH-066. **No capability clips are published yet.** Record and review each clip only after the workflow it demonstrates has passed its feature checks.
 
-The editable sample documents are generated from the built-in original scenes with `cargo run -- --write-capability-fixtures docs/capability-demos/fixtures`. The command refuses to overwrite existing files and removes files it created if fixture generation stops partway through. Static tutorial alternatives and draft captions are in `tutorials/`.
+The editable sample documents are generated from the built-in original scenes with `cargo run -- --write-capability-fixtures docs/capability-demos/fixtures`. The command refuses to overwrite existing files and removes files it created if fixture generation stops partway through. Static tutorial alternatives, caption transcripts, and draft 60-second WebVTT tracks are in `tutorials/`.
 
 ## Capture a clip
 
@@ -10,8 +10,9 @@ The editable sample documents are generated from the built-in original scenes wi
 2. Close dialogs, notifications, and unrelated windows. Keep private file paths and account information out of the application window.
 3. Run `scripts/record_capability_demo.ps1` from PowerShell 7 with a short unique name, duration, fixture, theme, DPI, and one `-ShotStep` argument per action. The script accepts only the exact `Sketch3D` title and captures that window only; it refuses to proceed if multiple windows have that title and never captures the desktop.
 4. Operate the app manually during the capture. The capture utility does not inject input, synthesize pressure, or measure latency. If a future clip uses deterministic replay, identify that fact in both the clip manifest and its caption.
-5. Review the MP4, GIF loop, poster, and JSON manifest. Correct `review` fields and record the reviewer/notes only after checking the clip at its intended README/tutorial size.
-6. Keep raw masters and unreviewed material under ignored `verification/capability-demos/`. Copy only reviewed, bounded assets into a curated release location. Do not add raw recordings to Git.
+5. For tutorials longer than 25 seconds, provide `-CaptionFile` with a WebVTT sidecar. Validate the draft without starting capture by adding `-ValidateOnly`; cues must be ordered, non-overlapping, and within the requested duration.
+6. Review the MP4, GIF loop, poster, caption timing, and JSON manifest. The script copies captions as a sidecar and records their size/hash; it does not claim that draft timings align with the footage. Correct `review.captions_timing_checked` and other `review` fields only after checking the clip at its intended README/tutorial size.
+7. Keep raw masters and unreviewed material under ignored `verification/capability-demos/`. Copy only reviewed, bounded assets into a curated release location. Do not add raw recordings to Git.
 
 Example (run from the repository root):
 
@@ -32,7 +33,11 @@ Example (run from the repository root):
 
 FFmpeg must include the Windows `gdigrab` input and libx264. The script caps captures at 2,700 frames, 7,680×4,320 metadata dimensions, 512 MiB per MP4, and 5 MiB per short GIF. GIF previews are generated only for clips up to 25 seconds; longer tutorials use an MP4 and poster. Output names never overwrite existing files.
 
-The capture manifest includes byte sizes and SHA-256 hashes for the MP4, GIF (when created), and poster. If publishing the completed output set fails partway through, the script removes files already moved by that capture so a retry does not inherit a partial set.
+Timed WebVTT is a sidecar, not burned into the MP4. Long clips require one. Caption files are UTF-8, at most 1 MiB and 200 cues; timestamps use `HH:MM:SS.mmm`, cannot overlap, and must end within the declared clip duration. The two tutorial VTT files currently contain 60-second draft timing; they still need synchronization against reviewed footage.
+
+For either 60-second tutorial, add `-DurationSeconds 60 -CaptionFile docs/capability-demos/tutorials/house-editing.en.vtt` (or `curved-drawing.en.vtt`) to the capture command. Use `-ValidateOnly` to check the selected VTT without launching FFmpeg or starting a recording.
+
+The capture manifest includes byte sizes and SHA-256 hashes for the MP4, GIF (when created), poster, and WebVTT sidecar (when supplied). If publishing the completed output set fails partway through, the script removes files already moved by that capture so a retry does not inherit a partial set.
 
 ## Review checklist
 

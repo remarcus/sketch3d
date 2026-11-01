@@ -22,12 +22,15 @@ param(
     [int]$DpiPercent = 100,
     [string]$Viewport = '1920x1080',
     [string[]]$ShotStep = @(),
+    [string]$CaptionFile,
+    [switch]$ValidateOnly,
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\verification\capability-demos')
 )
 
 $ErrorActionPreference = 'Stop'
 $maximumGifBytes = 5MB
 $maximumMp4Bytes = 512MB
+$maximumCaptionBytes = 1MB
 $maximumFrames = 2700
 
 function Invoke-Ffmpeg {
@@ -56,6 +59,104 @@ function Invoke-Ffmpeg {
     }
 }
 
+function ConvertTo-CaptionMilliseconds {
+    param([string]$Timestamp)
+
+    if ($Timestamp -notmatch '^(?<hours>\d{2}):(?<minutes>[0-5]\d):(?<seconds>[0-5]\d)\.(?<milliseconds>\d{3})$') {
+        throw "Invalid WebVTT timestamp '$Timestamp'. Use HH:MM:SS.mmm."
+    }
+    return ((([int]$Matches.hours * 60 + [int]$Matches.minutes) * 60 + [int]$Matches.seconds) * 1000 + [int]$Matches.milliseconds)
+}
+
+function Read-ValidatedCaptionTrack {
+    param(
+        [string]$Path,
+        [int]$MaximumDurationSeconds
+    )
+
+    $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.Length -le 0 -or $item.Length -gt $maximumCaptionBytes) {
+        throw "Caption file must be a nonempty regular file no larger than $maximumCaptionBytes bytes."
+    }
+    $bytes = [IO.File]::ReadAllBytes($item.FullName)
+    try {
+        $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+    }
+    catch {
+        throw 'Caption file must contain valid UTF-8 text.'
+    }
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) {
+        $text = $text.Substring(1)
+    }
+    $lines = [regex]::Split($text, '\r?\n')
+    if ($lines.Count -lt 3 -or $lines[0] -cne 'WEBVTT') {
+        throw 'Caption file must start with the WEBVTT header.'
+    }
+
+    $timestampPattern = '^(?<start>\d{2}:[0-5]\d:[0-5]\d\.\d{3})[ \t]+-->[ \t]+(?<end>\d{2}:[0-5]\d:[0-5]\d\.\d{3})(?:[ \t]+.*)?$'
+    $durationMilliseconds = $MaximumDurationSeconds * 1000
+    $previousEnd = -1
+    $cueCount = 0
+    $index = 1
+    while ($index -lt $lines.Count) {
+        while ($index -lt $lines.Count -and [string]::IsNullOrWhiteSpace($lines[$index])) { $index++ }
+        if ($index -ge $lines.Count) { break }
+        if ($lines[$index] -ceq 'NOTE' -or $lines[$index].StartsWith('NOTE ', [StringComparison]::Ordinal)) {
+            while ($index -lt $lines.Count -and -not [string]::IsNullOrWhiteSpace($lines[$index])) { $index++ }
+            continue
+        }
+
+        $timelineIndex = $index
+        $timelineMatch = [regex]::Match($lines[$timelineIndex], $timestampPattern)
+        if (-not $timelineMatch.Success) {
+            $timelineIndex++
+            if ($timelineIndex -ge $lines.Count) {
+                throw "Caption cue $($cueCount + 1) is missing its timestamp line."
+            }
+            $timelineMatch = [regex]::Match($lines[$timelineIndex], $timestampPattern)
+        }
+        if (-not $timelineMatch.Success) {
+            throw "Caption cue $($cueCount + 1) has an invalid timestamp line."
+        }
+        $start = ConvertTo-CaptionMilliseconds $timelineMatch.Groups['start'].Value
+        $end = ConvertTo-CaptionMilliseconds $timelineMatch.Groups['end'].Value
+        if ($end -le $start) {
+            throw "Caption cue $($cueCount + 1) must end after it starts."
+        }
+        if ($start -lt $previousEnd) {
+            throw "Caption cue $($cueCount + 1) overlaps the previous cue."
+        }
+        if ($end -gt $durationMilliseconds) {
+            throw "Caption cue $($cueCount + 1) extends beyond the $MaximumDurationSeconds-second clip."
+        }
+
+        $index = $timelineIndex + 1
+        $textLines = 0
+        while ($index -lt $lines.Count -and -not [string]::IsNullOrWhiteSpace($lines[$index])) {
+            $textLines++
+            $index++
+        }
+        if ($textLines -eq 0) {
+            throw "Caption cue $($cueCount + 1) has no text."
+        }
+        $cueCount++
+        if ($cueCount -gt 200) {
+            throw 'Caption track exceeds the 200-cue limit.'
+        }
+        $previousEnd = $end
+    }
+    if ($cueCount -eq 0) {
+        throw 'Caption track must contain at least one timed cue.'
+    }
+    return [pscustomobject]@{
+        Path = $item.FullName
+        Bytes = $bytes
+        ByteCount = $item.Length
+        CueCount = $cueCount
+        Sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    }
+}
+
 if ($DurationSeconds * $CaptureFps -gt $maximumFrames) {
     throw "The recording exceeds the $maximumFrames-frame cap. Reduce duration or frame rate."
 }
@@ -67,10 +168,26 @@ if ([int]$dimensions[0] -gt 7680 -or [int]$dimensions[1] -gt 4320) {
     throw 'The recorded viewport exceeds the 7680x4320 metadata limit.'
 }
 
-$ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
-if (-not $ffmpeg) {
-    throw 'FFmpeg is required for capture encoding. Install it and make it available on PATH.'
+$captionTrack = $null
+if (-not [string]::IsNullOrWhiteSpace($CaptionFile)) {
+    $captionPath = (Resolve-Path -LiteralPath $CaptionFile).Path
+    $captionTrack = Read-ValidatedCaptionTrack -Path $captionPath -MaximumDurationSeconds $DurationSeconds
 }
+elseif ($DurationSeconds -gt 25) {
+    throw 'Long tutorial captures require a timed WebVTT sidecar through -CaptionFile.'
+}
+if ($ValidateOnly) {
+    if ($null -eq $captionTrack) {
+        throw '-ValidateOnly requires a WebVTT file in -CaptionFile.'
+    }
+    Write-Host "Caption track is valid: $($captionTrack.CueCount) cues, $($captionTrack.ByteCount) bytes, SHA-256 $($captionTrack.Sha256)."
+}
+
+if (-not $ValidateOnly) {
+    $ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
+    if (-not $ffmpeg) {
+        throw 'FFmpeg is required for capture encoding. Install it and make it available on PATH.'
+    }
 
 $appWindows = @(Get-Process -ErrorAction SilentlyContinue |
     Where-Object { $_.MainWindowTitle -ceq $WindowTitle -and $_.MainWindowHandle -ne 0 })
@@ -86,18 +203,20 @@ $outputRoot = [System.IO.Path]::GetFullPath($OutputDirectory)
 $masterPath = Join-Path $outputRoot "$Name.mp4"
 $gifPath = Join-Path $outputRoot "$Name.gif"
 $posterPath = Join-Path $outputRoot "$Name.png"
+$captionsPath = Join-Path $outputRoot "$Name.vtt"
 $manifestPath = Join-Path $outputRoot "$Name.recording.json"
 $tempMasterPath = Join-Path $outputRoot ".$Name.capture.mp4"
 $tempGifPath = Join-Path $outputRoot ".$Name.preview.gif"
 $tempPosterPath = Join-Path $outputRoot ".$Name.poster.png"
+$tempCaptionsPath = Join-Path $outputRoot ".$Name.captions.vtt"
 $publishedPaths = [System.Collections.Generic.List[string]]::new()
 
-foreach ($destination in @($masterPath, $gifPath, $posterPath, $manifestPath)) {
+foreach ($destination in @($masterPath, $gifPath, $posterPath, $captionsPath, $manifestPath)) {
     if (Test-Path -LiteralPath $destination) {
         throw "Refusing to overwrite existing recording output: $destination"
     }
 }
-$temporaryPaths = @($tempMasterPath, $tempGifPath, $tempPosterPath, (Join-Path $outputRoot ".$Name.recording.json.tmp"))
+$temporaryPaths = @($tempMasterPath, $tempGifPath, $tempPosterPath, $tempCaptionsPath, (Join-Path $outputRoot ".$Name.recording.json.tmp"))
 foreach ($temporary in $temporaryPaths) {
     if (Test-Path -LiteralPath $temporary) {
         throw "Refusing to overwrite an unfinished capture file: $temporary"
@@ -114,6 +233,9 @@ if ($ready -cne 'RECORD') {
 
 $startedAt = [DateTimeOffset]::UtcNow
 try {
+    if ($null -ne $captionTrack) {
+        [IO.File]::WriteAllBytes($tempCaptionsPath, $captionTrack.Bytes)
+    }
     Invoke-Ffmpeg @(
         '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
         '-f', 'gdigrab', '-framerate', "$CaptureFps", '-draw_mouse', '1',
@@ -171,17 +293,20 @@ try {
         encoding = [ordered]@{
             mp4 = "FFmpeg gdigrab, window-title input, native window resolution, $CaptureFps fps capture, libx264 CRF 18"
             gif = if ($DurationSeconds -le 25) { "FFmpeg palettegen/paletteuse at $PreviewFps fps, 960px wide, <=5 MiB" } else { $null }
+            captions = if ($null -ne $captionTrack) { 'Timed WebVTT sidecar; supplied and validated against the requested clip duration, must be reviewed against the captured footage.' } else { $null }
         }
         outputs = [ordered]@{
             mp4 = [ordered]@{ file = "$Name.mp4"; bytes = $masterBytes; sha256 = (Get-FileHash -LiteralPath $tempMasterPath -Algorithm SHA256).Hash.ToLowerInvariant() }
             gif = if ($gifBytes -ne $null) { [ordered]@{ file = "$Name.gif"; bytes = $gifBytes; sha256 = (Get-FileHash -LiteralPath $tempGifPath -Algorithm SHA256).Hash.ToLowerInvariant() } } else { $null }
             poster = [ordered]@{ file = "$Name.png"; bytes = (Get-Item -LiteralPath $tempPosterPath).Length; sha256 = (Get-FileHash -LiteralPath $tempPosterPath -Algorithm SHA256).Hash.ToLowerInvariant(); alt = 'Reviewed poster frame for the capability clip.' }
+            captions = if ($null -ne $captionTrack) { [ordered]@{ file = "$Name.vtt"; bytes = $captionTrack.ByteCount; sha256 = $captionTrack.Sha256; timing_reviewed = $false } } else { $null }
         }
         review = [ordered]@{
             reviewed = $false
             loop_boundary_checked = $false
             intended_readme_surface_checked = $false
             private_content_checked = $false
+            captions_timing_checked = $false
             reviewer = $null
             notes = 'Review and complete before publishing this clip.'
         }
@@ -197,6 +322,10 @@ try {
         Move-Item -LiteralPath $tempGifPath -Destination $gifPath
         $publishedPaths.Add($gifPath)
     }
+    if (Test-Path -LiteralPath $tempCaptionsPath) {
+        Move-Item -LiteralPath $tempCaptionsPath -Destination $captionsPath
+        $publishedPaths.Add($captionsPath)
+    }
     Move-Item -LiteralPath $manifestTemp -Destination $manifestPath
     $publishedPaths.Add($manifestPath)
     Write-Host "Saved reviewed-candidate outputs under $outputRoot"
@@ -208,10 +337,11 @@ catch {
             Remove-Item -LiteralPath $published -Force -ErrorAction SilentlyContinue
         }
     }
-    foreach ($temporary in @($tempMasterPath, $tempGifPath, $tempPosterPath, (Join-Path $outputRoot ".$Name.recording.json.tmp"))) {
+    foreach ($temporary in @($tempMasterPath, $tempGifPath, $tempPosterPath, $tempCaptionsPath, (Join-Path $outputRoot ".$Name.recording.json.tmp"))) {
         if (Test-Path -LiteralPath $temporary) {
             Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
         }
     }
     throw
+}
 }

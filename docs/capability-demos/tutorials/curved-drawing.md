@@ -4,6 +4,8 @@
 
 **Sample:** [Cylindrical lantern](../fixtures/cylindrical-lantern.sketch.json), generated from the built-in original fixture in `src/scenes.rs`.
 
+**Draft timed captions:** [WebVTT sidecar](curved-drawing.en.vtt), planned for a 60-second tutorial. Check every cue against the final recording before publishing.
+
 **Prerequisites:** Sketch3D; mouse or tablet. Mouse input uses constant pressure. This walkthrough makes no tablet-pressure or latency claims.
 
 ## Steps
@@ -16,7 +18,7 @@
 
 ## Draft narration / caption transcript
 
-These are caption-ready sentences, not timed captions. Match their timing to the final capture and name any shortcut when it appears.
+This narration draft is also available as the linked 60-second WebVTT timing draft. Confirm cue timing and shortcut visibility against the final capture before publication.
 
 - “Open the editable lantern sample and inspect its curved strokes.”
 - “Orbit around the drawing to see how the marks wrap through three dimensions.”

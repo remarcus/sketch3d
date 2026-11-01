@@ -35,6 +35,13 @@
       "bytes": null,
       "sha256": null,
       "alt": null
+    },
+    "captions": {
+      "file": null,
+      "bytes": null,
+      "sha256": null,
+      "format": "WebVTT sidecar",
+      "timing_reviewed": false
     }
   },
   "review": {
@@ -42,6 +49,7 @@
     "loop_boundary_checked": false,
     "intended_readme_surface_checked": false,
     "private_content_checked": false,
+    "captions_timing_checked": false,
     "reviewer": null,
     "notes": null
   }

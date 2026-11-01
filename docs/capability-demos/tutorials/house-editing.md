@@ -4,6 +4,8 @@
 
 **Sample:** [Garden house](../fixtures/garden-house.sketch.json), generated from the built-in original fixture in `src/scenes.rs`.
 
+**Draft timed captions:** [WebVTT sidecar](house-editing.en.vtt), planned for a 60-second tutorial. Check every cue against the final recording before publishing.
+
 **Prerequisites:** Sketch3D; mouse or tablet. Mouse input uses constant pressure.
 
 ## Steps
@@ -16,7 +18,7 @@
 
 ## Draft narration / caption transcript
 
-These are caption-ready sentences, not timed captions. Align them to the final capture and identify each shortcut on screen.
+This narration draft is also available as the linked 60-second WebVTT timing draft. Confirm cue timing and control visibility against the final capture before publication.
 
 - “Start from the editable garden-house scene.”
 - “Select a roof stroke and move it. Undo and redo to compare the saved geometry.”
