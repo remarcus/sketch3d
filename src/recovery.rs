@@ -632,15 +632,35 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut recovery = Recovery::new(Ok(dir.path().into()), egui::Context::default());
         let mut doc = document();
-        doc.guide_resources = vec![crate::document::guide_resources::GuideResource {
+        use crate::document::guide_resources::{
+            GuideGeometry, GuideResource, LoftSection, LoftSurface,
+        };
+        let loft_section = |z: f32| LoftSection {
+            controls: [
+                Vec3::new(-1.0, 0.0, z),
+                Vec3::new(-0.3, 0.2, z),
+                Vec3::new(0.3, -0.1, z),
+                Vec3::new(1.0, 0.0, z),
+            ],
+        };
+        let mut sections = [loft_section(0.0); 8];
+        sections[0] = loft_section(-1.0);
+        sections[1] = loft_section(0.0);
+        sections[2] = loft_section(1.0);
+        doc.guide_resources = vec![GuideResource {
             id: 23,
-            name: "Recovery sphere".into(),
+            name: "Recovery loft".into(),
             visible: true,
             locked: false,
-            geometry: crate::document::guide_resources::GuideGeometry::sphere(
-                Vec3::new(1.0, 2.0, 3.0),
-                1.25,
-            ),
+            geometry: GuideGeometry::Loft {
+                surface: LoftSurface {
+                    center: Vec3::new(1.0, 2.0, 3.0),
+                    rotation: glam::Quat::IDENTITY,
+                    sections,
+                    section_count: 3,
+                    tension: -0.2,
+                },
+            },
         }];
         doc.active_guide = Some(23);
         recovery.mark_edit();

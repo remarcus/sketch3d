@@ -335,3 +335,85 @@ fn ray_triangle(origin: Vec3, direction: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Opt
     let t = edge2.dot(q) * inverse;
     (t > 1.0e-6 && t.is_finite()).then_some(t)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loft() -> LoftSurface {
+        let section = |z: f32, lift: f32| LoftSection {
+            controls: [
+                Vec3::new(-1.0, 0.0, z),
+                Vec3::new(-0.35, lift + 0.5, z + 0.03),
+                Vec3::new(0.35, lift - 0.25, z - 0.02),
+                Vec3::new(1.0, lift, z),
+            ],
+        };
+        LoftSurface {
+            center: Vec3::new(0.6, -0.4, 1.2),
+            rotation: Quat::from_rotation_y(0.35) * Quat::from_rotation_x(-0.2),
+            sections: [
+                section(-1.0, 0.0),
+                section(0.0, 0.4),
+                section(1.1, -0.2),
+                section(0.0, 0.0),
+                section(0.0, 0.0),
+                section(0.0, 0.0),
+                section(0.0, 0.0),
+                section(0.0, 0.0),
+            ],
+            section_count: 3,
+            tension: 0.35,
+        }
+    }
+
+    #[test]
+    fn loft_hit_coordinates_and_internal_section_seam_are_stable() {
+        let loft = loft();
+        assert!(loft.validate().is_ok());
+        assert_eq!(loft.triangles(64, 16).unwrap().len(), 2048);
+        let (u, v) = (0.37, 0.5);
+        let expected = loft.center + loft.rotation * cubic(loft.sections[1].controls, u);
+        assert!(loft.point(u, v).distance(expected) < 1e-5);
+
+        let point = loft.point(0.42, 0.31);
+        let (_, normal) = loft.frame(0.42, 0.31);
+        let hit = loft.hit(point + normal * 3.0, -normal).unwrap();
+        assert!(hit.distance(point) < 0.06);
+        let coordinates = loft.coordinates(hit).unwrap();
+        assert!((coordinates.0 - 0.42).abs() < 0.02);
+        assert!((coordinates.1 - 0.31).abs() < 0.02);
+
+        let mut stabilizer = crate::surface::SurfaceStabilizer::default();
+        stabilizer.start(crate::surface::Surface::Loft(loft));
+        let mut drawn = Vec::new();
+        for index in 0..9 {
+            let v = 0.44 + index as f32 * 0.015;
+            if index > 0 {
+                assert!(!stabilizer.discontinuity(loft.point(0.4, v)));
+            }
+            drawn.extend(stabilizer.push(
+                crate::document::Point {
+                    position: loft.point(0.4, v),
+                    pressure: 0.3 + index as f32 * 0.05,
+                    tilt: None,
+                },
+                0.08,
+            ));
+        }
+        drawn.extend(stabilizer.finish());
+        assert!(drawn
+            .iter()
+            .all(|point| loft.coordinates(point.position).is_some()));
+
+        let mut twisted = loft;
+        twisted.sections[2].controls.reverse();
+        assert!(twisted.validate().is_err());
+        let mut folded = loft;
+        folded.sections[2]
+            .controls
+            .iter_mut()
+            .for_each(|point| point.z = -1.5);
+        assert!(folded.validate().is_err());
+    }
+}

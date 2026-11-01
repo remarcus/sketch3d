@@ -923,6 +923,96 @@ mod saved_guide_document_tests {
         }
     }
 
+    fn sample_loft() -> GuideGeometry {
+        let section = |z: f32, lift: f32| guide_resources::LoftSection {
+            controls: [
+                Vec3::new(-1.0, 0.0, z),
+                Vec3::new(-0.3, lift + 0.2, z),
+                Vec3::new(0.3, lift - 0.1, z),
+                Vec3::new(1.0, lift, z),
+            ],
+        };
+        let mut sections = [section(0.0, 0.0); 8];
+        sections[0] = section(-1.0, 0.0);
+        sections[1] = section(0.0, 0.35);
+        sections[2] = section(1.0, -0.1);
+        GuideGeometry::Loft {
+            surface: guide_resources::LoftSurface {
+                center: Vec3::new(2.0, -1.0, 0.5),
+                rotation: glam::Quat::from_rotation_y(0.3),
+                sections,
+                section_count: 3,
+                tension: 0.4,
+            },
+        }
+    }
+
+    #[test]
+    fn loft_snapshot_roundtrips_and_guide_edit_undoes_without_changing_ink() {
+        let ink = vec![sample_stroke()];
+        let loft = guide(27, "Canopy loft", sample_loft());
+        let mut doc = Document {
+            strokes: ink.clone(),
+            guide_resources: vec![loft.clone()],
+            active_guide: Some(27),
+            ..Document::default()
+        };
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+        let reopened = Document::from_json(&std::fs::read_to_string(file.path()).unwrap()).unwrap();
+        assert_eq!(reopened.guide_resources, vec![loft.clone()]);
+        assert_eq!(reopened.strokes, ink);
+
+        let before = (
+            doc.guide_resources.clone(),
+            doc.active_guide,
+            doc.image_planes.clone(),
+            doc.active_image_plane,
+            doc.active_model_reference,
+        );
+        let mut changed = loft;
+        if let GuideGeometry::Loft { surface } = &mut changed.geometry {
+            surface.tension = -0.6;
+            surface.center += Vec3::new(0.5, 0.0, -0.2);
+        }
+        let after = (
+            vec![changed],
+            Some(27),
+            doc.image_planes.clone(),
+            doc.active_image_plane,
+            doc.active_model_reference,
+        );
+        let edit = crate::editing::Edit::Guides {
+            before: before.clone(),
+            after: after.clone(),
+        };
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes, ink);
+        edit.apply(&mut doc, false);
+        assert_eq!(
+            (
+                doc.guide_resources.clone(),
+                doc.active_guide,
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_model_reference,
+            ),
+            before
+        );
+        edit.apply(&mut doc, true);
+        assert_eq!(
+            (
+                doc.guide_resources.clone(),
+                doc.active_guide,
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_model_reference,
+            ),
+            after
+        );
+        assert_eq!(doc.strokes, ink);
+    }
+
     #[test]
     fn primitive_guides_roundtrip_transform_undo_without_moving_existing_ink() {
         let mut doc = Document {
