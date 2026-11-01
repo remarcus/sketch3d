@@ -640,6 +640,14 @@ mod tests {
                 .unwrap();
         assert_eq!(loaded_model.positions, parsed_model.positions);
         assert_eq!(loaded_model.materials, parsed_model.materials);
+        let export =
+            crate::export::encode_with_images(&reloaded, None, Some(&destination_assets)).unwrap();
+        assert_eq!(export.summary.image_planes, 1);
+        assert_eq!(export.summary.model_references, 1);
+        assert!(export.summary.triangles > 1);
+        let gltf = gltf::Gltf::from_slice(&export.bytes).unwrap();
+        assert_eq!(gltf.images().count(), 1);
+        assert_eq!(gltf.meshes().count(), 2);
 
         edit.apply(&mut merged, false);
         assert!(merged.image_planes.is_empty());
