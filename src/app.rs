@@ -58,6 +58,8 @@ mod mirror_ui;
 mod mixed_resources_ui;
 #[path = "native_merge.rs"]
 mod native_merge;
+#[path = "native_merge_check.rs"]
+mod native_merge_check;
 #[path = "obj_export_ui.rs"]
 mod obj_export_ui;
 #[path = "obj_reference_ui.rs"]
@@ -98,6 +100,10 @@ mod tutorial_ui;
 mod ui_style;
 #[path = "video_export_ui.rs"]
 mod video_export_ui;
+
+pub(crate) fn write_native_merge_fixture(output: &std::path::Path) -> Result<(), String> {
+    native_merge_check::run(output)
+}
 #[path = "views.rs"]
 mod views;
 use std::{

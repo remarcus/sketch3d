@@ -102,6 +102,20 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--write-native-merge-fixture")
+    {
+        let Some(directory) = args.get(index + 1) else {
+            eprintln!("Usage: sketch3d --write-native-merge-fixture <output-directory>");
+            std::process::exit(2);
+        };
+        if let Err(error) = app::write_native_merge_fixture(std::path::Path::new(directory)) {
+            eprintln!("Native merge fixture generation failed: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--benchmark-performance") {
         if let Err(error) = performance_benchmark::run() {
             eprintln!("{error}");
