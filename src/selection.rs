@@ -1428,6 +1428,119 @@ impl SketchApp {
             app.canvas_input(ctx, rect, Vec::new());
             ctx.input_mut(|i| i.events.clear());
         }
+        fn compare_scale_handle_and_numeric(
+            app: &mut SketchApp,
+            ctx: &egui::Context,
+            rect: Rect,
+            pivot_mode: PivotMode,
+            custom_pivot: Vec3,
+            axis: usize,
+            factor: f32,
+        ) {
+            app.transform_mode = Mode::Scale;
+            app.transform_pivot = pivot_mode;
+            app.custom_pivot = custom_pivot;
+            app.scale_uniform_lock = false;
+            let original = app.doc.strokes.clone();
+            let undo_depth = app.undo.len();
+            let layout = app.layout(rect).unwrap();
+            let handle = layout
+                .handles
+                .iter()
+                .find(|handle| handle.kind == HandleKind::ScaleAxis(axis))
+                .unwrap_or_else(|| panic!("scale axis {axis} handle is available"));
+            let start = handle.path[1];
+            let direction = (start - layout.origin).normalized();
+            replay(
+                app,
+                ctx,
+                rect,
+                start,
+                Some(start + direction * (factor.ln() * 100.0)),
+                false,
+                true,
+            );
+            assert_eq!(app.undo.len(), undo_depth + 1);
+            let handle_scaled = app.doc.strokes.clone();
+            app.undo();
+            assert_eq!(app.doc.strokes, original);
+
+            let mut factors = [1.0; 3];
+            factors[axis] = factor;
+            app.scale_values = factors;
+            app.numeric_transform();
+            let numeric_scaled = app.doc.strokes.clone();
+            assert_eq!(app.undo.len(), undo_depth + 1);
+            assert_eq!(handle_scaled.len(), numeric_scaled.len());
+            for (handle_stroke, numeric_stroke) in handle_scaled.iter().zip(&numeric_scaled) {
+                assert_eq!(handle_stroke.id, numeric_stroke.id);
+                assert_eq!(handle_stroke.fill, numeric_stroke.fill);
+                assert_eq!(handle_stroke.color, numeric_stroke.color);
+                assert_eq!(handle_stroke.material, numeric_stroke.material);
+                assert_eq!(handle_stroke.group_id, numeric_stroke.group_id);
+                assert_eq!(handle_stroke.layer_id, numeric_stroke.layer_id);
+                assert!((handle_stroke.radius - numeric_stroke.radius).abs() < 0.0001);
+                assert_eq!(handle_stroke.brush.kind, numeric_stroke.brush.kind);
+                assert_eq!(handle_stroke.brush.dynamics, numeric_stroke.brush.dynamics);
+                assert_eq!(
+                    handle_stroke.brush.texture.kind,
+                    numeric_stroke.brush.texture.kind
+                );
+                assert_eq!(
+                    handle_stroke.brush.texture.seed,
+                    numeric_stroke.brush.texture.seed
+                );
+                assert!(
+                    (handle_stroke.brush.thickness - numeric_stroke.brush.thickness).abs() < 0.0001
+                );
+                assert!(
+                    (handle_stroke.brush.opacity - numeric_stroke.brush.opacity).abs() < 0.0001
+                );
+                assert!(
+                    (handle_stroke.brush.softness - numeric_stroke.brush.softness).abs() < 0.0001
+                );
+                assert!(
+                    handle_stroke
+                        .brush
+                        .normal
+                        .distance(numeric_stroke.brush.normal)
+                        < 0.0001
+                );
+                assert!(
+                    handle_stroke
+                        .brush
+                        .tangent
+                        .distance(numeric_stroke.brush.tangent)
+                        < 0.0001
+                );
+                assert!(
+                    (handle_stroke.brush.texture.scale - numeric_stroke.brush.texture.scale).abs()
+                        < 0.0001
+                );
+                assert_eq!(handle_stroke.points.len(), numeric_stroke.points.len());
+                for (handle_point, numeric_point) in
+                    handle_stroke.points.iter().zip(&numeric_stroke.points)
+                {
+                    assert!(
+                        handle_point.position.distance(numeric_point.position) < 0.0001,
+                        "numeric and axis {axis} handle scaling must agree around {pivot_mode:?}"
+                    );
+                    assert_eq!(handle_point.pressure, numeric_point.pressure);
+                    assert_eq!(handle_point.tilt.is_some(), numeric_point.tilt.is_some());
+                    if let (Some(handle_tilt), Some(numeric_tilt)) =
+                        (handle_point.tilt, numeric_point.tilt)
+                    {
+                        assert!(handle_tilt.distance(numeric_tilt) < 0.0001);
+                    }
+                }
+            }
+            app.undo();
+            assert_eq!(app.doc.strokes, original);
+            app.redo();
+            assert_eq!(app.doc.strokes, numeric_scaled);
+            app.undo();
+            assert_eq!(app.doc.strokes, original);
+        }
         self.select_mode = true;
         self.eraser = false;
         self.selected.clear();
@@ -1577,102 +1690,16 @@ impl SketchApp {
         assert_eq!(self.doc.strokes, moved);
         self.redo();
         assert_eq!(self.doc.strokes, rotated);
-        self.transform_mode = Mode::Scale;
-        self.transform_pivot = PivotMode::Custom;
-        self.custom_pivot = Vec3::new(0.35, -0.2, 0.4);
-        self.scale_uniform_lock = false;
-        let factor = 1.35_f32;
-        let layout = self.layout(rect).unwrap();
-        let handle = layout
-            .handles
-            .iter()
-            .find(|handle| handle.kind == HandleKind::ScaleAxis(0))
-            .expect("X scale handle is available");
-        let start = handle.path[1];
-        let direction = (start - layout.origin).normalized();
-        let steps = self.undo.len();
-        replay(
-            self,
-            ctx,
-            rect,
-            start,
-            Some(start + direction * (factor.ln() * 100.0)),
-            false,
-            true,
-        );
-        assert_eq!(self.undo.len(), steps + 1);
-        let handle_scaled = self.doc.strokes.clone();
-        self.undo();
-        assert_eq!(self.doc.strokes, rotated);
-        self.scale_values = [factor, 1.0, 1.0];
-        self.numeric_transform();
-        let numeric_scaled = self.doc.strokes.clone();
-        assert_eq!(self.undo.len(), steps + 1);
-        assert_eq!(handle_scaled.len(), numeric_scaled.len());
-        for (handle_stroke, numeric_stroke) in handle_scaled.iter().zip(&numeric_scaled) {
-            assert_eq!(handle_stroke.id, numeric_stroke.id);
-            assert_eq!(handle_stroke.fill, numeric_stroke.fill);
-            assert_eq!(handle_stroke.color, numeric_stroke.color);
-            assert_eq!(handle_stroke.material, numeric_stroke.material);
-            assert_eq!(handle_stroke.group_id, numeric_stroke.group_id);
-            assert_eq!(handle_stroke.layer_id, numeric_stroke.layer_id);
-            assert!((handle_stroke.radius - numeric_stroke.radius).abs() < 0.0001);
-            assert_eq!(handle_stroke.brush.kind, numeric_stroke.brush.kind);
-            assert_eq!(handle_stroke.brush.dynamics, numeric_stroke.brush.dynamics);
-            assert_eq!(
-                handle_stroke.brush.texture.kind,
-                numeric_stroke.brush.texture.kind
-            );
-            assert_eq!(
-                handle_stroke.brush.texture.seed,
-                numeric_stroke.brush.texture.seed
-            );
-            assert!(
-                (handle_stroke.brush.thickness - numeric_stroke.brush.thickness).abs() < 0.0001
-            );
-            assert!((handle_stroke.brush.opacity - numeric_stroke.brush.opacity).abs() < 0.0001);
-            assert!((handle_stroke.brush.softness - numeric_stroke.brush.softness).abs() < 0.0001);
-            assert!(
-                handle_stroke
-                    .brush
-                    .normal
-                    .distance(numeric_stroke.brush.normal)
-                    < 0.0001
-            );
-            assert!(
-                handle_stroke
-                    .brush
-                    .tangent
-                    .distance(numeric_stroke.brush.tangent)
-                    < 0.0001
-            );
-            assert!(
-                (handle_stroke.brush.texture.scale - numeric_stroke.brush.texture.scale).abs()
-                    < 0.0001
-            );
-            assert_eq!(handle_stroke.points.len(), numeric_stroke.points.len());
-            for (handle_point, numeric_point) in
-                handle_stroke.points.iter().zip(&numeric_stroke.points)
-            {
-                assert!(
-                    handle_point.position.distance(numeric_point.position) < 0.0001,
-                    "numeric and X-handle scaling must agree around the custom pivot"
-                );
-                assert_eq!(handle_point.pressure, numeric_point.pressure);
-                assert_eq!(handle_point.tilt.is_some(), numeric_point.tilt.is_some());
-                if let (Some(handle_tilt), Some(numeric_tilt)) =
-                    (handle_point.tilt, numeric_point.tilt)
-                {
-                    assert!(handle_tilt.distance(numeric_tilt) < 0.0001);
-                }
+        let custom_pivot = Vec3::new(0.35, -0.2, 0.4);
+        for (pivot_mode, pivot) in [
+            (PivotMode::SelectionCenter, Vec3::ZERO),
+            (PivotMode::WorldOrigin, Vec3::ZERO),
+            (PivotMode::Custom, custom_pivot),
+        ] {
+            for axis in 0..3 {
+                compare_scale_handle_and_numeric(self, ctx, rect, pivot_mode, pivot, axis, 1.35);
             }
         }
-        self.undo();
-        assert_eq!(self.doc.strokes, rotated);
-        self.redo();
-        assert_eq!(self.doc.strokes, numeric_scaled);
-        self.undo();
-        assert_eq!(self.doc.strokes, rotated);
         self.transform_pivot = PivotMode::SelectionCenter;
         self.scale_values = [1.0; 3];
         let layout = self.layout(rect).unwrap();
