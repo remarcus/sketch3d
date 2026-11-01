@@ -1740,6 +1740,56 @@ impl SketchApp {
         assert!(self.drag.is_none());
         assert_eq!(self.doc.strokes, before_cancel);
         assert_eq!(self.undo.len(), cancel_history);
+        self.transform_mode = Mode::Scale;
+        self.transform_pivot = PivotMode::Custom;
+        self.custom_pivot = custom_pivot;
+        self.scale_uniform_lock = false;
+        let before_view_scale = self.doc.strokes.clone();
+        let view_scale_history = self.undo.len();
+        let layout = self.layout(rect).unwrap();
+        let handle = layout
+            .handles
+            .iter()
+            .find(|handle| handle.kind == HandleKind::ScaleView)
+            .expect("view-plane scale handle is available");
+        let start = *handle.path.last().unwrap();
+        let scale_x = 1.3_f32;
+        let scale_y = 0.75_f32;
+        replay(
+            self,
+            ctx,
+            rect,
+            start,
+            Some(start + egui::vec2(scale_x.ln() * 100.0, -scale_y.ln() * 100.0)),
+            false,
+            true,
+        );
+        let view_scaled = self.doc.strokes.clone();
+        assert_ne!(view_scaled, before_view_scale);
+        assert_eq!(self.undo.len(), view_scale_history + 1);
+        let (view_right, view_up, view_forward) = self.camera.basis();
+        let view_basis = Quat::from_mat3(&Mat3::from_cols(view_right, view_up, view_forward));
+        let pivot = self.custom_pivot;
+        for (before_stroke, after_stroke) in before_view_scale.iter().zip(&view_scaled) {
+            if !self.selected.contains(&before_stroke.id) {
+                assert_eq!(before_stroke, after_stroke);
+                continue;
+            }
+            for (before_point, after_point) in before_stroke.points.iter().zip(&after_stroke.points)
+            {
+                let before_local = view_basis.inverse() * (before_point.position - pivot);
+                let after_local = view_basis.inverse() * (after_point.position - pivot);
+                assert!((after_local.x - before_local.x * scale_x).abs() < 0.0001);
+                assert!((after_local.y - before_local.y * scale_y).abs() < 0.0001);
+                assert!((after_local.z - before_local.z).abs() < 0.0001);
+            }
+        }
+        self.undo();
+        assert_eq!(self.doc.strokes, before_view_scale);
+        self.redo();
+        assert_eq!(self.doc.strokes, view_scaled);
+        self.undo();
+        assert_eq!(self.doc.strokes, before_view_scale);
         self.transform_pivot = PivotMode::SelectionCenter;
         self.scale_values = [1.0; 3];
         let layout = self.layout(rect).unwrap();
