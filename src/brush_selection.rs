@@ -23,7 +23,7 @@ pub enum BrushSelectionOperation {
 ///
 /// `path` and `radius_px` are in logical egui points. `through_selection` skips
 /// occlusion checks; otherwise a hit only counts where the stroke is the
-/// frontmost visible artwork according to the same picker used by click
+/// frontmost editable artwork according to the same picker used by click
 /// selection. Hidden and locked layers are excluded in both modes. Filled
 /// strokes are selectable along their contour, consistent with stroke picking.
 ///
@@ -113,8 +113,7 @@ pub fn hit_ids(
         }
 
         let Some(witness) = witness else { continue };
-        if through_selection || gizmo::pick_visible(doc, camera, canvas, witness) == Some(stroke.id)
-        {
+        if through_selection || gizmo::pick(doc, camera, canvas, witness) == Some(stroke.id) {
             if individual {
                 hits.insert(stroke.id);
             } else {
@@ -255,4 +254,148 @@ fn point_in_polygon(point: Pos2, polygon: &[Pos2]) -> bool {
         previous = current;
     }
     inside
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Brush, Layer, Point, Stroke};
+    use crate::geometry::Projection;
+    use eframe::egui::Vec2;
+    use glam::Vec3;
+
+    fn stroke(id: u64, layer_id: u64, group_id: Option<u64>, position: Vec3) -> Stroke {
+        Stroke {
+            id,
+            layer_id,
+            group_id,
+            fill: None,
+            material: Default::default(),
+            color: [0.2, 0.3, 0.4],
+            radius: 0.001,
+            brush: Brush::default(),
+            points: vec![Point {
+                position,
+                pressure: 1.0,
+                tilt: None,
+            }],
+        }
+    }
+
+    fn canvas() -> Rect {
+        Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))
+    }
+
+    fn screen_point(camera: &Camera, canvas: Rect, position: Vec3) -> Pos2 {
+        crate::gizmo::project(camera, canvas, position)
+            .expect("test points should be in the camera frustum")
+            .0
+    }
+
+    #[test]
+    fn visible_only_and_through_modes_respect_occlusion_and_protected_layers() {
+        let camera = Camera {
+            yaw: 0.0,
+            pitch: 0.0,
+            ..Camera::default()
+        };
+        let canvas = canvas();
+        let mut doc = Document::default();
+        doc.layers.extend([
+            Layer {
+                id: 2,
+                name: "Locked".into(),
+                visible: true,
+                locked: true,
+            },
+            Layer {
+                id: 3,
+                name: "Hidden".into(),
+                visible: false,
+                locked: false,
+            },
+        ]);
+        let point = Vec3::ZERO;
+        doc.strokes = vec![
+            stroke(1, 1, None, point - Vec3::Z),
+            stroke(2, 1, None, point + Vec3::Z),
+            stroke(3, 2, None, point + Vec3::Z * 2.0),
+            stroke(4, 3, None, point + Vec3::Z * 3.0),
+        ];
+        let path = [screen_point(&camera, canvas, point)];
+
+        assert_eq!(
+            hit_ids(&doc, &camera, canvas, &path, 6.0, false, true).unwrap(),
+            HashSet::from([2])
+        );
+        assert_eq!(
+            hit_ids(&doc, &camera, canvas, &path, 6.0, true, true).unwrap(),
+            HashSet::from([1, 2])
+        );
+    }
+
+    #[test]
+    fn screen_radius_is_stable_across_projection_modes_and_zoom_levels() {
+        let canvas = canvas();
+        for projection in [Projection::Perspective, Projection::Orthographic] {
+            for distance in [4.0, 20.0] {
+                let camera = Camera {
+                    projection,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    distance,
+                    ..Camera::default()
+                };
+                let center = camera.target;
+                let scale = camera.world_per_pixel(center, canvas.height());
+                let right = camera.basis().0;
+                let inside = center + right * (scale * 4.0);
+                let outside = center + right * (scale * 12.0);
+                let path = [screen_point(&camera, canvas, center)];
+                let mut doc = Document::default();
+                doc.strokes = vec![stroke(1, 1, None, inside), stroke(2, 1, None, outside)];
+
+                assert_eq!(
+                    hit_ids(&doc, &camera, canvas, &path, 6.0, true, true).unwrap(),
+                    HashSet::from([1]),
+                    "radius should be interpreted in logical screen points for {projection:?} at distance {distance}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn select_deselect_and_repeated_previews_only_change_ids_from_the_starting_set() {
+        let mut doc = Document::default();
+        doc.strokes = vec![
+            stroke(1, 1, Some(7), Vec3::ZERO),
+            stroke(2, 1, Some(7), Vec3::X),
+        ];
+        let before = doc.strokes.clone();
+        let starting = HashSet::from([9]);
+        let hits = HashSet::from([1, 2]);
+
+        let selected = apply_brush_selection(&starting, &hits, BrushSelectionOperation::Select);
+        assert_eq!(selected, HashSet::from([1, 2, 9]));
+        let deselected = apply_brush_selection(
+            &HashSet::from([1, 2, 9]),
+            &hits,
+            BrushSelectionOperation::Deselect,
+        );
+        assert_eq!(deselected, HashSet::from([9]));
+        assert_eq!(
+            apply_brush_selection(&starting, &hits, BrushSelectionOperation::Select),
+            selected,
+            "each preview is derived from the original selection, not the previous preview"
+        );
+        assert_eq!(
+            doc.strokes, before,
+            "selection gestures must not edit geometry"
+        );
+        assert_eq!(
+            starting,
+            HashSet::from([9]),
+            "cancel restores this starting set"
+        );
+    }
 }
