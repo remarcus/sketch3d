@@ -848,13 +848,27 @@ mod tests {
         let scan = scan(dir.path(), "another-session").unwrap();
         assert_eq!(scan.candidates.len(), 1);
         let recovered = &scan.candidates[0].snapshot;
-        assert_eq!(recovered.document.model_references, vec![resource]);
+        assert_eq!(recovered.document.model_references, vec![resource.clone()]);
         assert_eq!(recovered.document.active_model_reference, Some(42));
         assert_eq!(recovered.assets.len(), 2);
         assert_eq!(recovered.assets[0].asset_file, "models/42/model.obj");
         assert_eq!(recovered.assets[0].bytes, obj);
         assert_eq!(recovered.assets[1].asset_file, "models/42/material-000.mtl");
         assert_eq!(recovered.assets[1].bytes, mtl);
+
+        let restored_root = dir.path().join("recovered-drawing.assets");
+        restore_assets(&recovered.document, &restored_root, &recovered.assets).unwrap();
+        let restored_model =
+            crate::obj_reference_storage::load_bundle(&restored_root, &resource.asset).unwrap();
+        assert_eq!(restored_model.triangles.len(), 1);
+        assert_eq!(restored_model.materials.len(), 1);
+        assert_eq!(restored_model.materials[0].name, "default");
+        assert_eq!(restored_model.materials[0].diffuse, [0.7, 0.8, 0.9]);
+        assert_eq!(restored_model.materials[0].opacity, 1.0);
+        assert_eq!(
+            restored_model.bounds,
+            [Vec3::ZERO, Vec3::new(1.0, 1.0, 0.0)]
+        );
     }
     #[test]
     fn failed_replacement_retains_complete_previous_snapshot() {
