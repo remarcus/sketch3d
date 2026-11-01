@@ -56,6 +56,13 @@ impl SketchApp {
         self.shape_tool.draft.is_some()
     }
 
+    pub(super) fn shape_draft_preview(&self) -> Option<&Stroke> {
+        self.shape_tool
+            .draft
+            .as_ref()
+            .and_then(|draft| draft.preview.as_ref())
+    }
+
     pub(super) fn start_shape_tool(&mut self, mode: ShapeMode) {
         if self.planar_drawing_target().is_none() {
             self.status =

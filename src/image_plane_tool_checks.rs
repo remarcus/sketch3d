@@ -172,13 +172,51 @@ impl SketchApp {
         self.camera.distance = 10.0;
         self.start_shape_tool(shape_tool::ShapeMode::Ellipse);
         let before = self.doc.strokes.len();
-        drag(
-            self,
-            ctx,
-            rect,
-            screen(self, -0.6, -0.65),
-            screen(self, 0.6, 0.65),
+        self.shape_input(screen(self, -0.6, -0.65), 1.0, rect, true);
+        self.shape_input(screen(self, 0.6, 0.65), 1.0, rect, false);
+        assert!(
+            self.shape_draft_active(),
+            "ellipse drag shows a live preview"
         );
+        assert_eq!(
+            self.doc.strokes.len(),
+            before,
+            "preview does not commit ink"
+        );
+        let prior_camera = self.camera;
+        self.navigate(Vec2::new(24.0, -11.0), false, false, rect);
+        assert_ne!(
+            self.camera.yaw, prior_camera.yaw,
+            "camera orbit changes the view"
+        );
+        assert!(
+            self.shape_draft_active(),
+            "camera orbit keeps the shape draft"
+        );
+        let ellipse_end = target.plane.origin() + axis_u * 0.6 + axis_v * 0.65;
+        let ellipse_end_screen = crate::gizmo::project(&self.camera, rect, ellipse_end)
+            .expect("ellipse endpoint remains visible after orbit")
+            .0;
+        self.shape_input(ellipse_end_screen, 1.0, rect, false);
+        assert!(
+            self.shape_draft_active(),
+            "orbiting pointer updates preview"
+        );
+        assert_eq!(
+            self.doc.strokes.len(),
+            before,
+            "updated preview stays uncommitted"
+        );
+        let preview = self
+            .shape_draft_preview()
+            .expect("ellipse preview remains live");
+        assert!(preview.points.iter().any(|point| {
+            (point.position - (target.plane.origin() + axis_u * 0.6)).length() < 0.002
+        }));
+        assert!(preview.points.iter().any(|point| {
+            (point.position - (target.plane.origin() + axis_v * 0.65)).length() < 0.002
+        }));
+        self.release_shape(ellipse_end_screen, 1.0, rect);
         assert_eq!(
             self.doc.strokes.len(),
             before + 1,
@@ -190,7 +228,7 @@ impl SketchApp {
         self.redo();
         assert_eq!(self.doc.strokes.last(), Some(&ellipse));
         self.shape_tool.mode = None;
-        checks.push("rotated image-plane ellipse drag, clipping, and undo/redo");
+        checks.push("rotated image-plane ellipse drag, camera orbit, clipping, and undo/redo");
 
         // Smooth curve anchor clicks at another zoom.
         self.camera.distance = 9.5;
@@ -235,7 +273,24 @@ impl SketchApp {
         self.pointer_action(screen(self, -0.5, 0.0), 1.0, rect, true, false);
         self.pointer_action(screen(self, 0.0, 0.0), 1.0, rect, false, false);
         assert!(self.shape_draft_active());
-        self.cancel();
+        let camera_before_escape = self.camera;
+        self.navigate(Vec2::new(-13.0, 7.0), false, false, rect);
+        assert_ne!(self.camera.yaw, camera_before_escape.yaw);
+        assert!(
+            self.shape_draft_active(),
+            "camera orbit keeps cancelable draft"
+        );
+        ctx.input_mut(|input| {
+            input.events = vec![egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }]
+        });
+        self.shape_shortcuts(ctx);
+        ctx.input_mut(|input| input.events.clear());
         assert!(!self.shape_draft_active());
         assert_eq!(self.doc.strokes.len(), before);
         self.shape_tool.mode = None;
@@ -246,6 +301,7 @@ impl SketchApp {
         self.cancel_curve_tool();
         assert_eq!(self.doc.strokes.len(), before);
         checks.push("line, fill, circle, and curve cancel without document edits");
+        checks.push("shape Escape cancels after camera orbit without document edits");
 
         // Hidden or locked image planes are rejected by each planar tool.
         for locked in [false, true] {
