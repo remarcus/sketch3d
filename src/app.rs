@@ -54,6 +54,8 @@ mod line_checks;
 mod line_tool;
 #[path = "liquify_ui.rs"]
 mod liquify_ui;
+#[path = "mirror_checks.rs"]
+mod mirror_checks;
 #[path = "mirror_ui.rs"]
 mod mirror_ui;
 #[path = "mixed_resources_ui.rs"]
@@ -202,6 +204,7 @@ pub struct SketchApp {
     layer_target: u64,
     layer_verification_frame: Option<u32>,
     image_plane_verification_frame: Option<u32>,
+    mirror_verification_frame: Option<u32>,
     image_plane_verification_changed_pixels: usize,
     liquify_brush_verification_frame: Option<u32>,
     liquify_brush_verification_before: Option<Vec<Stroke>>,
@@ -581,6 +584,7 @@ impl SketchApp {
             layer_target: 1,
             layer_verification_frame: None,
             image_plane_verification_frame: None,
+            mirror_verification_frame: None,
             image_plane_verification_changed_pixels: 0,
             liquify_brush_verification_frame: None,
             liquify_brush_verification_before: None,
@@ -724,6 +728,9 @@ impl SketchApp {
                 guide_ids: HashSet::from([9301]),
             };
             app.camera.align(crate::geometry::Plane::Front);
+        } else if std::env::args().any(|a| a == "--verify-mirror") {
+            app.verification_frame = None;
+            app.mirror_verification_frame = Some(0);
         } else if std::env::args().any(|a| a == "--verify-image-planes") {
             app.verification_frame = None;
             app.image_plane_verification_frame = Some(0);
@@ -3678,6 +3685,7 @@ impl eframe::App for SketchApp {
                 self.verify_recovery(ctx, rect);
                 self.verify_presets(ctx, rect);
                 self.verify_image_planes(ctx, rect);
+                self.verify_mirror(ctx, rect);
                 self.verify_liquify_brush(ctx, rect);
                 self.verify_mixed_resources(ctx);
                 self.verify_textures(ctx, rect);
@@ -3918,6 +3926,7 @@ impl eframe::App for SketchApp {
             || self.preset_verification_frame.is_some()
             || self.recovery_verification_frame.is_some()
             || self.layer_verification_frame.is_some()
+            || self.mirror_verification_frame.is_some()
             || self.vase_verification_frame.is_some()
             || self.group_verification_frame.is_some()
             || self.tutorial.verification_frame.is_some()
@@ -4552,6 +4561,7 @@ impl SketchApp {
             && self.recovery_verification_frame.is_none()
             && self.layer_verification_frame.is_none()
             && self.image_plane_verification_frame.is_none()
+            && self.mirror_verification_frame.is_none()
             && self.liquify_brush_verification_frame.is_none()
             && self.mixed_resources_verification_frame.is_none()
             && self.vase_verification_frame.is_none()
@@ -4592,6 +4602,8 @@ impl SketchApp {
                     "layer-preview.png"
                 } else if self.image_plane_verification_frame.is_some() {
                     "image-plane-preview.png"
+                } else if self.mirror_verification_frame.is_some() {
+                    "mirror-preview.png"
                 } else if self.liquify_brush_verification_frame.is_some() {
                     "liquify-brush-preview.png"
                 } else if self.mixed_resources_verification_frame.is_some() {
@@ -4624,6 +4636,8 @@ impl SketchApp {
                 serde_json::json!({"passed":true,"checks":["house component grouping","group and individual selection","duplicate independent group","shared pivot transforms","ungroup undo and native persistence","layer protection","GPU groups"],"gpu":self.renderer.adapter})
             } else if self.image_plane_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["generated asymmetric image texture uploaded to GPU","transformed image plane brush input handler commits a stroke","stroke points remain within transformed plane bounds","captured brush frame follows plane rotation","one-step stroke undo and exact redo","out-of-bounds image-plane contact rejected","inactive image plane does not intercept brush input","transformed finite image-plane line drag and undo/redo","image-plane fill click-to-close, clipping, and undo/redo","rotated image-plane circle drag, clipping, and undo/redo","rotated image-plane ellipse drag, clipping, and undo/redo","image-plane curve anchor clicks, clipping, and undo/redo","line, fill, circle, and curve cancel without document edits","hidden and locked image planes reject all planar tools","artwork PNG includes image-plane pixels"],"image_plane_count":self.doc.image_planes.len(),"stroke_count":self.doc.strokes.len(),"png_changed_pixels_vs_no_plane":self.image_plane_verification_changed_pixels,"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+            } else if self.mirror_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["synthetic pointer-handler samples draw on an active saved cylinder guide","curved-guide brush points remain on the guide surface","mirror preview geometry does not mutate the document","committed mirrored geometry matches its preview exactly","source and mirrored run commit as one undo edit","undo/redo preserve the exact mirrored pair","cancel discards an in-progress source without history","whole-drawing GLB includes the mirrored pair"],"stroke_count":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.liquify_brush_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["synthetic canvas drag creates a non-destructive preview","front, side, and ground camera views preserve the working-plane depth","unselected and occluding strokes remain unchanged","cancel restores exact source strokes","navigation interruption cancels brush preview without history","apply commits preview as one history edit","undo restores source geometry","redo restores committed deformation","native serialization and recovery scan preserve the deformed geometry","whole-scene and selected-stroke GLB encode the committed result","brush cursor indicates radius and working-plane depth"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.mixed_resources_verification_frame.is_some() {
@@ -4654,6 +4668,8 @@ impl SketchApp {
                     "group-report.json"
                 } else if self.image_plane_verification_frame.is_some() {
                     "image-plane-report.json"
+                } else if self.mirror_verification_frame.is_some() {
+                    "mirror-report.json"
                 } else if self.vase_verification_frame.is_some() {
                     "vase-report.json"
                 } else if self.layer_verification_frame.is_some() {

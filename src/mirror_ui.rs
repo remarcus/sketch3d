@@ -87,6 +87,12 @@ impl SketchApp {
         self.mirror_plane()
     }
 
+    pub(super) fn mirrored_runs_for(&self, source: &Stroke) -> Result<Vec<Stroke>, String> {
+        self.mirror_availability().and_then(|plane| {
+            crate::mirror::mirror_stroke_runs(source, plane, self.next_id, 0.0001)
+        })
+    }
+
     pub(super) fn mirror_controls(&mut self, ui: &mut egui::Ui) {
         let availability = self.mirror_availability();
         ui.separator();
@@ -122,9 +128,7 @@ impl SketchApp {
         let mut mirrored = Vec::new();
         let mut mirror_warning = None;
         if self.mirror_ui.enabled {
-            match self.mirror_availability().and_then(|plane| {
-                crate::mirror::mirror_stroke_runs(&source, plane, self.next_id, 0.0001)
-            }) {
+            match self.mirrored_runs_for(&source) {
                 Ok(copies) => mirrored = copies,
                 Err(error) => mirror_warning = Some(error),
             }
@@ -164,11 +168,12 @@ impl SketchApp {
                     self.doc.strokes.len()
                 };
                 let mut after = Vec::with_capacity(added_strokes);
-                if !already_present {
-                    after.push((index, source));
-                }
+                // The live source exists in the document while its pointer
+                // gesture is in progress. Include it in the transaction so
+                // one undo removes the source and every reflected run.
+                after.push((index, source.clone()));
                 for (copy_index, copy) in mirrored.into_iter().enumerate() {
-                    after.push((index + usize::from(!already_present) + copy_index, copy));
+                    after.push((index + 1 + copy_index, copy));
                 }
                 let edit = Edit::Change {
                     before: Vec::new(),
@@ -208,11 +213,7 @@ impl SketchApp {
         if !self.mirror_ui.enabled {
             return;
         }
-        let Ok(plane) = self.mirror_availability() else {
-            return;
-        };
-        let Ok(mirrored) = crate::mirror::mirror_stroke_runs(source, plane, self.next_id, 0.0001)
-        else {
+        let Ok(mirrored) = self.mirrored_runs_for(source) else {
             return;
         };
         let painter = ui.painter().with_clip_rect(rect);
