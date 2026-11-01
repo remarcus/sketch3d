@@ -1428,6 +1428,135 @@ impl SketchApp {
             app.canvas_input(ctx, rect, Vec::new());
             ctx.input_mut(|i| i.events.clear());
         }
+        fn replay_pen(
+            app: &mut SketchApp,
+            ctx: &egui::Context,
+            rect: Rect,
+            start: Pos2,
+            end: Pos2,
+        ) {
+            let scale = ctx.pixels_per_point();
+            for (position, phase) in [(start, Phase::Down), (end, Phase::Move), (end, Phase::Up)] {
+                ctx.input_mut(|input| input.events.clear());
+                app.canvas_input(
+                    ctx,
+                    rect,
+                    vec![PenSample {
+                        position: egui::pos2(position.x * scale, position.y * scale),
+                        pressure: Some(0.65),
+                        tilt: [None, None],
+                        eraser: false,
+                        barrel: false,
+                        contact: true,
+                        phase,
+                    }],
+                );
+            }
+            ctx.input_mut(|input| input.events.clear());
+        }
+        fn verify_mouse_pen_brush_selection(app: &mut SketchApp, ctx: &egui::Context, rect: Rect) {
+            let original_doc = app.doc.clone();
+            let original_selection = app.selected.clone();
+            let original_camera = app.camera;
+            let original_undo = app.undo.len();
+            let original_redo = app.redo.len();
+            let original_last_pen = app.last_pen;
+            let original_last_pen_at = app.last_pen_at;
+            let original_pen_previous = app.pen_previous;
+            let original_mouse_down = app.mouse_down;
+            let original_select_mode = app.select_mode;
+            let original_brush_select_enabled = app.brush_select_enabled;
+            let original_brush_select_deselect = app.brush_select_deselect;
+            let original_brush_select_radius = app.brush_select_radius;
+            let original_brush_select_through = app.brush_select_through;
+            let make_stroke = |id, y| Stroke {
+                material: Default::default(),
+                fill: None,
+                group_id: None,
+                layer_id: 1,
+                id,
+                color: [0.4, 0.7, 0.9],
+                radius: 0.08,
+                brush: Default::default(),
+                points: [-0.8, 0.8]
+                    .into_iter()
+                    .map(|x| Point {
+                        position: Vec3::new(x, y, 0.0),
+                        pressure: 1.0,
+                        tilt: None,
+                    })
+                    .collect(),
+            };
+            app.doc = Document {
+                strokes: vec![make_stroke(501, 0.8), make_stroke(502, -0.8)],
+                ..Document::default()
+            };
+            app.camera = Camera {
+                projection: crate::geometry::Projection::Perspective,
+                distance: 5.0,
+                yaw: 0.0,
+                pitch: 0.0,
+                ..Camera::default()
+            };
+            app.selected.clear();
+            app.select_mode = true;
+            app.eraser = false;
+            app.brush_select_enabled = true;
+            app.brush_select_deselect = false;
+            app.brush_select_radius = 6.0;
+            app.brush_select_through = false;
+            let original_geometry = app.doc.strokes.clone();
+            let first = app.doc.strokes[0].id;
+            let second = app.doc.strokes[1].id;
+            let first_start =
+                gizmo::project(&app.camera, rect, app.doc.strokes[0].points[0].position)
+                    .unwrap()
+                    .0;
+            let first_end =
+                gizmo::project(&app.camera, rect, app.doc.strokes[0].points[1].position)
+                    .unwrap()
+                    .0;
+            replay(app, ctx, rect, first_start, Some(first_end), false, true);
+            assert_eq!(app.selected, HashSet::from([first]));
+            app.brush_select_deselect = true;
+            replay(app, ctx, rect, first_start, Some(first_end), false, true);
+            assert!(app.selected.is_empty());
+
+            app.camera.projection = crate::geometry::Projection::Orthographic;
+            app.camera.distance = 30.0;
+            let second_start =
+                gizmo::project(&app.camera, rect, app.doc.strokes[1].points[0].position)
+                    .unwrap()
+                    .0;
+            let second_end =
+                gizmo::project(&app.camera, rect, app.doc.strokes[1].points[1].position)
+                    .unwrap()
+                    .0;
+            app.brush_select_deselect = false;
+            replay_pen(app, ctx, rect, second_start, second_end);
+            assert_eq!(app.selected, HashSet::from([second]));
+            app.brush_select_deselect = true;
+            replay_pen(app, ctx, rect, second_start, second_end);
+            assert!(app.selected.is_empty());
+            assert_eq!(app.doc.strokes, original_geometry);
+            assert_eq!(app.undo.len(), original_undo);
+            assert_eq!(app.redo.len(), original_redo);
+            assert!(app.brush_select_drag.is_none());
+
+            app.doc = original_doc;
+            app.selected = original_selection;
+            app.camera = original_camera;
+            app.last_pen = original_last_pen;
+            app.last_pen_at = original_last_pen_at;
+            app.pen_previous = original_pen_previous;
+            app.mouse_down = original_mouse_down;
+            app.select_mode = original_select_mode;
+            app.brush_select_enabled = original_brush_select_enabled;
+            app.brush_select_deselect = original_brush_select_deselect;
+            app.brush_select_radius = original_brush_select_radius;
+            app.brush_select_through = original_brush_select_through;
+            app.renderer.invalidate();
+        }
         fn compare_scale_handle_and_numeric(
             app: &mut SketchApp,
             ctx: &egui::Context,
@@ -1541,6 +1670,7 @@ impl SketchApp {
             app.undo();
             assert_eq!(app.doc.strokes, original);
         }
+        verify_mouse_pen_brush_selection(self, ctx, rect);
         self.select_mode = true;
         self.eraser = false;
         self.selected.clear();
