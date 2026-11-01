@@ -250,3 +250,188 @@ fn ray_triangle(origin: Vec3, direction: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Opt
     let t = edge2.dot(q) * inverse;
     (t > 1e-6 && t.is_finite()).then_some(t)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::Point;
+
+    fn surface() -> FreeformSurface {
+        FreeformSurface {
+            center: Vec3::new(0.7, -0.3, 1.2),
+            rotation: Quat::from_rotation_y(0.4) * Quat::from_rotation_x(-0.25),
+            directrix: [
+                Vec2::new(-1.0, 0.0),
+                Vec2::new(-0.4, 0.8),
+                Vec2::new(0.4, -0.5),
+                Vec2::new(1.0, 0.2),
+            ],
+            depth: 2.5,
+            bend: 0.4,
+        }
+    }
+
+    #[test]
+    fn freeform_sheet_validates_hits_deterministically_and_inverts_coordinates() {
+        let surface = surface();
+        assert!(surface.validate().is_ok());
+        assert_eq!(
+            surface.triangles(HIT_U_STEPS, HIT_V_STEPS).unwrap().len(),
+            1024
+        );
+        let (u, v) = (0.37, 0.62);
+        let point = surface.point(u, v);
+        let (_, normal) = surface.frame(u, v);
+        let hit = surface.hit(point + normal * 3.0, -normal).unwrap();
+        assert!(
+            hit.distance(point) < 0.06,
+            "mesh hit should be near analytic sheet"
+        );
+        let coordinates = surface.coordinates(hit).unwrap();
+        assert!((coordinates.0 - u).abs() < 0.02);
+        assert!((coordinates.1 - v).abs() < 0.02);
+
+        let miss_origin = surface.center + surface.rotation * Vec3::new(4.0, 4.0, 5.0);
+        assert!(surface
+            .hit(miss_origin, surface.rotation * Vec3::Z)
+            .is_none());
+
+        let mut invalid = surface;
+        invalid.directrix[1].x = invalid.directrix[2].x + 0.1;
+        assert!(invalid.validate().is_err());
+        invalid = surface;
+        invalid.bend = MAX_BEND + 0.01;
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn freeform_stabilization_stays_on_the_single_sheet() {
+        let surface = surface();
+        let mut stabilizer = crate::surface::SurfaceStabilizer::default();
+        stabilizer.start(crate::surface::Surface::Freeform(surface));
+        let mut output = Vec::new();
+        for index in 0..12 {
+            let u = 0.1 + index as f32 * 0.065;
+            let v = 0.2 + (index as f32 * 0.27).sin() * 0.2;
+            let position = surface.point(u, v);
+            if index > 0 {
+                assert!(!stabilizer.discontinuity(position));
+            }
+            output.extend(stabilizer.push(
+                Point {
+                    position,
+                    pressure: 0.2 + index as f32 * 0.05,
+                    tilt: None,
+                },
+                0.08,
+            ));
+        }
+        output.extend(stabilizer.finish());
+        assert!(output.len() > 12);
+        assert!(output.iter().all(|point| {
+            surface
+                .coordinates(point.position)
+                .is_some_and(|(u, v)| (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v))
+        }));
+    }
+
+    #[test]
+    fn freeform_guide_parameters_save_transform_delete_and_undo_exactly() {
+        let source = surface();
+        let guide = crate::document::guide_resources::GuideResource {
+            id: 31,
+            name: "Canopy".into(),
+            visible: true,
+            locked: false,
+            geometry: crate::document::guide_resources::GuideGeometry::Freeform { surface: source },
+        };
+        let mut doc = crate::document::Document {
+            guide_resources: vec![guide.clone()],
+            active_guide: Some(31),
+            ..Default::default()
+        };
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+        let reopened =
+            crate::document::Document::from_json(&std::fs::read_to_string(file.path()).unwrap())
+                .unwrap();
+        assert_eq!(reopened.guide_resources, doc.guide_resources);
+        assert_eq!(reopened.active_guide, doc.active_guide);
+
+        let before = (
+            doc.guide_resources.clone(),
+            doc.active_guide,
+            doc.image_planes.clone(),
+            doc.active_image_plane,
+            doc.active_model_reference,
+        );
+        let mut transformed = guide.clone();
+        if let crate::document::guide_resources::GuideGeometry::Freeform { surface } =
+            &mut transformed.geometry
+        {
+            surface.center += Vec3::new(0.5, -0.2, 1.0);
+            surface.rotation = Quat::from_rotation_y(0.7);
+            surface.depth = 3.2;
+            surface.bend = -0.25;
+        }
+        let after = (
+            vec![transformed],
+            Some(31),
+            doc.image_planes.clone(),
+            doc.active_image_plane,
+            doc.active_model_reference,
+        );
+        let transform = crate::editing::Edit::Guides {
+            before: before.clone(),
+            after: after.clone(),
+        };
+        transform.apply(&mut doc, true);
+        transform.apply(&mut doc, false);
+        assert_eq!(
+            (
+                doc.guide_resources.clone(),
+                doc.active_guide,
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_model_reference,
+            ),
+            before
+        );
+        transform.apply(&mut doc, true);
+        assert_eq!(
+            (
+                doc.guide_resources.clone(),
+                doc.active_guide,
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_model_reference,
+            ),
+            after
+        );
+
+        let deleted = (
+            Vec::new(),
+            None,
+            doc.image_planes.clone(),
+            doc.active_image_plane,
+            doc.active_model_reference,
+        );
+        let remove = crate::editing::Edit::Guides {
+            before: after.clone(),
+            after: deleted,
+        };
+        remove.apply(&mut doc, true);
+        assert!(doc.guide_resources.is_empty());
+        remove.apply(&mut doc, false);
+        assert_eq!(
+            (
+                doc.guide_resources.clone(),
+                doc.active_guide,
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_model_reference,
+            ),
+            after
+        );
+    }
+}
