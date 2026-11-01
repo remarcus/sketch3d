@@ -47,7 +47,10 @@ try {
         'source and mirrored run commit as one undo edit',
         'undo/redo preserve the exact mirrored pair',
         'cancel discards an in-progress source without history',
-        'whole-drawing GLB includes the mirrored pair'
+        'whole-drawing GLB includes the mirrored pair',
+        'mouse canvas events preview, cancel, and commit a straight line on a rotated active guide',
+        'active guide horizontal constraint and mirrored points remain on the rotated plane',
+        'line source and mirror commit as one undo edit and survive undo/redo'
     )
     foreach ($check in $requiredChecks) {
         if ($report.checks -notcontains $check) {
@@ -57,7 +60,7 @@ try {
     if ($report.passed -ne $true -or $report.physical_tablet_tested -ne $false) {
         throw 'Mirror report must pass and disclose that physical tablet testing was deferred.'
     }
-    Write-Output 'Saved curved-guide mirror verification passed.'
+    Write-Output 'Curved-guide brush and rotated-plane line mirror verification passed.'
     Write-Output "Report: $reportPath"
 } finally {
     if ($null -ne $process) {

@@ -11,7 +11,7 @@ pub(super) enum Constraint {
 }
 pub(super) struct LineDraft {
     target: PlanarTarget,
-    mark: Stroke,
+    pub(super) mark: Stroke,
     constraint: Constraint,
     step: f32,
 }
