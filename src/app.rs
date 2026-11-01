@@ -281,6 +281,42 @@ pub struct SketchApp {
     obj_export: obj_export_ui::ObjExportUi,
     png_verification_frame: Option<u32>,
 }
+
+struct InsertedDrawingTarget<'a> {
+    doc: &'a mut Document,
+    selected: &'a mut HashSet<u64>,
+    undo: &'a mut Vec<Edit>,
+    redo: &'a mut Vec<Edit>,
+    next_id: &'a mut u64,
+    dirty: &'a mut bool,
+    image_assets: &'a mut HashMap<u64, crate::image_planes::ImageAsset>,
+    obj_models: &'a mut HashMap<u64, crate::obj_reference::ObjModel>,
+}
+
+fn apply_inserted_drawing_state(
+    target: InsertedDrawingTarget<'_>,
+    inserted: native_merge::InsertedDrawing,
+) -> usize {
+    let native_merge::InsertedDrawing {
+        edit: merge,
+        next_id: inserted_next_id,
+        image_assets: inserted_images,
+        obj_models: inserted_models,
+    } = inserted;
+    let stroke_ids = merge.strokes.iter().map(|stroke| stroke.id).collect();
+    let stroke_count = merge.strokes.len();
+    let edit = Edit::Merge(merge);
+    edit.apply(target.doc, true);
+    target.undo.push(edit);
+    target.redo.clear();
+    *target.next_id = inserted_next_id;
+    target.image_assets.extend(inserted_images);
+    target.obj_models.extend(inserted_models);
+    *target.selected = stroke_ids;
+    *target.dirty = true;
+    stroke_count
+}
+
 impl SketchApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui_style::apply(&cc.egui_ctx, crate::presentation::UiTheme::Dark);
@@ -2422,22 +2458,19 @@ impl SketchApp {
                 &self.obj_reference_models,
             ) {
                 Ok(inserted) => {
-                    let stroke_ids: HashSet<_> = inserted
-                        .edit
-                        .strokes
-                        .iter()
-                        .map(|stroke| stroke.id)
-                        .collect();
-                    let stroke_count = inserted.edit.strokes.len();
-                    let edit = Edit::Merge(inserted.edit);
-                    edit.apply(&mut self.doc, true);
-                    self.undo.push(edit);
-                    self.redo.clear();
-                    self.next_id = inserted.next_id;
-                    self.image_plane_assets.extend(inserted.image_assets);
-                    self.obj_reference_models.extend(inserted.obj_models);
-                    self.selected = stroke_ids;
-                    self.dirty = true;
+                    let stroke_count = apply_inserted_drawing_state(
+                        InsertedDrawingTarget {
+                            doc: &mut self.doc,
+                            selected: &mut self.selected,
+                            undo: &mut self.undo,
+                            redo: &mut self.redo,
+                            next_id: &mut self.next_id,
+                            dirty: &mut self.dirty,
+                            image_assets: &mut self.image_plane_assets,
+                            obj_models: &mut self.obj_reference_models,
+                        },
+                        inserted,
+                    );
                     self.record_recovery_edit_labeled("Insert drawing");
                     self.refresh_image_plane_textures();
                     self.refresh_obj_reference_meshes();
@@ -3273,6 +3306,7 @@ impl SketchApp {
         self.sync_selection();
     }
 }
+
 impl eframe::App for SketchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let start = Instant::now();
@@ -4647,5 +4681,116 @@ impl SketchApp {
         assert!(self.save(false));
         self.status =
             "Selection, transforms, stabilization, endpoint, and undo checks passed.".into();
+    }
+}
+
+#[cfg(test)]
+mod native_merge_apply_tests {
+    use super::*;
+    use crate::{
+        document::{Layer, Point},
+        editing::MergeEdit,
+    };
+
+    fn stroke(id: u64, layer_id: u64, x: f32) -> Stroke {
+        Stroke {
+            fill: None,
+            material: Default::default(),
+            group_id: None,
+            layer_id,
+            id,
+            color: [0.2, 0.6, 0.9],
+            radius: 0.04,
+            brush: Default::default(),
+            points: vec![
+                Point {
+                    position: Vec3::new(x, 0.0, 0.0),
+                    pressure: 0.8,
+                    tilt: None,
+                },
+                Point {
+                    position: Vec3::new(x + 0.5, 0.0, 0.0),
+                    pressure: 0.8,
+                    tilt: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn applying_insert_is_one_edit_and_preserves_camera_and_presentation_state() {
+        let mut doc = Document {
+            strokes: vec![stroke(1, 1, -1.0)],
+            ..Document::default()
+        };
+        let mut selected = HashSet::from([1]);
+        let mut undo = Vec::new();
+        let mut redo = vec![Edit::Add(stroke(99, 1, 2.0))];
+        let mut next_id = 2;
+        let mut dirty = false;
+        let mut image_assets = HashMap::new();
+        let mut obj_models = HashMap::new();
+        let camera = Camera::default();
+        let camera_before = format!("{camera:?}");
+        let preferences = crate::presentation::Preferences {
+            background: [0.81, 0.63, 0.42],
+            ..Default::default()
+        };
+        let preferences_before = preferences.clone();
+        let guide = DrawingPlane::default();
+        let guide_before = guide;
+
+        let inserted = native_merge::InsertedDrawing {
+            edit: MergeEdit {
+                strokes: vec![stroke(2, 2, 0.0)],
+                layers: vec![Layer {
+                    id: 2,
+                    name: "Layer 1 (import 2)".into(),
+                    visible: true,
+                    locked: false,
+                }],
+                image_planes: Vec::new(),
+                guides: Vec::new(),
+                model_references: Vec::new(),
+                previous_active_layer: 1,
+                inserted_active_layer: 2,
+            },
+            next_id: 3,
+            image_assets: HashMap::new(),
+            obj_models: HashMap::new(),
+        };
+
+        let inserted_count = apply_inserted_drawing_state(
+            InsertedDrawingTarget {
+                doc: &mut doc,
+                selected: &mut selected,
+                undo: &mut undo,
+                redo: &mut redo,
+                next_id: &mut next_id,
+                dirty: &mut dirty,
+                image_assets: &mut image_assets,
+                obj_models: &mut obj_models,
+            },
+            inserted,
+        );
+
+        assert_eq!(inserted_count, 1);
+        assert_eq!(
+            doc.strokes
+                .iter()
+                .map(|stroke| stroke.id)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(doc.layers[1].name, "Layer 1 (import 2)");
+        assert_eq!(doc.active_layer, 2);
+        assert_eq!(selected, HashSet::from([2]));
+        assert_eq!(undo.len(), 1);
+        assert!(redo.is_empty());
+        assert_eq!(next_id, 3);
+        assert!(dirty);
+        assert_eq!(format!("{camera:?}"), camera_before);
+        assert_eq!(preferences, preferences_before);
+        assert_eq!(guide, guide_before);
     }
 }
