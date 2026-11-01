@@ -294,28 +294,24 @@ impl SketchApp {
             let mut activate = None;
             for index in 0..self.doc.guide_resources.len() {
                 let id = self.doc.guide_resources[index].id;
-                let mut changed_guide = false;
-                ui.group(|ui| {
+                let was_active = self.doc.active_guide == Some(id);
+                let row = ui.group(|ui| {
                     let guide = &mut self.doc.guide_resources[index];
                     let original_geometry = guide.geometry.clone();
-                    ui.horizontal(|ui| {
-                        ui.strong(&guide.name);
-                        let mut active = self.doc.active_guide == Some(id);
-                        if ui.checkbox(&mut active, "Use").changed() { activate = Some((id, active)); }
-                        changed_guide |= ui.checkbox(&mut guide.visible, "Visible").changed();
-                        changed_guide |= ui.checkbox(&mut guide.locked, "Locked").changed();
-                        if ui.small_button("Remove").clicked() { remove = Some(index); }
-                    });
+                    let mut action = guide_row_controls(ui, guide, was_active);
                     ui.add_enabled_ui(!guide.locked, |ui| {
-                        changed_guide |= edit_geometry(ui, &mut guide.geometry);
+                        action.changed |= edit_geometry(ui, &mut guide.geometry);
                     });
-                    if changed_guide && guide.validate().is_err() {
+                    if action.changed && guide.validate().is_err() {
                         guide.geometry = original_geometry;
-                        changed_guide = false;
+                        action.changed = false;
                         ui.colored_label(ui_style::colors(ui.ctx()).error, "Invalid guide geometry; the last valid values were restored.");
                     }
-                });
-                changed |= changed_guide;
+                    action
+                }).inner;
+                if row.remove { remove = Some(index); }
+                if let Some(active) = row.activate { activate = Some((id, active)); }
+                changed |= row.changed;
             }
             if let Some(index) = remove {
                 let guide = self.doc.guide_resources.remove(index);
@@ -507,6 +503,44 @@ impl SketchApp {
 
 fn add_ring_button(ui: &mut egui::Ui) -> egui::Response {
     ui.button("Add ring")
+}
+
+#[derive(Default)]
+struct GuideRowAction {
+    activate: Option<bool>,
+    changed: bool,
+    remove: bool,
+    use_rect: Option<Rect>,
+    visible_rect: Option<Rect>,
+    locked_rect: Option<Rect>,
+    remove_rect: Option<Rect>,
+}
+
+fn guide_row_controls(
+    ui: &mut egui::Ui,
+    guide: &mut GuideResource,
+    is_active: bool,
+) -> GuideRowAction {
+    let mut action = GuideRowAction::default();
+    ui.horizontal(|ui| {
+        ui.strong(&guide.name);
+        let mut active = is_active;
+        let use_response = ui.checkbox(&mut active, "Use");
+        action.use_rect = Some(use_response.rect);
+        if use_response.changed() {
+            action.activate = Some(active);
+        }
+        let visible_response = ui.checkbox(&mut guide.visible, "Visible");
+        action.visible_rect = Some(visible_response.rect);
+        action.changed |= visible_response.changed();
+        let locked_response = ui.checkbox(&mut guide.locked, "Locked");
+        action.locked_rect = Some(locked_response.rect);
+        action.changed |= locked_response.changed();
+        let remove_response = ui.small_button("Remove");
+        action.remove_rect = Some(remove_response.rect);
+        action.remove = remove_response.clicked();
+    });
+    action
 }
 
 fn fit_loft_section(points: &[Vec3]) -> LoftSection {
@@ -1003,6 +1037,114 @@ mod ring_button_tests {
             clicked,
             "the production Add ring button dispatches on click"
         );
+    }
+}
+
+#[cfg(test)]
+mod guide_row_tests {
+    use super::{guide_row_controls, GuideRowAction};
+    use crate::document::guide_resources::{GuideGeometry, GuideResource};
+    use eframe::egui::{self, Event, PointerButton, Pos2, Rect, Vec2};
+    use glam::Vec3;
+
+    fn frame(
+        ctx: &egui::Context,
+        guide: &mut GuideResource,
+        active: bool,
+        events: Vec<Event>,
+    ) -> GuideRowAction {
+        let mut result = None;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 480.0))),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    result = Some(ui.group(|ui| guide_row_controls(ui, guide, active)).inner);
+                });
+            },
+        );
+        result.expect("saved guide inspector row renders")
+    }
+
+    fn click(
+        ctx: &egui::Context,
+        guide: &mut GuideResource,
+        active: bool,
+        position: Pos2,
+    ) -> GuideRowAction {
+        let _ = frame(ctx, guide, active, vec![Event::PointerMoved(position)]);
+        let _ = frame(
+            ctx,
+            guide,
+            active,
+            vec![Event::PointerButton {
+                pos: position,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+        );
+        frame(
+            ctx,
+            guide,
+            active,
+            vec![Event::PointerButton {
+                pos: position,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        )
+    }
+
+    #[test]
+    fn saved_guide_inspector_use_visibility_lock_and_remove_controls_respond_to_mouse() {
+        let ctx = egui::Context::default();
+        let mut guide = GuideResource {
+            id: 42,
+            name: "Interaction guide".into(),
+            visible: true,
+            locked: false,
+            geometry: GuideGeometry::Plane {
+                origin: Vec3::ZERO,
+                rotation: glam::Quat::IDENTITY,
+            },
+        };
+        let controls = frame(&ctx, &mut guide, false, Vec::new());
+
+        let use_action = click(&ctx, &mut guide, false, controls.use_rect.unwrap().center());
+        assert_eq!(use_action.activate, Some(true), "Use activates the guide");
+
+        let visibility_action = click(
+            &ctx,
+            &mut guide,
+            true,
+            controls.visible_rect.unwrap().center(),
+        );
+        assert!(visibility_action.changed);
+        assert!(!guide.visible, "Visible toggles the guide independently");
+
+        guide.visible = true;
+        let lock_action = click(
+            &ctx,
+            &mut guide,
+            true,
+            controls.locked_rect.unwrap().center(),
+        );
+        assert!(lock_action.changed);
+        assert!(guide.locked, "Locked toggles the guide independently");
+
+        let remove_action = click(
+            &ctx,
+            &mut guide,
+            false,
+            controls.remove_rect.unwrap().center(),
+        );
+        assert!(remove_action.remove, "Remove dispatches a distinct action");
     }
 }
 
