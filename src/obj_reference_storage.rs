@@ -312,3 +312,36 @@ fn normalize_obj_material_libraries(
     }
     Ok(output.into_bytes())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imported_bundle_reloads_after_original_obj_and_mtl_are_removed() {
+        let source = tempfile::tempdir().unwrap();
+        let obj_path = source.path().join("source.obj");
+        let mtl_path = source.path().join("source.mtl");
+        fs::write(
+            &obj_path,
+            "mtllib source.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl red\nf 1 2 3\n",
+        )
+        .unwrap();
+        fs::write(&mtl_path, "newmtl red\nKd 0.8 0.1 0.2\nd 0.7\n").unwrap();
+        let parsed = obj_reference::load(&obj_path).unwrap();
+        let asset_root = tempfile::tempdir().unwrap();
+        let asset = import_bundle(&parsed, asset_root.path(), 42).unwrap();
+        assert_eq!(asset.bundle_dir, "models/42");
+
+        fs::remove_file(&obj_path).unwrap();
+        fs::remove_file(&mtl_path).unwrap();
+        let reopened = load_bundle(asset_root.path(), &asset).unwrap();
+        assert_eq!(reopened.positions, parsed.positions);
+        assert_eq!(reopened.triangles, parsed.triangles);
+        assert_eq!(reopened.materials, parsed.materials);
+        assert_eq!(reopened.source_materials.len(), 1);
+
+        remove_bundle(asset_root.path(), &asset).unwrap();
+        assert!(load_bundle(asset_root.path(), &asset).is_err());
+    }
+}

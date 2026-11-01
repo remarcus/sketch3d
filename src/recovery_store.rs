@@ -712,6 +712,56 @@ mod tests {
         assert_eq!(recovered.assets[0].bytes, bytes);
     }
     #[test]
+    fn obj_model_and_material_bundles_survive_recovery_snapshot_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let obj = b"mtllib material-000.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n".to_vec();
+        let mtl = b"newmtl default\nKd 0.7 0.8 0.9\n".to_vec();
+        let resource = crate::document::model_references::ObjReferenceResource {
+            id: 42,
+            name: "Recovery model".into(),
+            visible: true,
+            locked: false,
+            center: Vec3::new(1.0, 2.0, 3.0),
+            rotation: Quat::IDENTITY,
+            scale: 1.25,
+            asset: crate::obj_reference_storage::ObjReferenceAsset {
+                id: 42,
+                bundle_dir: "models/42".into(),
+            },
+        };
+        let assets = vec![
+            RecoveryAsset {
+                asset_file: "models/42/model.obj".into(),
+                bytes: obj.clone(),
+            },
+            RecoveryAsset {
+                asset_file: "models/42/material-000.mtl".into(),
+                bytes: mtl.clone(),
+            },
+        ];
+        let snapshot = RecoverySnapshot::new_with_assets(
+            "model-session".into(),
+            None,
+            Document {
+                model_references: vec![resource.clone()],
+                active_model_reference: Some(42),
+                ..Document::default()
+            },
+            assets,
+        );
+        write(dir.path(), &snapshot).unwrap();
+        let scan = scan(dir.path(), "another-session").unwrap();
+        assert_eq!(scan.candidates.len(), 1);
+        let recovered = &scan.candidates[0].snapshot;
+        assert_eq!(recovered.document.model_references, vec![resource]);
+        assert_eq!(recovered.document.active_model_reference, Some(42));
+        assert_eq!(recovered.assets.len(), 2);
+        assert_eq!(recovered.assets[0].asset_file, "models/42/model.obj");
+        assert_eq!(recovered.assets[0].bytes, obj);
+        assert_eq!(recovered.assets[1].asset_file, "models/42/material-000.mtl");
+        assert_eq!(recovered.assets[1].bytes, mtl);
+    }
+    #[test]
     fn failed_replacement_retains_complete_previous_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let valid = sample("session-a");
