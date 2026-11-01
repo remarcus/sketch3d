@@ -474,7 +474,7 @@ impl CapabilityReplay {
         painter.text(
             disclosure.center(),
             egui::Align2::CENTER_CENTER,
-            "DETERMINISTIC REPLAY  •  NO PRESSURE DATA",
+            "SYNTHETIC REPLAY  •  NO PRESSURE",
             egui::FontId::proportional(15.0),
             Color32::WHITE,
         );
@@ -653,6 +653,7 @@ impl CapabilityReplay {
             "source_tree_dirty": source_tree_dirty,
             "fixture": "Japanese house",
             "fixture_version": 1,
+            "license_or_provenance": "Original Japanese garden house scene built into Sketch3D; no external artwork or assets.",
             "viewport": [dimensions[0], dimensions[1]],
             "capture_size": [dimensions[0], dimensions[1]],
             "gif_size": [640, 360],
@@ -667,7 +668,7 @@ impl CapabilityReplay {
                 "Orbit the camera using a synthetic barrel gesture through canvas_input.",
                 "Pause on the edited view."
             ],
-            "cursor_cue": "A synthetic pointer ring is labeled DRAW or ORBIT while the corresponding input is active.",
+            "cursor_cue": "A synthetic pointer ring is labeled DRAW or ORBIT while input is active; a persistent banner discloses synthetic replay and no pressure data.",
             "encoding": {
                 "mp4": format!("Captured full-viewport RGBA frames; {mp4_backend}; 10 fps."),
                 "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder; 10 fps; 6 seconds; <=5 MiB.",
