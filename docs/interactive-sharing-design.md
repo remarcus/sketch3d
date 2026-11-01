@@ -21,3 +21,7 @@ No hosting provider is selected. The service needs bounded object storage, HTTPS
 ## Validation before implementation
 
 Choose the host and account/capability model; price the proposed quotas; document retention and cache deletion; validate the viewer and GLB limits on low-end Android/iOS browsers; verify update failure and unpublish behavior; and confirm there is no implicit camera use or upload before the explicit publish action. Publishing remains unavailable until these decisions and tests are complete.
+
+## Host-independent viewer implementation
+
+The initial static viewer is implemented in `web/share-viewer/`. It accepts a local `.glb` or a future same-site HTTPS `.glb` URL, enforces the proposed 10 MiB limit, checks the binary glTF 2.0 container before rendering, and provides orbit/pan/zoom/reset controls plus loading and error messages. Shared fetches omit credentials and reject redirects; the viewer does not upload local files or access native drawings, recovery state, camera, or microphone. It uses the pinned Google `<model-viewer>` 4.4.0 component from the Google CDN. Eleven Node tests cover parser boundaries and simulated local/share workflows, including failures. Browser/CDN rendering and mobile performance remain unverified. This viewer does not select a host or enable publishing; publish/update/unpublish remain unavailable until the service decisions above are made.

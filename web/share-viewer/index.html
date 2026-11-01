@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Spatial Sketch artwork viewer</title>
+    <link rel="stylesheet" href="viewer.css">
+    <script id="model-viewer-library" type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.4.0/model-viewer.min.js"></script>
+    <script type="module" src="viewer.js"></script>
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <a class="wordmark" href="./">SPATIAL / SKETCH</a>
+        <h1>Artwork viewer</h1>
+        <p>Open a GLB drawing from your device, or follow a same-site shared link.</p>
+      </header>
+
+      <section class="viewer-card" aria-label="Interactive 3D artwork">
+        <model-viewer
+          id="artwork-viewer"
+          alt="Interactive 3D artwork. Drag to orbit, right-drag or use a modifier to pan, and scroll or pinch to zoom."
+          camera-controls
+          touch-action="pan-y"
+          interaction-prompt="when-focused"
+          shadow-intensity="0.7"
+          exposure="1"
+          loading="eager"
+          reveal="auto">
+          <span class="viewer-empty">Choose a GLB file to view artwork.</span>
+        </model-viewer>
+        <div class="viewer-status" id="viewer-status" role="status" aria-live="polite">Viewer ready. GLB files up to 10 MiB are supported.</div>
+        <p class="viewer-error" id="viewer-error" role="alert" hidden></p>
+      </section>
+
+      <section class="controls" aria-label="Viewer controls">
+        <label class="file-control">
+          <span>Open GLB</span>
+          <input id="glb-file" type="file" accept=".glb,model/gltf-binary">
+        </label>
+        <button id="reset-view" type="button" disabled>Reset view</button>
+        <span class="size-note">GLB only · 10 MiB maximum</span>
+      </section>
+
+      <footer>
+        <p>Only the selected GLB is loaded. This viewer does not access your drawing library, recovery files, camera, or microphone.</p>
+      </footer>
+    </main>
+  </body>
+</html>
