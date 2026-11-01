@@ -437,7 +437,13 @@ impl Ids {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{Brush, Point, Stroke};
+    use crate::{
+        document::{model_references::ObjReferenceResource, Brush, Point, Stroke},
+        image_planes::ImagePlane,
+    };
+    use glam::Quat;
+    use image::{ImageFormat, Rgba, RgbaImage};
+    use std::io::Cursor;
 
     #[test]
     fn prepared_insert_remaps_ids_offsets_and_undoes_as_one_merge() {
@@ -525,5 +531,127 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(serde_json::to_value(&destination).unwrap(), original_json);
         assert_eq!(fs::read_dir(&asset_root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn insert_copies_managed_image_and_obj_assets_for_relocated_source() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source_dir = root.path().join("relocated-source");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source_path = source_dir.join("source.sketch.json");
+        let source_assets = crate::image_plane_storage::asset_root(&source_path).unwrap();
+        fs::create_dir_all(&source_assets).unwrap();
+
+        let original_image = source_dir.join("original.png");
+        let image = RgbaImage::from_pixel(3, 2, Rgba([24, 128, 220, 255]));
+        let mut png = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut png, ImageFormat::Png)
+            .unwrap();
+        fs::write(&original_image, png.into_inner()).unwrap();
+        let (image_file, source_image) =
+            image_planes::copy_asset(&original_image, &source_assets, 7).unwrap();
+        let mut plane = ImagePlane::from_asset(
+            7,
+            "Source image",
+            image_file,
+            source_image.size,
+            Vec3::new(0.5, 1.0, 0.0),
+            Quat::from_rotation_y(0.25),
+            2.0,
+        )
+        .unwrap();
+        plane.drawable = true;
+
+        let source_obj = source_dir.join("tree.obj");
+        let source_mtl = source_dir.join("tree.mtl");
+        fs::write(
+            &source_obj,
+            "mtllib tree.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl leaf\nf 1 2 3\n",
+        )
+        .unwrap();
+        fs::write(&source_mtl, "newmtl leaf\nKd 0.1 0.8 0.2\nd 0.75\n").unwrap();
+        let parsed_model = crate::obj_reference::load(&source_obj).unwrap();
+        let source_model_asset =
+            crate::obj_reference_storage::import_bundle(&parsed_model, &source_assets, 8).unwrap();
+
+        let mut source = Document::default();
+        source.image_planes.push(plane);
+        source.active_image_plane = Some(7);
+        source.model_references.push(ObjReferenceResource {
+            id: 8,
+            name: "Tree".into(),
+            visible: true,
+            locked: false,
+            center: Vec3::new(-1.0, 0.0, 0.0),
+            rotation: Quat::IDENTITY,
+            scale: 1.0,
+            asset: source_model_asset,
+        });
+        fs::write(&source_path, serde_json::to_vec(&source).unwrap()).unwrap();
+
+        let destination_path = root.path().join("destination.sketch.json");
+        let destination_assets = crate::image_plane_storage::asset_root(&destination_path).unwrap();
+        let destination = Document::default();
+        let inserted = prepare_insert(
+            &destination,
+            &source_path,
+            &destination_assets,
+            100,
+            10,
+            200,
+            Vec3::new(2.0, -1.0, 0.5),
+            false,
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        let inserted_plane = inserted.edit.image_planes.first().unwrap();
+        let inserted_model = inserted.edit.model_references.first().unwrap();
+        assert_eq!(inserted_plane.id, 100);
+        assert_eq!(inserted_model.id, 101);
+        assert_eq!(inserted_plane.origin, Vec3::new(2.5, 0.0, 0.5));
+        assert_eq!(inserted_model.center, Vec3::new(1.0, -1.0, 0.5));
+        assert_eq!(inserted.image_assets[&inserted_plane.id].size, [3, 2]);
+        assert_eq!(
+            inserted.image_assets[&inserted_plane.id].pixels,
+            source_image.pixels
+        );
+        let staged_model = &inserted.obj_models[&inserted_model.id];
+        assert_eq!(staged_model.positions, parsed_model.positions);
+        assert_eq!(staged_model.triangles, parsed_model.triangles);
+        assert_eq!(staged_model.materials, parsed_model.materials);
+
+        fs::remove_dir_all(&source_dir).unwrap();
+        let mut merged = destination.clone();
+        let edit = crate::editing::Edit::Merge(inserted.edit.clone());
+        edit.apply(&mut merged, true);
+        fs::write(&destination_path, serde_json::to_vec(&merged).unwrap()).unwrap();
+        let reloaded =
+            Document::from_json(&fs::read_to_string(&destination_path).unwrap()).unwrap();
+        let loaded_images =
+            crate::image_plane_storage::load_assets(&reloaded, &destination_path).unwrap();
+        assert_eq!(
+            loaded_images[&inserted_plane.id].pixels,
+            source_image.pixels
+        );
+        let loaded_model =
+            crate::obj_reference_storage::load_bundle(&destination_assets, &inserted_model.asset)
+                .unwrap();
+        assert_eq!(loaded_model.positions, parsed_model.positions);
+        assert_eq!(loaded_model.materials, parsed_model.materials);
+
+        edit.apply(&mut merged, false);
+        assert!(merged.image_planes.is_empty());
+        assert!(merged.model_references.is_empty());
+        assert!(destination_assets
+            .join(&inserted_plane.asset_file)
+            .is_file());
+        assert!(destination_assets
+            .join(&inserted_model.asset.bundle_dir)
+            .is_dir());
+        edit.apply(&mut merged, true);
+        assert_eq!(merged.image_planes, reloaded.image_planes);
+        assert_eq!(merged.model_references, reloaded.model_references);
     }
 }
