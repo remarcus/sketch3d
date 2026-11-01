@@ -680,6 +680,41 @@ mod tests {
     }
 
     #[test]
+    fn ring_guide_and_active_target_survive_recovery_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut recovery = Recovery::new(Ok(dir.path().into()), egui::Context::default());
+        let mut doc = document();
+        use crate::document::guide_resources::{GuideGeometry, GuideResource};
+        let ring = GuideResource {
+            id: 31,
+            name: "Recovery ring".into(),
+            visible: true,
+            locked: false,
+            geometry: GuideGeometry::Ring {
+                center: Vec3::new(1.5, -0.75, 2.25),
+                rotation: glam::Quat::from_rotation_y(0.37) * glam::Quat::from_rotation_x(-0.21),
+                major_radius: 2.4,
+                minor_radius: 0.6,
+            },
+        };
+        doc.guide_resources = vec![ring];
+        doc.active_guide = Some(31);
+
+        recovery.mark_edit();
+        assert!(recovery.force_snapshot(&doc, None));
+        wait(&mut recovery);
+        drop(recovery);
+
+        let scan = recovery_store::scan(dir.path(), "another-session").unwrap();
+        assert_eq!(scan.candidates.len(), 1);
+        assert_eq!(
+            scan.candidates[0].snapshot.document.guide_resources,
+            doc.guide_resources
+        );
+        assert_eq!(scan.candidates[0].snapshot.document.active_guide, Some(31));
+    }
+
+    #[test]
     fn failed_background_write_never_claims_protection_and_retries_are_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let mut recovery = Recovery::new(Ok(dir.path().into()), egui::Context::default());

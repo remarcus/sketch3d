@@ -602,6 +602,27 @@ mod ring_hit_tests {
             tangent_hit.distance(tangent_expected) < 2e-3,
             "tangent hit: {tangent_hit:?}"
         );
+
+        let hole_origin = center + rotation * Vec3::new(0.0, -5.0, 0.0);
+        let hole_direction = rotation * Vec3::Y;
+        assert!(
+            geometry.hit(hole_origin, hole_direction).is_none(),
+            "a ray through the center hole must not hit the torus"
+        );
+
+        let invalid = GuideResource {
+            id: 1,
+            name: "Self-intersecting ring".into(),
+            visible: true,
+            locked: false,
+            geometry: GuideGeometry::Ring {
+                center,
+                rotation,
+                major_radius: 0.5,
+                minor_radius: 0.5,
+            },
+        };
+        assert!(invalid.validate().is_err());
     }
 }
 

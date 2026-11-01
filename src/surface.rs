@@ -822,6 +822,27 @@ mod ring_tests {
         assert!(points
             .windows(2)
             .all(|pair| pair[0].position.distance(pair[1].position) < 0.2));
+
+        let document = crate::document::Document {
+            strokes: vec![crate::document::Stroke {
+                material: Default::default(),
+                fill: None,
+                group_id: None,
+                layer_id: 1,
+                id: 1,
+                color: [0.2, 0.6, 0.8],
+                radius: 0.02,
+                brush: Default::default(),
+                points,
+            }],
+            ..crate::document::Document::default()
+        };
+        let glb = crate::export::encode(&document, None).unwrap();
+        assert_eq!(glb.summary.strokes, 1);
+        assert_eq!(
+            gltf::Gltf::from_slice(&glb.bytes).unwrap().meshes().count(),
+            1
+        );
     }
 }
 
