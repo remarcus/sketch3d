@@ -1784,6 +1784,21 @@ impl SketchApp {
                 assert!((after_local.z - before_local.z).abs() < 0.0001);
             }
         }
+        let picked_scaled_stroke = view_scaled
+            .iter()
+            .find(|stroke| self.selected.contains(&stroke.id))
+            .expect("a scaled stroke remains selected");
+        assert!(
+            picked_scaled_stroke
+                .points
+                .iter()
+                .filter_map(|point| gizmo::project(&self.camera, rect, point.position))
+                .any(|(position, _)| {
+                    gizmo::pick(&self.doc, &self.camera, rect, position)
+                        == Some(picked_scaled_stroke.id)
+                }),
+            "the transformed stroke remains pickable at its new geometry"
+        );
         self.undo();
         assert_eq!(self.doc.strokes, before_view_scale);
         self.redo();
