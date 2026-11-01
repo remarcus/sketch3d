@@ -176,7 +176,11 @@ impl SketchApp {
                 rotation,
                 major_radius,
                 minor_radius,
-            } => (*center, *rotation, (major_radius + minor_radius) * 1.8),
+            } => (
+                *center,
+                *rotation * glam::Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                (major_radius + minor_radius) * 1.8,
+            ),
             GuideGeometry::Freeform { surface } => (
                 surface.center,
                 surface.rotation,
@@ -219,7 +223,7 @@ impl SketchApp {
                 if ui.button("Add cone").clicked() {
                     self.add_saved_guide("Cone", GuideGeometry::cone(self.camera.target, 1.0, 2.0));
                 }
-                if ui.button("Add ring").clicked() {
+                if add_ring_button(ui).clicked() {
                     self.add_saved_guide(
                         "Ring",
                         GuideGeometry::Ring {
@@ -370,7 +374,7 @@ impl SketchApp {
         self.add_saved_guide(name, geometry);
     }
 
-    fn add_saved_guide(&mut self, name: impl Into<String>, geometry: GuideGeometry) {
+    pub(super) fn add_saved_guide(&mut self, name: impl Into<String>, geometry: GuideGeometry) {
         if self.doc.guide_resources.len() >= crate::document::guide_resources::MAX_GUIDES {
             self.status = "This drawing already has the maximum number of saved guides.".into();
             return;
@@ -499,6 +503,10 @@ impl SketchApp {
             "Loft preview ready. Apply to save it, or cancel to leave the drawing unchanged."
                 .into();
     }
+}
+
+fn add_ring_button(ui: &mut egui::Ui) -> egui::Response {
+    ui.button("Add ring")
 }
 
 fn fit_loft_section(points: &[Vec3]) -> LoftSection {
@@ -941,6 +949,61 @@ fn edit_transform(ui: &mut egui::Ui, center: &mut Vec3, rotation: &mut glam::Qua
         *rotation = rotation_from_degrees(degrees);
     }
     changed
+}
+
+#[cfg(test)]
+mod ring_button_tests {
+    use super::add_ring_button;
+    use eframe::egui::{self, Pos2, Rect, Vec2};
+
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>) -> (bool, Rect) {
+        let mut result = None;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(640.0, 480.0))),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let response = add_ring_button(ui);
+                    result = Some((response.clicked(), response.rect));
+                });
+            },
+        );
+        result.expect("ring guide button renders")
+    }
+
+    #[test]
+    fn add_ring_button_responds_to_pointer_click() {
+        let ctx = egui::Context::default();
+        let (_, rect) = frame(&ctx, Vec::new());
+        let position = rect.center();
+        let _ = frame(&ctx, vec![egui::Event::PointerMoved(position)]);
+        let _ = frame(
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+        );
+        let (clicked, _) = frame(
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert!(
+            clicked,
+            "the production Add ring button dispatches on click"
+        );
+    }
 }
 
 #[cfg(test)]
