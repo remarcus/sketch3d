@@ -563,3 +563,36 @@ fn write_jpeg_atomic(path: &Path, size: [u32; 2], pixels: &[u8]) -> Result<(), S
     temp.persist(path).map_err(|error| error.to_string())?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn png_and_jpeg_files_decode_and_invalid_frames_preserve_existing_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let size = [32, 32];
+        let pixels = [40, 100, 220, 128].repeat((size[0] * size[1]) as usize);
+        let png = dir.path().join("art.png");
+        write_png_atomic(&png, size, &pixels).unwrap();
+        let decoded_png = image::open(&png).unwrap().to_rgba8();
+        assert_eq!(decoded_png.dimensions(), (size[0], size[1]));
+        assert_eq!(decoded_png.get_pixel(16, 16).0, [40, 100, 220, 128]);
+
+        let jpeg = dir.path().join("art.jpg");
+        write_jpeg_atomic(&jpeg, size, &pixels).unwrap();
+        let decoded_jpeg = image::open(&jpeg).unwrap().to_rgb8();
+        assert_eq!(decoded_jpeg.dimensions(), (size[0], size[1]));
+        let decoded = decoded_jpeg.get_pixel(16, 16).0;
+        for (actual, expected) in decoded.into_iter().zip([40_u8, 100, 220]) {
+            assert!(actual.abs_diff(expected) <= 8);
+        }
+
+        std::fs::write(&png, b"preserve png").unwrap();
+        assert!(write_png_atomic(&png, size, &[0; 4]).is_err());
+        assert_eq!(std::fs::read(&png).unwrap(), b"preserve png");
+        std::fs::write(&jpeg, b"preserve jpeg").unwrap();
+        assert!(write_jpeg_atomic(&jpeg, size, &[0; 4]).is_err());
+        assert_eq!(std::fs::read(&jpeg).unwrap(), b"preserve jpeg");
+    }
+}
