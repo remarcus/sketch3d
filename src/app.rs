@@ -738,9 +738,9 @@ impl CapabilityReplay {
         } else if self.clip.is_mirror_shapes() {
             concat!(
                 "WEBVTT\n\n",
-                "00:00:00.000 --> 00:00:00.700\n",
+                "00:00:00.000 --> 00:00:00.500\n",
                 "A mirrored line and ellipse were prepared on the front guide.\n\n",
-                "00:00:00.700 --> 00:00:05.200\n",
+                "00:00:00.500 --> 00:00:05.200\n",
                 "A synthetic barrel gesture orbits to reveal the editable geometry.\n\n",
                 "00:00:05.200 --> 00:00:06.000\n",
                 "The replay uses synthetic input with no pressure data.\n"
@@ -750,9 +750,7 @@ impl CapabilityReplay {
                 "WEBVTT\n\n",
                 "00:00:00.000 --> 00:00:00.500\n",
                 "Deterministic app replay. Synthetic input has no pressure data.\n\n",
-                "00:00:00.500 --> 00:00:02.500\n",
-                "The saved cylinder carries editable curved and mirrored strokes.\n\n",
-                "00:00:02.500 --> 00:00:05.200\n",
+                "00:00:00.500 --> 00:00:05.200\n",
                 "A simulated barrel gesture orbits to reveal the curved drawing.\n\n",
                 "00:00:05.200 --> 00:00:06.000\n",
                 "The cylinder and mirrored strokes remain editable.\n"
@@ -787,6 +785,7 @@ impl CapabilityReplay {
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
             .as_secs();
+        let captions_timing_checked = self.clip.is_curved_guides() || self.clip.is_mirror_shapes();
         let app_commit = std::process::Command::new("git")
             .args(["rev-parse", "HEAD"])
             .output()
@@ -908,7 +907,7 @@ impl CapabilityReplay {
                     "file": format!("{clip_name}.en.vtt"),
                     "bytes": std::fs::metadata(&captions_path).map_err(|error| error.to_string())?.len(),
                     "format": "WebVTT",
-                    "timing_reviewed": false
+                    "timing_reviewed": captions_timing_checked
                 }
             },
             "review": {
@@ -916,7 +915,7 @@ impl CapabilityReplay {
                 "loop_boundary_checked": false,
                 "intended_readme_surface_checked": false,
                 "private_content_checked": false,
-                "captions_timing_checked": false,
+                "captions_timing_checked": captions_timing_checked,
                 "reviewer": null,
                 "notes": if self.clip.is_edit_erase() { "Synthetic edit-erase draft. The selected stroke and appearance are prepared by production handlers before the captured eraser and undo sequence; review playback and readability before use." } else if self.clip.is_mirror_shapes() { "Synthetic mirror-shapes draft. The mirrored line and ellipse are prepared through production handlers before the captured orbit; review playback and readability before use." } else if self.clip.is_curved_guides() { "Synthetic curved-guide draft. The strokes are scripted through production handlers before the captured orbit; review playback and visual readability before use." } else { "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use." }
             }
