@@ -604,3 +604,77 @@ mod ring_hit_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod saved_guide_tests {
+    use super::*;
+
+    fn guide(id: u64, name: &str, geometry: GuideGeometry) -> GuideResource {
+        GuideResource {
+            id,
+            name: name.into(),
+            visible: true,
+            locked: false,
+            geometry,
+        }
+    }
+
+    #[test]
+    fn guide_catalog_validates_each_new_primitive_and_active_protection() {
+        let guides = vec![
+            guide(1, "Sphere", GuideGeometry::sphere(Vec3::ZERO, 1.0)),
+            guide(2, "Cone", GuideGeometry::cone(Vec3::X, 0.8, 2.0)),
+            guide(
+                3,
+                "Ring",
+                GuideGeometry::Ring {
+                    center: Vec3::Y,
+                    rotation: Quat::IDENTITY,
+                    major_radius: 2.0,
+                    minor_radius: 0.5,
+                },
+            ),
+        ];
+        assert!(validate_catalog(&guides, Some(2)).is_ok());
+
+        let mut locked = guides.clone();
+        locked[1].locked = true;
+        assert!(validate_catalog(&locked, Some(2)).is_err());
+        let mut hidden = guides.clone();
+        hidden[1].visible = false;
+        assert!(validate_catalog(&hidden, Some(2)).is_err());
+        let mut duplicate = guides.clone();
+        duplicate[2].id = duplicate[0].id;
+        assert!(validate_catalog(&duplicate, None).is_err());
+    }
+
+    #[test]
+    fn transformed_sphere_and_cone_intersections_choose_near_hits_and_reject_misses() {
+        let center = Vec3::new(1.0, -0.5, 2.0);
+        let rotation = Quat::from_rotation_y(0.63) * Quat::from_rotation_x(-0.28);
+        let sphere = GuideGeometry::Sphere {
+            center,
+            rotation,
+            radius: 1.0,
+        };
+        let sphere_origin = center + rotation * Vec3::new(0.0, 0.0, 3.0);
+        let sphere_direction = rotation * -Vec3::Z;
+        let sphere_hit = sphere.clone().hit(sphere_origin, sphere_direction).unwrap();
+        assert!(sphere_hit.distance(center + rotation * Vec3::Z) < 1e-5);
+        assert!(sphere.hit(sphere_origin, rotation * Vec3::X).is_none());
+
+        let cone = GuideGeometry::Cone {
+            center,
+            rotation,
+            radius: 1.0,
+            height: 2.0,
+        };
+        let cone_origin = center + rotation * Vec3::new(0.0, 1.0, 3.0);
+        let cone_direction = rotation * -Vec3::Z;
+        let cone_hit = cone.clone().hit(cone_origin, cone_direction).unwrap();
+        assert!(cone_hit.distance(center + rotation * Vec3::new(0.0, 1.0, 0.5)) < 1e-5);
+        assert!(cone
+            .hit(center + rotation * Vec3::new(0.0, 3.0, 3.0), cone_direction)
+            .is_none());
+    }
+}

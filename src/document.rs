@@ -891,6 +891,184 @@ mod layer_tests {
 }
 
 #[cfg(test)]
+mod saved_guide_document_tests {
+    use super::*;
+    use guide_resources::{GuideGeometry, GuideResource};
+
+    fn guide(id: u64, name: &str, geometry: GuideGeometry) -> GuideResource {
+        GuideResource {
+            id,
+            name: name.into(),
+            visible: true,
+            locked: false,
+            geometry,
+        }
+    }
+
+    fn sample_stroke() -> Stroke {
+        Stroke {
+            material: Default::default(),
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id: 1,
+            color: [0.5; 3],
+            radius: 0.02,
+            brush: Brush::default(),
+            points: vec![Point {
+                position: Vec3::ONE,
+                pressure: 0.7,
+                tilt: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn primitive_guides_roundtrip_transform_undo_without_moving_existing_ink() {
+        let mut doc = Document {
+            strokes: vec![sample_stroke()],
+            guide_resources: vec![
+                guide(
+                    10,
+                    "Plane",
+                    GuideGeometry::Plane {
+                        origin: Vec3::new(1.0, 2.0, 3.0),
+                        rotation: glam::Quat::from_rotation_y(0.4),
+                    },
+                ),
+                guide(11, "Sphere", GuideGeometry::sphere(Vec3::X, 1.2)),
+                guide(12, "Cone", GuideGeometry::cone(Vec3::Y, 0.8, 2.0)),
+                guide(
+                    13,
+                    "Ring",
+                    GuideGeometry::Ring {
+                        center: Vec3::Z,
+                        rotation: glam::Quat::IDENTITY,
+                        major_radius: 2.0,
+                        minor_radius: 0.5,
+                    },
+                ),
+            ],
+            active_guide: Some(10),
+            ..Document::default()
+        };
+        let original_strokes = doc.strokes.clone();
+        let before = (
+            doc.guide_resources.clone(),
+            doc.active_guide,
+            doc.image_planes.clone(),
+            doc.active_image_plane,
+            doc.active_model_reference,
+        );
+        let mut after_guides = doc.guide_resources.clone();
+        if let GuideGeometry::Plane { origin, rotation } = &mut after_guides[0].geometry {
+            *origin = Vec3::new(-2.0, 0.5, 4.0);
+            *rotation = glam::Quat::from_rotation_x(-0.6);
+        }
+        after_guides[0].visible = false;
+        after_guides[0].locked = true;
+        let after = (
+            after_guides,
+            None,
+            doc.image_planes.clone(),
+            doc.active_image_plane,
+            doc.active_model_reference,
+        );
+        let edit = crate::editing::Edit::Guides {
+            before: before.clone(),
+            after: after.clone(),
+        };
+        edit.apply(&mut doc, true);
+        assert_eq!(
+            doc.strokes, original_strokes,
+            "guide changes must not move ink"
+        );
+        assert_eq!(doc.active_guide, None);
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+        let reopened = Document::from_json(&std::fs::read_to_string(file.path()).unwrap()).unwrap();
+        assert_eq!(reopened.guide_resources, doc.guide_resources);
+        assert_eq!(reopened.strokes, original_strokes);
+        assert_eq!(reopened.active_guide, None);
+        let glb = crate::export::encode(&reopened, None).unwrap();
+        assert_eq!(
+            gltf::Gltf::from_slice(&glb.bytes).unwrap().meshes().count(),
+            1,
+            "saved guide resources are not exported as artwork meshes"
+        );
+
+        edit.apply(&mut doc, false);
+        assert_eq!(
+            (
+                doc.guide_resources.clone(),
+                doc.active_guide,
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_model_reference,
+            ),
+            before
+        );
+        edit.apply(&mut doc, true);
+        assert_eq!(
+            (
+                doc.guide_resources.clone(),
+                doc.active_guide,
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_model_reference,
+            ),
+            after
+        );
+
+        let removed = (
+            Vec::new(),
+            None,
+            doc.image_planes.clone(),
+            doc.active_image_plane,
+            doc.active_model_reference,
+        );
+        let remove = crate::editing::Edit::Guides {
+            before: after.clone(),
+            after: removed.clone(),
+        };
+        remove.apply(&mut doc, true);
+        assert!(doc.guide_resources.is_empty());
+        assert_eq!(doc.strokes, original_strokes);
+        remove.apply(&mut doc, false);
+        assert_eq!(
+            (
+                doc.guide_resources.clone(),
+                doc.active_guide,
+                doc.image_planes.clone(),
+                doc.active_image_plane,
+                doc.active_model_reference,
+            ),
+            after
+        );
+    }
+
+    #[test]
+    fn pre_guide_native_file_migration_keeps_ink_and_uses_empty_catalog() {
+        let doc = Document {
+            strokes: vec![sample_stroke()],
+            guide_resources: vec![guide(10, "Sphere", GuideGeometry::sphere(Vec3::ZERO, 1.0))],
+            active_guide: Some(10),
+            ..Document::default()
+        };
+        let mut legacy = serde_json::to_value(doc.clone()).unwrap();
+        legacy["version"] = serde_json::json!(10);
+        legacy.as_object_mut().unwrap().remove("guide_resources");
+        legacy.as_object_mut().unwrap().remove("active_guide");
+        let loaded = Document::from_json(&legacy.to_string()).unwrap();
+        assert_eq!(loaded.version, 13);
+        assert!(loaded.guide_resources.is_empty());
+        assert_eq!(loaded.active_guide, None);
+        assert_eq!(loaded.strokes, doc.strokes);
+    }
+}
+
+#[cfg(test)]
 mod group_tests {
     use super::*;
     fn mark(id: u64) -> Stroke {

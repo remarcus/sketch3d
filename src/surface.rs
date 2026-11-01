@@ -871,6 +871,101 @@ mod tilt_tests {
 }
 
 #[cfg(test)]
+mod sphere_cone_guide_tests {
+    use super::*;
+
+    #[test]
+    fn sphere_stabilization_crosses_longitude_seam_and_remains_stable_at_poles() {
+        let sphere = SphereSurface {
+            center: Vec3::new(0.4, -0.3, 0.8),
+            rotation: Quat::from_rotation_y(0.4) * Quat::from_rotation_x(-0.2),
+            radius: 1.5,
+        };
+        let mut stabilizer = SurfaceStabilizer::default();
+        stabilizer.start(Surface::Sphere(sphere));
+        let seam_world = [sphere.point(PI - 0.08, 0.2), sphere.point(-PI + 0.08, 0.21)];
+        let mut output = Vec::new();
+        for (index, position) in seam_world.into_iter().enumerate() {
+            if index > 0 {
+                assert!(!stabilizer.discontinuity(position));
+            }
+            output.extend(stabilizer.push(
+                Point {
+                    position,
+                    pressure: 0.4 + index as f32 * 0.2,
+                    tilt: None,
+                },
+                0.05,
+            ));
+        }
+        output.extend(stabilizer.finish());
+        assert!(output
+            .iter()
+            .all(|point| ((point.position - sphere.center).length() - sphere.radius).abs() < 1e-4));
+        assert!(output.last().unwrap().position.distance(seam_world[1]) < 1e-5);
+
+        stabilizer.start(Surface::Sphere(sphere));
+        let north = sphere.point(0.0, PI * 0.5);
+        for longitude in [0.0, 1.0, 2.0, 3.0] {
+            let near_pole = sphere.point(longitude, PI * 0.5 - 0.002);
+            assert!(!stabilizer.discontinuity(near_pole));
+            stabilizer.push(
+                Point {
+                    position: near_pole,
+                    pressure: 0.7,
+                    tilt: None,
+                },
+                0.05,
+            );
+        }
+        let tail = stabilizer.finish();
+        assert!(tail.iter().all(|point| {
+            ((point.position - sphere.center).length() - sphere.radius).abs() < 1e-4
+        }));
+        assert!(north.is_finite());
+    }
+
+    #[test]
+    fn cone_stabilization_crosses_seam_and_never_leaves_open_side() {
+        let cone = ConeSurface {
+            center: Vec3::new(-0.7, 0.5, 1.2),
+            rotation: Quat::from_rotation_z(0.3) * Quat::from_rotation_x(-0.2),
+            radius: 1.1,
+            height: 2.4,
+        };
+        let mut stabilizer = SurfaceStabilizer::default();
+        stabilizer.start(Surface::Cone(cone));
+        let points = [
+            cone.point(PI - 0.1, 0.4),
+            cone.point(-PI + 0.1, 0.45),
+            cone.point(-PI + 0.2, 0.5),
+        ];
+        let mut output = Vec::new();
+        for (index, position) in points.into_iter().enumerate() {
+            if index > 0 {
+                assert!(!stabilizer.discontinuity(position));
+            }
+            output.extend(stabilizer.push(
+                Point {
+                    position,
+                    pressure: 0.3 + index as f32 * 0.2,
+                    tilt: None,
+                },
+                0.04,
+            ));
+        }
+        output.extend(stabilizer.finish());
+        assert!(output.iter().all(|point| {
+            let local = cone.rotation.inverse() * (point.position - cone.center);
+            let expected_radius = cone.radius * (1.0 - local.y / cone.height);
+            (local.x.hypot(local.z) - expected_radius).abs() < 1e-4
+                && (0.0..=cone.height).contains(&local.y)
+        }));
+        assert!(output.last().unwrap().position.distance(points[2]) < 1e-5);
+    }
+}
+
+#[cfg(test)]
 mod revolved_tests {
     use super::*;
     #[test]

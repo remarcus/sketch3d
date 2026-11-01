@@ -628,6 +628,38 @@ mod tests {
     }
 
     #[test]
+    fn saved_guides_and_active_target_survive_recovery_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut recovery = Recovery::new(Ok(dir.path().into()), egui::Context::default());
+        let mut doc = document();
+        doc.guide_resources = vec![crate::document::guide_resources::GuideResource {
+            id: 23,
+            name: "Recovery sphere".into(),
+            visible: true,
+            locked: false,
+            geometry: crate::document::guide_resources::GuideGeometry::sphere(
+                Vec3::new(1.0, 2.0, 3.0),
+                1.25,
+            ),
+        }];
+        doc.active_guide = Some(23);
+        recovery.mark_edit();
+        assert!(recovery.force_snapshot(&doc, None));
+        wait(&mut recovery);
+        drop(recovery);
+        let scan = recovery_store::scan(dir.path(), "another-session").unwrap();
+        assert_eq!(scan.candidates.len(), 1);
+        assert_eq!(
+            scan.candidates[0].snapshot.document.guide_resources,
+            doc.guide_resources
+        );
+        assert_eq!(
+            scan.candidates[0].snapshot.document.active_guide,
+            doc.active_guide
+        );
+    }
+
+    #[test]
     fn failed_background_write_never_claims_protection_and_retries_are_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let mut recovery = Recovery::new(Ok(dir.path().into()), egui::Context::default());
