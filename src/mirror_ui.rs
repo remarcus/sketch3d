@@ -6,6 +6,16 @@ enum NormalAxis {
     V,
 }
 
+fn mirror_tool_supported(
+    selecting: bool,
+    erasing: bool,
+    filling: bool,
+    shaping: bool,
+    curving: bool,
+) -> bool {
+    !(selecting || erasing || filling || shaping || curving)
+}
+
 pub(super) struct MirrorUi {
     pub enabled: bool,
     axis: NormalAxis,
@@ -48,10 +58,32 @@ impl SketchApp {
         })
     }
 
+    fn mirror_availability(&self) -> Result<crate::mirror::MirrorPlane, String> {
+        if !mirror_tool_supported(
+            self.select_mode,
+            self.eraser,
+            self.fills.enabled,
+            self.shape_tool.mode.is_some(),
+            self.curve_tool.enabled,
+        ) {
+            return Err(
+                "Live mirror is available for brush and straight-line strokes only.".into(),
+            );
+        }
+        self.mirror_plane()
+    }
+
     pub(super) fn mirror_controls(&mut self, ui: &mut egui::Ui) {
+        let availability = self.mirror_availability();
         ui.separator();
         ui.strong("LIVE MIRROR");
-        ui.checkbox(&mut self.mirror_ui.enabled, "Mirror brush and line strokes");
+        ui.add_enabled(
+            availability.is_ok(),
+            egui::Checkbox::new(&mut self.mirror_ui.enabled, "Mirror brush and line strokes"),
+        );
+        if let Err(reason) = availability {
+            ui.small(reason);
+        }
         if self.mirror_ui.enabled {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.mirror_ui.axis, NormalAxis::U, "Plane normal U");
@@ -79,7 +111,7 @@ impl SketchApp {
         let mut mirrored = Vec::new();
         let mut mirror_warning = None;
         if self.mirror_ui.enabled {
-            match self.mirror_plane().and_then(|plane| {
+            match self.mirror_availability().and_then(|plane| {
                 crate::mirror::mirror_stroke_runs(&source, plane, self.next_id, 0.0001)
             }) {
                 Ok(copies) => mirrored = copies,
@@ -165,7 +197,7 @@ impl SketchApp {
         if !self.mirror_ui.enabled {
             return;
         }
-        let Ok(plane) = self.mirror_plane() else {
+        let Ok(plane) = self.mirror_availability() else {
             return;
         };
         let Ok(mirrored) = crate::mirror::mirror_stroke_runs(source, plane, self.next_id, 0.0001)
@@ -201,6 +233,24 @@ impl SketchApp {
         };
         if let Some(source) = self.doc.strokes.iter().find(|stroke| stroke.id == id) {
             self.mirror_preview_overlay(ui, rect, source);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mirror_tool_supported;
+
+    #[test]
+    fn live_mirror_is_limited_to_brush_and_line_modes() {
+        assert!(mirror_tool_supported(false, false, false, false, false));
+        for unsupported_mode in 0..5 {
+            let mut modes = [false; 5];
+            modes[unsupported_mode] = true;
+            assert!(
+                !mirror_tool_supported(modes[0], modes[1], modes[2], modes[3], modes[4]),
+                "mode {unsupported_mode} must disable live mirror"
+            );
         }
     }
 }
