@@ -904,7 +904,7 @@ impl SketchApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui_style::apply(&cc.egui_ctx, crate::presentation::UiTheme::Dark);
         let (pen, input_status) = match PenInput::install(cc) {
-            Ok(p) => (Some(p), "Windows Ink listener ready".into()),
+            Ok(p) => (Some(p), "Native pen listener ready".into()),
             Err(e) => (None, e),
         };
         let renderer = SceneRenderer::new(
@@ -4493,7 +4493,7 @@ impl eframe::App for SketchApp {
             },
         );
         self.obj_export.show(ctx);
-        let pen = self.pen.as_ref().map(|p| p.drain()).unwrap_or_default();
+        let pen = self.pen.as_mut().map(|p| p.drain()).unwrap_or_default();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {

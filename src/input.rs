@@ -68,6 +68,22 @@ mod pen_mapping {
     pub(super) fn fixed_16_16(value: i32) -> f32 {
         value as f32 / 65_536.0
     }
+
+    pub(super) fn wayland_pressure(value: u32) -> f32 {
+        (value as f32 / 65_535.0).clamp(0.0, 1.0)
+    }
+
+    pub(super) fn wayland_tilt(value: f64) -> f32 {
+        if value.is_finite() {
+            (value as f32).clamp(-90.0, 90.0)
+        } else {
+            0.0
+        }
+    }
+
+    pub(super) fn wayland_position(x: f64, y: f64, scale: f32) -> eframe::egui::Pos2 {
+        eframe::egui::pos2((x * f64::from(scale)) as f32, (y * f64::from(scale)) as f32)
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +139,23 @@ mod pen_mapping_tests {
     fn converts_xinput_window_coordinates_from_fixed_point() {
         assert_eq!(fixed_16_16(1 << 16), 1.0);
         assert_eq!(fixed_16_16(-(2 << 16)), -2.0);
+    }
+
+    #[test]
+    fn normalizes_wayland_pressure_and_clamps_tilt() {
+        assert_eq!(wayland_pressure(0), 0.0);
+        assert_eq!(wayland_pressure(65_535), 1.0);
+        assert_eq!(wayland_tilt(120.0), 90.0);
+        assert_eq!(wayland_tilt(-120.0), -90.0);
+        assert_eq!(wayland_tilt(f64::NAN), 0.0);
+    }
+
+    #[test]
+    fn converts_wayland_surface_coordinates_to_pixel_coordinates() {
+        assert_eq!(
+            wayland_position(12.5, 4.0, 2.0),
+            eframe::egui::pos2(25.0, 8.0)
+        );
     }
 }
 
@@ -335,24 +368,19 @@ mod linux_x11 {
         tilt_y: Option<f32>,
     }
 
-    pub struct PenInput {
+    pub struct X11PenInput {
         stop: Arc<AtomicBool>,
         worker: Option<JoinHandle<()>>,
         samples: Arc<Mutex<Vec<PenSample>>>,
     }
 
-    impl PenInput {
-        pub fn install(cc: &eframe::CreationContext<'_>) -> Result<Self, String> {
+    impl X11PenInput {
+        pub(super) fn install(cc: &eframe::CreationContext<'_>) -> Result<Self, String> {
             let handle = cc.window_handle().map_err(|e| e.to_string())?;
             let window = match handle.as_raw() {
                 RawWindowHandle::Xlib(handle) => handle.window as u32,
                 RawWindowHandle::Xcb(handle) => handle.window.get(),
-                RawWindowHandle::Wayland(_) => {
-                    return Err(
-                        "Native pen input currently supports X11 only; Wayland is not yet supported."
-                            .into(),
-                    );
-                }
+                RawWindowHandle::Wayland(_) => unreachable!("Wayland uses the tablet-v2 backend"),
                 _ => return Err("Native pen input requires an X11 window.".into()),
             };
 
@@ -403,7 +431,7 @@ mod linux_x11 {
             })
         }
 
-        pub fn drain(&self) -> Vec<PenSample> {
+        pub(super) fn drain(&self) -> Vec<PenSample> {
             self.samples
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -412,7 +440,7 @@ mod linux_x11 {
         }
     }
 
-    impl Drop for PenInput {
+    impl Drop for X11PenInput {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Release);
             if let Some(worker) = self.worker.take() {
@@ -684,8 +712,534 @@ mod linux_x11 {
         }
     }
 }
+
 #[cfg(target_os = "linux")]
-pub use linux_x11::PenInput;
+mod linux_wayland {
+    use super::pen_mapping::{wayland_position, wayland_pressure, wayland_tilt};
+    use super::*;
+    use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Mutex},
+    };
+    use wayland_client::{
+        backend::{Backend, ObjectId},
+        protocol::{wl_registry, wl_seat, wl_surface},
+        Connection, Dispatch, EventQueue, Proxy, QueueHandle,
+    };
+    use wayland_protocols::wp::tablet::zv2::client::{
+        zwp_tablet_manager_v2::{self, ZwpTabletManagerV2},
+        zwp_tablet_pad_dial_v2::ZwpTabletPadDialV2,
+        zwp_tablet_pad_group_v2::{self, ZwpTabletPadGroupV2},
+        zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2,
+        zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2,
+        zwp_tablet_pad_v2::{self, ZwpTabletPadV2},
+        zwp_tablet_seat_v2::{self, ZwpTabletSeatV2},
+        zwp_tablet_tool_v2::{self, ZwpTabletToolV2},
+        zwp_tablet_v2::{self, ZwpTabletV2},
+    };
+
+    pub struct PenInput {
+        queue: EventQueue<State>,
+        state: State,
+        connection: Connection,
+    }
+
+    struct State {
+        surface: wl_surface::WlSurface,
+        scale: f32,
+        samples: Arc<Mutex<Vec<PenSample>>>,
+        manager: Option<ZwpTabletManagerV2>,
+        seat: Option<wl_seat::WlSeat>,
+        tablet_seat: Option<ZwpTabletSeatV2>,
+        tablets: Vec<ZwpTabletV2>,
+        tools: Vec<ZwpTabletToolV2>,
+        pads: Vec<ZwpTabletPadV2>,
+        groups: Vec<ZwpTabletPadGroupV2>,
+        rings: Vec<ZwpTabletPadRingV2>,
+        strips: Vec<ZwpTabletPadStripV2>,
+        dials: Vec<ZwpTabletPadDialV2>,
+        context: egui::Context,
+    }
+
+    struct Tool {
+        inner: Mutex<ToolState>,
+    }
+
+    struct ToolState {
+        eraser: bool,
+        barrel_buttons: HashSet<u32>,
+        contact: bool,
+        position: Option<(f64, f64)>,
+        pressure: Option<f32>,
+        tilt: [Option<f32>; 2],
+        phase: Phase,
+        focused: bool,
+    }
+
+    impl Default for Tool {
+        fn default() -> Self {
+            Self {
+                inner: Mutex::new(ToolState {
+                    eraser: false,
+                    barrel_buttons: HashSet::new(),
+                    contact: false,
+                    position: None,
+                    pressure: None,
+                    tilt: [None; 2],
+                    phase: Phase::Move,
+                    focused: false,
+                }),
+            }
+        }
+    }
+
+    impl PenInput {
+        pub fn install(cc: &eframe::CreationContext<'_>) -> Result<Self, String> {
+            let display_handle = cc.display_handle().map_err(|e| e.to_string())?;
+            let RawDisplayHandle::Wayland(display) = display_handle.as_raw() else {
+                return Err("The Wayland pen backend requires a Wayland display.".into());
+            };
+            let window_handle = cc.window_handle().map_err(|e| e.to_string())?;
+            let RawWindowHandle::Wayland(window) = window_handle.as_raw() else {
+                return Err("The Wayland pen backend requires a Wayland surface.".into());
+            };
+            // SAFETY: winit owns this display for the lifetime of the app and this
+            // guest backend is dropped with its surface proxy before winit closes it.
+            let backend = unsafe { Backend::from_foreign_display(display.display.as_ptr().cast()) };
+            let connection = Connection::from_backend(backend);
+            // SAFETY: the pointer is the live wl_surface from this same display;
+            // ObjectId is only used with the guest connection wrapping that display.
+            let surface_id = unsafe {
+                ObjectId::from_ptr(
+                    wl_surface::WlSurface::interface(),
+                    window.surface.as_ptr().cast(),
+                )
+            }
+            .map_err(|error| format!("Could not import the Wayland window surface: {error}"))?;
+            let surface = wl_surface::WlSurface::from_id(&connection, surface_id)
+                .map_err(|error| format!("Could not manage the Wayland window surface: {error}"))?;
+            let queue = connection.new_event_queue();
+            let qh = queue.handle();
+            connection.display().get_registry(&qh, ());
+            connection
+                .flush()
+                .map_err(|e| format!("Could not initialize tablet-v2: {e}"))?;
+            let state = State {
+                surface,
+                scale: cc.egui_ctx.pixels_per_point(),
+                samples: Arc::new(Mutex::new(Vec::new())),
+                manager: None,
+                seat: None,
+                tablet_seat: None,
+                tablets: Vec::new(),
+                tools: Vec::new(),
+                pads: Vec::new(),
+                groups: Vec::new(),
+                rings: Vec::new(),
+                strips: Vec::new(),
+                dials: Vec::new(),
+                context: cc.egui_ctx.clone(),
+            };
+            Ok(Self {
+                queue,
+                state,
+                connection,
+            })
+        }
+
+        pub fn drain(&mut self) -> Vec<PenSample> {
+            self.state.scale = self.state.context.pixels_per_point();
+            if let Err(error) = self.queue.dispatch_pending(&mut self.state) {
+                eprintln!("Wayland tablet event dispatch stopped: {error}");
+                push_sample(&self.state.samples, canceled_sample());
+            }
+            let _ = self.connection.flush();
+            self.state
+                .samples
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .drain(..)
+                .collect()
+        }
+    }
+
+    impl Drop for PenInput {
+        fn drop(&mut self) {
+            for proxy in self.state.tools.drain(..) {
+                proxy.destroy();
+            }
+            for proxy in self.state.dials.drain(..) {
+                proxy.destroy();
+            }
+            for proxy in self.state.rings.drain(..) {
+                proxy.destroy();
+            }
+            for proxy in self.state.strips.drain(..) {
+                proxy.destroy();
+            }
+            for proxy in self.state.groups.drain(..) {
+                proxy.destroy();
+            }
+            for proxy in self.state.pads.drain(..) {
+                proxy.destroy();
+            }
+            for proxy in self.state.tablets.drain(..) {
+                proxy.destroy();
+            }
+            if let Some(seat) = self.state.tablet_seat.take() {
+                seat.destroy();
+            }
+            if let Some(manager) = self.state.manager.take() {
+                manager.destroy();
+            }
+            if let Some(seat) = self.state.seat.take() {
+                seat.release();
+            }
+            let _ = self.connection.flush();
+        }
+    }
+
+    impl State {
+        fn maybe_bind_tablet_seat(&mut self, qh: &QueueHandle<Self>) {
+            if self.tablet_seat.is_none() {
+                if let (Some(manager), Some(seat)) = (&self.manager, &self.seat) {
+                    self.tablet_seat = Some(manager.get_tablet_seat(seat, qh, ()));
+                }
+            }
+        }
+    }
+
+    impl Dispatch<wl_registry::WlRegistry, ()> for State {
+        fn event(
+            state: &mut Self,
+            registry: &wl_registry::WlRegistry,
+            event: wl_registry::Event,
+            _: &(),
+            _: &Connection,
+            qh: &QueueHandle<Self>,
+        ) {
+            if let wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } = event
+            {
+                if interface == "zwp_tablet_manager_v2" && state.manager.is_none() {
+                    state.manager = Some(registry.bind::<ZwpTabletManagerV2, _, _>(
+                        name,
+                        version.min(2),
+                        qh,
+                        (),
+                    ));
+                } else if interface == "wl_seat" && state.seat.is_none() {
+                    state.seat =
+                        Some(registry.bind::<wl_seat::WlSeat, _, _>(name, version.min(8), qh, ()));
+                }
+                state.maybe_bind_tablet_seat(qh);
+            }
+        }
+    }
+
+    impl Dispatch<wl_seat::WlSeat, ()> for State {
+        fn event(
+            _: &mut Self,
+            _: &wl_seat::WlSeat,
+            _: wl_seat::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    impl Dispatch<ZwpTabletManagerV2, ()> for State {
+        fn event(
+            _: &mut Self,
+            _: &ZwpTabletManagerV2,
+            _: zwp_tablet_manager_v2::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    impl Dispatch<ZwpTabletSeatV2, ()> for State {
+        fn event(
+            state: &mut Self,
+            _: &ZwpTabletSeatV2,
+            event: zwp_tablet_seat_v2::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            match event {
+                zwp_tablet_seat_v2::Event::ToolAdded { id } => state.tools.push(id),
+                zwp_tablet_seat_v2::Event::TabletAdded { id } => state.tablets.push(id),
+                zwp_tablet_seat_v2::Event::PadAdded { id } => state.pads.push(id),
+                _ => {}
+            }
+        }
+
+        wayland_client::event_created_child!(State, ZwpTabletSeatV2, [
+            zwp_tablet_seat_v2::EVT_TOOL_ADDED_OPCODE => (ZwpTabletToolV2, Tool::default()),
+            zwp_tablet_seat_v2::EVT_TABLET_ADDED_OPCODE => (ZwpTabletV2, ()),
+            zwp_tablet_seat_v2::EVT_PAD_ADDED_OPCODE => (ZwpTabletPadV2, ()),
+        ]);
+    }
+
+    impl Dispatch<ZwpTabletV2, ()> for State {
+        fn event(
+            state: &mut Self,
+            proxy: &ZwpTabletV2,
+            event: zwp_tablet_v2::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if matches!(event, zwp_tablet_v2::Event::Removed) {
+                proxy.destroy();
+                state.tablets.retain(|item| item.id() != proxy.id());
+            }
+        }
+    }
+
+    impl Dispatch<ZwpTabletPadV2, ()> for State {
+        fn event(
+            state: &mut Self,
+            proxy: &ZwpTabletPadV2,
+            event: zwp_tablet_pad_v2::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if matches!(event, zwp_tablet_pad_v2::Event::Removed) {
+                proxy.destroy();
+                state.pads.retain(|item| item.id() != proxy.id());
+            }
+            if let zwp_tablet_pad_v2::Event::Group { pad_group } = event {
+                state.groups.push(pad_group);
+            }
+        }
+
+        wayland_client::event_created_child!(State, ZwpTabletPadV2, [
+            zwp_tablet_pad_v2::EVT_GROUP_OPCODE => (ZwpTabletPadGroupV2, ()),
+        ]);
+    }
+
+    impl Dispatch<ZwpTabletPadGroupV2, ()> for State {
+        fn event(
+            state: &mut Self,
+            _: &ZwpTabletPadGroupV2,
+            event: zwp_tablet_pad_group_v2::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            match event {
+                zwp_tablet_pad_group_v2::Event::Ring { ring } => state.rings.push(ring),
+                zwp_tablet_pad_group_v2::Event::Strip { strip } => state.strips.push(strip),
+                zwp_tablet_pad_group_v2::Event::Dial { dial } => state.dials.push(dial),
+                _ => {}
+            }
+        }
+
+        wayland_client::event_created_child!(State, ZwpTabletPadGroupV2, [
+            zwp_tablet_pad_group_v2::EVT_RING_OPCODE => (ZwpTabletPadRingV2, ()),
+            zwp_tablet_pad_group_v2::EVT_STRIP_OPCODE => (ZwpTabletPadStripV2, ()),
+            zwp_tablet_pad_group_v2::EVT_DIAL_OPCODE => (ZwpTabletPadDialV2, ()),
+        ]);
+    }
+
+    impl Dispatch<ZwpTabletPadRingV2, ()> for State {
+        fn event(
+            _: &mut Self,
+            _: &ZwpTabletPadRingV2,
+            _: wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_ring_v2::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    impl Dispatch<ZwpTabletPadStripV2, ()> for State {
+        fn event(
+            _: &mut Self,
+            _: &ZwpTabletPadStripV2,
+            _: wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_strip_v2::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    impl Dispatch<ZwpTabletPadDialV2, ()> for State {
+        fn event(
+            _: &mut Self,
+            _: &ZwpTabletPadDialV2,
+            _: wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_dial_v2::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    impl Dispatch<ZwpTabletToolV2, Tool> for State {
+        fn event(
+            state: &mut Self,
+            proxy: &ZwpTabletToolV2,
+            event: zwp_tablet_tool_v2::Event,
+            tool: &Tool,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            let mut tool = tool.inner.lock().unwrap_or_else(|p| p.into_inner());
+            match event {
+                zwp_tablet_tool_v2::Event::Type { tool_type } => {
+                    tool.eraser = matches!(
+                        tool_type,
+                        wayland_client::WEnum::Value(zwp_tablet_tool_v2::Type::Eraser)
+                    );
+                }
+                zwp_tablet_tool_v2::Event::ProximityIn { surface, .. } => {
+                    tool.focused = surface == state.surface;
+                    tool.contact = false;
+                    tool.phase = Phase::Move;
+                }
+                zwp_tablet_tool_v2::Event::ProximityOut => {
+                    push_sample(&state.samples, canceled_sample());
+                    tool.focused = false;
+                    tool.contact = false;
+                    tool.barrel_buttons.clear();
+                    tool.pressure = None;
+                    tool.tilt = [None; 2];
+                }
+                zwp_tablet_tool_v2::Event::Motion { x, y } => tool.position = Some((x, y)),
+                zwp_tablet_tool_v2::Event::Pressure { pressure } => {
+                    tool.pressure = Some(wayland_pressure(pressure))
+                }
+                zwp_tablet_tool_v2::Event::Tilt { tilt_x, tilt_y } => {
+                    tool.tilt = [Some(wayland_tilt(tilt_x)), Some(wayland_tilt(tilt_y))]
+                }
+                zwp_tablet_tool_v2::Event::Down { .. } => {
+                    tool.contact = true;
+                    tool.phase = Phase::Down;
+                }
+                zwp_tablet_tool_v2::Event::Up => {
+                    tool.contact = false;
+                    tool.phase = Phase::Up;
+                }
+                zwp_tablet_tool_v2::Event::Button {
+                    button,
+                    state: button_state,
+                    ..
+                } => {
+                    if !matches!(button, 0x14b | 0x14c) {
+                        return;
+                    }
+                    if matches!(
+                        button_state,
+                        wayland_client::WEnum::Value(zwp_tablet_tool_v2::ButtonState::Pressed)
+                    ) {
+                        tool.barrel_buttons.insert(button);
+                    } else {
+                        tool.barrel_buttons.remove(&button);
+                    }
+                }
+                zwp_tablet_tool_v2::Event::Frame { .. } => {
+                    if tool.focused {
+                        if let Some((x, y)) = tool.position {
+                            push_sample(
+                                &state.samples,
+                                PenSample {
+                                    position: wayland_position(x, y, state.scale),
+                                    pressure: tool.pressure,
+                                    tilt: tool.tilt,
+                                    eraser: tool.eraser,
+                                    barrel: !tool.barrel_buttons.is_empty(),
+                                    contact: tool.contact,
+                                    phase: tool.phase,
+                                },
+                            );
+                            tool.phase = Phase::Move;
+                        }
+                    }
+                }
+                zwp_tablet_tool_v2::Event::Removed => {
+                    if tool.contact {
+                        push_sample(&state.samples, canceled_sample());
+                    }
+                    proxy.destroy();
+                    state.tools.retain(|item| item.id() != proxy.id());
+                }
+                _ => {}
+            }
+            state.context.request_repaint();
+        }
+    }
+
+    fn push_sample(samples: &Mutex<Vec<PenSample>>, sample: PenSample) {
+        let mut samples = samples.lock().unwrap_or_else(|p| p.into_inner());
+        if samples.len() >= 32_768 {
+            samples.clear();
+            samples.push(canceled_sample());
+        } else {
+            samples.push(sample);
+        }
+    }
+
+    fn canceled_sample() -> PenSample {
+        PenSample {
+            position: egui::Pos2::ZERO,
+            pressure: None,
+            tilt: [None; 2],
+            eraser: false,
+            barrel: false,
+            contact: false,
+            phase: Phase::Cancel,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux_input {
+    use super::*;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    pub enum PenInput {
+        X11(super::linux_x11::X11PenInput),
+        Wayland(Box<super::linux_wayland::PenInput>),
+    }
+
+    impl PenInput {
+        pub fn install(cc: &eframe::CreationContext<'_>) -> Result<Self, String> {
+            let handle = cc.window_handle().map_err(|e| e.to_string())?;
+            match handle.as_raw() {
+                RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_) => {
+                    super::linux_x11::X11PenInput::install(cc).map(Self::X11)
+                }
+                RawWindowHandle::Wayland(_) => super::linux_wayland::PenInput::install(cc)
+                    .map(Box::new)
+                    .map(Self::Wayland),
+                _ => Err("Native Linux pen input requires an X11 or Wayland window.".into()),
+            }
+        }
+
+        pub fn drain(&mut self) -> Vec<PenSample> {
+            match self {
+                Self::X11(pen) => pen.drain(),
+                Self::Wayland(pen) => pen.drain(),
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use linux_input::PenInput;
 
 #[cfg(target_os = "macos")]
 mod macos_appkit {

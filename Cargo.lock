@@ -2883,6 +2883,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
  "windows-sys 0.59.0",
  "x11rb",
 ]
