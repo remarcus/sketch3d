@@ -51,6 +51,20 @@ mod pen_mapping {
         (value.clamp(min, max) as f32).clamp(-90.0, 90.0)
     }
 
+    pub(super) fn update_axis_cache(
+        cached: &mut Option<f32>,
+        mask: &[u32],
+        values: &[f64],
+        axis: Option<(u16, f64, f64)>,
+        normalize: fn(f64, f64, f64) -> f32,
+    ) {
+        if let Some((number, min, max)) = axis {
+            if let Some(value) = valuator_value(mask, values, number) {
+                *cached = Some(normalize(value, min, max));
+            }
+        }
+    }
+
     pub(super) fn fixed_16_16(value: i32) -> f32 {
         value as f32 / 65_536.0
     }
@@ -74,6 +88,28 @@ mod pen_mapping_tests {
             -30.0
         );
         assert_eq!(valuator_value(&mask, &values, 0), None);
+    }
+
+    #[test]
+    fn keeps_last_axis_values_when_xinput_events_omit_unchanged_valuators() {
+        let mut pressure = None;
+        update_axis_cache(
+            &mut pressure,
+            &[1 << 3],
+            &[42.0],
+            Some((3, 0.0, 100.0)),
+            normalize_axis,
+        );
+        assert_eq!(pressure, Some(0.42));
+
+        update_axis_cache(
+            &mut pressure,
+            &[1],
+            &[7.0],
+            Some((3, 0.0, 100.0)),
+            normalize_axis,
+        );
+        assert_eq!(pressure, Some(0.42));
     }
 
     #[test]
@@ -253,9 +289,7 @@ pub use native::PenInput;
 
 #[cfg(target_os = "linux")]
 mod linux_x11 {
-    use super::pen_mapping::{
-        fixed_16_16, normalize_axis, normalize_tilt, valuator_value as map_valuator_value,
-    };
+    use super::pen_mapping::{fixed_16_16, normalize_axis, normalize_tilt, update_axis_cache};
     use super::*;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use std::{
@@ -294,6 +328,13 @@ mod linux_x11 {
         phase: Phase,
     }
 
+    #[derive(Clone, Copy, Default)]
+    struct DynamicAxes {
+        pressure: Option<f32>,
+        tilt_x: Option<f32>,
+        tilt_y: Option<f32>,
+    }
+
     pub struct PenInput {
         stop: Arc<AtomicBool>,
         worker: Option<JoinHandle<()>>,
@@ -322,6 +363,8 @@ mod linux_x11 {
                 .map_err(|error| format!("XInput2 is unavailable: {error}"))?
                 .reply()
                 .map_err(|error| format!("XInput2 is unavailable: {error}"))?;
+            let axes = query_tablet_axes(&connection)
+                .map_err(|error| format!("Could not inspect XInput2 tablet axes: {error}"))?;
 
             let masks = [EventMask {
                 deviceid: 0, // XIAllDevices
@@ -350,7 +393,7 @@ mod linux_x11 {
             let context = cc.egui_ctx.clone();
             let worker = thread::Builder::new()
                 .name("sketch3d-xinput2-pen".into())
-                .spawn(move || run_listener(connection, worker_stop, worker_samples, context))
+                .spawn(move || run_listener(connection, axes, worker_stop, worker_samples, context))
                 .map_err(|error| format!("Could not start XInput2 listener: {error}"))?;
 
             Ok(Self {
@@ -380,15 +423,13 @@ mod linux_x11 {
 
     fn run_listener(
         connection: RustConnection,
+        mut axes: HashMap<xinput::DeviceId, Axes>,
         stop: Arc<AtomicBool>,
         samples: Arc<Mutex<Vec<PenSample>>>,
         context: egui::Context,
     ) {
-        let mut axes = match query_tablet_axes(&connection) {
-            Ok(axes) => axes,
-            Err(_) => return,
-        };
         let mut contact = HashSet::new();
+        let mut dynamic_axes = HashMap::<xinput::DeviceId, DynamicAxes>::new();
 
         while !stop.load(Ordering::Acquire) {
             let event = match connection.poll_for_event() {
@@ -403,11 +444,15 @@ mod linux_x11 {
             match event {
                 Event::XinputDeviceChanged(_) | Event::XinputHierarchy(_) => {
                     contact.clear();
+                    dynamic_axes.clear();
                     push_sample(&samples, canceled_sample());
-                    axes = query_tablet_axes(&connection).unwrap_or_default();
+                    if let Ok(updated_axes) = query_tablet_axes(&connection) {
+                        axes = updated_axes;
+                    }
                     context.request_repaint();
                 }
                 Event::XinputFocusOut(_) => {
+                    dynamic_axes.clear();
                     if !contact.is_empty() {
                         contact.clear();
                         push_sample(&samples, canceled_sample());
@@ -427,10 +472,12 @@ mod linux_x11 {
                     push_sample(
                         &samples,
                         sample_from_event(
+                            source,
                             position,
                             &event.valuator_mask,
                             &event.axisvalues,
                             device_axes,
+                            &mut dynamic_axes,
                             SampleState {
                                 eraser: device_axes.eraser,
                                 barrel,
@@ -456,10 +503,12 @@ mod linux_x11 {
                     push_sample(
                         &samples,
                         sample_from_event(
+                            source,
                             event_position(event.event_x, event.event_y),
                             &event.valuator_mask,
                             &event.axisvalues,
                             device_axes,
+                            &mut dynamic_axes,
                             SampleState {
                                 eraser: device_axes.eraser,
                                 barrel: false,
@@ -472,6 +521,9 @@ mod linux_x11 {
                             },
                         ),
                     );
+                    if event.detail == 1 {
+                        dynamic_axes.remove(&source);
+                    }
                     context.request_repaint();
                 }
                 Event::XinputMotion(event) => {
@@ -482,10 +534,12 @@ mod linux_x11 {
                     push_sample(
                         &samples,
                         sample_from_event(
+                            source,
                             event_position(event.event_x, event.event_y),
                             &event.valuator_mask,
                             &event.axisvalues,
                             device_axes,
+                            &mut dynamic_axes,
                             SampleState {
                                 eraser: device_axes.eraser,
                                 barrel: button_is_down(&event.button_mask, 2)
@@ -550,29 +604,41 @@ mod linux_x11 {
     }
 
     fn sample_from_event(
+        source: xinput::DeviceId,
         position: egui::Pos2,
         valuator_mask: &[u32],
         axis_values: &[xinput::Fp3232],
         axes: Axes,
+        dynamic_axes: &mut HashMap<xinput::DeviceId, DynamicAxes>,
         state: SampleState,
     ) -> PenSample {
         let values = axis_values.iter().copied().map(fp3232).collect::<Vec<_>>();
+        let dynamic = dynamic_axes.entry(source).or_default();
+        update_axis_cache(
+            &mut dynamic.pressure,
+            valuator_mask,
+            &values,
+            axes.pressure,
+            normalize_axis,
+        );
+        update_axis_cache(
+            &mut dynamic.tilt_x,
+            valuator_mask,
+            &values,
+            axes.tilt_x,
+            normalize_tilt,
+        );
+        update_axis_cache(
+            &mut dynamic.tilt_y,
+            valuator_mask,
+            &values,
+            axes.tilt_y,
+            normalize_tilt,
+        );
         PenSample {
             position,
-            pressure: axes.pressure.and_then(|axis| {
-                map_valuator_value(valuator_mask, &values, axis.0)
-                    .map(|value| normalize_axis(value, axis.1, axis.2))
-            }),
-            tilt: [
-                axes.tilt_x.and_then(|axis| {
-                    map_valuator_value(valuator_mask, &values, axis.0)
-                        .map(|value| normalize_tilt(value, axis.1, axis.2))
-                }),
-                axes.tilt_y.and_then(|axis| {
-                    map_valuator_value(valuator_mask, &values, axis.0)
-                        .map(|value| normalize_tilt(value, axis.1, axis.2))
-                }),
-            ],
+            pressure: dynamic.pressure,
+            tilt: [dynamic.tilt_x, dynamic.tilt_y],
             eraser: state.eraser,
             barrel: state.barrel,
             contact: state.contact,
@@ -660,6 +726,7 @@ mod macos_appkit {
                 .window()
                 .ok_or_else(|| "The AppKit view is not attached to a window.".to_owned())?;
             let window_number = window.windowNumber();
+            let backing_scale = window.backingScaleFactor() as f32;
             let view_address = view_ptr.as_ptr() as usize;
             let samples = Arc::new(Mutex::new(Vec::new()));
             let contact = Arc::new(Mutex::new(false));
@@ -704,8 +771,8 @@ mod macos_appkit {
                 let bounds = view.bounds();
                 let point = view.convertPoint_fromView(event.locationInWindow(), None);
                 let position = egui::pos2(
-                    point.x as f32,
-                    (bounds.origin.y + bounds.size.height - point.y) as f32,
+                    ((point.x - bounds.origin.x) as f32) * backing_scale,
+                    ((bounds.origin.y + bounds.size.height - point.y) as f32) * backing_scale,
                 );
                 let buttons = event.buttonMask();
                 let tip_down = buttons.contains(objc2_app_kit::NSEventButtonMask::PenTip);
