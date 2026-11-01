@@ -1700,6 +1700,46 @@ impl SketchApp {
                 compare_scale_handle_and_numeric(self, ctx, rect, pivot_mode, pivot, axis, 1.35);
             }
         }
+        self.transform_mode = Mode::Scale;
+        self.transform_pivot = PivotMode::Custom;
+        self.custom_pivot = custom_pivot;
+        self.scale_uniform_lock = false;
+        let before_cancel = self.doc.strokes.clone();
+        let cancel_history = self.undo.len();
+        let layout = self.layout(rect).unwrap();
+        let handle = layout
+            .handles
+            .iter()
+            .find(|handle| handle.kind == HandleKind::ScaleAxis(1))
+            .expect("Y scale handle is available for cancellation");
+        let start = handle.path[1];
+        let direction = (start - layout.origin).normalized();
+        replay(
+            self,
+            ctx,
+            rect,
+            start,
+            Some(start + direction * (0.4_f32.ln() * 100.0)),
+            false,
+            false,
+        );
+        assert!(self.drag.is_some(), "scale preview remains cancellable");
+        assert_ne!(self.doc.strokes, before_cancel);
+        assert_eq!(self.undo.len(), cancel_history);
+        ctx.input_mut(|input| {
+            input.events = vec![egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }]
+        });
+        self.selection_shortcuts(ctx);
+        ctx.input_mut(|input| input.events.clear());
+        assert!(self.drag.is_none());
+        assert_eq!(self.doc.strokes, before_cancel);
+        assert_eq!(self.undo.len(), cancel_history);
         self.transform_pivot = PivotMode::SelectionCenter;
         self.scale_values = [1.0; 3];
         let layout = self.layout(rect).unwrap();
