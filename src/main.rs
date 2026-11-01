@@ -70,6 +70,23 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--write-obj-material-fixture")
+    {
+        let Some(directory) = args.get(index + 1) else {
+            eprintln!("Usage: sketch3d --write-obj-material-fixture <directory>");
+            std::process::exit(2);
+        };
+        match obj_export::write_material_verification_bundle(std::path::Path::new(directory)) {
+            Ok(()) => println!("Wrote OBJ material verification fixture to {directory}"),
+            Err(error) => {
+                eprintln!("Could not write OBJ material verification fixture: {error}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--benchmark-performance") {
         if let Err(error) = performance_benchmark::run() {
             eprintln!("{error}");

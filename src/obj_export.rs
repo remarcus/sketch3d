@@ -1,9 +1,10 @@
 //! Wavefront OBJ/MTL export for visible editable stroke geometry.
 use crate::{
-    document::{Document, Stroke, StrokeMaterial},
+    document::{Document, Point, Stroke, StrokeMaterial},
     export,
     texture::{self, TextureKind, TextureSettings},
 };
+use glam::Vec3;
 use std::{
     collections::HashMap,
     fmt::Write as FmtWrite,
@@ -13,6 +14,53 @@ use std::{
 };
 
 type MaterialKey = (u32, u32, u32, u32, TextureKind, u32, u32, StrokeMaterial);
+
+/// Write a compact OBJ/MTL fixture with one stroke for each material mode.
+pub fn write_material_verification_bundle(directory: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    let strokes = [
+        StrokeMaterial::Shaded,
+        StrokeMaterial::Unlit,
+        StrokeMaterial::Emissive,
+        StrokeMaterial::Cutout,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, material)| material_stroke(index as u64 + 1, material))
+    .collect();
+    let document = Document {
+        strokes,
+        ..Document::default()
+    };
+    let destination = directory.join("materials.obj");
+    write_obj_bundle(&document, None, &destination, false)?;
+    Ok(())
+}
+
+fn material_stroke(id: u64, material: StrokeMaterial) -> Stroke {
+    Stroke {
+        material,
+        fill: None,
+        group_id: None,
+        layer_id: 1,
+        id,
+        color: [0.25, 0.5, 0.75],
+        radius: 0.04,
+        brush: Default::default(),
+        points: vec![
+            Point {
+                position: Vec3::new(0.0, id as f32 * 0.2, 0.0),
+                pressure: 0.8,
+                tilt: None,
+            },
+            Point {
+                position: Vec3::new(1.0, id as f32 * 0.2, 0.0),
+                pressure: 0.8,
+                tilt: None,
+            },
+        ],
+    }
+}
 
 struct Material {
     name: String,
@@ -298,33 +346,6 @@ impl<W: Write> Write for BudgetWriter<W> {
 #[cfg(test)]
 mod material_tests {
     use super::*;
-    use crate::document::{Point, StrokeMaterial};
-    use glam::Vec3;
-
-    fn material_stroke(id: u64, material: StrokeMaterial) -> Stroke {
-        Stroke {
-            material,
-            fill: None,
-            group_id: None,
-            layer_id: 1,
-            id,
-            color: [0.25, 0.5, 0.75],
-            radius: 0.04,
-            brush: Default::default(),
-            points: vec![
-                Point {
-                    position: Vec3::new(0.0, id as f32 * 0.2, 0.0),
-                    pressure: 0.8,
-                    tilt: None,
-                },
-                Point {
-                    position: Vec3::new(1.0, id as f32 * 0.2, 0.0),
-                    pressure: 0.8,
-                    tilt: None,
-                },
-            ],
-        }
-    }
 
     #[test]
     fn obj_mtl_preserves_material_modes_and_discloses_cutout_fallback() {
