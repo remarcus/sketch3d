@@ -1264,7 +1264,7 @@ fn encode_mp4_with_blender(
 /// Stream raw RGBA frames to FFmpeg; if it is absent, encode a temporary PNG
 /// sequence through Blender's bundled FFmpeg video writer. The final file is
 /// installed only after a clean encoder exit.
-fn encode_mp4(
+pub(crate) fn encode_mp4(
     receiver: Receiver<Option<Vec<u8>>>,
     destination: &std::path::Path,
     size: [u32; 2],

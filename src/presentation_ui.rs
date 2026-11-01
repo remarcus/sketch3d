@@ -25,7 +25,8 @@ pub(super) struct PresentationUi {
 }
 impl PresentationUi {
     pub fn new() -> Self {
-        let verify = std::env::args().any(|a| a.starts_with("--verify"));
+        let verify =
+            std::env::args().any(|a| a.starts_with("--verify") || a == "--record-capability-demo");
         let own_verify = std::env::args().any(|a| a == "--verify-presentation");
         let path = if verify {
             std::env::current_dir()

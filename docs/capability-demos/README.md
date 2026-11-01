@@ -4,6 +4,16 @@ This folder defines the capture recipe for SKETCH-066. **No capability clips are
 
 The editable sample documents are generated from the built-in original scenes with `cargo run -- --write-capability-fixtures docs/capability-demos/fixtures`. The command refuses to overwrite existing files and removes files it created if fixture generation stops partway through. Static tutorial alternatives, caption transcripts, and draft 60-second WebVTT tracks are in `tutorials/`.
 
+## Deterministic hidden preview
+
+The first focused preview can be regenerated without opening a visible app window:
+
+```powershell
+cargo run --locked -j1 -- --record-capability-demo draw-orbit
+```
+
+This bounded 6-second replay draws a stroke and orbits the camera through `canvas_input`, captures one full app frame at a time, and writes an H.264 MP4 master, a 640×360 GIF preview, a full-size PNG poster, a WebVTT sidecar, and a JSON manifest under ignored `verification/capability-demos/drafts/`. The replay adds visible `DRAW` and `ORBIT` cursor cues and a synthetic-input disclosure. MP4 encoding uses FFmpeg when available and Blender's H.264 encoder otherwise. The command refuses to overwrite any of these outputs; remove or move the complete draft set before regenerating it. The manifest discloses synthetic `pressure=None` input, records the source commit and capture details, and leaves review flags false. This draft does not measure tablet pressure or latency and must pass the review checklist before it can be used in the README.
+
 ## Capture a clip
 
 1. Build the application and stage the exact fixture and UI state listed in [shot-list.md](shot-list.md).

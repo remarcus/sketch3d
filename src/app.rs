@@ -120,6 +120,8 @@ pub(crate) fn write_native_merge_fixture(output: &std::path::Path) -> Result<(),
 mod views;
 use std::{
     path::PathBuf,
+    sync::{atomic::AtomicBool, mpsc::SyncSender},
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -304,6 +306,401 @@ pub struct SketchApp {
     construction_history: crate::construction_history::ConstructionHistory,
     obj_export: obj_export_ui::ObjExportUi,
     png_verification_frame: Option<u32>,
+    capability_replay: Option<CapabilityReplay>,
+}
+
+const CAPABILITY_REPLAY_FPS: u32 = 10;
+const CAPABILITY_REPLAY_FRAMES: usize = 60;
+const CAPABILITY_REPLAY_MAX_GIF_BYTES: u64 = 5 * 1024 * 1024;
+const CAPABILITY_REPLAY_MAX_MP4_BYTES: u64 = 512 * 1024 * 1024;
+
+pub(crate) fn prepare_capability_demo_output() -> Result<PathBuf, String> {
+    let output_dir = std::env::current_dir()
+        .map_err(|error| error.to_string())?
+        .join("verification")
+        .join("capability-demos")
+        .join("drafts");
+    std::fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
+    for name in [
+        "draw-orbit.gif",
+        "draw-orbit.mp4",
+        "draw-orbit.png",
+        "draw-orbit.en.vtt",
+        "draw-orbit.recording.json",
+    ] {
+        let path = output_dir.join(name);
+        if path.exists() {
+            return Err(format!(
+                "Refusing to overwrite existing capability demo output: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(output_dir)
+}
+
+struct CapabilityReplay {
+    output_dir: PathBuf,
+    initial_stroke_count: usize,
+    initial_camera: Camera,
+    canvas_rect: Option<Rect>,
+    captured_frames: usize,
+    screenshot_pending: bool,
+    screenshot_requested: bool,
+    wait_updates: u32,
+    frame_size: Option<[u32; 2]>,
+    pixels_per_point: f32,
+    pointer_cue: Option<Pos2>,
+    contact: bool,
+    barrel: bool,
+    sender: Option<SyncSender<Option<Vec<u8>>>>,
+    encoder: Option<JoinHandle<Result<(), String>>>,
+    mp4_sender: Option<SyncSender<Option<Vec<u8>>>>,
+    mp4_encoder: Option<JoinHandle<Result<(), String>>>,
+}
+
+impl CapabilityReplay {
+    fn remove_draft_outputs(&self) {
+        for name in [
+            "draw-orbit.gif",
+            "draw-orbit.mp4",
+            "draw-orbit.png",
+            "draw-orbit.en.vtt",
+            "draw-orbit.recording.json",
+        ] {
+            let _ = std::fs::remove_file(self.output_dir.join(name));
+        }
+    }
+
+    fn abort(mut self) {
+        self.sender.take();
+        self.mp4_sender.take();
+        if let Some(encoder) = self.encoder.take() {
+            let _ = encoder.join();
+        }
+        if let Some(encoder) = self.mp4_encoder.take() {
+            let _ = encoder.join();
+        }
+        self.remove_draft_outputs();
+    }
+
+    fn save_poster(&self, pixels: &[u8], dimensions: [u32; 2]) -> Result<(), String> {
+        use image::ImageEncoder;
+        let destination = self.output_dir.join("draw-orbit.png");
+        let mut temporary = tempfile::Builder::new()
+            .suffix(".png")
+            .tempfile_in(&self.output_dir)
+            .map_err(|error| error.to_string())?;
+        image::codecs::png::PngEncoder::new(temporary.as_file_mut())
+            .write_image(
+                pixels,
+                dimensions[0],
+                dimensions[1],
+                image::ExtendedColorType::Rgba8,
+            )
+            .map_err(|error| error.to_string())?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|error| error.to_string())?;
+        temporary
+            .persist(&destination)
+            .map_err(|error| error.error.to_string())?;
+        Ok(())
+    }
+
+    fn next_sample(&mut self, rect: Rect) -> Option<PenSample> {
+        if self.screenshot_pending || self.captured_frames >= CAPABILITY_REPLAY_FRAMES {
+            return None;
+        }
+        self.screenshot_pending = true;
+        self.canvas_rect = Some(rect);
+        self.wait_updates = 0;
+        let frame = self.captured_frames;
+        let start = rect.center() + egui::vec2(-150.0, -65.0);
+        let end = rect.center() + egui::vec2(150.0, -35.0);
+        let (position, phase, contact, barrel) = match frame {
+            0..=2 => (start, Phase::Move, false, false),
+            3 => (start, Phase::Down, true, false),
+            4..=25 => {
+                let t = (frame - 4) as f32 / 21.0;
+                (
+                    egui::pos2(
+                        start.x + (end.x - start.x) * t,
+                        start.y + (end.y - start.y) * t + (t * std::f32::consts::TAU).sin() * 28.0,
+                    ),
+                    Phase::Move,
+                    true,
+                    false,
+                )
+            }
+            26 => (end, Phase::Up, false, false),
+            27..=33 => (end, Phase::Move, false, false),
+            34..=50 => {
+                let t = (frame - 34) as f32 / 16.0;
+                (
+                    egui::pos2(
+                        end.x + t * 210.0,
+                        end.y + (t * std::f32::consts::PI).sin() * 52.0,
+                    ),
+                    Phase::Move,
+                    true,
+                    true,
+                )
+            }
+            51 => (end + egui::vec2(210.0, 0.0), Phase::Up, false, false),
+            _ => (end + egui::vec2(210.0, 0.0), Phase::Move, false, false),
+        };
+        self.pointer_cue = Some(position);
+        self.contact = contact;
+        self.barrel = barrel;
+        Some(PenSample {
+            position,
+            pressure: None,
+            tilt: [None, None],
+            eraser: false,
+            barrel,
+            contact,
+            phase,
+        })
+    }
+
+    fn paint_cursor_cue(&self, painter: &egui::Painter, canvas: Rect) {
+        let disclosure = Rect::from_min_size(
+            canvas.left_top() + egui::vec2(12.0, 12.0),
+            egui::vec2(288.0, 28.0),
+        );
+        painter.rect_filled(disclosure, 4.0, Color32::from_black_alpha(210));
+        painter.text(
+            disclosure.center(),
+            egui::Align2::CENTER_CENTER,
+            "DETERMINISTIC REPLAY  •  NO PRESSURE DATA",
+            egui::FontId::proportional(15.0),
+            Color32::WHITE,
+        );
+        let Some(position) = self
+            .pointer_cue
+            .filter(|position| canvas.contains(*position))
+        else {
+            return;
+        };
+        let accent = Color32::from_rgb(60, 220, 210);
+        painter.circle_stroke(
+            position,
+            if self.contact { 10.0 } else { 8.0 },
+            egui::Stroke::new(2.0_f32, accent),
+        );
+        painter.circle_filled(position, 2.5, accent);
+        if self.contact {
+            let label = if self.barrel { "ORBIT" } else { "DRAW" };
+            let label_rect =
+                Rect::from_min_size(position + egui::vec2(14.0, -20.0), egui::vec2(56.0, 18.0));
+            painter.rect_filled(label_rect, 3.0, Color32::from_black_alpha(210));
+            painter.text(
+                label_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(11.0),
+                Color32::WHITE,
+            );
+        }
+    }
+
+    fn finish(mut self) -> Result<(), String> {
+        if let Some(sender) = self.sender.take() {
+            drop(sender);
+        }
+        if let Some(sender) = self.mp4_sender.take() {
+            drop(sender);
+        }
+        let gif_result = self
+            .encoder
+            .take()
+            .map(|encoder| {
+                encoder
+                    .join()
+                    .map_err(|_| "Capability demo GIF encoder panicked".to_owned())?
+            })
+            .unwrap_or(Ok(()));
+        let mp4_result = self
+            .mp4_encoder
+            .take()
+            .map(|encoder| {
+                encoder
+                    .join()
+                    .map_err(|_| "Capability demo MP4 encoder panicked".to_owned())?
+            })
+            .unwrap_or(Ok(()));
+        if let Err(error) = gif_result.and(mp4_result) {
+            self.remove_draft_outputs();
+            return Err(error);
+        }
+        let gif_path = self.output_dir.join("draw-orbit.gif");
+        let mp4_path = self.output_dir.join("draw-orbit.mp4");
+        let poster_path = self.output_dir.join("draw-orbit.png");
+        let gif_metadata = match std::fs::metadata(&gif_path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                self.remove_draft_outputs();
+                return Err(error.to_string());
+            }
+        };
+        let mp4_metadata = match std::fs::metadata(&mp4_path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                self.remove_draft_outputs();
+                return Err(error.to_string());
+            }
+        };
+        let poster_metadata = match std::fs::metadata(&poster_path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                self.remove_draft_outputs();
+                return Err(error.to_string());
+            }
+        };
+        if gif_metadata.len() == 0 || gif_metadata.len() > CAPABILITY_REPLAY_MAX_GIF_BYTES {
+            self.remove_draft_outputs();
+            return Err(format!(
+                "Capability demo GIF is {} bytes, empty or over the {} byte limit",
+                gif_metadata.len(),
+                CAPABILITY_REPLAY_MAX_GIF_BYTES,
+            ));
+        }
+        if mp4_metadata.len() <= 64 || mp4_metadata.len() > CAPABILITY_REPLAY_MAX_MP4_BYTES {
+            self.remove_draft_outputs();
+            return Err(format!(
+                "Capability demo MP4 is {} bytes, empty or over the {} byte limit",
+                mp4_metadata.len(),
+                CAPABILITY_REPLAY_MAX_MP4_BYTES,
+            ));
+        }
+        if poster_metadata.len() == 0 {
+            self.remove_draft_outputs();
+            return Err("Capability demo poster is empty".into());
+        }
+        let manifest_path = self.output_dir.join("draw-orbit.recording.json");
+        let captions_path = self.output_dir.join("draw-orbit.en.vtt");
+        let captions = concat!(
+            "WEBVTT\n\n",
+            "00:00:00.000 --> 00:00:00.300\n",
+            "Deterministic replay. Input is synthetic; tablet pressure was not measured.\n\n",
+            "00:00:00.300 --> 00:00:02.700\n",
+            "Draw a short cyan stroke on the front plane.\n\n",
+            "00:00:03.400 --> 00:00:05.100\n",
+            "Orbit the camera with a simulated barrel gesture.\n\n",
+            "00:00:05.100 --> 00:00:06.000\n",
+            "The new stroke remains editable.\n"
+        );
+        let mut caption_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&captions_path)
+            .map_err(|error| error.to_string())?;
+        use std::io::Write;
+        if let Err(error) = caption_file
+            .write_all(captions.as_bytes())
+            .and_then(|()| caption_file.sync_all())
+        {
+            self.remove_draft_outputs();
+            return Err(error.to_string());
+        }
+        let recorded_unix_seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_secs();
+        let app_commit = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            .filter(|commit| !commit.is_empty())
+            .unwrap_or_else(|| "unknown".into());
+        let source_tree_dirty = std::process::Command::new("git")
+            .args([
+                "status",
+                "--porcelain",
+                "--",
+                "src/app.rs",
+                "src/main.rs",
+                "src/tutorial_ui.rs",
+                "src/presentation_ui.rs",
+                "src/video_export_ui.rs",
+            ])
+            .output()
+            .map(|output| !output.stdout.is_empty())
+            .unwrap_or(true);
+        let dimensions = self
+            .frame_size
+            .ok_or_else(|| "Capability demo did not capture any frames".to_owned())?;
+        let manifest = serde_json::json!({
+            "format": "spatial-sketch-capability-demo",
+            "manifest_version": 1,
+            "clip": "draw-orbit",
+            "recorded_unix_seconds": recorded_unix_seconds,
+            "duration_seconds": 6,
+            "app_commit": app_commit,
+            "source_tree_dirty": source_tree_dirty,
+            "fixture": "Japanese house",
+            "fixture_version": 1,
+            "viewport": [dimensions[0], dimensions[1]],
+            "capture_size": [dimensions[0], dimensions[1]],
+            "gif_size": [640, 360],
+            "dpi_percent": (self.pixels_per_point * 100.0).round() as u32,
+            "theme": "Dark",
+            "capture_mode": "deterministic hidden in-app replay through canvas_input",
+            "input_note": "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured.",
+            "window_visible": false,
+            "frame_rate": CAPABILITY_REPLAY_FPS,
+            "shot_steps": [
+                "Draw a short stroke on the Japanese house drawing plane with pressure-free synthetic input.",
+                "Orbit the camera using a synthetic barrel gesture through canvas_input.",
+                "Pause on the edited view."
+            ],
+            "cursor_cue": "A synthetic pointer ring is labeled DRAW or ORBIT while the corresponding input is active.",
+            "encoding": {
+                "mp4": "Captured full-viewport RGBA frames; FFmpeg H.264 or Blender H.264 fallback; 10 fps.",
+                "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder; 10 fps; 6 seconds; <=5 MiB.",
+                "poster": "First full-resolution app frame encoded as PNG."
+            },
+            "outputs": {
+                "mp4": { "file": "draw-orbit.mp4", "bytes": mp4_metadata.len() },
+                "gif": { "file": "draw-orbit.gif", "bytes": gif_metadata.len() },
+                "poster": {
+                    "file": "draw-orbit.png",
+                    "bytes": poster_metadata.len(),
+                    "alt": "Japanese garden house in Sketch3D's dark workspace before the scripted cyan stroke is added."
+                },
+                "captions": {
+                    "file": "draw-orbit.en.vtt",
+                    "bytes": std::fs::metadata(&captions_path).map_err(|error| error.to_string())?.len(),
+                    "format": "WebVTT",
+                    "timing_reviewed": false
+                }
+            },
+            "review": {
+                "reviewed": false,
+                "loop_boundary_checked": false,
+                "intended_readme_surface_checked": false,
+                "private_content_checked": false,
+                "captions_timing_checked": false,
+                "reviewer": null,
+                "notes": "Synthetic replay draft; visual correctness and readability review remain required."
+            }
+        });
+        let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&manifest_path)
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
+            self.remove_draft_outputs();
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
 }
 
 struct AppearanceLayoutVerification {
@@ -727,8 +1124,39 @@ impl SketchApp {
             construction_history: crate::construction_history::ConstructionHistory::load(),
             obj_export: Default::default(),
             png_verification_frame: None,
+            capability_replay: None,
         };
-        if std::env::args().any(|a| a == "--verify-liquify-brush") {
+        if std::env::args().any(|a| a == "--record-capability-demo") {
+            app.verification_frame = None;
+            app.capability_replay = Some(CapabilityReplay {
+                output_dir: prepare_capability_demo_output()
+                    .expect("capability demo output path must be prepared before app launch"),
+                initial_stroke_count: 0,
+                initial_camera: app.camera,
+                canvas_rect: None,
+                captured_frames: 0,
+                screenshot_pending: false,
+                screenshot_requested: false,
+                wait_updates: 0,
+                frame_size: None,
+                pixels_per_point: cc.egui_ctx.pixels_per_point(),
+                pointer_cue: None,
+                contact: false,
+                barrel: false,
+                sender: None,
+                encoder: None,
+                mp4_sender: None,
+                mp4_encoder: None,
+            });
+            app.stabilization = 0.0;
+            app.load_house();
+            app.guide = DrawingPlane::from_preset(Plane::Front);
+            app.guide.depth = app.camera.target.z;
+            if let Some(replay) = app.capability_replay.as_mut() {
+                replay.initial_stroke_count = app.doc.strokes.len();
+                replay.initial_camera = app.camera;
+            }
+        } else if std::env::args().any(|a| a == "--verify-liquify-brush") {
             app.verification_frame = None;
             app.liquify_brush_verification_frame = Some(0);
             app.doc = crate::export_check::brush_fixture();
@@ -3470,6 +3898,7 @@ impl SketchApp {
             && self.line.verification_frame.is_none()
             && self.liquify_brush_verification_frame.is_none()
             && self.mirror_verification_frame.is_none()
+            && self.capability_replay.is_none()
         {
             self.cancel();
             return;
@@ -3792,6 +4221,7 @@ impl eframe::App for SketchApp {
             self.status = status;
         }
         self.capture_verification(ctx);
+        self.capture_capability_replay_screenshot(ctx);
         if let Some(verification) = &mut self.appearance_layout_verification {
             if !verification.screenshot_requested
                 && (ctx.zoom_factor() - verification.zoom_factor).abs() < 0.001
@@ -4152,7 +4582,11 @@ impl eframe::App for SketchApp {
                 self.verify_cylinder(ctx, rect);
                 self.verify_house(ctx);
                 self.verify_canvas(ctx, rect);
-                self.canvas_input(ctx, rect, pen);
+                let replay_pen = self
+                    .capability_replay
+                    .as_mut()
+                    .and_then(|replay| replay.next_sample(rect));
+                self.canvas_input(ctx, rect, replay_pen.map_or(pen, |sample| vec![sample]));
                 let scale = ctx.pixels_per_point();
                 if self.select_mode && !self.presentation.artwork {
                     self.renderer.set_selection(&self.selected);
@@ -4197,6 +4631,9 @@ impl eframe::App for SketchApp {
                     cursor_painted.unwrap_or_else(|reason| {
                         panic!("appearance capture could not paint the Liquify cursor: {reason}")
                     });
+                }
+                if let Some(replay) = &self.capability_replay {
+                    replay.paint_cursor_cue(ui.painter(), rect);
                 }
                 if let Some((
                     destination,
@@ -4336,6 +4773,12 @@ impl eframe::App for SketchApp {
                     ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
                 }
             });
+        if let Some(replay) = self.capability_replay.as_mut() {
+            if replay.screenshot_pending && !replay.screenshot_requested {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                replay.screenshot_requested = true;
+            }
+        }
         if self.confirm {
             egui::Window::new("Save your drawing?")
                 .collapsible(false)
@@ -4414,11 +4857,17 @@ impl eframe::App for SketchApp {
             || self.placement.verification_frame.is_some()
             || self.presentation.verification_frame.is_some()
             || self.view_verification_frame.is_some()
+            || self.capability_replay.is_some()
             || self.line.verification_frame.is_some()
             || self.close_after_recovery
             || self.recovery.busy()
         {
-            ctx.request_repaint_after(Duration::from_millis(8));
+            let repaint_delay = if self.capability_replay.is_some() {
+                Duration::from_millis(1000 / CAPABILITY_REPLAY_FPS as u64)
+            } else {
+                Duration::from_millis(8)
+            };
+            ctx.request_repaint_after(repaint_delay);
         }
     }
 }
@@ -5379,6 +5828,159 @@ impl SketchApp {
             )
             .unwrap();
             self.dirty = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+}
+
+impl SketchApp {
+    fn capture_capability_replay_screenshot(&mut self, ctx: &egui::Context) {
+        let screenshot_pending = self
+            .capability_replay
+            .as_ref()
+            .is_some_and(|replay| replay.screenshot_pending && replay.screenshot_requested);
+        if !screenshot_pending {
+            return;
+        }
+        let screenshot = ctx.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        let Some(image) = screenshot else {
+            if let Some(replay) = self.capability_replay.as_mut() {
+                replay.wait_updates = replay.wait_updates.saturating_add(1);
+                if replay.wait_updates > 120 {
+                    eprintln!("Capability demo capture timed out waiting for a screenshot event");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        };
+        let dimensions = [image.size[0] as u32, image.size[1] as u32];
+        let pixel_count = (dimensions[0] as usize).saturating_mul(dimensions[1] as usize);
+        if dimensions[0] == 0
+            || dimensions[1] == 0
+            || dimensions[0] > 3840
+            || dimensions[1] > 2160
+            || pixel_count > 3840usize * 2160usize
+        {
+            eprintln!("Capability demo screenshot dimensions exceed the capture limit");
+            std::process::exit(1);
+        }
+        let replay = self.capability_replay.as_mut().unwrap();
+        if replay.frame_size.is_some_and(|size| size != dimensions) {
+            eprintln!("Capability demo screenshots changed size during capture");
+            std::process::exit(1);
+        }
+        if replay.sender.is_none() {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let gif_output = replay.output_dir.join("draw-orbit.gif");
+            replay.encoder = Some(std::thread::spawn(move || {
+                let cancelled = AtomicBool::new(false);
+                video_export_ui::encode_gif(
+                    receiver,
+                    &gif_output,
+                    [640, 360],
+                    CAPABILITY_REPLAY_FPS,
+                    CAPABILITY_REPLAY_FRAMES,
+                    &cancelled,
+                )
+            }));
+            replay.sender = Some(sender);
+            let (mp4_sender, mp4_receiver) = std::sync::mpsc::sync_channel(1);
+            let mp4_output = replay.output_dir.join("draw-orbit.mp4");
+            let mp4_size = dimensions;
+            replay.mp4_encoder = Some(std::thread::spawn(move || {
+                let cancelled = AtomicBool::new(false);
+                video_export_ui::encode_mp4(
+                    mp4_receiver,
+                    &mp4_output,
+                    mp4_size,
+                    CAPABILITY_REPLAY_FPS,
+                    CAPABILITY_REPLAY_FRAMES,
+                    &cancelled,
+                )
+            }));
+            replay.mp4_sender = Some(mp4_sender);
+            replay.frame_size = Some(dimensions);
+        }
+        replay.pixels_per_point = ctx.pixels_per_point();
+        let pixels = image
+            .pixels
+            .iter()
+            .flat_map(|pixel| pixel.to_array())
+            .collect::<Vec<_>>();
+        let Some(rgba) = image::RgbaImage::from_raw(dimensions[0], dimensions[1], pixels) else {
+            eprintln!("Could not assemble capability demo screenshot pixels");
+            std::process::exit(1);
+        };
+        if replay.captured_frames == 0 {
+            if let Err(error) = replay.save_poster(rgba.as_raw(), dimensions) {
+                self.capability_replay.take().unwrap().abort();
+                eprintln!("Could not save capability demo poster: {error}");
+                std::process::exit(1);
+            }
+        }
+        let resized =
+            image::imageops::resize(&rgba, 640, 360, image::imageops::FilterType::Lanczos3);
+        let sender = replay.sender.as_ref().unwrap();
+        if sender.send(Some(resized.into_raw())).is_err() {
+            eprintln!("Capability demo GIF encoder stopped before all frames were captured");
+            std::process::exit(1);
+        }
+        let mp4_sender = replay.mp4_sender.as_ref().unwrap();
+        if mp4_sender.send(Some(rgba.into_raw())).is_err() {
+            eprintln!("Capability demo MP4 encoder stopped before all frames were captured");
+            std::process::exit(1);
+        }
+        replay.captured_frames += 1;
+        if replay.captured_frames.is_multiple_of(10) {
+            eprintln!(
+                "Capability demo captured frame {}/{}",
+                replay.captured_frames, CAPABILITY_REPLAY_FRAMES
+            );
+        }
+        replay.screenshot_pending = false;
+        replay.screenshot_requested = false;
+        if replay.captured_frames == 27 {
+            let committed = self.doc.strokes.len() > replay.initial_stroke_count
+                && self.doc.strokes.last().is_some_and(|stroke| {
+                    stroke.points.len() > 10
+                        && replay.canvas_rect.is_some_and(|rect| {
+                            stroke.points.iter().any(|point| {
+                                crate::gizmo::project(&self.camera, rect, point.position)
+                                    .is_some_and(|(position, _)| rect.contains(position))
+                            })
+                        })
+                });
+            if !committed {
+                self.capability_replay.take().unwrap().abort();
+                eprintln!("Capability demo replay did not commit the scripted drawing stroke");
+                std::process::exit(1);
+            }
+        }
+        if replay.captured_frames == 51 {
+            let camera_changed = (self.camera.yaw - replay.initial_camera.yaw).abs() > 0.001
+                || (self.camera.pitch - replay.initial_camera.pitch).abs() > 0.001
+                || (self.camera.roll - replay.initial_camera.roll).abs() > 0.001
+                || (self.camera.distance - replay.initial_camera.distance).abs() > 0.001
+                || self.camera.target.distance(replay.initial_camera.target) > 0.001;
+            if !camera_changed {
+                self.capability_replay.take().unwrap().abort();
+                eprintln!("Capability demo replay did not orbit the camera through canvas_input");
+                std::process::exit(1);
+            }
+        }
+        if replay.captured_frames == CAPABILITY_REPLAY_FRAMES {
+            let replay = self.capability_replay.take().unwrap();
+            if let Err(error) = replay.finish() {
+                eprintln!("Capability demo capture failed: {error}");
+                std::process::exit(1);
+            }
+            eprintln!("Wrote verification/capability-demos/drafts/draw-orbit.gif and manifest");
+            self.allow_close = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }

@@ -283,6 +283,19 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--record-capability-demo")
+    {
+        if args.get(index + 1).is_none_or(|name| name != "draw-orbit") || args.len() != index + 2 {
+            eprintln!("Usage: sketch3d --record-capability-demo draw-orbit");
+            std::process::exit(2);
+        }
+        if let Err(error) = app::prepare_capability_demo_output() {
+            eprintln!("Could not prepare capability demo output: {error}");
+            std::process::exit(2);
+        }
+    }
     let hidden_verification = args.iter().any(|argument| {
         matches!(
             argument.as_str(),
@@ -291,25 +304,32 @@ fn main() -> eframe::Result {
                 | "--verify-obj-references"
                 | "--verify-camera-bookmarks"
                 | "--verify-appearance-layout"
+                | "--record-capability-demo"
         )
     });
-    let viewport_size = args
+    let viewport_size = if args
         .iter()
-        .position(|argument| argument == "--verify-appearance-layout")
-        .map(|index| {
-            let width = args
-                .get(index + 3)
-                .and_then(|value| value.parse::<u32>().ok())
-                .filter(|dimension| (640..=3840).contains(dimension))
-                .unwrap_or(1440);
-            let height = args
-                .get(index + 4)
-                .and_then(|value| value.parse::<u32>().ok())
-                .filter(|dimension| (480..=2160).contains(dimension))
-                .unwrap_or(940);
-            [width as f32, height as f32]
-        })
-        .unwrap_or([1440.0, 940.0]);
+        .any(|argument| argument == "--record-capability-demo")
+    {
+        [1280.0, 720.0]
+    } else {
+        args.iter()
+            .position(|argument| argument == "--verify-appearance-layout")
+            .map(|index| {
+                let width = args
+                    .get(index + 3)
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .filter(|dimension| (640..=3840).contains(dimension))
+                    .unwrap_or(1440);
+                let height = args
+                    .get(index + 4)
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .filter(|dimension| (480..=2160).contains(dimension))
+                    .unwrap_or(940);
+                [width as f32, height as f32]
+            })
+            .unwrap_or([1440.0, 940.0])
+    };
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()
