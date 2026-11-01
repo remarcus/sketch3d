@@ -91,6 +91,14 @@ pub fn canvas_selection_accent(background_srgb: [f32; 3], has_image: bool) -> Co
     }
 }
 
+pub fn canvas_overlay_accent(background_srgb: [f32; 3], has_image: bool) -> Color32 {
+    if has_image {
+        Color32::from_rgb(244, 45, 190)
+    } else {
+        canvas_accent(background_srgb)
+    }
+}
+
 fn scene_luminance(background_srgb: [f32; 3]) -> f32 {
     background_srgb
         .into_iter()

@@ -42,7 +42,7 @@ foreach ($theme in @('dark', 'light')) {
             height = $size[1]
         })
     }
-    foreach ($state in @('brush', 'select', 'layers', 'color-picker', 'library', 'recovery-error', 'export', 'scene-dark-background', 'scene-light-background', 'scene-custom-background', 'scene-image-background')) {
+    foreach ($state in @('brush', 'select', 'layers', 'color-picker', 'library', 'recovery-error', 'export', 'scene-dark-background', 'scene-light-background', 'scene-custom-background', 'scene-image-background', 'scene-mirror-preview-dark', 'scene-mirror-preview-light', 'scene-mirror-preview-custom', 'scene-mirror-preview-image', 'scene-liquify-cursor-light', 'scene-liquify-cursor-image')) {
         foreach ($zoom in @(1.0, 1.5, 2.0)) {
             foreach ($size in @(@(1280, 720), @(1920, 1080))) {
                 $captureRequests.Add([pscustomobject]@{
@@ -93,12 +93,14 @@ try {
                 -RedirectStandardOutput $stdoutPath `
                 -RedirectStandardError $stderrPath `
                 -PassThru
+            $captureTimedOut = $false
             try {
                 if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-                    throw "Appearance capture timed out for $theme at $width`x$height and $percent percent."
+                    $captureTimedOut = $true
+                } else {
+                    $process.Refresh()
                 }
-                $process.Refresh()
-                if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
+                if (-not $captureTimedOut -and $null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
                     throw "Appearance capture failed for $theme at $width`x$height and $percent percent; see $stderrPath."
                 }
             } finally {
@@ -108,11 +110,17 @@ try {
                     $null = $process.WaitForExit(5000)
                 }
             }
+            if ($captureTimedOut) {
+                if ($attempt -eq 2) {
+                    throw "Appearance capture timed out twice for $theme $state at $width`x$height and $percent percent."
+                }
+                continue
+            }
             $artifactsProduced = (Test-Path -LiteralPath $reportPath -PathType Leaf) -and
                 (Test-Path -LiteralPath $imagePath -PathType Leaf)
         }
         if (-not $artifactsProduced) {
-            throw "Appearance capture did not produce both artifacts after one retry for $theme at $width`x$height and $percent percent."
+            throw "Appearance capture did not produce both artifacts after one retry for $theme $state at $width`x$height and $percent percent."
         }
         $capture = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
         if ($capture.passed -ne $true -or
@@ -143,7 +151,7 @@ try {
 }
 
 $stateCaptures = @($captures | Where-Object { $_.capture_kind -eq 'state' })
-$expectedStateCaptureCount = 11 * 2 * 2 * 3
+$expectedStateCaptureCount = 17 * 2 * 2 * 3
 if ($stateCaptures.Count -ne $expectedStateCaptureCount) {
     throw "Expected $expectedStateCaptureCount named UI-state captures; found $($stateCaptures.Count)."
 }
@@ -157,13 +165,16 @@ $summary = [pscustomobject]@{
         'the full editing workspace rendered in Dark and Light themes at 80%, 150%, and 200% egui zoom',
         'all hidden app processes used settings separate from the user profile and saved fresh screenshots at their requested dimensions',
         'the workspace rendered in Dark and Light at 1280x720 and 1920x1080 viewport sizes',
-      'Brush, Select, Layers, color picker, library, recovery error, PNG export, and light, dark, custom, and image scene backgrounds rendered in both themes at 1280x720 and 1920x1080 with 100%, 150%, and 200% egui zoom',
+        'Brush, Select, Layers, color picker, library, recovery error, PNG export, and light, dark, custom, and image scene backgrounds rendered in both themes at 1280x720 and 1920x1080 with 100%, 150%, and 200% egui zoom',
+        'production live line and mirror preview overlays rendered against dark, light, custom, and mixed image backgrounds',
+        'the painted Liquify radius cursor rendered at a synthetic in-canvas pointer location on light and image backgrounds',
         'the Color control remains visible at 150% and wraps to a second row at 200%',
         'the empty-canvas message remains legible within the reduced canvas width at 200%'
     )
     limitations = @(
         'viewport and egui zoom checks do not replace operating-system DPI scaling walkthroughs',
-        'Windows Narrator announcements still require direct assistive-technology testing'
+        'Windows Narrator announcements still require direct assistive-technology testing',
+        'OS-drawn Brush crosshair visibility is not present in screenshots and needs desktop review'
     )
     physical_tablet_tested = $false
     state_capture_count = $stateCaptures.Count

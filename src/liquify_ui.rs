@@ -449,15 +449,15 @@ impl SketchApp {
         painter: &egui::Painter,
         rect: Rect,
         pointer: Option<Pos2>,
-    ) {
+    ) -> Result<(), &'static str> {
         if !self.liquify_brush_active() {
-            return;
+            return Err("Liquify brush mode or draft is inactive");
         }
         let Some(draft) = self.liquify_ui.draft.as_ref() else {
-            return;
+            return Err("Liquify draft is missing");
         };
         let Some(pointer) = pointer.filter(|pos| rect.contains(*pos)) else {
-            return;
+            return Err("synthetic pointer is outside the canvas");
         };
         let (cursor_center, plane_origin) = self
             .liquify_ui
@@ -470,16 +470,20 @@ impl SketchApp {
         let (ray_origin, ray_direction) = crate::gizmo::ray(&self.camera, rect, pointer);
         let denominator = ray_direction.dot(normal);
         if denominator.abs() < 1.0e-5 {
-            return;
+            return Err("cursor ray is parallel to its working plane");
         }
         let distance = (plane_origin - ray_origin).dot(normal) / denominator;
         if distance <= 0.0 {
-            return;
+            return Err("working plane is behind the cursor ray");
         }
         let world = ray_origin + ray_direction * distance;
         let radius_pixels =
             draft.settings.radius / self.camera.world_per_pixel(world, rect.height());
         let painter = painter.with_clip_rect(rect);
+        let label_color = super::ui_style::canvas_overlay_accent(
+            self.presentation.preferences.background,
+            self.presentation.preferences.background_image.is_some(),
+        );
         painter.circle_stroke(
             cursor_center,
             radius_pixels,
@@ -496,7 +500,7 @@ impl SketchApp {
             egui::Align2::LEFT_CENTER,
             format!("r {:.2} wu · depth {depth:.2} wu", draft.settings.radius),
             egui::FontId::proportional(12.0),
-            Color32::WHITE,
+            label_color,
         );
         if let Some(gesture) = &self.liquify_ui.gesture {
             painter.arrow(
@@ -505,6 +509,7 @@ impl SketchApp {
                 egui::Stroke::new(2.0_f32, Color32::from_rgb(255, 205, 50)),
             );
         }
+        Ok(())
     }
 }
 

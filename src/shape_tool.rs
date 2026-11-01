@@ -306,7 +306,10 @@ impl SketchApp {
                     [pair[0], pair[1]],
                     egui::Stroke::new(
                         2.0_f32,
-                        ui_style::canvas_accent(self.presentation.preferences.background),
+                        ui_style::canvas_overlay_accent(
+                            self.presentation.preferences.background,
+                            self.presentation.preferences.background_image.is_some(),
+                        ),
                     ),
                 );
             }
@@ -315,7 +318,10 @@ impl SketchApp {
                     [*last, *first],
                     egui::Stroke::new(
                         2.0_f32,
-                        ui_style::canvas_accent(self.presentation.preferences.background),
+                        ui_style::canvas_overlay_accent(
+                            self.presentation.preferences.background,
+                            self.presentation.preferences.background_image.is_some(),
+                        ),
                     ),
                 );
             }

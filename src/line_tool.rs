@@ -260,7 +260,10 @@ impl SketchApp {
             crate::gizmo::project(&self.camera, rect, draft.mark.points[1].position),
         ) {
             let painter = ui.painter().with_clip_rect(rect);
-            let color = ui_style::canvas_accent(self.presentation.preferences.background);
+            let color = ui_style::canvas_overlay_accent(
+                self.presentation.preferences.background,
+                self.presentation.preferences.background_image.is_some(),
+            );
             painter.line_segment([a, b], egui::Stroke::new(2.0_f32, color));
             for p in [a, b] {
                 painter.circle_stroke(p, 5.0, egui::Stroke::new(1.5_f32, color));

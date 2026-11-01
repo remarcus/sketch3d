@@ -169,7 +169,10 @@ impl SketchApp {
             return;
         };
         let painter = ui.painter().with_clip_rect(rect);
-        let color = ui_style::canvas_accent(self.presentation.preferences.background);
+        let color = ui_style::canvas_overlay_accent(
+            self.presentation.preferences.background,
+            self.presentation.preferences.background_image.is_some(),
+        );
         painter.circle_stroke(start, 5.0, egui::Stroke::new(1.5_f32, color));
         if start.distance(end) > 10.0 {
             painter.arrow(start, end - start, egui::Stroke::new(1.5_f32, color));

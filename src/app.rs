@@ -787,6 +787,12 @@ impl SketchApp {
                 "scene-light-background",
                 "scene-custom-background",
                 "scene-image-background",
+                "scene-mirror-preview-dark",
+                "scene-mirror-preview-light",
+                "scene-mirror-preview-custom",
+                "scene-mirror-preview-image",
+                "scene-liquify-cursor-light",
+                "scene-liquify-cursor-image",
             ];
             assert!(
                 supported_states.contains(&state),
@@ -841,18 +847,44 @@ impl SketchApp {
                 "scene-dark-background"
                 | "scene-light-background"
                 | "scene-custom-background"
-                | "scene-image-background" => {
+                | "scene-image-background"
+                | "scene-mirror-preview-dark"
+                | "scene-mirror-preview-light"
+                | "scene-mirror-preview-custom"
+                | "scene-mirror-preview-image"
+                | "scene-liquify-cursor-light"
+                | "scene-liquify-cursor-image" => {
                     app.doc = crate::export_check::brush_fixture();
                     app.selected = app.doc.strokes.iter().map(|stroke| stroke.id).collect();
-                    app.select_mode = true;
+                    let mirror_preview = matches!(
+                        state,
+                        "scene-mirror-preview-dark"
+                            | "scene-mirror-preview-light"
+                            | "scene-mirror-preview-custom"
+                            | "scene-mirror-preview-image"
+                    );
+                    app.select_mode = !mirror_preview;
                     app.camera.align(Plane::Front);
                     app.presentation.preferences.background = match state {
-                        "scene-dark-background" | "scene-image-background" => [0.035, 0.045, 0.06],
-                        "scene-light-background" => [0.94, 0.95, 0.97],
-                        "scene-custom-background" => [0.46, 0.31, 0.68],
+                        "scene-dark-background"
+                        | "scene-image-background"
+                        | "scene-mirror-preview-dark"
+                        | "scene-mirror-preview-image"
+                        | "scene-liquify-cursor-image" => [0.035, 0.045, 0.06],
+                        "scene-light-background"
+                        | "scene-mirror-preview-light"
+                        | "scene-liquify-cursor-light" => [0.94, 0.95, 0.97],
+                        "scene-custom-background" | "scene-mirror-preview-custom" => {
+                            [0.46, 0.31, 0.68]
+                        }
                         _ => unreachable!("appearance background state was validated above"),
                     };
-                    if state == "scene-image-background" {
+                    if matches!(
+                        state,
+                        "scene-image-background"
+                            | "scene-mirror-preview-image"
+                            | "scene-liquify-cursor-image"
+                    ) {
                         let light = [238, 236, 224, 255];
                         let dark = [31, 42, 55, 255];
                         let pixels = (0..8)
@@ -879,6 +911,31 @@ impl SketchApp {
                                 alignment: [0.5, 0.5],
                                 opacity: 1.0,
                             });
+                    }
+                    if matches!(
+                        state,
+                        "scene-dark-background"
+                            | "scene-light-background"
+                            | "scene-custom-background"
+                            | "scene-image-background"
+                            | "scene-mirror-preview-dark"
+                            | "scene-mirror-preview-light"
+                            | "scene-mirror-preview-custom"
+                            | "scene-mirror-preview-image"
+                    ) {
+                        app.line.enabled = true;
+                        app.mirror_ui.enabled = true;
+                    } else {
+                        let stroke_id = app
+                            .doc
+                            .strokes
+                            .iter()
+                            .find(|stroke| stroke.fill.is_none())
+                            .map(|stroke| stroke.id)
+                            .expect("Liquify cursor fixture contains an ordinary stroke");
+                        app.selected = HashSet::from([stroke_id]);
+                        app.begin_liquify();
+                        app.activate_liquify_brush();
                     }
                 }
                 _ => unreachable!("appearance capture states are validated above"),
@@ -3326,6 +3383,7 @@ impl SketchApp {
             )
         });
         if !ctx.input(|i| i.focused)
+            && self.appearance_layout_verification.is_none()
             && self.verification_frame.is_none()
             && self.dynamics_verification_frame.is_none()
             && self.texture_verification_frame.is_none()
@@ -3929,6 +3987,36 @@ impl eframe::App for SketchApp {
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                let appearance_state = self
+                    .appearance_layout_verification
+                    .as_ref()
+                    .map(|verification| verification.state.clone());
+                if matches!(
+                    appearance_state.as_deref(),
+                    Some(
+                        "scene-mirror-preview-dark"
+                            | "scene-mirror-preview-light"
+                            | "scene-mirror-preview-custom"
+                            | "scene-mirror-preview-image"
+                    )
+                ) && self.line.draft.is_none()
+                {
+                    let start = rect.center() + egui::vec2(-160.0, 45.0);
+                    let end = rect.center() + egui::vec2(-50.0, -45.0);
+                    self.line_input(start, 0.75, None, rect, true);
+                    self.line_input(end, 0.75, None, rect, false);
+                    let draft =
+                        self.line.draft.as_ref().expect(
+                            "appearance mirror preview line draft starts on the active guide",
+                        );
+                    let mirrors = self
+                        .mirrored_runs_for(&draft.mark)
+                        .expect("appearance mirror preview geometry is supported");
+                    assert!(
+                        !mirrors.is_empty(),
+                        "appearance mirror preview must contain reflected geometry"
+                    );
+                }
                 self.verify_lines(ctx, rect);
                 self.verify_views(ctx, rect);
                 self.verify_presentation(ctx, rect);
@@ -3985,7 +4073,23 @@ impl eframe::App for SketchApp {
                     Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
-                self.paint_liquify_cursor(ui.painter(), rect, ctx.pointer_hover_pos());
+                let cursor_pointer = if matches!(
+                    appearance_state.as_deref(),
+                    Some("scene-liquify-cursor-light" | "scene-liquify-cursor-image")
+                ) {
+                    Some(rect.center())
+                } else {
+                    ctx.pointer_hover_pos()
+                };
+                let cursor_painted = self.paint_liquify_cursor(ui.painter(), rect, cursor_pointer);
+                if matches!(
+                    appearance_state.as_deref(),
+                    Some("scene-liquify-cursor-light" | "scene-liquify-cursor-image")
+                ) {
+                    cursor_painted.unwrap_or_else(|reason| {
+                        panic!("appearance capture could not paint the Liquify cursor: {reason}")
+                    });
+                }
                 if let Some((
                     destination,
                     size,
@@ -4950,6 +5054,32 @@ impl SketchApp {
                     image::ColorType::Rgba8,
                 )
                 .expect("appearance screenshot saves");
+                let mut checks = vec![
+                    format!(
+                        "hidden app rendered the {} UI state at the requested egui zoom factor",
+                        verification.state
+                    ),
+                    "the requested appearance theme was applied in memory without saving user preferences".into(),
+                ];
+                if matches!(
+                    verification.state.as_str(),
+                    "scene-mirror-preview-dark"
+                        | "scene-mirror-preview-light"
+                        | "scene-mirror-preview-custom"
+                        | "scene-mirror-preview-image"
+                ) {
+                    checks.push(
+                        "production live line draft and mirror preview overlays were active for this capture".into(),
+                    );
+                }
+                if matches!(
+                    verification.state.as_str(),
+                    "scene-liquify-cursor-light" | "scene-liquify-cursor-image"
+                ) {
+                    checks.push(
+                        "painted Liquify cursor received a deterministic synthetic in-canvas pointer position".into(),
+                    );
+                }
                 let report = serde_json::json!({
                     "passed": true,
                     "theme": theme,
@@ -4958,10 +5088,7 @@ impl SketchApp {
                     "requested_viewport_points": verification.viewport_size,
                     "screenshot": filename,
                     "screenshot_size_pixels": image.size,
-                    "checks": [
-                        format!("hidden app rendered the {} UI state at the requested egui zoom factor", verification.state),
-                        "the requested appearance theme was applied in memory without saving user preferences"
-                    ],
+                    "checks": checks,
                     "physical_tablet_tested": false
                 });
                 std::fs::write(

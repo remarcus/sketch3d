@@ -565,7 +565,10 @@ impl SketchApp {
             return;
         };
         let painter = ui.painter().with_clip_rect(rect);
-        let color = ui_style::canvas_accent(self.presentation.preferences.background);
+        let color = ui_style::canvas_overlay_accent(
+            self.presentation.preferences.background,
+            self.presentation.preferences.background_image.is_some(),
+        );
         if let Some(stroke) = &draft.preview {
             let points: Vec<_> = stroke
                 .points
