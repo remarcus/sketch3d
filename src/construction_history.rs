@@ -209,6 +209,37 @@ pub struct ConstructionHistory {
 }
 
 impl ConstructionHistory {
+    #[cfg(test)]
+    pub(crate) fn empty_for_test() -> Self {
+        Self {
+            storage_dir: None,
+            path: None,
+            recording_id: None,
+            source_key: None,
+            started_at_ms: 0,
+            last_elapsed_ms: 0,
+            paused_total_ms: 0,
+            pause_started_at_ms: None,
+            elapsed_duration_ms: 0,
+            baseline: None,
+            baseline_camera: None,
+            camera_events: Vec::new(),
+            last_camera_sample_ms: 0,
+            baseline_tool_settings: None,
+            tool_settings_events: Vec::new(),
+            last_tool_settings_sample_ms: 0,
+            events: Vec::new(),
+            estimated_bytes: 0,
+            overhead: RecordingOverhead::default(),
+            recording: false,
+            paused: false,
+            interrupted: false,
+            writer: None,
+            writer_errors: None,
+            notice: None,
+        }
+    }
+
     pub fn load() -> Self {
         let storage_dir = crate::presets::path()
             .ok()

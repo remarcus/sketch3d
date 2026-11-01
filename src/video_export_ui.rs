@@ -151,7 +151,7 @@ fn append_reveal_prefix(
     *revealed_stroke_count = target_count;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExportMode {
     Turntable,
     Sequence(u64),
@@ -159,7 +159,7 @@ enum ExportMode {
     RecordedHistory,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VideoFormat {
     Gif,
     Mp4,
@@ -275,6 +275,12 @@ pub(super) struct VideoExportUi {
     overwrite: Option<VideoRequest>,
     request: Option<VideoRequest>,
     job: Option<VideoJob>,
+    #[cfg(test)]
+    test_save_path: Option<PathBuf>,
+    #[cfg(test)]
+    test_reconstructed_mode_rect: Option<egui::Rect>,
+    #[cfg(test)]
+    test_choose_file_rect: Option<egui::Rect>,
 }
 
 pub(super) struct HistoryRecordingContext<'a> {
@@ -299,6 +305,12 @@ impl Default for VideoExportUi {
             overwrite: None,
             request: None,
             job: None,
+            #[cfg(test)]
+            test_save_path: None,
+            #[cfg(test)]
+            test_reconstructed_mode_rect: None,
+            #[cfg(test)]
+            test_choose_file_rect: None,
         }
     }
 }
@@ -442,11 +454,17 @@ impl VideoExportUi {
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut self.mode, ExportMode::Turntable, "Turntable");
-                        ui.selectable_value(
+                        let reconstructed_mode = ui.selectable_value(
                             &mut self.mode,
                             ExportMode::ReconstructedReveal,
                             "Reconstructed reveal",
                         );
+                        #[cfg(test)]
+                        {
+                            self.test_reconstructed_mode_rect = Some(reconstructed_mode.rect);
+                        }
+                        #[cfg(not(test))]
+                        let _ = reconstructed_mode;
                         if history.has_history() {
                             ui.selectable_value(
                                 &mut self.mode,
@@ -541,19 +559,22 @@ impl VideoExportUi {
                         );
                     }
                     ui.horizontal(|ui| {
-                        choose = ui
-                            .add_enabled(
+                        let choose_file = ui.add_enabled(
                             self.frame_count(sequences, history.duration_ms()).is_some()
                                 && (self.mode != ExportMode::RecordedHistory
                                     || self.history_trim_percent[1]
                                         > self.history_trim_percent[0])
                                     && u64::from(self.width) * u64::from(self.height) <= MAX_PIXELS,
-                                egui::Button::new(match self.format {
-                                    VideoFormat::Gif => "Choose GIF file…",
-                                    VideoFormat::Mp4 => "Choose MP4 file…",
-                                }),
-                            )
-                            .clicked();
+                            egui::Button::new(match self.format {
+                                VideoFormat::Gif => "Choose GIF file…",
+                                VideoFormat::Mp4 => "Choose MP4 file…",
+                            }),
+                        );
+                        choose = choose_file.clicked();
+                        #[cfg(test)]
+                        {
+                            self.test_choose_file_rect = Some(choose_file.rect);
+                        }
                         if ui.button("Cancel").clicked() {
                             self.dialog_open = false;
                         }
@@ -565,11 +586,23 @@ impl VideoExportUi {
                     VideoFormat::Gif => ("gif", "Animated GIF", "animation.gif"),
                     VideoFormat::Mp4 => ("mp4", "MP4 video", "animation.mp4"),
                 };
-                if let Some(mut path) = rfd::FileDialog::new()
-                    .add_filter(filter, &[extension])
-                    .set_file_name(filename)
-                    .save_file()
-                {
+                let selected_path = {
+                    #[cfg(test)]
+                    {
+                        self.test_save_path.take()
+                    }
+                    #[cfg(not(test))]
+                    {
+                        None
+                    }
+                }
+                .or_else(|| {
+                    rfd::FileDialog::new()
+                        .add_filter(filter, &[extension])
+                        .set_file_name(filename)
+                        .save_file()
+                });
+                if let Some(mut path) = selected_path {
                     path.set_extension(extension);
                     let history_total_ms = history.duration_ms();
                     let request = VideoRequest {
@@ -1155,6 +1188,158 @@ mod tests {
                 Poll::Pending => thread::park(),
             }
         }
+    }
+
+    fn render_video_dialog(
+        ctx: &egui::Context,
+        ui: &mut VideoExportUi,
+        history: &mut crate::construction_history::ConstructionHistory,
+        document: &Document,
+        camera: &crate::geometry::Camera,
+        tool_settings: &crate::construction_history::ToolSettingsSnapshot,
+        events: Vec<egui::Event>,
+    ) {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(900.0, 700.0),
+                )),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                ui.show(
+                    ctx,
+                    &[],
+                    history,
+                    document,
+                    HistoryRecordingContext {
+                        source_key: "video-export-ui-test",
+                        camera,
+                        tool_settings,
+                    },
+                );
+            },
+        );
+    }
+
+    fn click_video_dialog(
+        ctx: &egui::Context,
+        ui: &mut VideoExportUi,
+        history: &mut crate::construction_history::ConstructionHistory,
+        document: &Document,
+        camera: &crate::geometry::Camera,
+        tool_settings: &crate::construction_history::ToolSettingsSnapshot,
+        position: egui::Pos2,
+    ) {
+        render_video_dialog(
+            ctx,
+            ui,
+            history,
+            document,
+            camera,
+            tool_settings,
+            vec![egui::Event::PointerMoved(position)],
+        );
+        render_video_dialog(
+            ctx,
+            ui,
+            history,
+            document,
+            camera,
+            tool_settings,
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+        );
+        render_video_dialog(
+            ctx,
+            ui,
+            history,
+            document,
+            camera,
+            tool_settings,
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    #[test]
+    fn reconstructed_reveal_dialog_click_queues_gif_request() {
+        let ctx = egui::Context::default();
+        let mut ui = VideoExportUi::default();
+        ui.begin();
+        let mut history = crate::construction_history::ConstructionHistory::empty_for_test();
+        let document = Document::default();
+        let camera = crate::geometry::Camera::default();
+        let tool_settings = crate::construction_history::ToolSettingsSnapshot {
+            tool: "brush".into(),
+            radius: 0.1,
+            color: [0.2, 0.4, 0.8],
+            stabilization: 0.0,
+            brush: Default::default(),
+        };
+
+        render_video_dialog(
+            &ctx,
+            &mut ui,
+            &mut history,
+            &document,
+            &camera,
+            &tool_settings,
+            Vec::new(),
+        );
+        let mode_position = ui
+            .test_reconstructed_mode_rect
+            .expect("reconstructed reveal choice is visible")
+            .center();
+        click_video_dialog(
+            &ctx,
+            &mut ui,
+            &mut history,
+            &document,
+            &camera,
+            &tool_settings,
+            mode_position,
+        );
+        assert_eq!(ui.mode, ExportMode::ReconstructedReveal);
+        assert_eq!(ui.frame_count(&[], history.duration_ms()), Some(60));
+
+        let output = tempfile::tempdir().unwrap();
+        let selected_path = output.path().join("reconstructed.gif");
+        ui.test_save_path = Some(selected_path.clone());
+        let choose_position = ui
+            .test_choose_file_rect
+            .expect("GIF file selection control is visible")
+            .center();
+        click_video_dialog(
+            &ctx,
+            &mut ui,
+            &mut history,
+            &document,
+            &camera,
+            &tool_settings,
+            choose_position,
+        );
+
+        let request = ui
+            .take_request()
+            .expect("clicking Choose GIF file queues the export request");
+        assert_eq!(request.path, selected_path);
+        assert_eq!(request.mode, ExportMode::ReconstructedReveal);
+        assert_eq!(request.format, VideoFormat::Gif);
+        assert_eq!(request.size, [640, 360]);
+        assert_eq!(request.fps, 12);
+        assert_eq!(request.duration, 5.0);
     }
 
     #[test]
