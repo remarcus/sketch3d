@@ -262,6 +262,7 @@ mod tests {
         std::fs::write(&path, br#"{"version":1,"background":[0.1,0.2,0.3]}"#).unwrap();
         let prefs = Preferences::load(&path).unwrap();
         assert_eq!(prefs.version, 7);
+        assert_eq!(prefs.ui_theme, UiTheme::Dark);
         assert_eq!(prefs.background, [0.1, 0.2, 0.3]);
         assert_eq!(prefs.layout, LayoutPreferences::default());
     }
