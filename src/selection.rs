@@ -1766,13 +1766,35 @@ impl SketchApp {
         assert_ne!(self.doc.strokes, scaled);
         self.undo();
         assert_eq!(self.doc.strokes, scaled);
+        self.redo();
+        let moved = self.doc.strokes.clone();
+        self.transform_mode = Mode::Scale;
+        self.transform_pivot = PivotMode::Custom;
+        self.custom_pivot = Vec3::new(-0.25, 0.3, 0.15);
+        self.scale_uniform_lock = false;
+        self.scale_values = [1.2, 0.8, 1.1];
+        let steps = self.undo.len();
+        self.numeric_transform();
+        let non_uniform = self.doc.strokes.clone();
+        assert_eq!(self.undo.len(), steps + 1);
+        assert_ne!(non_uniform, moved);
+        self.undo();
+        assert_eq!(self.doc.strokes, moved);
+        self.redo();
+        assert_eq!(self.doc.strokes, non_uniform);
+        let exported = crate::export::encode(&self.doc, None).unwrap().bytes;
         assert!(self.save(false));
         let loaded =
             Document::from_json(&std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap())
                 .unwrap();
-        assert_eq!(loaded.strokes, self.doc.strokes);
+        assert_eq!(loaded.strokes, non_uniform);
+        assert_eq!(
+            crate::export::encode(&loaded, None).unwrap().bytes,
+            exported,
+            "native reload preserves non-uniform scale in the GLB export"
+        );
         self.doc = loaded;
         self.renderer.invalidate();
-        self.status="Selection, handles, grouped undo, duplicate/delete, cancel, and persistence checks passed.".into();
+        self.status="Selection and scaling checks passed: axes/pivots, cancel, undo/redo, native reload and GLB export.".into();
     }
 }
