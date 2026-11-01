@@ -803,6 +803,16 @@ fn list_trash_in(root: &Path) -> Result<Vec<TrashDrawing>, String> {
     for entry in entries.take(MAX_TRASH_ENTRIES) {
         let entry = entry.map_err(|error| error.to_string())?;
         let path = entry.path();
+        // A terminated backup may leave its private staging directory behind.
+        // It is not an installed trash item and should not appear as a corrupt
+        // user backup in the trash browser.
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".sketch-backup-"))
+        {
+            continue;
+        }
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => metadata,
             _ => continue,
@@ -1344,6 +1354,67 @@ mod tests {
         );
         assert!(restore_native_backup(&backup, &restored).is_err());
         assert!(restored.is_file());
+    }
+
+    #[test]
+    fn rename_rejects_duplicate_drawing_names_without_changing_either_file() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source = root.path().join("study.sketch.json");
+        let destination = root.path().join("study-copy.sketch.json");
+        let source_bytes = serde_json::to_vec(&crate::document::Document::default()).unwrap();
+        let destination_bytes = b"keep the existing drawing";
+        fs::write(&source, &source_bytes).unwrap();
+        fs::write(&destination, destination_bytes).unwrap();
+        let mut library = drawing_library_for_test(root.path().join("thumbnails"));
+
+        assert!(library
+            .rename_drawing(&source, "study-copy.sketch")
+            .is_err());
+        assert_eq!(fs::read(&source).unwrap(), source_bytes);
+        assert_eq!(fs::read(&destination).unwrap(), destination_bytes);
+    }
+
+    #[test]
+    fn abandoned_backup_staging_directory_is_not_listed_or_consumed_on_retry() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let trash = root.path().join("trash");
+        fs::create_dir(&trash).unwrap();
+        let source = root.path().join("recovered.sketch.json");
+        fs::write(
+            &source,
+            serde_json::to_vec(&crate::document::Document::default()).unwrap(),
+        )
+        .unwrap();
+
+        // This is the state left if a process stops while backup_native_drawing
+        // is still building its private tempdir in the trash parent.
+        let abandoned_stage = trash.join(".sketch-backup-interrupted");
+        fs::create_dir(&abandoned_stage).unwrap();
+        fs::write(abandoned_stage.join("drawing.sketch.json"), b"partial").unwrap();
+
+        let visible_before_retry = list_trash_in(&trash).unwrap();
+        assert!(visible_before_retry.is_empty());
+        assert!(
+            abandoned_stage.is_dir(),
+            "listing must not mutate crash residue"
+        );
+        assert!(
+            source.is_file(),
+            "the original remains safe until backup install"
+        );
+
+        let installed = trash.join("recovered.sketch-backup");
+        backup_native_drawing(&source, &installed).unwrap();
+        assert!(source.is_file());
+        assert!(installed.is_dir());
+        let visible_after_retry = list_trash_in(&trash).unwrap();
+        assert_eq!(visible_after_retry.len(), 1);
+        assert_eq!(visible_after_retry[0].name, "recovered.sketch.json");
+        assert!(visible_after_retry[0].issue.is_none());
+        assert!(
+            abandoned_stage.is_dir(),
+            "retry does not delete unknown leftovers"
+        );
     }
 
     #[test]

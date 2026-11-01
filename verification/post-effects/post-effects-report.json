@@ -1,0 +1,108 @@
+{
+  "adapter": "test GPU",
+  "backend": "Vulkan",
+  "checks": [
+    "grain and toon each visibly change the multisampled baseline",
+    "glow, depth-of-field, and pixelation each visibly change a no-op single-sample screen-pass reference",
+    "each individual effect produces deterministic repeat output at both sizes",
+    "effect-off and effect-on canvas pixels exactly match artwork PNG pixels at both sizes",
+    "combined effects produce deterministic output at both sizes",
+    "GPU-backed render and readback latency is measured at two resolutions with effects off and on"
+  ],
+  "measurement_method": "Median CPU wall time around render_png_pixels, including render setup, GPU queue work, and synchronous pixel readback; hardware-specific end-to-end latency, not isolated GPU shader time.",
+  "passed": true,
+  "physical_hardware_tested": false,
+  "samples_per_measurement": 7,
+  "sizes": [
+    {
+      "combined_effects_changed_pixels": 16165,
+      "combined_repeat_exact": true,
+      "effects": [
+        {
+          "changed_pixels_over_two_levels": 2704,
+          "effect": "grain",
+          "max_rgb_channel_delta": 48,
+          "repeat_exact": true
+        },
+        {
+          "changed_pixels_over_two_levels": 1460,
+          "effect": "toon",
+          "max_rgb_channel_delta": 17,
+          "repeat_exact": true
+        },
+        {
+          "changed_pixels_over_two_levels": 2394,
+          "effect": "glow",
+          "max_rgb_channel_delta": 178,
+          "repeat_exact": true
+        },
+        {
+          "changed_pixels_over_two_levels": 12976,
+          "effect": "depth-of-field",
+          "max_rgb_channel_delta": 145,
+          "repeat_exact": true
+        },
+        {
+          "changed_pixels_over_two_levels": 2802,
+          "effect": "pixelation",
+          "max_rgb_channel_delta": 249,
+          "repeat_exact": true
+        }
+      ],
+      "render_readback_delta_percent": 3.3752746155382463,
+      "render_readback_delta_us": 169,
+      "render_readback_median_us_effects_off": 5007,
+      "render_readback_median_us_effects_on": 5176,
+      "size": [
+        384,
+        256
+      ]
+    },
+    {
+      "combined_effects_changed_pixels": 36637,
+      "combined_repeat_exact": true,
+      "effects": [
+        {
+          "changed_pixels_over_two_levels": 10424,
+          "effect": "grain",
+          "max_rgb_channel_delta": 59,
+          "repeat_exact": true
+        },
+        {
+          "changed_pixels_over_two_levels": 5684,
+          "effect": "toon",
+          "max_rgb_channel_delta": 17,
+          "repeat_exact": true
+        },
+        {
+          "changed_pixels_over_two_levels": 7044,
+          "effect": "glow",
+          "max_rgb_channel_delta": 178,
+          "repeat_exact": true
+        },
+        {
+          "changed_pixels_over_two_levels": 35972,
+          "effect": "depth-of-field",
+          "max_rgb_channel_delta": 166,
+          "repeat_exact": true
+        },
+        {
+          "changed_pixels_over_two_levels": 6680,
+          "effect": "pixelation",
+          "max_rgb_channel_delta": 249,
+          "repeat_exact": true
+        }
+      ],
+      "render_readback_delta_percent": -7.8519145847196175,
+      "render_readback_delta_us": -1298,
+      "render_readback_median_us_effects_off": 16531,
+      "render_readback_median_us_effects_on": 15233,
+      "size": [
+        768,
+        512
+      ]
+    }
+  ],
+  "timing_note": "Effect-on rendering enables grain/toon shading, disables the baseline multisample target, and adds a screen-space pass, so the measured delta reflects the actual renderer configuration rather than the isolated cost of only the screen-space pass.",
+  "warmup_renders_per_measurement": 2
+}

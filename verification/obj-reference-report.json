@@ -1,0 +1,14 @@
+{
+  "checks": [
+    "OBJ References window displays its import control",
+    "the tested import action installs and reloads a drawing-local bundle",
+    "imported model is registered with the scene renderer",
+    "synthetic viewport selection picks the imported model",
+    "selected-model bounds match the normalized OBJ bounds"
+  ],
+  "gpu": "test GPU / Vulkan",
+  "model_count": 1,
+  "passed": true,
+  "physical_tablet_tested": false,
+  "triangle_count": 1
+}

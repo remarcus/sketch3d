@@ -34,6 +34,7 @@ mod partial_eraser;
 mod performance_benchmark;
 mod placement;
 mod polygon;
+mod post_effects_check;
 mod presentation;
 mod presentation_background_check;
 mod presets;
@@ -171,6 +172,20 @@ fn main() -> eframe::Result {
     }
     if let Some(index) = args
         .iter()
+        .position(|argument| argument == "--verify-post-effects")
+    {
+        let Some(directory) = args.get(index + 1) else {
+            eprintln!("Usage: sketch3d --verify-post-effects <output-directory>");
+            std::process::exit(2);
+        };
+        if let Err(error) = post_effects_check::run(std::path::Path::new(directory)) {
+            eprintln!("Post-processing verification failed: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(index) = args
+        .iter()
         .position(|argument| argument == "--write-native-merge-fixture")
     {
         let Some(directory) = args.get(index + 1) else {
@@ -207,7 +222,7 @@ fn main() -> eframe::Result {
     let hidden_verification = args.iter().any(|argument| {
         matches!(
             argument.as_str(),
-            "--verify-model-surfaces" | "--verify-liquify-brush"
+            "--verify-model-surfaces" | "--verify-liquify-brush" | "--verify-obj-references"
         )
     });
     let options = eframe::NativeOptions {

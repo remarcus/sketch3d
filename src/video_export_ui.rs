@@ -1111,6 +1111,162 @@ fn encode_mp4(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        future::Future,
+        sync::Arc,
+        task::{Context, Poll, Wake, Waker},
+        thread,
+    };
+
+    struct ThreadWake(thread::Thread);
+
+    impl Wake for ThreadWake {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Ready(output) => return output,
+                Poll::Pending => thread::park(),
+            }
+        }
+    }
+
+    #[test]
+    fn production_renderer_turntable_gif_decodes_as_moving_playback() {
+        use image::AnimationDecoder;
+
+        const SIZE: [u32; 2] = [320, 240];
+        const FRAME_COUNT: usize = 8;
+        const FPS: u32 = 8;
+        let config = eframe::egui_wgpu::WgpuConfiguration::default();
+        let instance = block_on(config.wgpu_setup.new_instance());
+        let state = block_on(eframe::egui_wgpu::RenderState::create(
+            &config, &instance, None, None, 1, false,
+        ))
+        .expect("headless WGPU render state initializes");
+        let adapter = state.adapter.get_info();
+        let mut renderer = crate::renderer::SceneRenderer::new(state);
+        let lighting = crate::lighting::Lighting {
+            ground: false,
+            shadows: false,
+            ..Default::default()
+        };
+        let document = crate::export_check::brush_fixture();
+        let background = [0.08, 0.12, 0.2];
+        let start_camera = crate::geometry::Camera {
+            projection: crate::geometry::Projection::Orthographic,
+            distance: 7.0,
+            pitch: 0.38,
+            ..Default::default()
+        };
+        let mut rendered = Vec::with_capacity(FRAME_COUNT);
+        for frame_index in 0..FRAME_COUNT {
+            let mut camera = start_camera;
+            camera.yaw =
+                start_camera.yaw + std::f32::consts::TAU * frame_index as f32 / FRAME_COUNT as f32;
+            rendered.push(
+                renderer
+                    .render_png_pixels(&document, &camera, SIZE, background, lighting)
+                    .expect("turntable frame renders through the production renderer"),
+            );
+        }
+
+        let output = std::env::current_dir()
+            .unwrap()
+            .join("verification/video-export-check");
+        std::fs::create_dir_all(&output).unwrap();
+        let gif_path = output.join("turntable.gif");
+        let (sender, receiver) = mpsc::channel();
+        for frame in &rendered {
+            sender.send(Some(frame.clone())).unwrap();
+        }
+        drop(sender);
+        encode_gif(
+            receiver,
+            &gif_path,
+            SIZE,
+            FPS,
+            FRAME_COUNT,
+            &AtomicBool::new(false),
+        )
+        .expect("production GIF encoder writes rendered turntable frames");
+
+        let frames = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(
+            std::fs::File::open(&gif_path).unwrap(),
+        ))
+        .unwrap()
+        .into_frames()
+        .collect_frames()
+        .unwrap();
+        assert_eq!(frames.len(), FRAME_COUNT, "playback retains every frame");
+        assert!(frames.iter().all(|frame| {
+            frame.buffer().width() == SIZE[0] && frame.buffer().height() == SIZE[1]
+        }));
+        assert!(
+            frames.iter().all(|frame| {
+                let (numerator, denominator) = frame.delay().numer_denom_ms();
+                (numerator as f64 / denominator as f64 - 1000.0 / f64::from(FPS)).abs() <= 5.0
+            }),
+            "playback frame delays match the requested {FPS} FPS"
+        );
+
+        let first = frames[0].buffer();
+        let opposite = frames[FRAME_COUNT / 2].buffer();
+        let (delay_numerator, delay_denominator) = frames[0].delay().numer_denom_ms();
+        let frame_delay_ms = delay_numerator / delay_denominator;
+        let changed_pixels = first
+            .pixels()
+            .zip(opposite.pixels())
+            .filter(|(left, right)| left.0 != right.0)
+            .count();
+        assert!(
+            changed_pixels > (SIZE[0] * SIZE[1] / 20) as usize,
+            "opposite turntable views visibly differ, changed pixels: {changed_pixels}"
+        );
+
+        let mut contact_sheet = RgbaImage::new(SIZE[0] * 4, SIZE[1] * 2);
+        for (index, frame) in frames.iter().enumerate() {
+            let x = (index % 4) as i64 * i64::from(SIZE[0]);
+            let y = (index / 4) as i64 * i64::from(SIZE[1]);
+            image::imageops::replace(&mut contact_sheet, frame.buffer(), x, y);
+        }
+        contact_sheet
+            .save(output.join("turntable-contact.png"))
+            .unwrap();
+        std::fs::write(
+            output.join("turntable-report.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "passed": true,
+                "adapter": adapter.name,
+                "backend": format!("{:?}", adapter.backend),
+                "checks": [
+                    "all turntable frames render through the production offscreen PNG renderer",
+                    "production GIF encoder emits all requested frames at the requested dimensions",
+                    "GIF playback decoding preserves visible camera motion between opposing views",
+                ],
+                "frame_count": frames.len(),
+                "size": SIZE,
+                "fps": FPS,
+                "frame_delay_ms": frame_delay_ms,
+                "changed_pixels_first_to_half_turn": changed_pixels,
+                "physical_hardware_tested": false,
+                "artifacts": ["turntable.gif", "turntable-contact.png"],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn recorded_history_samples_the_latest_state_at_each_timeline_time() {

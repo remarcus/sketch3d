@@ -70,6 +70,8 @@ mod native_merge;
 mod native_merge_check;
 #[path = "obj_export_ui.rs"]
 mod obj_export_ui;
+#[path = "obj_reference_checks.rs"]
+mod obj_reference_checks;
 #[path = "obj_reference_ui.rs"]
 mod obj_reference_ui;
 #[path = "palette_ui.rs"]
@@ -184,6 +186,12 @@ pub struct SketchApp {
     obj_surface_indices: std::collections::HashMap<u64, crate::obj_mesh_index::ObjMeshIndex>,
     model_stroke_contact: Option<(u64, u32, Pos2)>,
     selected_model_reference: Option<u64>,
+    obj_reference_window_open: bool,
+    obj_reference_verification_frame: Option<u32>,
+    obj_reference_verification_import_rect: Option<Rect>,
+    obj_reference_verification_source: Option<PathBuf>,
+    obj_reference_verification_source_root: Option<tempfile::TempDir>,
+    obj_reference_verification_asset_root: Option<tempfile::TempDir>,
     image_asset_root: PathBuf,
     guide_name: String,
     loft_preview: Option<crate::document::guide_resources::LoftSurface>,
@@ -502,6 +510,8 @@ impl SketchApp {
             let arguments = std::env::args().collect::<Vec<_>>();
             let relative = if arguments.iter().any(|arg| arg == "--verify-presentation") {
                 "verification/presentation/recovery"
+            } else if arguments.iter().any(|arg| arg == "--verify-obj-references") {
+                "verification/obj-reference/recovery"
             } else if arguments.iter().any(|arg| arg == "--verify") {
                 "verification/smoke/recovery"
             } else {
@@ -574,6 +584,12 @@ impl SketchApp {
             obj_surface_indices: std::collections::HashMap::new(),
             model_stroke_contact: None,
             selected_model_reference: None,
+            obj_reference_window_open: false,
+            obj_reference_verification_frame: None,
+            obj_reference_verification_import_rect: None,
+            obj_reference_verification_source: None,
+            obj_reference_verification_source_root: None,
+            obj_reference_verification_asset_root: None,
             image_asset_root,
             guide_name: String::new(),
             loft_preview: None,
@@ -694,6 +710,13 @@ impl SketchApp {
         } else if std::env::args().any(|a| a == "--verify-model-surfaces") {
             app.verification_frame = None;
             app.model_surface_verification_frame = Some(0);
+        } else if std::env::args().any(|a| a == "--verify-obj-references") {
+            app.verification_frame = None;
+            app.obj_reference_verification_frame = Some(0);
+            app.obj_reference_window_open = true;
+            app.camera.align(crate::geometry::Plane::Front);
+            app.camera.target = Vec3::ZERO;
+            app.camera.distance = 6.0;
         } else if std::env::args().any(|a| a == "--verify-mixed-resources") {
             app.verification_frame = None;
             app.mixed_resources_verification_frame = Some(0);
@@ -2679,6 +2702,14 @@ impl SketchApp {
             });
         });
 
+        ui.menu_button("Drawing", |ui| {
+            if ui.button("OBJ references…").clicked() {
+                ui.close_menu();
+                self.finish();
+                self.obj_reference_window_open = true;
+            }
+        });
+
         ui.menu_button("Edit", |ui| {
             if ui
                 .add_enabled(
@@ -3109,6 +3140,7 @@ impl SketchApp {
             && self.image_plane_verification_frame.is_none()
             && self.ring_verification_frame.is_none()
             && self.model_surface_verification_frame.is_none()
+            && self.obj_reference_verification_frame.is_none()
             && self.vase_verification_frame.is_none()
             && self.group_verification_frame.is_none()
             && self.tutorial.verification_frame.is_none()
@@ -3633,6 +3665,7 @@ impl eframe::App for SketchApp {
             self.artwork_bar(ctx);
         }
         self.camera_bookmark_controls(ctx);
+        self.show_obj_reference_window(ctx);
         self.repeat_modal(ctx);
         self.png_export.show(ctx);
         let history_source_key = self.file.as_ref().map_or_else(
@@ -3681,6 +3714,7 @@ impl eframe::App for SketchApp {
                 self.verify_mirror(ctx, rect);
                 self.verify_ring(ctx, rect);
                 self.verify_model_surfaces(ctx, rect);
+                self.verify_obj_references(ctx, rect);
                 self.verify_liquify_brush(ctx, rect);
                 self.verify_mixed_resources(ctx);
                 self.verify_textures(ctx, rect);
@@ -3924,6 +3958,7 @@ impl eframe::App for SketchApp {
             || self.mirror_verification_frame.is_some()
             || self.ring_verification_frame.is_some()
             || self.model_surface_verification_frame.is_some()
+            || self.obj_reference_verification_frame.is_some()
             || self.vase_verification_frame.is_some()
             || self.group_verification_frame.is_some()
             || self.tutorial.verification_frame.is_some()
@@ -4628,6 +4663,7 @@ impl SketchApp {
             && self.mirror_verification_frame.is_none()
             && self.ring_verification_frame.is_none()
             && self.model_surface_verification_frame.is_none()
+            && self.obj_reference_verification_frame.is_none()
             && self.liquify_brush_verification_frame.is_none()
             && self.mixed_resources_verification_frame.is_none()
             && self.vase_verification_frame.is_none()
@@ -4674,6 +4710,8 @@ impl SketchApp {
                     "ring-preview.png"
                 } else if self.model_surface_verification_frame.is_some() {
                     "model-surface-preview.png"
+                } else if self.obj_reference_verification_frame.is_some() {
+                    "obj-reference-preview.png"
                 } else if self.liquify_brush_verification_frame.is_some() {
                     "liquify-brush-preview.png"
                 } else if self.mixed_resources_verification_frame.is_some() {
@@ -4712,6 +4750,8 @@ impl SketchApp {
                 serde_json::json!({"passed":true,"checks":["Add ring action creates and activates a saved torus at the camera target","active ring camera alignment faces the torus hole","synthetic pointer samples draw on the saved ring surface","a center-hole miss splits the drawing into two surface strokes","ring strokes remain on the torus instead of cutting through its hole","cancel removes an in-progress ring stroke without history","undo and redo preserve split ring strokes","ring strokes export to GLB"],"guide_count":self.doc.guide_resources.len(),"stroke_count":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.model_surface_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["synthetic pointer samples cross a shared manifold triangle edge in one model-surface stroke","world-space samples remain on the OBJ surface","model-surface commit creates one ordinary undo edit","undo and redo preserve exact model-surface samples","a pointer miss commits the first surface run","recontact after a miss starts a second surface run without bridging the gap","split model-surface runs undo and redo independently"],"stroke_count":self.doc.strokes.len(),"point_count":self.doc.strokes.iter().map(|stroke|stroke.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+            } else if self.obj_reference_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["OBJ References window displays its import control","the tested import action installs and reloads a drawing-local bundle","imported model is registered with the scene renderer","synthetic viewport selection picks the imported model","selected-model bounds match the normalized OBJ bounds"],"model_count":self.doc.model_references.len(),"triangle_count":self.obj_reference_models.values().map(|model|model.triangles.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.liquify_brush_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["synthetic canvas drag creates a non-destructive preview","front, side, and ground camera views preserve the working-plane depth","unselected and occluding strokes remain unchanged","cancel restores exact source strokes","navigation interruption cancels brush preview without history","apply commits preview as one history edit","undo restores source geometry","redo restores committed deformation","updated stroke remains pickable at the deformed position and is no longer picked at its original position","native serialization and recovery scan preserve the deformed geometry","whole-scene and selected-stroke GLB encode the committed result","brush cursor indicates radius and working-plane depth"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.mixed_resources_verification_frame.is_some() {
@@ -4748,6 +4788,8 @@ impl SketchApp {
                     "ring-report.json"
                 } else if self.model_surface_verification_frame.is_some() {
                     "model-surface-report.json"
+                } else if self.obj_reference_verification_frame.is_some() {
+                    "obj-reference-report.json"
                 } else if self.vase_verification_frame.is_some() {
                     "vase-report.json"
                 } else if self.layer_verification_frame.is_some() {

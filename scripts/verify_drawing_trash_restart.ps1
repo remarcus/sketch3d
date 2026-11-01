@@ -77,6 +77,7 @@ try {
     $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
     $requiredChecks = @(
         'first application process moved a valid drawing into on-disk trash',
+        'second application process ignores abandoned backup staging from an interrupted operation',
         'second application process rediscovered source name and deletion date after restart',
         'conflicting restore preserved existing data and retained the backup',
         'restore after restart recovered the drawing into a relocated folder'

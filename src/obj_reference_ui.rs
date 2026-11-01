@@ -3,6 +3,18 @@ use crate::document::model_references::ObjReferenceResource;
 use std::path::Path;
 
 impl SketchApp {
+    pub(super) fn show_obj_reference_window(&mut self, ctx: &egui::Context) {
+        if !self.obj_reference_window_open {
+            return;
+        }
+        let mut open = self.obj_reference_window_open;
+        egui::Window::new("OBJ references")
+            .open(&mut open)
+            .default_width(460.0)
+            .show(ctx, |ui| self.obj_reference_controls(ui));
+        self.obj_reference_window_open = open;
+    }
+
     pub(super) fn pick_obj_reference(
         &mut self,
         rect: egui::Rect,
@@ -49,8 +61,14 @@ impl SketchApp {
     }
 
     pub(super) fn obj_reference_controls(&mut self, ui: &mut egui::Ui) {
-        ui.collapsing("OBJ references", |ui| {
-            if ui.button("Import OBJ reference…").clicked() {
+        egui::CollapsingHeader::new("OBJ references")
+            .default_open(true)
+            .show(ui, |ui| {
+            let import_response = import_obj_reference_button(ui);
+            if self.obj_reference_verification_frame.is_some() {
+                self.obj_reference_verification_import_rect = Some(import_response.rect);
+            }
+            if import_response.clicked() {
                 self.import_obj_reference();
             }
             ui.small("OBJ models are read-only references. Whole-scene GLB includes visible models; selected-stroke export remains ink-only. Supported MTL properties: Kd diffuse color and d/Tr opacity. Texture maps and other MTL properties are ignored and listed in the GLB metadata.");
@@ -143,19 +161,25 @@ impl SketchApp {
         });
     }
 
-    fn import_obj_reference(&mut self) {
+    pub(super) fn import_obj_reference(&mut self) {
+        let path = self.obj_reference_verification_source.take().or_else(|| {
+            rfd::FileDialog::new()
+                .add_filter("Wavefront OBJ", &["obj"])
+                .pick_file()
+        });
+        let Some(path) = path else {
+            return;
+        };
+        self.import_obj_reference_from_path(&path);
+    }
+
+    fn import_obj_reference_from_path(&mut self, path: &Path) {
         if self.doc.model_references.len()
             >= crate::document::model_references::MAX_MODEL_REFERENCES
         {
             self.status = "This drawing already has the maximum number of OBJ references.".into();
             return;
         }
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Wavefront OBJ", &["obj"])
-            .pick_file()
-        else {
-            return;
-        };
         let mut id = self.next_id;
         let model_root = self.image_asset_root.join("models");
         while id != 0 && id != u64::MAX && model_root.join(id.to_string()).exists() {
@@ -166,7 +190,7 @@ impl SketchApp {
             return;
         }
         let (asset, model) = match crate::obj_reference_storage::import_source_bundle(
-            &path,
+            path,
             &self.image_asset_root,
             id,
         ) {
@@ -406,6 +430,10 @@ fn nearest_obj_reference_hit(
     nearest.map(|(_, id)| id)
 }
 
+fn import_obj_reference_button(ui: &mut egui::Ui) -> egui::Response {
+    ui.button("Import OBJ reference…")
+}
+
 fn transform_controls(ui: &mut egui::Ui, resource: &mut ObjReferenceResource) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
@@ -465,6 +493,52 @@ mod tests {
             Path::new("test.obj"),
         )
         .unwrap()
+    }
+
+    fn render_import_button(ctx: &egui::Context, events: Vec<egui::Event>) -> (Rect, bool) {
+        let mut response = None;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(640.0, 480.0))),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let button = import_obj_reference_button(ui);
+                    response = Some((button.rect, button.clicked()));
+                });
+            },
+        );
+        response.expect("import button renders")
+    }
+
+    #[test]
+    fn import_obj_reference_button_responds_to_pointer_click() {
+        let ctx = egui::Context::default();
+        let (rect, _) = render_import_button(&ctx, Vec::new());
+        let position = rect.center();
+        let _ = render_import_button(&ctx, vec![egui::Event::PointerMoved(position)]);
+        let _ = render_import_button(
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+        );
+        let (_, clicked) = render_import_button(
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert!(clicked, "the import control responds to a pointer click");
     }
 
     fn resource(id: u64, center: glam::Vec3, scale: f32, visible: bool) -> ObjReferenceResource {

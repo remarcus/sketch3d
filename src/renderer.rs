@@ -248,8 +248,15 @@ pub struct SceneRenderer {
     coverage_triangles: wgpu::RenderPipeline,
     transparent_triangles: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
+    single_triangles: wgpu::RenderPipeline,
+    single_cutout_triangles: wgpu::RenderPipeline,
+    single_coverage_triangles: wgpu::RenderPipeline,
+    single_transparent_triangles: wgpu::RenderPipeline,
+    single_lines: wgpu::RenderPipeline,
     screen_background_pipeline: wgpu::RenderPipeline,
+    single_screen_background_pipeline: wgpu::RenderPipeline,
     image_planes_pipeline: wgpu::RenderPipeline,
+    single_image_planes_pipeline: wgpu::RenderPipeline,
     post_effects_pipeline: wgpu::RenderPipeline,
     post_effects_layout: wgpu::BindGroupLayout,
     post_effects_sampler: wgpu::Sampler,
@@ -420,7 +427,11 @@ impl SceneRenderer {
             push_constant_ranges: &[],
         });
         let sample_count = canvas_sample_count(&state.adapter);
-        let create = |topology, transparent: bool, alpha_blend: bool, cutout: bool| {
+        let create = |topology,
+                      transparent: bool,
+                      alpha_blend: bool,
+                      cutout: bool,
+                      pipeline_samples| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:Some("3D strokes"),layout:Some(&pipeline_layout),
             vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32]}]},
@@ -430,15 +441,58 @@ impl SceneRenderer {
             ]}),
             primitive:wgpu::PrimitiveState {topology,cull_mode:None,..Default::default()},
             depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:(!transparent || cutout) && topology != wgpu::PrimitiveTopology::LineList,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
-            multisample:wgpu::MultisampleState {count:sample_count,mask:!0,alpha_to_coverage_enabled:sample_count > 1 && !transparent && !alpha_blend && !cutout},multiview:None,cache:None,
+            multisample:wgpu::MultisampleState {count:pipeline_samples,mask:!0,alpha_to_coverage_enabled:pipeline_samples > 1 && !transparent && !alpha_blend && !cutout},multiview:None,cache:None,
         })
         };
-        let triangles = create(wgpu::PrimitiveTopology::TriangleList, false, false, false);
-        let cutout_triangles = create(wgpu::PrimitiveTopology::TriangleList, false, false, true);
-        let coverage_triangles = create(wgpu::PrimitiveTopology::TriangleList, false, true, false);
-        let transparent_triangles =
-            create(wgpu::PrimitiveTopology::TriangleList, true, true, false);
-        let lines = create(wgpu::PrimitiveTopology::LineList, false, false, false);
+        let triangles = create(
+            wgpu::PrimitiveTopology::TriangleList,
+            false,
+            false,
+            false,
+            sample_count,
+        );
+        let cutout_triangles = create(
+            wgpu::PrimitiveTopology::TriangleList,
+            false,
+            false,
+            true,
+            sample_count,
+        );
+        let coverage_triangles = create(
+            wgpu::PrimitiveTopology::TriangleList,
+            false,
+            true,
+            false,
+            sample_count,
+        );
+        let transparent_triangles = create(
+            wgpu::PrimitiveTopology::TriangleList,
+            true,
+            true,
+            false,
+            sample_count,
+        );
+        let lines = create(
+            wgpu::PrimitiveTopology::LineList,
+            false,
+            false,
+            false,
+            sample_count,
+        );
+        let single_triangles = create(
+            wgpu::PrimitiveTopology::TriangleList,
+            false,
+            false,
+            false,
+            1,
+        );
+        let single_cutout_triangles =
+            create(wgpu::PrimitiveTopology::TriangleList, false, false, true, 1);
+        let single_coverage_triangles =
+            create(wgpu::PrimitiveTopology::TriangleList, false, true, false, 1);
+        let single_transparent_triangles =
+            create(wgpu::PrimitiveTopology::TriangleList, true, true, false, 1);
+        let single_lines = create(wgpu::PrimitiveTopology::LineList, false, false, false, 1);
         let image_plane_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Image plane texture layout"),
@@ -475,7 +529,7 @@ impl SceneRenderer {
                 bind_group_layouts: &[&image_plane_layout],
                 push_constant_ranges: &[],
             });
-        let screen_background_pipeline =
+        let create_screen_background_pipeline = |pipeline_samples| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Screen-aligned background image"),
                 layout: Some(&screen_background_layout),
@@ -516,20 +570,24 @@ impl SceneRenderer {
                     bias: Default::default(),
                 }),
                 multisample: wgpu::MultisampleState {
-                    count: sample_count,
+                    count: pipeline_samples,
                     mask: !0,
                     alpha_to_coverage_enabled: false,
                 },
                 multiview: None,
                 cache: None,
-            });
+            })
+        };
+        let screen_background_pipeline = create_screen_background_pipeline(sample_count);
+        let single_screen_background_pipeline = create_screen_background_pipeline(1);
         let image_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Image plane pipeline layout"),
                 bind_group_layouts: &[&layout, &image_plane_layout],
                 push_constant_ranges: &[],
             });
-        let image_planes_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let create_image_planes_pipeline = |pipeline_samples| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Textured image planes"),
             layout: Some(&image_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -571,10 +629,13 @@ impl SceneRenderer {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: wgpu::MultisampleState { count: sample_count, mask: !0, alpha_to_coverage_enabled: false },
+            multisample: wgpu::MultisampleState { count: pipeline_samples, mask: !0, alpha_to_coverage_enabled: false },
             multiview: None,
             cache: None,
-        });
+        })
+        };
+        let image_planes_pipeline = create_image_planes_pipeline(sample_count);
+        let single_image_planes_pipeline = create_image_planes_pipeline(1);
         let effects_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Post-processing effects layout"),
             entries: &[
@@ -684,8 +745,15 @@ impl SceneRenderer {
             coverage_triangles,
             transparent_triangles,
             lines,
+            single_triangles,
+            single_cutout_triangles,
+            single_coverage_triangles,
+            single_transparent_triangles,
+            single_lines,
             screen_background_pipeline,
+            single_screen_background_pipeline,
             image_planes_pipeline,
+            single_image_planes_pipeline,
             post_effects_pipeline,
             post_effects_layout: effects_layout,
             post_effects_sampler,
@@ -1061,6 +1129,10 @@ impl SceneRenderer {
         self.obj_reference_meshes.clear();
     }
 
+    pub fn has_obj_reference_model(&self, id: u64) -> bool {
+        self.obj_reference_meshes.contains_key(&id)
+    }
+
     fn image_plane_mesh(&self, plane: &crate::image_planes::ImagePlane) -> ImagePlaneMesh {
         let half = plane.size * 0.5;
         let corners = [
@@ -1272,6 +1344,29 @@ impl SceneRenderer {
         let effects = self.post_effects;
         let effects_enabled =
             effects.glow > 0.0 || effects.depth_of_field > 0.0 || effects.pixel_size > 1.0;
+        let (triangles, cutout_triangles, transparent_triangles, lines, image_planes_pipeline) =
+            if effects_enabled {
+                (
+                    &self.single_triangles,
+                    &self.single_cutout_triangles,
+                    &self.single_transparent_triangles,
+                    &self.single_lines,
+                    &self.single_image_planes_pipeline,
+                )
+            } else {
+                (
+                    &self.triangles,
+                    &self.cutout_triangles,
+                    &self.transparent_triangles,
+                    &self.lines,
+                    &self.image_planes_pipeline,
+                )
+            };
+        let screen_background_pipeline = if effects_enabled {
+            &self.single_screen_background_pipeline
+        } else {
+            &self.screen_background_pipeline
+        };
         let requested_samples = if effects_enabled {
             1
         } else {
@@ -1672,7 +1767,7 @@ impl SceneRenderer {
             });
             if let (Some(background), Some(buffer)) = (&self.screen_background, &screen_background)
             {
-                pass.set_pipeline(&self.screen_background_pipeline);
+                pass.set_pipeline(screen_background_pipeline);
                 pass.set_bind_group(0, &background.bind, &[]);
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..6, 0..1);
@@ -1681,18 +1776,18 @@ impl SceneRenderer {
             pass.set_bind_group(1, &self.textures[&texture::key(solid)], &[]);
             pass.set_bind_group(2, &self.shadow_bind, &[]);
             if settings.ground {
-                pass.set_pipeline(&self.triangles);
+                pass.set_pipeline(triangles);
                 if let Some((_, mesh)) = &self.ground {
                     pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                     pass.draw(0..mesh.count, 0..1);
                 }
             }
-            pass.set_pipeline(&self.lines);
+            pass.set_pipeline(lines);
             if let Some((_, mesh)) = &self.grid {
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
-            pass.set_pipeline(&self.triangles);
+            pass.set_pipeline(triangles);
             for model in doc.model_references.iter().filter(|model| model.visible) {
                 if let Some(meshes) = self.obj_reference_meshes.get(&model.id) {
                     if let Some(mesh) = &meshes.opaque {
@@ -1701,7 +1796,7 @@ impl SceneRenderer {
                     }
                 }
             }
-            pass.set_pipeline(&self.transparent_triangles);
+            pass.set_pipeline(transparent_triangles);
             for model in doc.model_references.iter().filter(|model| model.visible) {
                 if let Some(meshes) = self.obj_reference_meshes.get(&model.id) {
                     if let Some(mesh) = &meshes.translucent {
@@ -1717,9 +1812,9 @@ impl SceneRenderer {
             {
                 if let Some(mesh) = self.meshes.get(&stroke.id) {
                     pass.set_pipeline(if stroke.material == StrokeMaterial::Cutout {
-                        &self.cutout_triangles
+                        cutout_triangles
                     } else {
-                        &self.triangles
+                        triangles
                     });
                     pass.set_bind_group(
                         1,
@@ -1730,7 +1825,7 @@ impl SceneRenderer {
                     pass.draw(0..mesh.count, 0..1);
                 }
             }
-            pass.set_pipeline(&self.transparent_triangles);
+            pass.set_pipeline(transparent_triangles);
             for (stroke, mesh) in back_to_front(
                 doc.strokes
                     .iter()
@@ -1755,7 +1850,7 @@ impl SceneRenderer {
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
-            pass.set_pipeline(&self.image_planes_pipeline);
+            pass.set_pipeline(image_planes_pipeline);
             let mut image_planes: Vec<_> = doc
                 .image_planes
                 .iter()
@@ -1854,6 +1949,34 @@ impl SceneRenderer {
         let effects_enabled = self.post_effects.glow > 0.0
             || self.post_effects.depth_of_field > 0.0
             || self.post_effects.pixel_size > 1.0;
+        let (
+            triangles,
+            cutout_triangles,
+            coverage_triangles,
+            transparent_triangles,
+            image_planes_pipeline,
+        ) = if effects_enabled {
+            (
+                &self.single_triangles,
+                &self.single_cutout_triangles,
+                &self.single_coverage_triangles,
+                &self.single_transparent_triangles,
+                &self.single_image_planes_pipeline,
+            )
+        } else {
+            (
+                &self.triangles,
+                &self.cutout_triangles,
+                &self.coverage_triangles,
+                &self.transparent_triangles,
+                &self.image_planes_pipeline,
+            )
+        };
+        let screen_background_pipeline = if effects_enabled {
+            &self.single_screen_background_pipeline
+        } else {
+            &self.screen_background_pipeline
+        };
         let sample_count = if effects_enabled {
             1
         } else {
@@ -2117,7 +2240,7 @@ impl SceneRenderer {
                 occlusion_query_set: None,
             });
             if let (Some(image), Some(buffer)) = (&self.screen_background, &screen_background) {
-                pass.set_pipeline(&self.screen_background_pipeline);
+                pass.set_pipeline(screen_background_pipeline);
                 pass.set_bind_group(0, &image.bind, &[]);
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..6, 0..1);
@@ -2126,7 +2249,7 @@ impl SceneRenderer {
             pass.set_bind_group(1, &self.textures[&texture::key(solid)], &[]);
             pass.set_bind_group(2, &self.shadow_bind, &[]);
             if background.is_some() && settings.ground {
-                pass.set_pipeline(&self.triangles);
+                pass.set_pipeline(triangles);
                 if let Some((cached_settings, ground)) = &self.ground {
                     if *cached_settings == settings {
                         pass.set_vertex_buffer(0, ground.buffer.slice(..));
@@ -2136,11 +2259,11 @@ impl SceneRenderer {
             }
             for (stroke, mesh) in meshes.iter().filter(|(stroke, _)| !is_translucent(stroke)) {
                 pass.set_pipeline(if stroke.material == StrokeMaterial::Cutout {
-                    &self.cutout_triangles
+                    cutout_triangles
                 } else if background.is_none() {
-                    &self.coverage_triangles
+                    coverage_triangles
                 } else {
-                    &self.triangles
+                    triangles
                 });
                 pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
@@ -2156,12 +2279,12 @@ impl SceneRenderer {
                     .collect(),
                 camera,
             ) {
-                pass.set_pipeline(&self.transparent_triangles);
+                pass.set_pipeline(transparent_triangles);
                 pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
-            pass.set_pipeline(&self.image_planes_pipeline);
+            pass.set_pipeline(image_planes_pipeline);
             let mut image_planes: Vec<_> = image_plane_meshes.iter().collect();
             image_planes.sort_by(|(a, _), (b, _)| {
                 (a.origin - camera.target)

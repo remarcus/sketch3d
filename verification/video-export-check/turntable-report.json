@@ -1,0 +1,23 @@
+{
+  "adapter": "test GPU",
+  "artifacts": [
+    "turntable.gif",
+    "turntable-contact.png"
+  ],
+  "backend": "Vulkan",
+  "changed_pixels_first_to_half_turn": 8172,
+  "checks": [
+    "all turntable frames render through the production offscreen PNG renderer",
+    "production GIF encoder emits all requested frames at the requested dimensions",
+    "GIF playback decoding preserves visible camera motion between opposing views"
+  ],
+  "fps": 8,
+  "frame_count": 8,
+  "frame_delay_ms": 120,
+  "passed": true,
+  "physical_hardware_tested": false,
+  "size": [
+    320,
+    240
+  ]
+}
