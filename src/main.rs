@@ -204,12 +204,16 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
+    let model_surface_verification = args
+        .iter()
+        .any(|argument| argument == "--verify-model-surfaces");
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Sketch3D")
             .with_inner_size([1440.0, 940.0])
-            .with_min_inner_size([960.0, 640.0]),
+            .with_min_inner_size([960.0, 640.0])
+            .with_visible(!model_surface_verification),
         ..Default::default()
     };
     eframe::run_native(

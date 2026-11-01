@@ -265,20 +265,6 @@ impl SketchApp {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mixed_resource_ui_enables_translation_and_disables_rotation_and_scale() {
-        assert!(SketchApp::mixed_transform_supported(
-            TransformMode::Translate
-        ));
-        assert!(!SketchApp::mixed_transform_supported(TransformMode::Rotate));
-        assert!(!SketchApp::mixed_transform_supported(TransformMode::Scale));
-    }
-}
-
 fn resource_checkbox(
     ui: &mut egui::Ui,
     name: &str,
@@ -298,5 +284,19 @@ fn set_selection(selection: &mut HashSet<u64>, id: u64, selected: bool) {
         selection.insert(id);
     } else {
         selection.remove(&id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixed_resource_ui_enables_translation_and_disables_rotation_and_scale() {
+        assert!(SketchApp::mixed_transform_supported(
+            TransformMode::Translate
+        ));
+        assert!(!SketchApp::mixed_transform_supported(TransformMode::Rotate));
+        assert!(!SketchApp::mixed_transform_supported(TransformMode::Scale));
     }
 }

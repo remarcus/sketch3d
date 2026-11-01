@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn fixture_stroke_produces_srgb_alpha_edge_expectations() {
-        let expected = INK.map(|channel| crate::presentation::linear_to_srgb(channel));
+        let expected = INK.map(crate::presentation::linear_to_srgb);
         assert!(expected[0] > expected[1] && expected[1] > expected[2]);
         assert!(expected.iter().all(|channel| (0.0..=1.0).contains(channel)));
     }

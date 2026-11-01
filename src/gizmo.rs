@@ -525,7 +525,7 @@ mod tests {
         };
         let mut transparent_pick = false;
         let mut covered_pick = false;
-        for triangle in crate::geometry::stroke_mesh(&mark).chunks_exact(3) {
+        for triangle in crate::geometry::stroke_mesh(&mark).as_chunks::<3>().0 {
             let position = (Vec3::from(triangle[0].position)
                 + Vec3::from(triangle[1].position)
                 + Vec3::from(triangle[2].position))

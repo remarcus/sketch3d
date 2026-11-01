@@ -1,0 +1,16 @@
+{
+  "checks": [
+    "synthetic pointer samples cross a shared manifold triangle edge in one model-surface stroke",
+    "world-space samples remain on the OBJ surface",
+    "model-surface commit creates one ordinary undo edit",
+    "undo and redo preserve exact model-surface samples",
+    "a pointer miss commits the first surface run",
+    "recontact after a miss starts a second surface run without bridging the gap",
+    "split model-surface runs undo and redo independently"
+  ],
+  "gpu": "test GPU / Vulkan",
+  "passed": true,
+  "physical_tablet_tested": false,
+  "point_count": 12,
+  "stroke_count": 2
+}

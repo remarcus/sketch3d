@@ -62,6 +62,8 @@ mod mirror_checks;
 mod mirror_ui;
 #[path = "mixed_resources_ui.rs"]
 mod mixed_resources_ui;
+#[path = "model_surface_checks.rs"]
+mod model_surface_checks;
 #[path = "native_merge.rs"]
 mod native_merge;
 #[path = "native_merge_check.rs"]
@@ -210,6 +212,7 @@ pub struct SketchApp {
     image_plane_verification_frame: Option<u32>,
     mirror_verification_frame: Option<u32>,
     ring_verification_frame: Option<u32>,
+    model_surface_verification_frame: Option<u32>,
     image_plane_verification_changed_pixels: usize,
     liquify_brush_verification_frame: Option<u32>,
     liquify_brush_verification_before: Option<Vec<Stroke>>,
@@ -599,6 +602,7 @@ impl SketchApp {
             image_plane_verification_frame: None,
             mirror_verification_frame: None,
             ring_verification_frame: None,
+            model_surface_verification_frame: None,
             image_plane_verification_changed_pixels: 0,
             liquify_brush_verification_frame: None,
             liquify_brush_verification_before: None,
@@ -687,6 +691,9 @@ impl SketchApp {
             app.selected = HashSet::from([app.doc.strokes[0].id]);
             app.select_mode = true;
             app.camera.align(crate::geometry::Plane::Front);
+        } else if std::env::args().any(|a| a == "--verify-model-surfaces") {
+            app.verification_frame = None;
+            app.model_surface_verification_frame = Some(0);
         } else if std::env::args().any(|a| a == "--verify-mixed-resources") {
             app.verification_frame = None;
             app.mixed_resources_verification_frame = Some(0);
@@ -3101,6 +3108,7 @@ impl SketchApp {
             && self.layer_verification_frame.is_none()
             && self.image_plane_verification_frame.is_none()
             && self.ring_verification_frame.is_none()
+            && self.model_surface_verification_frame.is_none()
             && self.vase_verification_frame.is_none()
             && self.group_verification_frame.is_none()
             && self.tutorial.verification_frame.is_none()
@@ -3672,6 +3680,7 @@ impl eframe::App for SketchApp {
                 self.verify_image_planes(ctx, rect);
                 self.verify_mirror(ctx, rect);
                 self.verify_ring(ctx, rect);
+                self.verify_model_surfaces(ctx, rect);
                 self.verify_liquify_brush(ctx, rect);
                 self.verify_mixed_resources(ctx);
                 self.verify_textures(ctx, rect);
@@ -3914,6 +3923,7 @@ impl eframe::App for SketchApp {
             || self.layer_verification_frame.is_some()
             || self.mirror_verification_frame.is_some()
             || self.ring_verification_frame.is_some()
+            || self.model_surface_verification_frame.is_some()
             || self.vase_verification_frame.is_some()
             || self.group_verification_frame.is_some()
             || self.tutorial.verification_frame.is_some()
@@ -4565,6 +4575,7 @@ impl SketchApp {
             && self.image_plane_verification_frame.is_none()
             && self.mirror_verification_frame.is_none()
             && self.ring_verification_frame.is_none()
+            && self.model_surface_verification_frame.is_none()
             && self.liquify_brush_verification_frame.is_none()
             && self.mixed_resources_verification_frame.is_none()
             && self.vase_verification_frame.is_none()
@@ -4609,6 +4620,8 @@ impl SketchApp {
                     "mirror-preview.png"
                 } else if self.ring_verification_frame.is_some() {
                     "ring-preview.png"
+                } else if self.model_surface_verification_frame.is_some() {
+                    "model-surface-preview.png"
                 } else if self.liquify_brush_verification_frame.is_some() {
                     "liquify-brush-preview.png"
                 } else if self.mixed_resources_verification_frame.is_some() {
@@ -4645,6 +4658,8 @@ impl SketchApp {
                 serde_json::json!({"passed":true,"checks":["synthetic pointer-handler samples draw on an active saved cylinder guide","curved-guide brush points remain on the guide surface","mirror preview geometry does not mutate the document","committed mirrored geometry matches its preview exactly","source and mirrored run commit as one undo edit","undo/redo preserve the exact mirrored pair","cancel discards an in-progress source without history","whole-drawing GLB includes the mirrored pair","mouse canvas events preview, cancel, and commit a straight line on a rotated active guide","active guide horizontal constraint and mirrored points remain on the rotated plane","line source and mirror commit as one undo edit and survive undo/redo"],"stroke_count":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.ring_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["Add ring action creates and activates a saved torus at the camera target","active ring camera alignment faces the torus hole","synthetic pointer samples draw on the saved ring surface","a center-hole miss splits the drawing into two surface strokes","ring strokes remain on the torus instead of cutting through its hole","cancel removes an in-progress ring stroke without history","undo and redo preserve split ring strokes","ring strokes export to GLB"],"guide_count":self.doc.guide_resources.len(),"stroke_count":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+            } else if self.model_surface_verification_frame.is_some() {
+                serde_json::json!({"passed":true,"checks":["synthetic pointer samples cross a shared manifold triangle edge in one model-surface stroke","world-space samples remain on the OBJ surface","model-surface commit creates one ordinary undo edit","undo and redo preserve exact model-surface samples","a pointer miss commits the first surface run","recontact after a miss starts a second surface run without bridging the gap","split model-surface runs undo and redo independently"],"stroke_count":self.doc.strokes.len(),"point_count":self.doc.strokes.iter().map(|stroke|stroke.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.liquify_brush_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["synthetic canvas drag creates a non-destructive preview","front, side, and ground camera views preserve the working-plane depth","unselected and occluding strokes remain unchanged","cancel restores exact source strokes","navigation interruption cancels brush preview without history","apply commits preview as one history edit","undo restores source geometry","redo restores committed deformation","native serialization and recovery scan preserve the deformed geometry","whole-scene and selected-stroke GLB encode the committed result","brush cursor indicates radius and working-plane depth"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.mixed_resources_verification_frame.is_some() {
@@ -4679,6 +4694,8 @@ impl SketchApp {
                     "mirror-report.json"
                 } else if self.ring_verification_frame.is_some() {
                     "ring-report.json"
+                } else if self.model_surface_verification_frame.is_some() {
+                    "model-surface-report.json"
                 } else if self.vase_verification_frame.is_some() {
                     "vase-report.json"
                 } else if self.layer_verification_frame.is_some() {
