@@ -940,18 +940,21 @@ fn generate_thumbnail(path: &Path, cache_dir: Option<&Path>) -> Result<Vec<u8>, 
     });
     if let Some(cache_path) = &cache_path {
         if let Ok(metadata) = fs::symlink_metadata(cache_path) {
-            if metadata.is_file()
-                && !metadata.file_type().is_symlink()
-                && metadata.len() <= MAX_THUMBNAIL_BYTES
-            {
-                if let Ok(bytes) = fs::read(cache_path) {
-                    if valid_thumbnail_png(&bytes) {
-                        if let Some(directory) = cache_dir {
-                            prune_thumbnail_cache(directory);
+            if metadata.is_file() && !metadata.file_type().is_symlink() {
+                if metadata.len() <= MAX_THUMBNAIL_BYTES {
+                    if let Ok(bytes) = fs::read(cache_path) {
+                        if valid_thumbnail_png(&bytes) {
+                            if let Ok(rgba) = png_to_rgba(&bytes) {
+                                if let Some(directory) = cache_dir {
+                                    prune_thumbnail_cache(directory);
+                                }
+                                return Ok(rgba);
+                            }
                         }
-                        return png_to_rgba(&bytes);
                     }
                 }
+                // A malformed cache entry must not block its own replacement.
+                let _ = fs::remove_file(cache_path);
             }
         }
     }
@@ -1193,6 +1196,18 @@ mod tests {
         assert!(valid_thumbnail_png(&bytes));
         let second = generate_thumbnail(&drawing, Some(&cache)).unwrap();
         assert_eq!(second, first);
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 1);
+
+        let cached_path = fs::read_dir(&cache)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        fs::write(&cached_path, b"corrupt thumbnail").unwrap();
+        let recovered = generate_thumbnail(&drawing, Some(&cache)).unwrap();
+        assert_eq!(recovered, first);
+        assert!(valid_thumbnail_png(&fs::read(&cached_path).unwrap()));
         assert_eq!(fs::read_dir(&cache).unwrap().count(), 1);
     }
 
