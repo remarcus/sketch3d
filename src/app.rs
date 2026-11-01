@@ -496,8 +496,13 @@ impl SketchApp {
             library_path,
         );
         let recovery_path = if std::env::args().any(|arg| arg.starts_with("--verify")) {
+            let relative = if std::env::args().any(|arg| arg == "--verify-presentation") {
+                "verification/presentation/recovery"
+            } else {
+                "verification/recovery"
+            };
             std::env::current_dir()
-                .map(|p| p.join("verification/recovery"))
+                .map(|p| p.join(relative))
                 .map_err(|e| e.to_string())
         } else {
             crate::recovery_store::path()

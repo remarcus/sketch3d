@@ -97,6 +97,25 @@ impl SketchApp {
             let guide = self.guide;
             let visible = self.guide_visible;
             self.show_scene = true;
+            assert!(
+                self.line.draft.is_none()
+                    && self.fills.draft.is_none()
+                    && !self.placement.active
+                    && self.tutorial.practice.is_none()
+                    && !self.tutorial.offer
+                    && !self.show_help
+                    && !self.recovery_prompt
+                    && !self.confirm,
+                "artwork-only verifier is blocked: line={}, fill={}, placement={}, tutorial_practice={}, tutorial_offer={}, help={}, recovery={}, confirm={}",
+                self.line.draft.is_some(),
+                self.fills.draft.is_some(),
+                self.placement.active,
+                self.tutorial.practice.is_some(),
+                self.tutorial.offer,
+                self.show_help,
+                self.recovery_prompt,
+                self.confirm
+            );
             self.toggle_artwork();
             assert!(self.presentation.artwork);
             self.pointer_action(rect.center(), 1.0, rect, true, false);
