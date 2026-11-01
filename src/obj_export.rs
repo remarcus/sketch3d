@@ -79,11 +79,11 @@ pub fn write_obj_bundle(
         .unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let nonce = unique_nonce();
-    let mtl_name = format!("spatial-sketch-{nonce}.mtl");
+    let mtl_name = format!("sketch3d-{nonce}.mtl");
     let mtl_path = parent.join(&mtl_name);
     let mut companion_files = Vec::<(PathBuf, Vec<u8>)>::new();
     let mut mtl = String::new();
-    mtl.push_str("# Spatial Sketch cutout strokes export as fully transparent geometry; destination erasure is not represented by OBJ/MTL.\n");
+    mtl.push_str("# Sketch3D cutout strokes export as fully transparent geometry; destination erasure is not represented by OBJ/MTL.\n");
     for material in &materials {
         writeln!(mtl, "newmtl {}", material.name).unwrap();
         writeln!(
@@ -115,7 +115,7 @@ pub fn write_obj_bundle(
         )
         .unwrap();
         if let Some(mask_file) = &material.mask_file {
-            writeln!(mtl, "map_d spatial-sketch-{nonce}-{mask_file}").unwrap();
+            writeln!(mtl, "map_d sketch3d-{nonce}-{mask_file}").unwrap();
         }
         mtl.push('\n');
     }
@@ -132,7 +132,7 @@ pub fn write_obj_bundle(
             if companion_size >= export::MAX_BINARY_BYTES {
                 return Err("OBJ companions exceed the 128 MiB export limit".into());
             }
-            let name = format!("spatial-sketch-{nonce}-mask-{index:05}.png");
+            let name = format!("sketch3d-{nonce}-mask-{index:05}.png");
             companion_files.push((parent.join(name), bytes));
         }
     }
@@ -173,7 +173,7 @@ pub fn write_obj_bundle(
             inner: &mut temporary,
             remaining: export::MAX_BINARY_BYTES - total_companion_bytes,
         });
-        writeln!(writer, "# Spatial Sketch OBJ export").map_err(|error| error.to_string())?;
+        writeln!(writer, "# Sketch3D OBJ export").map_err(|error| error.to_string())?;
         writeln!(
             writer,
             "# Coordinates use document world units; axes are +X right, +Y up, +Z front."

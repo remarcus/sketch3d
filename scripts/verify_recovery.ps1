@@ -12,7 +12,7 @@ $verificationPath = Join-Path $workspacePath 'verification'
 $readyPath = Join-Path $verificationPath 'recovery-crash-ready.json'
 $reportPath = Join-Path $verificationPath 'recovery-report.json'
 if ([string]::IsNullOrWhiteSpace($Executable)) {
-    $Executable = Join-Path $workspacePath 'target/release/spatial-sketch.exe'
+    $Executable = Join-Path $workspacePath 'target/release/sketch3d.exe'
 }
 $Executable = (Resolve-Path -LiteralPath $Executable).Path
 $crashProcess = $null

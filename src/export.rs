@@ -681,7 +681,7 @@ pub fn encode_with_images(
     } else {
         "all strokes"
     };
-    let mut root = json!({"asset":{"version":"2.0","generator":concat!("Spatial Sketch ",env!("CARGO_PKG_VERSION"))},"scene":0,"scenes":[{"name":"Spatial Sketch drawing","nodes":scene_nodes}],"nodes":nodes,"meshes":meshes,"materials":materials,"accessors":accessors,"bufferViews":views,"buffers":[{"byteLength":binary.len()}],"extras":{"sourceFormat":format!("Spatial Sketch version {}",doc.version),"unitInMeters":1.0,"axes":"+X right, +Y up, +Z front","scope":scope}});
+    let mut root = json!({"asset":{"version":"2.0","generator":concat!("Sketch3D ",env!("CARGO_PKG_VERSION"))},"scene":0,"scenes":[{"name":"Sketch3D drawing","nodes":scene_nodes}],"nodes":nodes,"meshes":meshes,"materials":materials,"accessors":accessors,"bufferViews":views,"buffers":[{"byteLength":binary.len()}],"extras":{"sourceFormat":format!("Sketch3D version {}",doc.version),"unitInMeters":1.0,"axes":"+X right, +Y up, +Z front","scope":scope}});
     if uses_unlit {
         root["extensionsUsed"] = json!(["KHR_materials_unlit"]);
     }

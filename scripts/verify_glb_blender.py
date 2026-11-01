@@ -274,4 +274,4 @@ if plane_case:
     reports.append({"name":"mixed-scene","passed":True,"objects":3,"imageVertices":4,"modelVertices":3,"sourceTriangles":plane_case["summary"]["triangles"],"embeddedImage":list(images[0].size)})
 
 (root / "blender-report.json").write_text(json.dumps({"passed":True,"blender":bpy.app.version_string,"checks":["mesh names and stroke IDs","Y-up to Z-up orientation","per-stroke dimensions and pressure-shaped bounds","original PBR color factors","ribbon double-sided material","embedded mask images and coverage","UV bounds","GLB source triangle counts","imported topology within 0.5%","finite geometry","image-plane ID and bounds","embedded image-plane PNG, UVs, and opacity","OBJ reference transforms and bounds","OBJ normals and triangle topology","MTL Kd diffuse color and opacity","ignored MTL property metadata"],"cases":reports},indent=2),encoding="utf-8")
-print("Spatial Sketch GLB import verification passed", flush=True)
+print("Sketch3D GLB import verification passed", flush=True)

@@ -166,7 +166,7 @@ impl SketchApp {
         self.reset_recovery_document();
         self.cancel();
         self.image_asset_root = std::env::temp_dir().join(format!(
-            "3dsketch-image-planes-recovered-{}",
+            "sketch3d-image-planes-recovered-{}",
             crate::recovery_store::session_id()
         ));
         let mut candidate = candidate;

@@ -20,7 +20,7 @@ impl ObjExportUi {
         }
         let Some(mut path) = rfd::FileDialog::new()
             .add_filter("Wavefront OBJ", &["obj"])
-            .set_file_name("spatial-sketch.obj")
+            .set_file_name("sketch3d.obj")
             .save_file()
         else {
             return;

@@ -82,7 +82,7 @@ impl BrushPackage {
 
     fn as_preset(&self) -> Result<Preset, String> {
         if self.format != PACKAGE_FORMAT {
-            return Err("This is not a Spatial Sketch brush package".into());
+            return Err("This is not a Sketch3D brush package".into());
         }
         if self.version != 1 {
             return Err("Unsupported brush package version".into());

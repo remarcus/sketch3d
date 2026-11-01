@@ -327,7 +327,7 @@ impl SketchApp {
                 )
             });
         let image_asset_root = std::env::temp_dir().join(format!(
-            "3dsketch-image-planes-{}",
+            "sketch3d-image-planes-{}",
             crate::recovery_store::session_id()
         ));
         let mut app = Self {
@@ -1223,7 +1223,7 @@ impl SketchApp {
         self.finish();
         let path = if save_as || self.file.is_none() {
             rfd::FileDialog::new()
-                .add_filter("Spatial Sketch", &["json"])
+                .add_filter("Sketch3D", &["json"])
                 .set_file_name("drawing.sketch.json")
                 .save_file()
         } else {
@@ -1359,7 +1359,7 @@ impl SketchApp {
                 self.renderer.clear_image_plane_assets();
                 self.renderer.clear_obj_reference_models();
                 self.image_asset_root = std::env::temp_dir().join(format!(
-                    "3dsketch-image-planes-{}",
+                    "sketch3d-image-planes-{}",
                     crate::recovery_store::session_id()
                 ));
                 self.file = None;
@@ -1373,7 +1373,7 @@ impl SketchApp {
             Some(Pending::Open) => {
                 let selected_path = self.library_open_path.take().or_else(|| {
                     rfd::FileDialog::new()
-                        .add_filter("Spatial Sketch", &["json"])
+                        .add_filter("Sketch3D", &["json"])
                         .pick_file()
                 });
                 if let Some(path) = selected_path {
@@ -1885,7 +1885,7 @@ impl SketchApp {
                 ui.horizontal(|ui| {
                     if ui.button("Import drawing…").clicked() {
                         if let Some(source) = rfd::FileDialog::new()
-                            .add_filter("Spatial Sketch", &["json"])
+                            .add_filter("Sketch3D", &["json"])
                             .pick_file()
                         {
                             let file_name = source
@@ -1893,7 +1893,7 @@ impl SketchApp {
                                 .and_then(|name| name.to_str())
                                 .unwrap_or("drawing.sketch.json");
                             if let Some(destination) = rfd::FileDialog::new()
-                                .add_filter("Spatial Sketch", &["json"])
+                                .add_filter("Sketch3D", &["json"])
                                 .set_file_name(file_name)
                                 .save_file()
                             {
@@ -1904,7 +1904,7 @@ impl SketchApp {
                     if ui.button("Restore backup…").clicked() {
                         if let Some(bundle) = rfd::FileDialog::new().pick_folder() {
                             if let Some(destination) = rfd::FileDialog::new()
-                                .add_filter("Spatial Sketch", &["json"])
+                                .add_filter("Sketch3D", &["json"])
                                 .set_file_name("restored.sketch.json")
                                 .save_file()
                             {
@@ -2154,7 +2154,7 @@ impl SketchApp {
                 .and_then(|name| name.to_str())
                 .unwrap_or("drawing.sketch.json");
             if let Some(destination) = rfd::FileDialog::new()
-                .add_filter("Spatial Sketch", &["json"])
+                .add_filter("Sketch3D", &["json"])
                 .set_file_name(file_name)
                 .save_file()
             {
@@ -2227,7 +2227,7 @@ impl SketchApp {
         self.drawing_library.trash_open = open;
         if let Some((bundle, original_name)) = restore {
             let destination = rfd::FileDialog::new()
-                .add_filter("Spatial Sketch", &["json"])
+                .add_filter("Sketch3D", &["json"])
                 .set_file_name(original_name)
                 .save_file();
             if let Some(destination) = destination {
@@ -2256,7 +2256,7 @@ impl SketchApp {
         }
         self.finish();
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Spatial Sketch", &["json"])
+            .add_filter("Sketch3D", &["json"])
             .pick_file()
         else {
             return;

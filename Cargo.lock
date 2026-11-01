@@ -2960,7 +2960,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "spatial-sketch"
+name = "sketch3d"
 version = "0.1.0"
 dependencies = [
  "bytemuck",

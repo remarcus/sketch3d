@@ -7,7 +7,7 @@ param(
     [ValidateRange(1, 90)]
     [int]$DurationSeconds,
 
-    [string]$WindowTitle = 'Spatial Sketch',
+    [string]$WindowTitle = 'Sketch3D',
     [ValidateRange(10, 30)]
     [int]$CaptureFps = 30,
     [ValidateRange(10, 15)]
@@ -163,7 +163,7 @@ try {
         input_note = 'No input automation, pressure synthesis, or latency measurement.'
         window_title = $WindowTitle
         shot_steps = @($ShotStep)
-        license_or_provenance = 'Spatial Sketch original sample artwork or individually recorded fixture license'
+        license_or_provenance = 'Sketch3D original sample artwork or individually recorded fixture license'
         encoding = [ordered]@{
             mp4 = "FFmpeg gdigrab, window-title input, native window resolution, $CaptureFps fps capture, libx264 CRF 18"
             gif = if ($DurationSeconds -le 25) { "FFmpeg palettegen/paletteuse at $PreviewFps fps, 960px wide, <=5 MiB" } else { $null }

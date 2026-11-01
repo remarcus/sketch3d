@@ -286,7 +286,7 @@ impl SketchApp {
         if self.tutorial.offer && self.tutorial.practice.is_none() {
             let mut start = false;
             let mut skip = false;
-            egui::Window::new("Welcome to Spatial Sketch").collapsible(false).resizable(false)
+            egui::Window::new("Welcome to Sketch3D").collapsible(false).resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).default_width(430.0).show(ctx, |ui| {
                 ui.label("Learn to draw in 3D with a mouse, a screenless tablet, or a pen display.");
                 ui.label("Nine short lessons with optional practice. Your current drawing stays in memory and returns when you exit. Save it first for a deliberate disk copy.");

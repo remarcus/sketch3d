@@ -395,12 +395,12 @@ impl PresetUi {
                             egui::Button::new("Import brush package…"),
                         )
                         .on_hover_text(
-                            "Import a Spatial Sketch .brush.json file as a personal preset",
+                            "Import a Sketch3D .brush.json file as a personal preset",
                         )
                         .clicked()
                     {
                         if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Spatial Sketch brush", &["brush.json", "json"])
+                            .add_filter("Sketch3D brush", &["brush.json", "json"])
                             .pick_file()
                         {
                             match BrushPackage::load(&path)
@@ -428,7 +428,7 @@ impl PresetUi {
                         if let Some(preset) = self.library.get(self.selected) {
                             let suggested = format!("{}.brush.json", safe_file_stem(&preset.name));
                             if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Spatial Sketch brush", &["brush.json"])
+                                .add_filter("Sketch3D brush", &["brush.json"])
                                 .set_file_name(&suggested)
                                 .save_file()
                             {

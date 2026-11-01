@@ -1,6 +1,6 @@
-# Spatial Sketch brush packages
+# Sketch3D brush packages
 
-Spatial Sketch imports and exports one native brush definition per
+Sketch3D imports and exports one native brush definition per
 `.brush.json` file. Version 1 is a self-contained JSON package for this app's
 brush settings; it does not embed image assets, scripts, or external file
 references. Built-in brush shapes and procedural texture kinds are represented

@@ -1,9 +1,9 @@
 [package]
-name = "spatial-sketch"
+name = "sketch3d"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "An open-source, tablet-first 3D sketching prototype"
+description = "Sketch3D: an open-source, tablet-first 3D sketching app"
 
 [dependencies]
 eframe = { version = "0.31.1", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland", "accesskit"] }

@@ -4,7 +4,7 @@ Record only after the associated task's checks pass. Suggested timings are edit 
 
 ## Overview
 
-**Name:** `spatial-sketch-overview` · **Target:** 18–22 seconds · **Fixture:** Japanese house or another licensed original fixture.
+**Name:** `sketch3d-overview` · **Target:** 18–22 seconds · **Fixture:** Japanese house or another licensed original fixture.
 
 1. Show the clean workspace and editable house (2 seconds).
 2. Draw a short brush stroke on the plane (4 seconds).
