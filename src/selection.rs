@@ -1795,6 +1795,49 @@ impl SketchApp {
         );
         self.doc = loaded;
         self.renderer.invalidate();
-        self.status="Selection and scaling checks passed: axes/pivots, cancel, undo/redo, native reload and GLB export.".into();
+        self.transform_mode = Mode::Scale;
+        self.transform_pivot = PivotMode::Custom;
+        self.custom_pivot = Vec3::new(-0.25, 0.3, 0.15);
+        self.scale_uniform_lock = false;
+        self.scale_values = [1.1, 1.0, 1.0];
+        self.numeric_transform();
+        let recovery_document = self.doc.strokes.clone();
+        assert!(
+            self.recovery.force_snapshot(&self.doc, self.file.clone()),
+            "the scaled document should be eligible for a recovery snapshot"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while self.recovery.busy() && std::time::Instant::now() < deadline {
+            self.recovery.poll();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        self.recovery.poll();
+        assert!(!self.recovery.busy(), "recovery write should finish");
+        let recovery_path = self
+            .recovery
+            .last_snapshot_path()
+            .expect("recovery snapshot path is recorded")
+            .to_path_buf();
+        let recovery_bytes = std::fs::read(&recovery_path).unwrap();
+        let recovery_snapshot: crate::recovery_store::RecoverySnapshot =
+            serde_json::from_slice(&recovery_bytes).unwrap();
+        assert_eq!(recovery_snapshot.document.strokes, recovery_document);
+        let recovery_scan_dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let scan_copy = recovery_scan_dir
+            .path()
+            .join(recovery_path.file_name().unwrap());
+        std::fs::write(&scan_copy, recovery_bytes).unwrap();
+        let scan = crate::recovery_store::scan(
+            recovery_scan_dir.path(),
+            "selection-verifier-recovery-reader",
+        )
+        .unwrap();
+        assert!(scan.issues.is_empty());
+        assert_eq!(scan.candidates.len(), 1);
+        assert_eq!(
+            scan.candidates[0].snapshot.document.strokes,
+            recovery_document
+        );
+        self.status="Selection and scaling checks passed: axes/pivots, cancel, undo/redo, native reload, GLB export and recovery scan.".into();
     }
 }
