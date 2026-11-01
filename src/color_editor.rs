@@ -388,6 +388,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn production_swatch_buttons_emit_contextual_accesskit_labels() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let output = context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(420.0, 180.0),
+                )),
+                focused: true,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add_swatch("Coral", [0.9, 0.2, 0.3]);
+                });
+            },
+        );
+        let update = output
+            .platform_output
+            .accesskit_update
+            .expect("AccessKit update is enabled for this context");
+        let swatch = update
+            .nodes
+            .iter()
+            .map(|(_, node)| node)
+            .find(|node| node.label() == Some("Select color Coral"))
+            .expect("production color swatch has a contextual accessible name");
+        assert_eq!(format!("{:?}", swatch.role()), "Button");
+        assert!(!swatch.is_disabled());
+    }
+
+    #[test]
     fn hex_and_rgb_use_srgb_text_with_linear_model_values() {
         let teal = parse_hex("#2AC8B8").unwrap();
         assert_eq!(format_hex(teal), "#2AC8B8");
