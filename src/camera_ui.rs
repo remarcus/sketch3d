@@ -154,10 +154,22 @@ fn sequence_controls_ui(
                 camera_ui.rename_sequence_target = Some(sequence.id);
                 camera_ui.rename_sequence_text = sequence.name.clone();
             }
-            if ui.small_button("↑").clicked() && index > 0 {
+            if ui_style::small_icon_button(
+                ui,
+                "↑",
+                &format!("Move sequence {} up", sequence.name),
+                index > 0,
+            )
+            .clicked()
+            {
                 move_sequence = Some((index, index - 1));
             }
-            let down = ui.small_button("↓");
+            let down = ui_style::small_icon_button(
+                ui,
+                "↓",
+                &format!("Move sequence {} down", sequence.name),
+                index + 1 < sequence_ids.len(),
+            );
             #[cfg(test)]
             if index == 0 && down.enabled() {
                 actions.sequence_down_rect = Some(down.rect);
@@ -177,10 +189,22 @@ fn sequence_controls_ui(
                         .map_or("Missing view", |bookmark| bookmark.name.as_str());
                     ui.horizontal(|ui| {
                         ui.label(format!("{} · {:.1}s", name, frame.transition_seconds));
-                        if ui.small_button("↑").clicked() && frame_index > 0 {
+                        if ui_style::small_icon_button(
+                            ui,
+                            "↑",
+                            &format!("Move {name} frame up"),
+                            frame_index > 0,
+                        )
+                        .clicked()
+                        {
                             move_frame = Some((sequence.id, frame_index, frame_index - 1));
                         }
-                        let down = ui.small_button("↓");
+                        let down = ui_style::small_icon_button(
+                            ui,
+                            "↓",
+                            &format!("Move {name} frame down"),
+                            frame_index + 1 < sequence.frames.len(),
+                        );
                         #[cfg(test)]
                         if frame_index == 0 && down.enabled() {
                             actions.frame_down_rect = Some(down.rect);
@@ -363,13 +387,34 @@ impl SketchApp {
                             self.camera_ui.rename_target = Some(bookmark.id);
                             self.camera_ui.rename_text = bookmark.name.clone();
                         }
-                        if ui.small_button("↑").clicked() && index > 0 {
+                        if ui_style::small_icon_button(
+                            ui,
+                            "↑",
+                            &format!("Move bookmark {} up", bookmark.name),
+                            index > 0,
+                        )
+                        .clicked()
+                        {
                             move_bookmark = Some((index, index - 1));
                         }
-                        if ui.small_button("↓").clicked() && index + 1 < ids.len() {
+                        if ui_style::small_icon_button(
+                            ui,
+                            "↓",
+                            &format!("Move bookmark {} down", bookmark.name),
+                            index + 1 < ids.len(),
+                        )
+                        .clicked()
+                        {
                             move_bookmark = Some((index, index + 1));
                         }
-                        if ui.small_button("×").clicked() {
+                        if ui_style::small_icon_button(
+                            ui,
+                            "×",
+                            &format!("Remove bookmark {}", bookmark.name),
+                            true,
+                        )
+                        .clicked()
+                        {
                             remove_bookmark = Some(bookmark.id);
                         }
                         let mut selected = self.camera_ui.selected_frames.contains(&bookmark.id);

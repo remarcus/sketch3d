@@ -978,7 +978,15 @@ fn edit_geometry(ui: &mut egui::Ui, geometry: &mut GuideGeometry) -> GeometryEdi
                                 .prefix("R "),
                         )
                         .changed();
-                    if can_remove && ui.small_button("−").clicked() {
+                    if can_remove
+                        && ui_style::small_icon_button(
+                            ui,
+                            "−",
+                            &format!("Remove guide profile point {}", i + 1),
+                            true,
+                        )
+                        .clicked()
+                    {
                         remove = Some(i);
                     }
                 });

@@ -84,9 +84,13 @@ impl SketchApp {
         for i in 0..next.count {
             ui.horizontal(|ui| {
                 ui.strong(format!("Profile {}", i + 1));
-                if ui
-                    .add_enabled(next.count > 2, egui::Button::new("−"))
-                    .clicked()
+                if ui_style::small_icon_button(
+                    ui,
+                    "−",
+                    &format!("Remove revolved profile {}", i + 1),
+                    next.count > 2,
+                )
+                .clicked()
                 {
                     remove = Some(i);
                 }

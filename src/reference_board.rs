@@ -297,11 +297,13 @@ impl ReferenceBoard {
         });
         ui.label("Local workspace references. Pan by dragging; wheel or buttons zoom. Click the image to sample its color into the brush. Esc or Done returns to Properties.");
         ui.horizontal(|ui| {
-            if ui.button("−").clicked() {
+            if ui_style::icon_button(ui, "−", "Zoom out reference board", self.zoom > 0.1).clicked()
+            {
                 self.zoom = (self.zoom / 1.25).clamp(0.1, 8.0);
             }
             ui.label(format!("{:.0}%", self.zoom * 100.0));
-            if ui.button("+").clicked() {
+            if ui_style::icon_button(ui, "+", "Zoom in reference board", self.zoom < 8.0).clicked()
+            {
                 self.zoom = (self.zoom * 1.25).clamp(0.1, 8.0);
             }
             if ui.button("Fit").clicked() {

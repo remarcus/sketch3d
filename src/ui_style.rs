@@ -162,6 +162,38 @@ pub fn section(ui: &mut Ui, title: &str) {
     );
 }
 
+fn label_icon_button(response: Response, accessible_name: &str) -> Response {
+    response.widget_info(|| {
+        WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            response.enabled(),
+            accessible_name,
+        )
+    });
+    response
+}
+
+/// Adds a glyph button with a contextual label for assistive technology.
+pub fn icon_button(ui: &mut Ui, glyph: &str, accessible_name: &str, enabled: bool) -> Response {
+    label_icon_button(
+        ui.add_enabled(enabled, egui::Button::new(glyph)),
+        accessible_name,
+    )
+}
+
+/// Adds a compact glyph button with a contextual label for assistive technology.
+pub fn small_icon_button(
+    ui: &mut Ui,
+    glyph: &str,
+    accessible_name: &str,
+    enabled: bool,
+) -> Response {
+    label_icon_button(
+        ui.add_enabled(enabled, egui::Button::new(glyph).small()),
+        accessible_name,
+    )
+}
+
 /// Aligns a field label and its control using the shared inspector label width.
 pub fn field_row<R>(ui: &mut Ui, label: &str, add_control: impl FnOnce(&mut Ui) -> R) -> R {
     ui.horizontal(|ui| {
@@ -702,6 +734,44 @@ mod tests {
                 "selection focus contrast below 3:1 in dark={dark}"
             );
         }
+    }
+
+    #[test]
+    fn compact_icon_buttons_emit_contextual_accesskit_names() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let output = context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(420.0, 180.0),
+                )),
+                focused: true,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    small_icon_button(ui, "↑", "Move bookmark up", true);
+                    small_icon_button(ui, "+", "Zoom in reference board", true);
+                    small_icon_button(ui, "−", "Remove revolved profile 1", false);
+                });
+            },
+        );
+        let update = output
+            .platform_output
+            .accesskit_update
+            .expect("AccessKit update is enabled for this context");
+        let named_nodes = update
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| {
+                node.label()
+                    .map(|label| (label.to_owned(), node.is_disabled()))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(named_nodes.get("Move bookmark up"), Some(&false));
+        assert_eq!(named_nodes.get("Zoom in reference board"), Some(&false));
+        assert_eq!(named_nodes.get("Remove revolved profile 1"), Some(&true));
     }
 
     #[test]
