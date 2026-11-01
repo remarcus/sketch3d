@@ -9,6 +9,8 @@ pub(super) struct TrashWindowOutput {
     pub restore: Option<(PathBuf, String)>,
     #[cfg(test)]
     restore_rects: Vec<(PathBuf, Rect)>,
+    #[cfg(test)]
+    rendered_notice: Option<String>,
 }
 
 pub(super) fn show(
@@ -22,6 +24,8 @@ pub(super) fn show(
     }
     let mut restore = None;
     #[cfg(test)]
+    let mut rendered_notice = None;
+    #[cfg(test)]
     let mut restore_rects = Vec::new();
     egui::Window::new("Recoverable drawing trash")
         .open(&mut open)
@@ -30,6 +34,10 @@ pub(super) fn show(
             ui.label("Deleted drawings remain here until restored. Restoring never overwrites an existing file.");
             if let Some(error) = read_error {
                 ui.colored_label(super::ui_style::colors(ui.ctx()).error, error);
+                #[cfg(test)]
+                {
+                    rendered_notice = Some(error.to_owned());
+                }
             }
             if entries.is_empty() && read_error.is_none() {
                 ui.weak("Trash is empty.");
@@ -68,6 +76,8 @@ pub(super) fn show(
         restore,
         #[cfg(test)]
         restore_rects,
+        #[cfg(test)]
+        rendered_notice,
     }
 }
 
@@ -196,6 +206,7 @@ mod tests {
 
     #[test]
     fn trash_read_errors_remain_visible_in_light_and_dark_themes() {
+        let notice = "Restore failed: destination already exists";
         for visuals in [egui::Visuals::dark(), egui::Visuals::light()] {
             let ctx = egui::Context::default();
             ctx.set_visuals(visuals);
@@ -205,9 +216,11 @@ mod tests {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
                     ..Default::default()
                 },
-                |ctx| output = Some(show(ctx, true, &[], Some("Cannot read drawing trash"))),
+                |ctx| output = Some(show(ctx, true, &[], Some(notice))),
             );
-            assert!(output.expect("trash read error renders").open);
+            let output = output.expect("trash restore error renders");
+            assert!(output.open);
+            assert_eq!(output.rendered_notice.as_deref(), Some(notice));
         }
     }
 }

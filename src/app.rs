@@ -2390,7 +2390,9 @@ impl SketchApp {
             ctx,
             self.drawing_library.trash_open,
             &entries,
-            read_error.as_deref(),
+            read_error
+                .as_deref()
+                .or(self.drawing_library.notice.as_deref()),
         );
         self.drawing_library.trash_open = output.open;
         if let Some((bundle, original_name)) = output.restore {
@@ -2402,9 +2404,14 @@ impl SketchApp {
                 match crate::drawing_library::restore_from_trash(&bundle, &destination) {
                     Ok(()) => {
                         self.drawing_library.record(&destination);
+                        self.drawing_library.notice = None;
                         self.status = format!("Restored drawing to {}", destination.display());
                     }
-                    Err(error) => self.status = format!("Restore failed: {error}"),
+                    Err(error) => {
+                        let notice = format!("Restore failed: {error}");
+                        self.drawing_library.notice = Some(notice.clone());
+                        self.status = notice;
+                    }
                 }
             }
         }

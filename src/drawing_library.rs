@@ -1437,6 +1437,11 @@ mod tests {
         assert!(entries
             .iter()
             .any(|entry| entry.path == corrupt && entry.issue.is_some()));
+        drop(entries);
+        let entries_after_view_reopen = list_trash_in(&trash).unwrap();
+        assert!(entries_after_view_reopen
+            .iter()
+            .any(|entry| entry.path == bundle && entry.name == "garden.sketch.json"));
 
         let conflict = root.path().join("existing.sketch.json");
         fs::write(&conflict, b"keep existing drawing").unwrap();
