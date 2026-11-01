@@ -2296,3 +2296,47 @@ fn vertex_bounds(vertices: &[Vertex]) -> Option<(Vec3, Vec3)> {
         .map(|p| (p, p))
         .reduce(|(lo, hi), (min, max)| (lo.min(min), hi.max(max)))
 }
+
+#[cfg(test)]
+mod screen_background_tests {
+    use super::*;
+
+    #[test]
+    fn screen_background_fit_and_fill_keep_alignment_uv_and_opacity() {
+        let fit = screen_background_vertices(
+            [1600, 900],
+            [1000, 1000],
+            BackgroundImageFit::Fit,
+            [0.5, 0.5],
+            0.4,
+        );
+        assert!((fit[0].position[0] + 0.5625).abs() < 1e-6);
+        assert!((fit[1].position[0] - 0.5625).abs() < 1e-6);
+        assert_eq!(fit[0].uv, [0.0, 0.0]);
+        assert_eq!(fit[2].uv, [1.0, 1.0]);
+        assert!(fit.iter().all(|vertex| vertex.opacity == 0.4));
+
+        let fill = screen_background_vertices(
+            [1600, 900],
+            [1000, 1000],
+            BackgroundImageFit::Fill,
+            [0.5, 0.0],
+            0.7,
+        );
+        assert_eq!(fill[0].position, [-1.0, 1.0]);
+        assert_eq!(fill[2].position, [1.0, -1.0]);
+        assert!((fill[0].uv[1] - 0.0).abs() < 1e-6);
+        assert!((fill[2].uv[1] - 0.5625).abs() < 1e-6);
+        assert!(fill.iter().all(|vertex| vertex.opacity == 0.7));
+
+        let right_aligned_fill = screen_background_vertices(
+            [900, 1600],
+            [1600, 900],
+            BackgroundImageFit::Fill,
+            [1.0, 0.5],
+            1.0,
+        );
+        assert!((right_aligned_fill[0].uv[0] - 0.68359375).abs() < 1e-6);
+        assert!((right_aligned_fill[1].uv[0] - 1.0).abs() < 1e-6);
+    }
+}
