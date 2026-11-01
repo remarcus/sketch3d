@@ -732,7 +732,11 @@ pub fn trash_native_drawing(source: &Path) -> Result<PathBuf, String> {
     let trash_root = crate::presets::path()
         .map_err(|error| error.to_string())?
         .join("drawing-trash");
-    fs::create_dir_all(&trash_root)
+    trash_native_drawing_in(source, &trash_root)
+}
+
+fn trash_native_drawing_in(source: &Path, trash_root: &Path) -> Result<PathBuf, String> {
+    fs::create_dir_all(trash_root)
         .map_err(|error| format!("Cannot create drawing trash: {error}"))?;
     let stem = source
         .file_stem()
@@ -787,7 +791,11 @@ fn trash_root() -> Result<PathBuf, String> {
 /// issue label so corruption is visible instead of silently hiding data.
 pub fn list_trash() -> Result<Vec<TrashDrawing>, String> {
     let root = trash_root()?;
-    let entries = match fs::read_dir(&root) {
+    list_trash_in(&root)
+}
+
+fn list_trash_in(root: &Path) -> Result<Vec<TrashDrawing>, String> {
+    let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(format!("Cannot read drawing trash: {error}")),
@@ -852,6 +860,10 @@ fn read_backup_name(bundle: &Path) -> Result<String, String> {
 /// backup only after the restored drawing and managed resources are installed.
 pub fn restore_from_trash(bundle: &Path, destination: &Path) -> Result<(), String> {
     let root = trash_root()?;
+    restore_from_trash_in(bundle, destination, &root)
+}
+
+fn restore_from_trash_in(bundle: &Path, destination: &Path, root: &Path) -> Result<(), String> {
     let canonical_root = root
         .canonicalize()
         .map_err(|error| format!("Cannot locate drawing trash: {error}"))?;
@@ -1297,5 +1309,72 @@ mod tests {
         let rejected = root.path().join("should-not-exist.sketch.json");
         assert!(restore_native_backup(&corrupt, &rejected).is_err());
         assert!(!rejected.exists());
+    }
+
+    #[test]
+    fn drawing_trash_lists_corrupt_entries_and_restores_assets_without_clobbering() {
+        use image::ImageEncoder;
+
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source = root.path().join("garden.sketch.json");
+        let trash = root.path().join("trash");
+        let image = crate::image_planes::ImagePlane::from_asset(
+            19,
+            "Garden reference",
+            "image-19.png".into(),
+            [1, 1],
+            glam::Vec3::ZERO,
+            glam::Quat::IDENTITY,
+            1.0,
+        )
+        .unwrap();
+        let document = crate::document::Document {
+            image_planes: vec![image.clone()],
+            ..Default::default()
+        };
+        fs::write(&source, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        let source_assets = crate::image_plane_storage::asset_root(&source).unwrap();
+        fs::create_dir_all(&source_assets).unwrap();
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&[43, 87, 129, 255], 1, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        fs::write(source_assets.join("image-19.png"), png).unwrap();
+
+        let bundle = trash_native_drawing_in(&source, &trash).unwrap();
+        assert!(!source.exists());
+        assert!(!source_assets.exists());
+
+        let corrupt = trash.join("corrupt.sketch-backup");
+        fs::create_dir(&corrupt).unwrap();
+        fs::write(corrupt.join("manifest.json"), b"not json").unwrap();
+        let entries = list_trash_in(&trash).unwrap();
+        let listed = entries.iter().find(|entry| entry.path == bundle).unwrap();
+        assert_eq!(listed.name, "garden.sketch.json");
+        assert!(listed.deleted.is_some());
+        assert!(listed.issue.is_none());
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == corrupt && entry.issue.is_some()));
+
+        let conflict = root.path().join("existing.sketch.json");
+        fs::write(&conflict, b"keep existing drawing").unwrap();
+        assert!(restore_from_trash_in(&bundle, &conflict, &trash).is_err());
+        assert_eq!(fs::read(&conflict).unwrap(), b"keep existing drawing");
+        assert!(bundle.is_dir(), "failed restore must retain the backup");
+
+        let destination_dir = root.path().join("relocated");
+        fs::create_dir(&destination_dir).unwrap();
+        let destination = destination_dir.join("restored.sketch.json");
+        restore_from_trash_in(&bundle, &destination, &trash).unwrap();
+        assert!(!bundle.exists());
+        let restored =
+            crate::document::Document::from_json(&fs::read_to_string(&destination).unwrap())
+                .unwrap();
+        assert_eq!(restored.image_planes, vec![image]);
+        let restored_assets = crate::image_plane_storage::asset_root(&destination).unwrap();
+        let restored_image =
+            crate::image_planes::decode_asset(&restored_assets.join("image-19.png")).unwrap();
+        assert_eq!(restored_image.pixels, [43, 87, 129, 255]);
     }
 }
