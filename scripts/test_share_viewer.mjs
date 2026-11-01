@@ -229,6 +229,7 @@ test("same-site share links fetch without cookies and surface network failures",
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, "https://viewer.example/artwork/sample.glb");
   assert.equal(requests[0].options.credentials, "omit");
+  assert.equal(requests[0].options.redirect, "error");
   assert.match(document.querySelector("#artwork-viewer").src, /^blob:/);
   assert.match(document.querySelector("#viewer-status").textContent, /Loading sample\.glb/);
 
