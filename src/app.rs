@@ -314,21 +314,44 @@ const CAPABILITY_REPLAY_FRAMES: usize = 60;
 const CAPABILITY_REPLAY_MAX_GIF_BYTES: u64 = 5 * 1024 * 1024;
 const CAPABILITY_REPLAY_MAX_MP4_BYTES: u64 = 512 * 1024 * 1024;
 
-pub(crate) fn prepare_capability_demo_output() -> Result<PathBuf, String> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CapabilityClip {
+    DrawOrbit,
+    CurvedGuides,
+}
+
+impl CapabilityClip {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "draw-orbit" => Some(Self::DrawOrbit),
+            "curved-guides" => Some(Self::CurvedGuides),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::DrawOrbit => "draw-orbit",
+            Self::CurvedGuides => "curved-guides",
+        }
+    }
+
+    fn is_curved_guides(self) -> bool {
+        self == Self::CurvedGuides
+    }
+}
+
+pub(crate) fn prepare_capability_demo_output(name: &str) -> Result<PathBuf, String> {
+    let clip = CapabilityClip::parse(name)
+        .ok_or_else(|| format!("Unsupported capability demo clip: {name}"))?;
     let output_dir = std::env::current_dir()
         .map_err(|error| error.to_string())?
         .join("verification")
         .join("capability-demos")
         .join("drafts");
     std::fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
-    for name in [
-        "draw-orbit.gif",
-        "draw-orbit.mp4",
-        "draw-orbit.png",
-        "draw-orbit.en.vtt",
-        "draw-orbit.recording.json",
-    ] {
-        let path = output_dir.join(name);
+    for extension in ["gif", "mp4", "png", "en.vtt", "recording.json"] {
+        let path = output_dir.join(format!("{}.{}", clip.name(), extension));
         if path.exists() {
             return Err(format!(
                 "Refusing to overwrite existing capability demo output: {}",
@@ -340,6 +363,7 @@ pub(crate) fn prepare_capability_demo_output() -> Result<PathBuf, String> {
 }
 
 struct CapabilityReplay {
+    clip: CapabilityClip,
     output_dir: PathBuf,
     initial_stroke_count: usize,
     initial_camera: Camera,
@@ -353,6 +377,7 @@ struct CapabilityReplay {
     pointer_cue: Option<Pos2>,
     contact: bool,
     barrel: bool,
+    setup_verified: bool,
     sender: Option<SyncSender<Option<Vec<u8>>>>,
     encoder: Option<JoinHandle<Result<(), String>>>,
     mp4_sender: Option<SyncSender<Option<Vec<u8>>>>,
@@ -360,15 +385,14 @@ struct CapabilityReplay {
 }
 
 impl CapabilityReplay {
+    fn path(&self, extension: &str) -> PathBuf {
+        self.output_dir
+            .join(format!("{}.{}", self.clip.name(), extension))
+    }
+
     fn remove_draft_outputs(&self) {
-        for name in [
-            "draw-orbit.gif",
-            "draw-orbit.mp4",
-            "draw-orbit.png",
-            "draw-orbit.en.vtt",
-            "draw-orbit.recording.json",
-        ] {
-            let _ = std::fs::remove_file(self.output_dir.join(name));
+        for extension in ["gif", "mp4", "png", "en.vtt", "recording.json"] {
+            let _ = std::fs::remove_file(self.path(extension));
         }
     }
 
@@ -386,7 +410,7 @@ impl CapabilityReplay {
 
     fn save_poster(&self, pixels: &[u8], dimensions: [u32; 2]) -> Result<(), String> {
         use image::ImageEncoder;
-        let destination = self.output_dir.join("draw-orbit.png");
+        let destination = self.path("png");
         let mut temporary = tempfile::Builder::new()
             .suffix(".png")
             .tempfile_in(&self.output_dir)
@@ -417,40 +441,65 @@ impl CapabilityReplay {
         self.canvas_rect = Some(rect);
         self.wait_updates = 0;
         let frame = self.captured_frames;
-        let start = rect.center() + egui::vec2(-150.0, -65.0);
-        let end = rect.center() + egui::vec2(150.0, -35.0);
-        let (position, phase, contact, barrel) = match frame {
-            0..=2 => (start, Phase::Move, false, false),
-            3 => (start, Phase::Down, true, false),
-            4..=25 => {
-                let t = (frame - 4) as f32 / 21.0;
-                (
-                    egui::pos2(
-                        start.x + (end.x - start.x) * t,
-                        start.y + (end.y - start.y) * t + (t * std::f32::consts::TAU).sin() * 28.0,
-                    ),
-                    Phase::Move,
-                    true,
-                    false,
-                )
+        let orbit_sample = if self.clip.is_curved_guides() {
+            let start = rect.center() + egui::vec2(0.0, 12.0);
+            let end = start + egui::vec2(270.0, -55.0);
+            match frame {
+                0..=4 => (start, Phase::Move, false, false),
+                5..=50 => {
+                    let t = (frame - 5) as f32 / 45.0;
+                    (
+                        egui::pos2(
+                            start.x + (end.x - start.x) * t,
+                            start.y + (end.y - start.y) * t,
+                        ),
+                        if frame == 5 { Phase::Down } else { Phase::Move },
+                        true,
+                        true,
+                    )
+                }
+                51 => (end, Phase::Up, false, false),
+                _ => (end, Phase::Move, false, false),
             }
-            26 => (end, Phase::Up, false, false),
-            27..=33 => (end, Phase::Move, false, false),
-            34..=50 => {
-                let t = (frame - 34) as f32 / 16.0;
-                (
-                    egui::pos2(
-                        end.x + t * 210.0,
-                        end.y + (t * std::f32::consts::PI).sin() * 52.0,
-                    ),
-                    Phase::Move,
-                    true,
-                    true,
-                )
+        } else {
+            let start = rect.center() + egui::vec2(-150.0, -65.0);
+            let end = rect.center() + egui::vec2(150.0, -35.0);
+            match frame {
+                0..=2 => (start, Phase::Move, false, false),
+                3 => (start, Phase::Down, true, false),
+                4..=25 => {
+                    let t = (frame - 4) as f32 / 21.0;
+                    (
+                        egui::pos2(
+                            start.x + (end.x - start.x) * t,
+                            start.y
+                                + (end.y - start.y) * t
+                                + (t * std::f32::consts::TAU).sin() * 28.0,
+                        ),
+                        Phase::Move,
+                        true,
+                        false,
+                    )
+                }
+                26 => (end, Phase::Up, false, false),
+                27..=33 => (end, Phase::Move, false, false),
+                34..=50 => {
+                    let t = (frame - 34) as f32 / 16.0;
+                    (
+                        egui::pos2(
+                            end.x + t * 210.0,
+                            end.y + (t * std::f32::consts::PI).sin() * 52.0,
+                        ),
+                        Phase::Move,
+                        true,
+                        true,
+                    )
+                }
+                51 => (end + egui::vec2(210.0, 0.0), Phase::Up, false, false),
+                _ => (end + egui::vec2(210.0, 0.0), Phase::Move, false, false),
             }
-            51 => (end + egui::vec2(210.0, 0.0), Phase::Up, false, false),
-            _ => (end + egui::vec2(210.0, 0.0), Phase::Move, false, false),
         };
+        let (position, phase, contact, barrel) = orbit_sample;
         self.pointer_cue = Some(position);
         self.contact = contact;
         self.barrel = barrel;
@@ -535,9 +584,9 @@ impl CapabilityReplay {
             self.remove_draft_outputs();
             return Err(error);
         }
-        let gif_path = self.output_dir.join("draw-orbit.gif");
-        let mp4_path = self.output_dir.join("draw-orbit.mp4");
-        let poster_path = self.output_dir.join("draw-orbit.png");
+        let gif_path = self.path("gif");
+        let mp4_path = self.path("mp4");
+        let poster_path = self.path("png");
         let gif_metadata = match std::fs::metadata(&gif_path) {
             Ok(metadata) => metadata,
             Err(error) => {
@@ -579,19 +628,33 @@ impl CapabilityReplay {
             self.remove_draft_outputs();
             return Err("Capability demo poster is empty".into());
         }
-        let manifest_path = self.output_dir.join("draw-orbit.recording.json");
-        let captions_path = self.output_dir.join("draw-orbit.en.vtt");
-        let captions = concat!(
-            "WEBVTT\n\n",
-            "00:00:00.000 --> 00:00:00.300\n",
-            "Deterministic replay. Input is synthetic; tablet pressure was not measured.\n\n",
-            "00:00:00.300 --> 00:00:02.700\n",
-            "Draw a short cyan stroke on the front plane.\n\n",
-            "00:00:03.400 --> 00:00:05.100\n",
-            "Orbit the camera with a simulated barrel gesture.\n\n",
-            "00:00:05.100 --> 00:00:06.000\n",
-            "The new stroke remains editable.\n"
-        );
+        let manifest_path = self.path("recording.json");
+        let captions_path = self.path("en.vtt");
+        let captions = if self.clip.is_curved_guides() {
+            concat!(
+                "WEBVTT\n\n",
+                "00:00:00.000 --> 00:00:00.500\n",
+                "Deterministic app replay. Synthetic input has no pressure data.\n\n",
+                "00:00:00.500 --> 00:00:02.500\n",
+                "The saved cylinder carries editable curved and mirrored strokes.\n\n",
+                "00:00:02.500 --> 00:00:05.200\n",
+                "A simulated barrel gesture orbits to reveal the curved drawing.\n\n",
+                "00:00:05.200 --> 00:00:06.000\n",
+                "The cylinder and mirrored strokes remain editable.\n"
+            )
+        } else {
+            concat!(
+                "WEBVTT\n\n",
+                "00:00:00.000 --> 00:00:00.300\n",
+                "Deterministic replay. Input is synthetic; tablet pressure was not measured.\n\n",
+                "00:00:00.300 --> 00:00:02.700\n",
+                "Draw a short cyan stroke on the front plane.\n\n",
+                "00:00:03.400 --> 00:00:05.100\n",
+                "Orbit the camera with a simulated barrel gesture.\n\n",
+                "00:00:05.100 --> 00:00:06.000\n",
+                "The new stroke remains editable.\n"
+            )
+        };
         let mut caption_file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -643,17 +706,42 @@ impl CapabilityReplay {
         let dimensions = self
             .frame_size
             .ok_or_else(|| "Capability demo did not capture any frames".to_owned())?;
+        let clip_name = self.clip.name();
+        let (fixture, fixture_provenance, shot_steps, poster_alt) = if self.clip.is_curved_guides()
+        {
+            (
+                "Saved cylinder mirror study",
+                "Procedurally generated from an empty Sketch3D document by the production pointer-action handlers; no external artwork or assets.",
+                vec![
+                    "Create a saved cylinder and mirrored curved strokes through the production pointer-action handlers.",
+                    "Orbit the camera using a synthetic barrel gesture through canvas_input.",
+                    "Pause on the editable cylinder and reflected strokes.",
+                ],
+                "A saved cylinder with editable curved and mirrored strokes in Sketch3D's dark workspace.",
+            )
+        } else {
+            (
+                "Japanese house",
+                "Original Japanese garden house scene built into Sketch3D; no external artwork or assets.",
+                vec![
+                    "Draw a short stroke on the Japanese house drawing plane with pressure-free synthetic input.",
+                    "Orbit the camera using a synthetic barrel gesture through canvas_input.",
+                    "Pause on the edited view.",
+                ],
+                "Japanese garden house in Sketch3D's dark workspace before the scripted cyan stroke is added.",
+            )
+        };
         let manifest = serde_json::json!({
             "format": "spatial-sketch-capability-demo",
             "manifest_version": 1,
-            "clip": "draw-orbit",
+            "clip": clip_name,
             "recorded_unix_seconds": recorded_unix_seconds,
             "duration_seconds": 6,
             "app_commit": app_commit,
             "source_tree_dirty": source_tree_dirty,
-            "fixture": "Japanese house",
+            "fixture": fixture,
             "fixture_version": 1,
-            "license_or_provenance": "Original Japanese garden house scene built into Sketch3D; no external artwork or assets.",
+            "license_or_provenance": fixture_provenance,
             "viewport": [dimensions[0], dimensions[1]],
             "capture_size": [dimensions[0], dimensions[1]],
             "gif_size": [640, 360],
@@ -663,27 +751,23 @@ impl CapabilityReplay {
             "input_note": "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured.",
             "window_visible": false,
             "frame_rate": CAPABILITY_REPLAY_FPS,
-            "shot_steps": [
-                "Draw a short stroke on the Japanese house drawing plane with pressure-free synthetic input.",
-                "Orbit the camera using a synthetic barrel gesture through canvas_input.",
-                "Pause on the edited view."
-            ],
-            "cursor_cue": "A synthetic pointer ring is labeled DRAW or ORBIT while input is active; a persistent banner discloses synthetic replay and no pressure data.",
+            "shot_steps": shot_steps,
+            "cursor_cue": if self.clip.is_curved_guides() { "The curved-guide strokes are prepared by scripted production handlers before capture; playback shows a synthetic ORBIT cursor and a persistent no-pressure disclosure." } else { "A synthetic pointer ring is labeled DRAW or ORBIT while input is active; a persistent banner discloses synthetic replay and no pressure data." },
             "encoding": {
                 "mp4": format!("Captured full-viewport RGBA frames; {mp4_backend}; 10 fps."),
                 "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; 6 seconds; <=5 MiB.",
                 "poster": "First full-resolution app frame encoded as PNG."
             },
             "outputs": {
-                "mp4": { "file": "draw-orbit.mp4", "bytes": mp4_metadata.len() },
-                "gif": { "file": "draw-orbit.gif", "bytes": gif_metadata.len() },
+                "mp4": { "file": format!("{clip_name}.mp4"), "bytes": mp4_metadata.len() },
+                "gif": { "file": format!("{clip_name}.gif"), "bytes": gif_metadata.len() },
                 "poster": {
-                    "file": "draw-orbit.png",
+                    "file": format!("{clip_name}.png"),
                     "bytes": poster_metadata.len(),
-                    "alt": "Japanese garden house in Sketch3D's dark workspace before the scripted cyan stroke is added."
+                    "alt": poster_alt
                 },
                 "captions": {
-                    "file": "draw-orbit.en.vtt",
+                    "file": format!("{clip_name}.en.vtt"),
                     "bytes": std::fs::metadata(&captions_path).map_err(|error| error.to_string())?.len(),
                     "format": "WebVTT",
                     "timing_reviewed": false
@@ -696,7 +780,7 @@ impl CapabilityReplay {
                 "private_content_checked": false,
                 "captions_timing_checked": false,
                 "reviewer": null,
-                "notes": "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use."
+                "notes": if self.clip.is_curved_guides() { "Synthetic curved-guide draft. The strokes are scripted through production handlers before the captured orbit; review playback and visual readability before use." } else { "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use." }
             }
         });
         let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
@@ -1136,10 +1220,17 @@ impl SketchApp {
             png_verification_frame: None,
             capability_replay: None,
         };
-        if std::env::args().any(|a| a == "--record-capability-demo") {
+        if let Some(index) = std::env::args().position(|a| a == "--record-capability-demo") {
+            let arguments = std::env::args().collect::<Vec<_>>();
+            let clip_name = arguments
+                .get(index + 1)
+                .expect("capability demo clip name is validated before app launch");
+            let clip = CapabilityClip::parse(clip_name)
+                .expect("capability demo clip name is validated before app launch");
             app.verification_frame = None;
             app.capability_replay = Some(CapabilityReplay {
-                output_dir: prepare_capability_demo_output()
+                clip,
+                output_dir: prepare_capability_demo_output(clip_name)
                     .expect("capability demo output path must be prepared before app launch"),
                 initial_stroke_count: 0,
                 initial_camera: app.camera,
@@ -1153,18 +1244,23 @@ impl SketchApp {
                 pointer_cue: None,
                 contact: false,
                 barrel: false,
+                setup_verified: !clip.is_curved_guides(),
                 sender: None,
                 encoder: None,
                 mp4_sender: None,
                 mp4_encoder: None,
             });
             app.stabilization = 0.0;
-            app.load_house();
-            app.guide = DrawingPlane::from_preset(Plane::Front);
-            app.guide.depth = app.camera.target.z;
-            if let Some(replay) = app.capability_replay.as_mut() {
-                replay.initial_stroke_count = app.doc.strokes.len();
-                replay.initial_camera = app.camera;
+            if clip.is_curved_guides() {
+                app.mirror_verification_frame = Some(0);
+            } else {
+                app.load_house();
+                app.guide = DrawingPlane::from_preset(Plane::Front);
+                app.guide.depth = app.camera.target.z;
+                if let Some(replay) = app.capability_replay.as_mut() {
+                    replay.initial_stroke_count = app.doc.strokes.len();
+                    replay.initial_camera = app.camera;
+                }
             }
         } else if std::env::args().any(|a| a == "--verify-liquify-brush") {
             app.verification_frame = None;
@@ -4581,6 +4677,28 @@ impl eframe::App for SketchApp {
                 self.verify_presets(ctx, rect);
                 self.verify_image_planes(ctx, rect);
                 self.verify_mirror(ctx, rect);
+                if let Some(replay) = self
+                    .capability_replay
+                    .as_mut()
+                    .filter(|replay| replay.clip.is_curved_guides() && !replay.setup_verified)
+                {
+                    let guide = self
+                        .doc
+                        .guide_resources
+                        .iter()
+                        .find(|guide| Some(guide.id) == self.doc.active_guide)
+                        .expect("curved-guide replay verifier adds an active saved guide");
+                    assert!(
+                        matches!(
+                            guide.geometry,
+                            crate::document::guide_resources::GuideGeometry::Cylinder { .. }
+                        ) && self.doc.strokes.len() == 2,
+                        "curved-guide replay setup retains the verified cylinder and mirrored stroke pair"
+                    );
+                    replay.initial_stroke_count = self.doc.strokes.len();
+                    replay.initial_camera = self.camera;
+                    replay.setup_verified = true;
+                }
                 self.verify_ring(ctx, rect);
                 self.verify_model_surfaces(ctx, rect);
                 self.verify_obj_references(ctx, rect);
@@ -5886,7 +6004,7 @@ impl SketchApp {
         }
         if replay.sender.is_none() {
             let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-            let gif_output = replay.output_dir.join("draw-orbit.gif");
+            let gif_output = replay.path("gif");
             replay.encoder = Some(std::thread::spawn(move || {
                 let cancelled = AtomicBool::new(false);
                 video_export_ui::encode_gif_once(
@@ -5900,7 +6018,7 @@ impl SketchApp {
             }));
             replay.sender = Some(sender);
             let (mp4_sender, mp4_receiver) = std::sync::mpsc::sync_channel(1);
-            let mp4_output = replay.output_dir.join("draw-orbit.mp4");
+            let mp4_output = replay.path("mp4");
             let mp4_size = dimensions;
             replay.mp4_encoder = Some(std::thread::spawn(move || {
                 let cancelled = AtomicBool::new(false);
@@ -5955,19 +6073,25 @@ impl SketchApp {
         replay.screenshot_pending = false;
         replay.screenshot_requested = false;
         if replay.captured_frames == 27 {
-            let committed = self.doc.strokes.len() > replay.initial_stroke_count
-                && self.doc.strokes.last().is_some_and(|stroke| {
-                    stroke.points.len() > 10
-                        && replay.canvas_rect.is_some_and(|rect| {
-                            stroke.points.iter().any(|point| {
-                                crate::gizmo::project(&self.camera, rect, point.position)
-                                    .is_some_and(|(position, _)| rect.contains(position))
+            let committed = if replay.clip.is_curved_guides() {
+                replay.setup_verified
+                    && self.doc.strokes.len() == replay.initial_stroke_count
+                    && self.doc.active_guide.is_some()
+            } else {
+                self.doc.strokes.len() > replay.initial_stroke_count
+                    && self.doc.strokes.last().is_some_and(|stroke| {
+                        stroke.points.len() > 10
+                            && replay.canvas_rect.is_some_and(|rect| {
+                                stroke.points.iter().any(|point| {
+                                    crate::gizmo::project(&self.camera, rect, point.position)
+                                        .is_some_and(|(position, _)| rect.contains(position))
+                                })
                             })
-                        })
-                });
+                    })
+            };
             if !committed {
                 self.capability_replay.take().unwrap().abort();
-                eprintln!("Capability demo replay did not commit the scripted drawing stroke");
+                eprintln!("Capability demo replay did not retain its verified drawing workflow");
                 std::process::exit(1);
             }
         }
@@ -5985,11 +6109,15 @@ impl SketchApp {
         }
         if replay.captured_frames == CAPABILITY_REPLAY_FRAMES {
             let replay = self.capability_replay.take().unwrap();
+            let clip_name = replay.clip.name();
             if let Err(error) = replay.finish() {
                 eprintln!("Capability demo capture failed: {error}");
                 std::process::exit(1);
             }
-            eprintln!("Wrote verification/capability-demos/drafts/draw-orbit.gif and manifest");
+            eprintln!(
+                "Wrote verification/capability-demos/drafts/{}.gif and manifest",
+                clip_name
+            );
             self.allow_close = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }

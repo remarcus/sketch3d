@@ -296,6 +296,12 @@ impl SketchApp {
         self.dirty = false;
         self.renderer.invalidate();
         self.mirror_verification_frame = Some(1);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+        if self
+            .capability_replay
+            .as_ref()
+            .is_none_or(|replay| !replay.clip.is_curved_guides())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+        }
     }
 }

@@ -287,11 +287,12 @@ fn main() -> eframe::Result {
         .iter()
         .position(|argument| argument == "--record-capability-demo")
     {
-        if args.get(index + 1).is_none_or(|name| name != "draw-orbit") || args.len() != index + 2 {
-            eprintln!("Usage: sketch3d --record-capability-demo draw-orbit");
+        let name = args.get(index + 1).map(String::as_str).unwrap_or_default();
+        if !matches!(name, "draw-orbit" | "curved-guides") || args.len() != index + 2 {
+            eprintln!("Usage: sketch3d --record-capability-demo <draw-orbit|curved-guides>");
             std::process::exit(2);
         }
-        if let Err(error) = app::prepare_capability_demo_output() {
+        if let Err(error) = app::prepare_capability_demo_output(name) {
             eprintln!("Could not prepare capability demo output: {error}");
             std::process::exit(2);
         }

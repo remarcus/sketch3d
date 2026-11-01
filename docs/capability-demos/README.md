@@ -14,6 +14,14 @@ cargo run --locked -j1 -- --record-capability-demo draw-orbit
 
 This bounded 6-second replay draws a stroke and orbits the camera through `canvas_input`, captures one full app frame at a time, and writes an H.264 MP4 master, a 640×360 GIF preview configured to play once, a full-size PNG poster, a WebVTT sidecar, and a JSON manifest under ignored `verification/capability-demos/drafts/`. The single-play GIF avoids an abrupt loop reset; use the poster-linked MP4 where user-controlled playback is preferred. The replay adds visible `DRAW` and `ORBIT` cursor cues and a synthetic-input disclosure. MP4 encoding uses FFmpeg when available and Blender's H.264 encoder otherwise. The command refuses to overwrite any of these outputs; remove or move the complete draft set before regenerating it. The manifest discloses synthetic `pressure=None` input, records the source commit and capture details, and leaves review flags false. This draft does not measure tablet pressure or latency and must pass the review checklist before it can be used in the README.
 
+The curved-guide preview uses the same hidden capture pipeline:
+
+```powershell
+cargo run --locked -j1 -- --record-capability-demo curved-guides
+```
+
+This replay first runs the saved-cylinder mirror verifier, which creates the editable source and reflected strokes with production pointer handlers. It then records a synthetic barrel orbit through `canvas_input`. It writes `curved-guides.gif`, `curved-guides.mp4`, `curved-guides.png`, `curved-guides.en.vtt`, and `curved-guides.recording.json` alongside the first preview. Its captions and manifest describe the scripted setup and disclose that replay input has no pressure data. Output names are checked independently for each clip; existing drafts are not overwritten. Review playback and visual readability before README or tutorial use.
+
 ## Capture a clip
 
 1. Build the application and stage the exact fixture and UI state listed in [shot-list.md](shot-list.md).
