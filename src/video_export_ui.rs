@@ -111,6 +111,30 @@ fn recorded_document_with_stroke_at(
     Some(snapshot.clone())
 }
 
+fn visible_reveal_strokes(document: &Document) -> Result<Vec<crate::document::Stroke>, String> {
+    let strokes: Vec<_> = document
+        .strokes
+        .iter()
+        .filter(|stroke| document.visible(stroke))
+        .cloned()
+        .collect();
+    if strokes.is_empty() {
+        return Err("The drawing has no visible strokes to reveal".into());
+    }
+    Ok(strokes)
+}
+
+fn reveal_target_count(stroke_count: usize, frame_index: usize, frame_count: usize) -> usize {
+    if stroke_count == 0 || frame_count == 0 {
+        return 0;
+    }
+    (stroke_count
+        .saturating_mul(frame_index.saturating_add(1).min(frame_count))
+        .saturating_add(frame_count - 1)
+        / frame_count)
+        .min(stroke_count)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ExportMode {
     Turntable,
@@ -692,15 +716,7 @@ impl VideoExportUi {
         };
         let mut document = document.clone();
         let reveal_strokes = if request.mode == ExportMode::ReconstructedReveal {
-            let visible: Vec<_> = document
-                .strokes
-                .iter()
-                .filter(|stroke| document.visible(stroke))
-                .cloned()
-                .collect();
-            if visible.is_empty() {
-                return Err("The drawing has no visible strokes to reveal".into());
-            }
+            let visible = visible_reveal_strokes(&document)?;
             document.strokes.clear();
             Some(visible)
         } else {
@@ -847,7 +863,8 @@ impl VideoExportUi {
             }
             if job.request.mode == ExportMode::ReconstructedReveal {
                 if let Some(strokes) = &job.reveal_strokes {
-                    let target_count = strokes.len() * (job.next_frame + 1) / job.frame_count;
+                    let target_count =
+                        reveal_target_count(strokes.len(), job.next_frame, job.frame_count);
                     job.document.strokes.extend(
                         strokes[job.revealed_stroke_count..target_count]
                             .iter()
@@ -1329,5 +1346,62 @@ mod tests {
             std::fs::read(destination).unwrap(),
             b"keep on frame failure"
         );
+    }
+
+    fn reveal_stroke(id: u64, layer_id: u64) -> crate::document::Stroke {
+        crate::document::Stroke {
+            fill: None,
+            material: Default::default(),
+            group_id: None,
+            layer_id,
+            id,
+            color: [0.2, 0.4, 0.8],
+            radius: 0.04,
+            brush: Default::default(),
+            points: vec![crate::document::Point {
+                position: glam::Vec3::new(id as f32, 0.0, 0.0),
+                pressure: 0.7,
+                tilt: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn reconstructed_reveal_keeps_visible_source_order_and_distributes_prefixes() {
+        let mut document = Document::default();
+        let mut hidden_layer = document.layers[0].clone();
+        hidden_layer.id = 2;
+        hidden_layer.name = "Hidden".into();
+        hidden_layer.visible = false;
+        document.layers.push(hidden_layer);
+        document.strokes = vec![
+            reveal_stroke(9, 1),
+            reveal_stroke(3, 2),
+            reveal_stroke(7, 1),
+        ];
+
+        let saved = serde_json::to_string(&document).unwrap();
+        let reopened = Document::from_json(&saved).unwrap();
+        let visible = visible_reveal_strokes(&reopened).unwrap();
+        assert_eq!(
+            visible.iter().map(|stroke| stroke.id).collect::<Vec<_>>(),
+            [9, 7],
+            "reconstructed output follows saved visible stroke order"
+        );
+        assert_eq!(
+            (0..4)
+                .map(|frame| reveal_target_count(3, frame, 4))
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 3]
+        );
+        assert_eq!(reveal_target_count(3, 100, 4), 3);
+        assert_eq!(reveal_target_count(0, 0, 4), 0);
+        assert_eq!(reveal_target_count(3, 0, 0), 0);
+
+        let mut hidden = reopened;
+        for layer in &mut hidden.layers {
+            layer.visible = false;
+        }
+        assert!(visible_reveal_strokes(&hidden).is_err());
     }
 }
