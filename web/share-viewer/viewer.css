@@ -51,6 +51,8 @@ model-viewer {
   color: #4d5968;
 }
 
+model-viewer[src] .viewer-empty { display: none; }
+
 .viewer-status, .viewer-error { margin: 0; padding: 11px 16px; font-size: 0.92rem; }
 .viewer-status { color: #344252; background: #f7f9fb; }
 .viewer-error { color: #8f1d16; background: #fff0ee; }

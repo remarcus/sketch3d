@@ -33,6 +33,11 @@ test("accepts a real exported Spatial Sketch GLB", async () => {
   assert.equal(validateGlb(bytes).document.asset.version, "2.0");
 });
 
+test("hides the empty-state prompt after a model source is set", async () => {
+  const css = await readFile(new URL("../web/share-viewer/viewer.css", import.meta.url), "utf8");
+  assert.match(css, /model-viewer\[src\]\s+\.viewer-empty\s*\{\s*display:\s*none;\s*\}/);
+});
+
 test("rejects bad magic, other GLB versions, and mismatched file lengths", () => {
   const badMagic = makeGlb();
   badMagic.writeUInt32LE(0, 0);
