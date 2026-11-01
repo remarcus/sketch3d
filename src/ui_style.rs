@@ -939,6 +939,72 @@ mod tests {
     }
 
     #[test]
+    fn labeled_numeric_fields_and_sliders_emit_context_and_values_to_accesskit() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut brush_width = 12.0;
+        let mut opacity = 0.75;
+        let mut strength = 0.5;
+        let output = context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(420.0, 180.0),
+                )),
+                focused: true,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    field_row(ui, "Brush width", |ui| {
+                        numeric_field(ui, "brush-width", &mut brush_width, None, 1.0, "mm")
+                    });
+                    field_row(ui, "Opacity", |ui| {
+                        numeric_field(ui, "opacity", &mut opacity, Some(0.0..=1.0), 100.0, "%")
+                    });
+                    slider_row(
+                        ui,
+                        "Tool strength",
+                        "tool-strength",
+                        &mut strength,
+                        0.0..=1.0,
+                        100.0,
+                        "%",
+                    );
+                });
+            },
+        );
+        let update = output
+            .platform_output
+            .accesskit_update
+            .expect("AccessKit update is enabled for this context");
+        let labels = update
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect::<Vec<_>>();
+        assert!(
+            labels.iter().any(|label| label == "Brush width, mm"),
+            "labeled numeric fields need a unit-bearing accessible name: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label == "Opacity, %"),
+            "scaled numeric fields need a contextual accessible name: {labels:?}"
+        );
+        let strength_slider = update
+            .nodes
+            .iter()
+            .map(|(_, node)| node)
+            .find(|node| {
+                format!("{:?}", node.role()) == "Slider" && node.label() == Some("Tool strength, %")
+            })
+            .expect("slider has a contextual label and slider role");
+        assert_eq!(strength_slider.numeric_value(), Some(0.5));
+        assert_eq!(strength_slider.min_numeric_value(), Some(0.0));
+        assert_eq!(strength_slider.max_numeric_value(), Some(1.0));
+    }
+
+    #[test]
     fn numeric_parser_preserves_precision_and_display_units() {
         assert!((parse_numeric("1.234567", 1.0, None).unwrap() - 1.234567).abs() < 1e-6);
         assert!((parse_numeric("35", 100.0, Some(&(0.0..=1.0))).unwrap() - 0.35).abs() < 1e-6);

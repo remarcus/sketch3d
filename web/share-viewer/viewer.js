@@ -39,6 +39,17 @@ export function validateGlb(buffer, maxBytes = MAX_GLB_BYTES) {
     throw new Error("The GLB JSON chunk is invalid.");
   }
   if (document?.asset?.version !== "2.0") throw new Error("The model does not declare glTF 2.0.");
+  for (const collectionName of ["buffers", "images"]) {
+    const resources = document[collectionName];
+    if (!Array.isArray(resources)) continue;
+    for (const resource of resources) {
+      if (resource && typeof resource === "object" && "uri" in resource) {
+        if (typeof resource.uri !== "string" || !/^data:/iu.test(resource.uri)) {
+          throw new Error("External buffer and image URLs are blocked; GLB resources must be embedded or use data: URIs.");
+        }
+      }
+    }
+  }
   offset += jsonLength;
 
   while (offset < bytes.byteLength) {

@@ -57,6 +57,24 @@ test("rejects malformed JSON chunks and truncated chunks", () => {
   assert.throws(() => validateGlb(truncated), /JSON header chunk/i);
 });
 
+test("blocks external buffer and image URLs while allowing embedded data URIs", () => {
+  for (const document of [
+    { asset: { version: "2.0" }, buffers: [{ byteLength: 4, uri: "https://example.invalid/model.bin" }] },
+    { asset: { version: "2.0" }, images: [{ uri: "//cdn.example.invalid/texture.png" }] },
+    { asset: { version: "2.0" }, images: [{ uri: "textures/albedo.png" }] },
+  ]) {
+    assert.throws(() => validateGlb(makeGlb(document)), /external buffer and image URLs are blocked/i);
+  }
+
+  assert.equal(
+    validateGlb(makeGlb({
+      asset: { version: "2.0" },
+      images: [{ uri: "data:image/png;base64,AA==" }],
+    })).document.asset.version,
+    "2.0",
+  );
+});
+
 test("enforces the 10 MiB bound before parsing", () => {
   assert.equal(MAX_GLB_BYTES, 10 * 1024 * 1024);
   assert.throws(() => validateGlb(new Uint8Array(MAX_GLB_BYTES + 1)), /10 MiB limit/i);
