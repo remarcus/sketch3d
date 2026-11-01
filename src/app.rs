@@ -671,7 +671,7 @@ impl CapabilityReplay {
             "cursor_cue": "A synthetic pointer ring is labeled DRAW or ORBIT while input is active; a persistent banner discloses synthetic replay and no pressure data.",
             "encoding": {
                 "mp4": format!("Captured full-viewport RGBA frames; {mp4_backend}; 10 fps."),
-                "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder; 10 fps; 6 seconds; <=5 MiB.",
+                "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; 6 seconds; <=5 MiB.",
                 "poster": "First full-resolution app frame encoded as PNG."
             },
             "outputs": {
@@ -696,7 +696,7 @@ impl CapabilityReplay {
                 "private_content_checked": false,
                 "captions_timing_checked": false,
                 "reviewer": null,
-                "notes": "Synthetic replay draft; visual correctness and readability review remain required."
+                "notes": "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use."
             }
         });
         let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
@@ -5889,7 +5889,7 @@ impl SketchApp {
             let gif_output = replay.output_dir.join("draw-orbit.gif");
             replay.encoder = Some(std::thread::spawn(move || {
                 let cancelled = AtomicBool::new(false);
-                video_export_ui::encode_gif(
+                video_export_ui::encode_gif_once(
                     receiver,
                     &gif_output,
                     [640, 360],

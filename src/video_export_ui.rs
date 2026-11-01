@@ -986,6 +986,45 @@ pub(crate) fn encode_gif(
     frame_count: usize,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
+    encode_gif_with_repeat(
+        receiver,
+        destination,
+        size,
+        fps,
+        frame_count,
+        cancelled,
+        Some(image::codecs::gif::Repeat::Infinite),
+    )
+}
+
+pub(crate) fn encode_gif_once(
+    receiver: Receiver<Option<Vec<u8>>>,
+    destination: &std::path::Path,
+    size: [u32; 2],
+    fps: u32,
+    frame_count: usize,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    encode_gif_with_repeat(
+        receiver,
+        destination,
+        size,
+        fps,
+        frame_count,
+        cancelled,
+        None,
+    )
+}
+
+fn encode_gif_with_repeat(
+    receiver: Receiver<Option<Vec<u8>>>,
+    destination: &std::path::Path,
+    size: [u32; 2],
+    fps: u32,
+    frame_count: usize,
+    cancelled: &AtomicBool,
+    repeat: Option<image::codecs::gif::Repeat>,
+) -> Result<(), String> {
     let parent = destination
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -994,9 +1033,11 @@ pub(crate) fn encode_gif(
         tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
     {
         let mut encoder = GifEncoder::new(&mut temporary);
-        encoder
-            .set_repeat(image::codecs::gif::Repeat::Infinite)
-            .map_err(|error| error.to_string())?;
+        if let Some(repeat) = repeat {
+            encoder
+                .set_repeat(repeat)
+                .map_err(|error| error.to_string())?;
+        }
         for _ in 0..frame_count {
             if cancelled.load(Ordering::Relaxed) {
                 return Err("Export cancelled".into());
@@ -2442,6 +2483,35 @@ mod tests {
             std::fs::read(destination).unwrap(),
             b"keep on frame failure"
         );
+    }
+
+    #[test]
+    fn single_play_gif_preview_omits_the_infinite_loop_extension() {
+        use image::AnimationDecoder;
+
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("single-play.gif");
+        let (sender, receiver) = mpsc::channel();
+        sender.send(Some([20, 40, 60, 255].repeat(4))).unwrap();
+        encode_gif_once(
+            receiver,
+            &destination,
+            [2, 2],
+            10,
+            1,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        let bytes = std::fs::read(&destination).unwrap();
+        assert!(!bytes
+            .windows(b"NETSCAPE2.0".len())
+            .any(|window| window == b"NETSCAPE2.0"));
+        let decoder = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(
+            std::fs::File::open(&destination).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(decoder.into_frames().collect_frames().unwrap().len(), 1);
     }
 
     fn reveal_stroke(id: u64, layer_id: u64) -> crate::document::Stroke {
