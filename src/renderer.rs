@@ -430,7 +430,7 @@ impl SceneRenderer {
             ]}),
             primitive:wgpu::PrimitiveState {topology,cull_mode:None,..Default::default()},
             depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:(!transparent || cutout) && topology != wgpu::PrimitiveTopology::LineList,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
-            multisample:wgpu::MultisampleState {count:sample_count,mask:!0,alpha_to_coverage_enabled:sample_count > 1 && !transparent && !alpha_blend},multiview:None,cache:None,
+            multisample:wgpu::MultisampleState {count:sample_count,mask:!0,alpha_to_coverage_enabled:sample_count > 1 && !transparent && !alpha_blend && !cutout},multiview:None,cache:None,
         })
         };
         let triangles = create(wgpu::PrimitiveTopology::TriangleList, false, false, false);

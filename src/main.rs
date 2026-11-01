@@ -19,6 +19,7 @@ mod image_planes;
 mod input;
 mod lighting;
 mod liquify;
+mod material_render_check;
 mod mirror;
 mod mixed_resources;
 mod obj_export;
@@ -84,6 +85,20 @@ fn main() -> eframe::Result {
                 eprintln!("Could not write OBJ material verification fixture: {error}");
                 std::process::exit(1);
             }
+        }
+        return Ok(());
+    }
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--verify-material-render")
+    {
+        let Some(directory) = args.get(index + 1) else {
+            eprintln!("Usage: sketch3d --verify-material-render <output-directory>");
+            std::process::exit(2);
+        };
+        if let Err(error) = material_render_check::run(std::path::Path::new(directory)) {
+            eprintln!("Material rendering verification failed: {error}");
+            std::process::exit(1);
         }
         return Ok(());
     }
