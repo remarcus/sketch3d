@@ -1278,6 +1278,45 @@ mod tests {
     }
 
     #[test]
+    fn successful_library_record_invalidates_and_regenerates_the_preview() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let drawing = root.path().join("saved.sketch.json");
+        let cache = root.path().join("thumbnails");
+        fs::write(
+            &drawing,
+            serde_json::to_vec(&crate::document::Document::default()).unwrap(),
+        )
+        .unwrap();
+        let key = drawing.canonicalize().unwrap();
+        generate_thumbnail(&key, Some(&cache)).unwrap();
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 1);
+
+        let mut library = drawing_library_for_test(cache.clone());
+        library.thumbnail_failed.insert(key.clone());
+        library.record(&drawing);
+        assert!(library.recent().contains(&key));
+        assert!(!library.thumbnail_failed.contains(&key));
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 0);
+
+        generate_thumbnail(&key, Some(&cache)).unwrap();
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 1);
+        assert!(library.thumbnail_generations.get(&key).unwrap() > &0);
+    }
+
+    #[test]
+    fn missing_or_corrupt_drawings_never_write_thumbnail_cache_entries() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let cache = root.path().join("thumbnails");
+        let missing = root.path().join("missing.sketch.json");
+        assert!(generate_thumbnail(&missing, Some(&cache)).is_err());
+
+        let corrupt = root.path().join("corrupt.sketch.json");
+        fs::write(&corrupt, b"not a native drawing").unwrap();
+        assert!(generate_thumbnail(&corrupt, Some(&cache)).is_err());
+        assert!(!cache.exists());
+    }
+
+    #[test]
     fn portable_backup_restore_roundtrips_native_file_without_overwrite() {
         let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let source = root.path().join("source.sketch.json");

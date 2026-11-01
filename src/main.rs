@@ -8,6 +8,7 @@ mod construction_history;
 mod curve_geometry;
 mod document;
 mod drawing_library;
+mod drawing_library_restart_check;
 mod dynamics;
 mod editing;
 mod export;
@@ -50,6 +51,42 @@ mod tutorial;
 
 fn main() -> eframe::Result {
     let args: Vec<_> = std::env::args().collect();
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--verify-drawing-trash-seed")
+    {
+        let Some(marker) = args.get(index + 1) else {
+            eprintln!("Usage: sketch3d --verify-drawing-trash-seed <marker-path>");
+            std::process::exit(2);
+        };
+        if let Err(error) = drawing_library_restart_check::seed(std::path::Path::new(marker)) {
+            eprintln!("Drawing-trash restart seed failed: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--verify-drawing-trash-reopen")
+    {
+        let (Some(marker), Some(destination), Some(report)) = (
+            args.get(index + 1),
+            args.get(index + 2),
+            args.get(index + 3),
+        ) else {
+            eprintln!("Usage: sketch3d --verify-drawing-trash-reopen <marker-path> <destination-folder> <report-path>");
+            std::process::exit(2);
+        };
+        if let Err(error) = drawing_library_restart_check::reopen(
+            std::path::Path::new(marker),
+            std::path::Path::new(destination),
+            std::path::Path::new(report),
+        ) {
+            eprintln!("Drawing-trash restart verification failed: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if let Some(index) = args
         .iter()
         .position(|argument| argument == "--write-capability-fixtures")
