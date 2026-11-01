@@ -66,6 +66,26 @@ impl ReferenceBoard {
         board
     }
 
+    pub(super) fn add_capture_background(
+        &mut self,
+        ctx: &egui::Context,
+        id: u64,
+        pixels: Vec<u8>,
+        size: [usize; 2],
+    ) {
+        self.images.retain(|image| image.record.id != id);
+        self.images.push(make_image(
+            ctx,
+            ReferenceRecord {
+                id,
+                name: "Appearance verification background".into(),
+                file: "appearance-verification-background.png".into(),
+            },
+            pixels,
+            size,
+        ));
+    }
+
     fn index_path(&self) -> Result<PathBuf, String> {
         Ok(self.root.as_ref().map_err(Clone::clone)?.join("index.json"))
     }

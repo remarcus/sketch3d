@@ -42,7 +42,7 @@ foreach ($theme in @('dark', 'light')) {
             height = $size[1]
         })
     }
-    foreach ($state in @('brush', 'select', 'layers', 'color-picker', 'library', 'recovery-error', 'export')) {
+    foreach ($state in @('brush', 'select', 'layers', 'color-picker', 'library', 'recovery-error', 'export', 'scene-dark-background', 'scene-light-background', 'scene-custom-background', 'scene-image-background')) {
         foreach ($zoom in @(1.0, 1.5, 2.0)) {
             foreach ($size in @(@(1280, 720), @(1920, 1080))) {
                 $captureRequests.Add([pscustomobject]@{
@@ -71,44 +71,48 @@ try {
         $imagePath = Join-Path $outputPath "$theme-$suffix.png"
         $stdoutPath = Join-Path $outputPath ".$theme-$suffix.stdout.log"
         $stderrPath = Join-Path $outputPath ".$theme-$suffix.stderr.log"
-        foreach ($previousOutput in @($reportPath, $imagePath, $stdoutPath, $stderrPath)) {
-            if (Test-Path -LiteralPath $previousOutput -PathType Leaf) {
-                Remove-Item -LiteralPath $previousOutput
+        $artifactsProduced = $false
+        for ($attempt = 1; $attempt -le 2 -and -not $artifactsProduced; $attempt++) {
+            foreach ($previousOutput in @($reportPath, $imagePath, $stdoutPath, $stderrPath)) {
+                if (Test-Path -LiteralPath $previousOutput -PathType Leaf) {
+                    Remove-Item -LiteralPath $previousOutput
+                }
             }
+            $process = Start-Process `
+                -FilePath $Executable `
+                -ArgumentList @(
+                    '--verify-appearance-layout',
+                    $theme,
+                    $zoom.ToString([Globalization.CultureInfo]::InvariantCulture),
+                    $width.ToString([Globalization.CultureInfo]::InvariantCulture),
+                    $height.ToString([Globalization.CultureInfo]::InvariantCulture),
+                    $state
+                ) `
+                -WorkingDirectory $workspacePath `
+                -WindowStyle Hidden `
+                -RedirectStandardOutput $stdoutPath `
+                -RedirectStandardError $stderrPath `
+                -PassThru
+            try {
+                if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+                    throw "Appearance capture timed out for $theme at $width`x$height and $percent percent."
+                }
+                $process.Refresh()
+                if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
+                    throw "Appearance capture failed for $theme at $width`x$height and $percent percent; see $stderrPath."
+                }
+            } finally {
+                $process.Refresh()
+                if (-not $process.HasExited) {
+                    Stop-Process -Id $process.Id -ErrorAction SilentlyContinue
+                    $null = $process.WaitForExit(5000)
+                }
+            }
+            $artifactsProduced = (Test-Path -LiteralPath $reportPath -PathType Leaf) -and
+                (Test-Path -LiteralPath $imagePath -PathType Leaf)
         }
-        $process = Start-Process `
-            -FilePath $Executable `
-            -ArgumentList @(
-                '--verify-appearance-layout',
-                $theme,
-                $zoom.ToString([Globalization.CultureInfo]::InvariantCulture),
-                $width.ToString([Globalization.CultureInfo]::InvariantCulture),
-                $height.ToString([Globalization.CultureInfo]::InvariantCulture),
-                $state
-            ) `
-            -WorkingDirectory $workspacePath `
-            -WindowStyle Hidden `
-            -RedirectStandardOutput $stdoutPath `
-            -RedirectStandardError $stderrPath `
-            -PassThru
-        try {
-            if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-                throw "Appearance capture timed out for $theme at $width`x$height and $percent percent."
-            }
-            $process.Refresh()
-            if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
-                throw "Appearance capture failed for $theme at $width`x$height and $percent percent; see $stderrPath."
-            }
-        } finally {
-            $process.Refresh()
-            if (-not $process.HasExited) {
-                Stop-Process -Id $process.Id -ErrorAction SilentlyContinue
-                $null = $process.WaitForExit(5000)
-            }
-        }
-        if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf) -or
-            -not (Test-Path -LiteralPath $imagePath -PathType Leaf)) {
-            throw "Appearance capture did not produce both artifacts for $theme at $width`x$height."
+        if (-not $artifactsProduced) {
+            throw "Appearance capture did not produce both artifacts after one retry for $theme at $width`x$height and $percent percent."
         }
         $capture = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
         if ($capture.passed -ne $true -or
@@ -139,9 +143,13 @@ try {
 }
 
 $stateCaptures = @($captures | Where-Object { $_.capture_kind -eq 'state' })
-$expectedStateCaptureCount = 7 * 2 * 2 * 3
+$expectedStateCaptureCount = 11 * 2 * 2 * 3
 if ($stateCaptures.Count -ne $expectedStateCaptureCount) {
     throw "Expected $expectedStateCaptureCount named UI-state captures; found $($stateCaptures.Count)."
+}
+$expectedCaptureCount = $expectedStateCaptureCount + 2 * (3 + 2)
+if ($captures.Count -ne $expectedCaptureCount) {
+    throw "Expected $expectedCaptureCount total captures; found $($captures.Count)."
 }
 $summary = [pscustomobject]@{
     passed = $true
@@ -149,7 +157,7 @@ $summary = [pscustomobject]@{
         'the full editing workspace rendered in Dark and Light themes at 80%, 150%, and 200% egui zoom',
         'all hidden app processes used settings separate from the user profile and saved fresh screenshots at their requested dimensions',
         'the workspace rendered in Dark and Light at 1280x720 and 1920x1080 viewport sizes',
-      'Brush, Select, Layers, color picker, library, recovery error, and PNG export states rendered in both themes at 1280x720 and 1920x1080 with 100%, 150%, and 200% egui zoom',
+      'Brush, Select, Layers, color picker, library, recovery error, PNG export, and light, dark, custom, and image scene backgrounds rendered in both themes at 1280x720 and 1920x1080 with 100%, 150%, and 200% egui zoom',
         'the Color control remains visible at 150% and wraps to a second row at 200%',
         'the empty-canvas message remains legible within the reduced canvas width at 200%'
     )

@@ -80,6 +80,17 @@ pub fn canvas_accent(background_srgb: [f32; 3]) -> Color32 {
     }
 }
 
+/// Pick a selection color that remains distinct from solid and image backgrounds.
+pub fn canvas_selection_accent(background_srgb: [f32; 3], has_image: bool) -> Color32 {
+    if has_image {
+        Color32::from_rgb(244, 45, 190)
+    } else if scene_luminance(background_srgb) > 0.42 {
+        Color32::from_rgb(0, 91, 118)
+    } else {
+        Color32::from_rgb(255, 171, 48)
+    }
+}
+
 fn scene_luminance(background_srgb: [f32; 3]) -> f32 {
     background_srgb
         .into_iter()

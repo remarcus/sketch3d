@@ -1530,8 +1530,18 @@ impl SceneRenderer {
             }
             let mut vertices = geometry::stroke_mesh(stroke);
             if self.selected.contains(&stroke.id) {
+                let color = crate::app::ui_style::canvas_selection_accent(
+                    self.background,
+                    self.screen_background.is_some(),
+                )
+                .to_array();
+                let selection_color = [
+                    color[0] as f32 / 255.0,
+                    color[1] as f32 / 255.0,
+                    color[2] as f32 / 255.0,
+                ];
                 for vertex in &mut vertices {
-                    vertex.color = [1.0, 0.67, 0.18];
+                    vertex.color = selection_color;
                 }
             }
             let data = bytemuck::cast_slice(&vertices);

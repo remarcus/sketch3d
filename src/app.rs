@@ -109,7 +109,7 @@ mod starter;
 #[path = "tutorial_ui.rs"]
 mod tutorial_ui;
 #[path = "ui_style.rs"]
-mod ui_style;
+pub(crate) mod ui_style;
 #[path = "video_export_ui.rs"]
 pub(crate) mod video_export_ui;
 
@@ -783,6 +783,10 @@ impl SketchApp {
                 "library",
                 "recovery-error",
                 "export",
+                "scene-dark-background",
+                "scene-light-background",
+                "scene-custom-background",
+                "scene-image-background",
             ];
             assert!(
                 supported_states.contains(&state),
@@ -834,6 +838,49 @@ impl SketchApp {
                 }
                 "recovery-error" => {}
                 "export" => app.png_export.begin(),
+                "scene-dark-background"
+                | "scene-light-background"
+                | "scene-custom-background"
+                | "scene-image-background" => {
+                    app.doc = crate::export_check::brush_fixture();
+                    app.selected = app.doc.strokes.iter().map(|stroke| stroke.id).collect();
+                    app.select_mode = true;
+                    app.camera.align(Plane::Front);
+                    app.presentation.preferences.background = match state {
+                        "scene-dark-background" | "scene-image-background" => [0.035, 0.045, 0.06],
+                        "scene-light-background" => [0.94, 0.95, 0.97],
+                        "scene-custom-background" => [0.46, 0.31, 0.68],
+                        _ => unreachable!("appearance background state was validated above"),
+                    };
+                    if state == "scene-image-background" {
+                        let light = [238, 236, 224, 255];
+                        let dark = [31, 42, 55, 255];
+                        let pixels = (0..8)
+                            .flat_map(|y| {
+                                (0..8).flat_map(move |x| {
+                                    if (x / 4 + y / 4) % 2 == 0 {
+                                        light
+                                    } else {
+                                        dark
+                                    }
+                                })
+                            })
+                            .collect();
+                        app.reference_board.add_capture_background(
+                            &cc.egui_ctx,
+                            u64::MAX - 1,
+                            pixels,
+                            [8, 8],
+                        );
+                        app.presentation.preferences.background_image =
+                            Some(crate::presentation::BackgroundImageSettings {
+                                reference_id: u64::MAX - 1,
+                                fit: crate::presentation::BackgroundImageFit::Fill,
+                                alignment: [0.5, 0.5],
+                                opacity: 1.0,
+                            });
+                    }
+                }
                 _ => unreachable!("appearance capture states are validated above"),
             }
         } else if std::env::args().any(|a| a == "--verify-mixed-resources") {

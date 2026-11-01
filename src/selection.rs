@@ -1352,7 +1352,7 @@ if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete
                 &self.camera,
                 rect,
                 &corners,
-                Color32::from_rgba_unmultiplied(255, 201, 104, 110),
+                self.ui_style_selection_color(110),
             );
             if let Some(layout) = self.layout(rect) {
                 layout.paint(&painter, self.drag.as_ref().map(|d| d.kind));
@@ -1367,6 +1367,14 @@ if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete
                 Color32::from_rgba_unmultiplied(87, 224, 195, 220),
             );
         }
+    }
+
+    fn ui_style_selection_color(&self, alpha: u8) -> Color32 {
+        super::ui_style::canvas_selection_accent(
+            self.presentation.preferences.background,
+            self.presentation.preferences.background_image.is_some(),
+        )
+        .gamma_multiply(alpha as f32 / 255.0)
     }
 }
 
