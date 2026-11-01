@@ -35,6 +35,7 @@ mod performance_benchmark;
 mod placement;
 mod polygon;
 mod presentation;
+mod presentation_background_check;
 mod presets;
 mod presets_ui;
 mod recovery;
@@ -150,6 +151,20 @@ fn main() -> eframe::Result {
         };
         if let Err(error) = still_export_check::run(std::path::Path::new(directory)) {
             eprintln!("Still export visual verification failed: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--verify-presentation-background")
+    {
+        let Some(directory) = args.get(index + 1) else {
+            eprintln!("Usage: sketch3d --verify-presentation-background <output-directory>");
+            std::process::exit(2);
+        };
+        if let Err(error) = presentation_background_check::run(std::path::Path::new(directory)) {
+            eprintln!("Presentation background verification failed: {error}");
             std::process::exit(1);
         }
         return Ok(());

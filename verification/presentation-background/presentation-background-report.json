@@ -1,0 +1,47 @@
+{
+  "adapter": "test GPU",
+  "artifacts": [
+    "background-fit-landscape.png",
+    "background-fit-portrait.png",
+    "background-fill-landscape.png",
+    "background-fill-portrait.png",
+    "background-opacity-half.png",
+    "background-fit.gif",
+    "background-excluded-transparent.png"
+  ],
+  "backend": "Vulkan",
+  "canvas_color": [
+    0.07999999821186066,
+    0.11999999731779099,
+    0.20000000298023224
+  ],
+  "checks": [
+    "Fit leaves canvas-color margins and keeps image centered at landscape and portrait sizes",
+    "Fill covers the viewport at landscape and portrait sizes",
+    "background opacity blends in linear light over the canvas color",
+    "opaque PNG rendering includes the presentation image",
+    "production GIF encoder preserves the opaque presentation background",
+    "transparent PNG rendering excludes the presentation image"
+  ],
+  "expected_half_opacity_rgb": [
+    150,
+    56,
+    44
+  ],
+  "gif_background": {
+    "artifact": "background-fit.gif",
+    "center_rgb": [
+      204,
+      72,
+      36
+    ],
+    "frames": 1
+  },
+  "passed": true,
+  "source_color": [
+    204,
+    72,
+    36,
+    255
+  ]
+}

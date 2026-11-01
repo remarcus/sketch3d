@@ -218,6 +218,12 @@ mod tests {
         assert_eq!(Preferences::load(&path).unwrap(), Preferences::default());
         let prefs = Preferences {
             background: BLUE,
+            background_image: Some(BackgroundImageSettings {
+                reference_id: 19,
+                fit: BackgroundImageFit::Fill,
+                alignment: [0.2, 0.8],
+                opacity: 0.63,
+            }),
             ..Default::default()
         };
         prefs.save(&path).unwrap();

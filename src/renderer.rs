@@ -497,6 +497,10 @@ impl SceneRenderer {
                         format: wgpu::TextureFormat::Rgba8UnormSrgb,
                         blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                         write_mask: wgpu::ColorWrites::ALL,
+                    }), Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::empty(),
                     })],
                 }),
                 primitive: wgpu::PrimitiveState {
@@ -504,7 +508,13 @@ impl SceneRenderer {
                     cull_mode: None,
                     ..Default::default()
                 },
-                depth_stencil: None,
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: false,
+                    depth_compare: wgpu::CompareFunction::Always,
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
                 multisample: wgpu::MultisampleState {
                     count: sample_count,
                     mask: !0,

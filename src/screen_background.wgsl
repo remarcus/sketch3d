@@ -13,6 +13,11 @@ struct VertexOutput {
     @location(1) opacity: f32,
 };
 
+struct FragmentOutput {
+    @location(0) color: vec4<f32>,
+    @location(1) emission: vec4<f32>,
+};
+
 @vertex
 fn vs_background(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
@@ -23,8 +28,11 @@ fn vs_background(input: VertexInput) -> VertexOutput {
 }
 
 @fragment
-fn fs_background(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_background(input: VertexOutput) -> FragmentOutput {
     var color = textureSample(image_texture, image_sampler, input.uv);
     color.a *= input.opacity;
-    return color;
+    var output: FragmentOutput;
+    output.color = color;
+    output.emission = vec4<f32>(0.0);
+    return output;
 }

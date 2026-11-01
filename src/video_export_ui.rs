@@ -930,7 +930,7 @@ impl VideoExportUi {
     }
 }
 
-fn encode_gif(
+pub(crate) fn encode_gif(
     receiver: Receiver<Option<Vec<u8>>>,
     destination: &std::path::Path,
     size: [u32; 2],
