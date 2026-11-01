@@ -4370,7 +4370,11 @@ impl eframe::App for SketchApp {
         if !self.liquify_active() && self.camera_playback.is_none() {
             self.curve_shortcuts(ctx);
         }
+        if ctx.input(|i| i.viewport().close_requested()) && self.capability_replay.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         if ctx.input(|i| i.viewport().close_requested())
+            && self.capability_replay.is_none()
             && !self.allow_close
             && (self.export_job.is_some()
                 || self.png_export.is_running()
@@ -4379,7 +4383,10 @@ impl eframe::App for SketchApp {
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.status = "An export is running. Finish or cancel it, then close again.".into();
-        } else if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
+        } else if ctx.input(|i| i.viewport().close_requested())
+            && self.capability_replay.is_none()
+            && !self.allow_close
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             if self.close_cleanup_failed {
                 self.allow_close = true;
@@ -4690,7 +4697,7 @@ impl eframe::App for SketchApp {
                         .expect("curved-guide replay verifier adds an active saved guide");
                     assert!(
                         matches!(
-                            guide.geometry,
+                            &guide.geometry,
                             crate::document::guide_resources::GuideGeometry::Cylinder { .. }
                         ) && self.doc.strokes.len() == 2,
                         "curved-guide replay setup retains the verified cylinder and mirrored stroke pair"

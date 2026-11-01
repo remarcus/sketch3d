@@ -291,6 +291,19 @@ impl SketchApp {
             "redo restores the exact line pair"
         );
 
+        // Keep the curved-guide replay focused on the saved-cylinder workflow
+        // after the verifier has also exercised the rotated-plane line path.
+        self.doc.strokes = committed;
+        self.doc.guide_resources.retain(|guide| guide.id == 9401);
+        self.doc.active_guide = Some(9401);
+        self.line.enabled = false;
+        self.camera.align_guide(DrawingPlane {
+            anchor: Vec3::ZERO,
+            rotation_degrees: Vec3::ZERO,
+            depth: 0.0,
+        });
+        self.camera.distance = 4.0;
+
         self.status =
             "Saved-guide brush and rotated-plane line mirror pointer checks passed.".into();
         self.dirty = false;

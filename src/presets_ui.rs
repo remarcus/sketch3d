@@ -394,9 +394,7 @@ impl PresetUi {
                             !self.repair_needed,
                             egui::Button::new("Import brush package…"),
                         )
-                        .on_hover_text(
-                            "Import a Sketch3D .brush.json file as a personal preset",
-                        )
+                        .on_hover_text("Import a Sketch3D .brush.json file as a personal preset")
                         .clicked()
                     {
                         if let Some(path) = rfd::FileDialog::new()
