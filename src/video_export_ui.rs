@@ -1277,4 +1277,57 @@ mod tests {
         };
         validate_history_assets(&timeline, &available).unwrap();
     }
+
+    #[test]
+    fn gif_encoder_writes_decodable_frames_and_preserves_destination_on_cancel() {
+        use image::AnimationDecoder;
+
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("preview.gif");
+        let (sender, receiver) = mpsc::channel();
+        sender.send(Some(vec![255, 0, 0, 255].repeat(4))).unwrap();
+        sender.send(Some(vec![0, 255, 0, 255].repeat(4))).unwrap();
+        encode_gif(
+            receiver,
+            &destination,
+            [2, 2],
+            2,
+            2,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        let decoder = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(
+            std::fs::File::open(&destination).unwrap(),
+        ))
+        .unwrap();
+        let frames = decoder.into_frames().collect_frames().unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].buffer().get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(frames[1].buffer().get_pixel(0, 0).0, [0, 255, 0, 255]);
+
+        std::fs::write(&destination, b"previous export").unwrap();
+        let (sender, receiver) = mpsc::channel();
+        sender.send(Some(vec![0, 0, 255, 255].repeat(4))).unwrap();
+        assert!(encode_gif(receiver, &destination, [2, 2], 2, 1, &AtomicBool::new(true),).is_err());
+        assert_eq!(std::fs::read(destination).unwrap(), b"previous export");
+
+        let destination = dir.path().join("invalid.gif");
+        std::fs::write(&destination, b"keep on frame failure").unwrap();
+        let (sender, receiver) = mpsc::channel();
+        sender.send(Some(vec![0, 0, 255])).unwrap();
+        assert!(encode_gif(
+            receiver,
+            &destination,
+            [2, 2],
+            2,
+            1,
+            &AtomicBool::new(false),
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read(destination).unwrap(),
+            b"keep on frame failure"
+        );
+    }
 }
