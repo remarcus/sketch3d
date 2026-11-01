@@ -18,6 +18,14 @@ pub(super) enum JpegBackground {
     Black,
 }
 
+fn jpeg_background_color(background: JpegBackground, canvas: [f32; 3]) -> [f32; 3] {
+    match background {
+        JpegBackground::Canvas => canvas,
+        JpegBackground::White => [1.0; 3],
+        JpegBackground::Black => [0.0; 3],
+    }
+}
+
 struct PngJob {
     receiver: Receiver<Result<(), String>>,
     destination: PathBuf,
@@ -319,10 +327,10 @@ impl SketchApp {
         }
         self.status = "Rendering artwork image…".into();
         let camera = self.camera;
-        let background = match (format, jpeg_background) {
-            (StillFormat::Jpeg, JpegBackground::White) => [1.0; 3],
-            (StillFormat::Jpeg, JpegBackground::Black) => [0.0; 3],
-            _ => self.presentation.preferences.background,
+        let background = if format == StillFormat::Jpeg {
+            jpeg_background_color(jpeg_background, self.presentation.preferences.background)
+        } else {
+            self.presentation.preferences.background
         };
         let lighting = self.renderer.lighting;
         let rendered = if format == StillFormat::Png && transparent_png {
@@ -533,7 +541,7 @@ fn write_png_atomic(path: &Path, size: [u32; 2], pixels: &[u8]) -> Result<(), St
     Ok(())
 }
 
-fn write_jpeg_atomic(path: &Path, size: [u32; 2], pixels: &[u8]) -> Result<(), String> {
+pub(crate) fn write_jpeg_atomic(path: &Path, size: [u32; 2], pixels: &[u8]) -> Result<(), String> {
     if size.contains(&0)
         || size[0] > 8192
         || size[1] > 8192
@@ -567,6 +575,23 @@ fn write_jpeg_atomic(path: &Path, size: [u32; 2], pixels: &[u8]) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jpeg_background_choice_resolves_canvas_white_and_black_colors() {
+        let canvas = [0.13, 0.28, 0.46];
+        assert_eq!(
+            jpeg_background_color(JpegBackground::Canvas, canvas),
+            canvas
+        );
+        assert_eq!(
+            jpeg_background_color(JpegBackground::White, canvas),
+            [1.0; 3]
+        );
+        assert_eq!(
+            jpeg_background_color(JpegBackground::Black, canvas),
+            [0.0; 3]
+        );
+    }
 
     #[test]
     fn png_and_jpeg_files_decode_and_invalid_frames_preserve_existing_output() {

@@ -1,0 +1,74 @@
+{
+  "adapter": "test GPU",
+  "backend": "Vulkan",
+  "checks": [
+    "transparent antialias pixels retain straight ink color after linear-space unpremultiplication",
+    "zero-alpha pixels contain no residual color",
+    "Canvas, White, and Black JPEG renders use the production atomic writer and decode with their requested corner background"
+  ],
+  "jpeg_backgrounds": [
+    {
+      "artifact": "jpeg-canvas.jpg",
+      "choice": "canvas",
+      "decoded_corner_rgb": [
+        20,
+        31,
+        51
+      ],
+      "expected_corner_rgb": [
+        20,
+        31,
+        51
+      ],
+      "maximum_channel_error": 0
+    },
+    {
+      "artifact": "jpeg-white.jpg",
+      "choice": "white",
+      "decoded_corner_rgb": [
+        255,
+        255,
+        255
+      ],
+      "expected_corner_rgb": [
+        255,
+        255,
+        255
+      ],
+      "maximum_channel_error": 0
+    },
+    {
+      "artifact": "jpeg-black.jpg",
+      "choice": "black",
+      "decoded_corner_rgb": [
+        0,
+        0,
+        0
+      ],
+      "expected_corner_rgb": [
+        0,
+        0,
+        0
+      ],
+      "maximum_channel_error": 0
+    }
+  ],
+  "jpeg_uses_production_atomic_writer": true,
+  "passed": true,
+  "size": [
+    384,
+    256
+  ],
+  "transparent_png": {
+    "artifact": "transparent-edge.png",
+    "composite_previews": [
+      "transparent-edge-on-white.png",
+      "transparent-edge-on-black.png"
+    ],
+    "fully_covered_pixels": 2960,
+    "maximum_straight_color_channel_error": 1,
+    "partially_covered_edge_pixels": 40,
+    "zero_alpha_pixel_count": 95304,
+    "zero_alpha_pixels_have_zero_rgb": true
+  }
+}

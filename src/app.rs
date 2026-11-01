@@ -81,7 +81,7 @@ mod placement_ui;
 #[path = "planes.rs"]
 mod planes;
 #[path = "png_export_ui.rs"]
-mod png_export_ui;
+pub(crate) mod png_export_ui;
 #[path = "presentation_checks.rs"]
 mod presentation_checks;
 #[path = "presentation_ui.rs"]
