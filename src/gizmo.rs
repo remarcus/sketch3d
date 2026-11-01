@@ -104,6 +104,48 @@ pub fn pick_visible(doc: &Document, camera: &Camera, rect: Rect, pos: Pos2) -> O
     pick_filtered(doc, camera, rect, pos, false)
 }
 
+fn textured_surface_covered(
+    stroke: &crate::document::Stroke,
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<bool> {
+    let mut nearest: Option<(f32, [f32; 2])> = None;
+    for triangle in crate::geometry::stroke_mesh(stroke).as_chunks::<3>().0 {
+        let a = Vec3::from(triangle[0].position);
+        let b = Vec3::from(triangle[1].position);
+        let c = Vec3::from(triangle[2].position);
+        let edge_ab = b - a;
+        let edge_ac = c - a;
+        let cross = direction.cross(edge_ac);
+        let determinant = edge_ab.dot(cross);
+        if determinant.abs() < 1.0e-7 {
+            continue;
+        }
+        let inverse = determinant.recip();
+        let offset = origin - a;
+        let u = offset.dot(cross) * inverse;
+        if !(0.0..=1.0).contains(&u) {
+            continue;
+        }
+        let q = offset.cross(edge_ab);
+        let v = direction.dot(q) * inverse;
+        if v < 0.0 || u + v > 1.0 {
+            continue;
+        }
+        let distance = edge_ac.dot(q) * inverse;
+        if distance < 0.0 || nearest.is_some_and(|(best, _)| distance >= best) {
+            continue;
+        }
+        let w = 1.0 - u - v;
+        let uv = [
+            triangle[0].uv[0] * w + triangle[1].uv[0] * u + triangle[2].uv[0] * v,
+            triangle[0].uv[1] * w + triangle[1].uv[1] * u + triangle[2].uv[1] * v,
+        ];
+        nearest = Some((distance, uv));
+    }
+    nearest.map(|(_, uv)| crate::texture::covered_at_uv(stroke.brush.texture, uv))
+}
+
 fn pick_filtered(
     doc: &Document,
     camera: &Camera,
@@ -120,6 +162,33 @@ fn pick_filtered(
             doc.visible(stroke)
         }
     }) {
+        let textured = stroke.fill.is_none()
+            && stroke.brush.texture.kind != crate::texture::TextureKind::Solid
+            && stroke.brush.texture.strength > 0.0;
+        if textured {
+            let extent = crate::geometry::stroke_extent(stroke);
+            let close = stroke.points.iter().any(|point| {
+                project(camera, rect, point.position).is_some_and(|(screen, _)| {
+                    let width = extent / camera.world_per_pixel(point.position, rect.height());
+                    screen.distance(pos) <= 8.0 + width
+                })
+            }) || stroke.points.windows(2).any(|pair| {
+                let (Some((a, _)), Some((b, _))) = (
+                    project(camera, rect, pair[0].position),
+                    project(camera, rect, pair[1].position),
+                ) else {
+                    return false;
+                };
+                let width = extent
+                    / camera
+                        .world_per_pixel(pair[0].position, rect.height())
+                        .min(camera.world_per_pixel(pair[1].position, rect.height()));
+                distance(pos, a, b).0 <= 8.0 + width
+            });
+            if !close || textured_surface_covered(stroke, origin, direction) == Some(false) {
+                continue;
+            }
+        }
         if stroke.fill.is_some() {
             if let Some(hit) = crate::polygon::ray_hit(stroke, origin, direction) {
                 if let Some((_, depth)) = project(camera, rect, hit) {
@@ -407,6 +476,80 @@ mod tests {
         };
         assert_eq!(pick(&doc, &camera, rect, rect.center()), Some(1));
         assert_eq!(pick(&doc, &camera, rect, rect.min), None);
+    }
+    #[test]
+    fn textured_stroke_picker_skips_transparent_mask_holes() {
+        let mut camera = Camera::default();
+        camera.align(Plane::Front);
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let mut mark = Stroke {
+            material: Default::default(),
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id: 41,
+            color: [0.5; 3],
+            radius: 0.12,
+            brush: Default::default(),
+            points: vec![
+                Point {
+                    tilt: None,
+                    position: Vec3::new(-1.0, 0.0, 0.0),
+                    pressure: 1.0,
+                },
+                Point {
+                    tilt: None,
+                    position: Vec3::new(1.0, 0.0, 0.0),
+                    pressure: 1.0,
+                },
+            ],
+        };
+        mark.brush.texture = crate::texture::TextureSettings {
+            kind: crate::texture::TextureKind::Grain,
+            strength: 0.9,
+            seed: 37,
+            ..Default::default()
+        };
+        for point in &mut mark.points {
+            point.position.z = 1.0;
+        }
+        let mut behind = mark.clone();
+        behind.id = 42;
+        behind.brush.texture = Default::default();
+        for point in &mut behind.points {
+            point.position.z = 0.0;
+        }
+        let doc = Document {
+            strokes: vec![mark.clone(), behind.clone()],
+            ..Document::default()
+        };
+        let mut transparent_pick = false;
+        let mut covered_pick = false;
+        for triangle in crate::geometry::stroke_mesh(&mark).chunks_exact(3) {
+            let position = (Vec3::from(triangle[0].position)
+                + Vec3::from(triangle[1].position)
+                + Vec3::from(triangle[2].position))
+                / 3.0;
+            let screen = project(&camera, rect, position).unwrap().0;
+            let (origin, direction) = ray(&camera, rect, screen);
+            match textured_surface_covered(&mark, origin, direction) {
+                Some(false) => {
+                    transparent_pick |= pick(&doc, &camera, rect, screen) == Some(behind.id);
+                }
+                Some(true) => {
+                    covered_pick |= pick(&doc, &camera, rect, screen) == Some(mark.id);
+                }
+                None => {}
+            }
+            if transparent_pick && covered_pick {
+                break;
+            }
+        }
+        assert!(
+            transparent_pick,
+            "transparent mask holes reveal the stroke behind them"
+        );
+        assert!(covered_pick, "covered textured surface remains pickable");
     }
     #[test]
     fn axis_drag_parameters_follow_world_coordinates() {

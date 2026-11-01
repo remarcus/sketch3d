@@ -76,30 +76,43 @@ pub fn rgba(settings: TextureSettings) -> Vec<u8> {
     let mut result = Vec::with_capacity((SIZE * SIZE * 4) as usize);
     for y in 0..SIZE {
         for x in 0..SIZE {
-            let covered = if settings.kind == TextureKind::Solid || settings.strength <= 0.0 {
-                true
-            } else {
-                match settings.kind {
-                    TextureKind::Solid => true,
-                    TextureKind::Grain => noise(x, y, settings.seed) >= settings.strength * 0.65,
-                    TextureKind::DryBrush => {
-                        let lane = noise(0, y / 3, settings.seed);
-                        let streak = noise(x / 16, y / 3, settings.seed ^ 0x7a21_eb37);
-                        lane * 0.85 + streak * 0.15 >= settings.strength * 0.8
-                    }
-                    TextureKind::Pattern => {
-                        let phase_x = settings.seed & 31;
-                        let phase_y = (settings.seed >> 5) & 31;
-                        let dx = ((x + phase_x) % 32).abs_diff(16) as f32;
-                        let dy = ((y + phase_y) % 32).abs_diff(16) as f32;
-                        1.0 - (dx + dy) / 32.0 >= settings.strength * 0.95
-                    }
-                }
-            };
+            let covered = texel_covered(settings, x, y);
             result.extend_from_slice(&[255, 255, 255, if covered { 255 } else { 0 }]);
         }
     }
     result
+}
+
+/// Match the nearest, repeating texture sampler used by the renderer.
+pub fn covered_at_uv(settings: TextureSettings, uv: [f32; 2]) -> bool {
+    if !uv.into_iter().all(f32::is_finite) {
+        return false;
+    }
+    let x = (uv[0].rem_euclid(1.0) * SIZE as f32).floor() as u32;
+    let y = (uv[1].rem_euclid(1.0) * SIZE as f32).floor() as u32;
+    texel_covered(settings, x.min(SIZE - 1), y.min(SIZE - 1))
+}
+
+fn texel_covered(settings: TextureSettings, x: u32, y: u32) -> bool {
+    if settings.kind == TextureKind::Solid || settings.strength <= 0.0 {
+        return true;
+    }
+    match settings.kind {
+        TextureKind::Solid => true,
+        TextureKind::Grain => noise(x, y, settings.seed) >= settings.strength * 0.65,
+        TextureKind::DryBrush => {
+            let lane = noise(0, y / 3, settings.seed);
+            let streak = noise(x / 16, y / 3, settings.seed ^ 0x7a21_eb37);
+            lane * 0.85 + streak * 0.15 >= settings.strength * 0.8
+        }
+        TextureKind::Pattern => {
+            let phase_x = settings.seed & 31;
+            let phase_y = (settings.seed >> 5) & 31;
+            let dx = ((x + phase_x) % 32).abs_diff(16) as f32;
+            let dy = ((y + phase_y) % 32).abs_diff(16) as f32;
+            1.0 - (dx + dy) / 32.0 >= settings.strength * 0.95
+        }
+    }
 }
 
 pub fn png(settings: TextureSettings) -> Result<Vec<u8>, String> {
@@ -158,6 +171,31 @@ mod tests {
             assert_ne!(rgba(changed), rgba(settings(kind)));
             changed.strength = 0.0;
             assert!(rgba(changed).iter().all(|v| *v == 255));
+        }
+    }
+    #[test]
+    fn uv_coverage_matches_nearest_repeating_mask_texels() {
+        for kind in [
+            TextureKind::Grain,
+            TextureKind::DryBrush,
+            TextureKind::Pattern,
+        ] {
+            let settings = settings(kind);
+            let mask = rgba(settings);
+            for y in 0..SIZE {
+                for x in 0..SIZE {
+                    let uv = [
+                        (x as f32 + 0.5) / SIZE as f32,
+                        (y as f32 + 0.5) / SIZE as f32,
+                    ];
+                    let expected = mask[((y * SIZE + x) * 4 + 3) as usize] != 0;
+                    assert_eq!(covered_at_uv(settings, uv), expected);
+                }
+            }
+            assert_eq!(
+                covered_at_uv(settings, [1.25, -0.25]),
+                covered_at_uv(settings, [0.25, 0.75])
+            );
         }
     }
     #[test]
