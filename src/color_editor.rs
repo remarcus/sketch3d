@@ -160,113 +160,128 @@ impl ColorEditor {
         let mut result = ColorAction::None;
         egui::Modal::new(Id::new("shared-color-editor")).show(ctx, |ui| {
             ui.set_min_width(390.0);
-            ui.heading(target.label());
-            ui.small("The preview uses the stored base color. Lighting does not change it.");
-            ui.horizontal(|ui| {
-                ui.label("Preview");
-                let (preview_rect, _) =
-                    ui.allocate_exact_size(egui::vec2(86.0, 26.0), egui::Sense::hover());
-                ui.painter()
-                    .rect_filled(preview_rect, 4.0, color32_from_linear(self.draft));
-                ui.label(RichText::new(format_hex(self.draft)).monospace());
-            });
-            ui.separator();
+            let body_height = (ui.ctx().screen_rect().height() - 132.0).max(120.0);
+            egui::ScrollArea::vertical()
+                .max_height(body_height)
+                .show(ui, |ui| {
+                    ui.heading(target.label());
+                    ui.small(
+                        "The preview uses the stored base color. Lighting does not change it.",
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label("Preview");
+                        let (preview_rect, _) =
+                            ui.allocate_exact_size(egui::vec2(86.0, 26.0), egui::Sense::hover());
+                        ui.painter().rect_filled(
+                            preview_rect,
+                            4.0,
+                            color32_from_linear(self.draft),
+                        );
+                        ui.label(RichText::new(format_hex(self.draft)).monospace());
+                    });
+                    ui.separator();
 
-            let mut hsva =
-                Hsva::from_rgba_unmultiplied(self.draft[0], self.draft[1], self.draft[2], 1.0);
-            if egui::color_picker::color_picker_hsva_2d(
-                ui,
-                &mut hsva,
-                egui::color_picker::Alpha::Opaque,
-            ) {
-                let rgba = hsva.to_rgba_unmultiplied();
-                self.draft = [rgba[0], rgba[1], rgba[2]];
-                self.sync_text();
-                self.invalid = None;
-            }
-
-            ui.horizontal(|ui| {
-                ui.label("HEX sRGB");
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.hex)
-                        .hint_text("#RRGGBB")
-                        .desired_width(100.0),
-                );
-                if self.initial_focus {
-                    response.request_focus();
-                    self.initial_focus = false;
-                }
-                if response.changed() {
-                    match parse_hex(&self.hex) {
-                        Ok(color) => {
-                            self.draft = color;
-                            self.hex = format_hex(color);
-                            self.rgb = linear_to_srgb_bytes(color).map(|value| value.to_string());
-                            self.invalid = None;
-                        }
-                        Err(error) => self.invalid = Some(error),
-                    }
-                }
-                if response.lost_focus() && response.changed() {
-                    self.hex = format_hex(self.draft);
-                }
-            });
-
-            ui.horizontal(|ui| {
-                ui.label("RGB sRGB");
-                let mut changed = false;
-                for (axis, value) in ["R", "G", "B"].into_iter().zip(self.rgb.iter_mut()) {
-                    ui.label(axis);
-                    changed |= ui
-                        .add(
-                            egui::TextEdit::singleline(value)
-                                .desired_width(48.0)
-                                .horizontal_align(egui::Align::RIGHT),
-                        )
-                        .changed();
-                }
-                if changed {
-                    match parse_rgb(&self.rgb) {
-                        Ok(color) => {
-                            self.draft = color;
-                            self.hex = format_hex(color);
-                            self.invalid = None;
-                        }
-                        Err(error) => self.invalid = Some(error),
-                    }
-                }
-            });
-
-            if let Some(error) = &self.invalid {
-                ui.colored_label(ui_style::colors(ui.ctx()).error, error);
-            }
-
-            ui.separator();
-            ui.label("Saved swatches");
-            if palette.swatches.is_empty() {
-                ui.small("No saved swatches. Save colors from the palette section.");
-            } else {
-                ui.horizontal_wrapped(|ui| {
-                    for swatch in &palette.swatches {
-                        if ui.add_swatch(swatch.name.as_str(), swatch.color).clicked() {
-                            self.draft = swatch.color;
-                            self.invalid = None;
-                            self.sync_text();
-                        }
-                    }
-                });
-            }
-
-            ui.label("Recent colors · kept for this session");
-            ui.horizontal_wrapped(|ui| {
-                for color in self.recent.clone() {
-                    if ui.add_swatch(&format_hex(color), color).clicked() {
-                        self.draft = color;
-                        self.invalid = None;
+                    let mut hsva = Hsva::from_rgba_unmultiplied(
+                        self.draft[0],
+                        self.draft[1],
+                        self.draft[2],
+                        1.0,
+                    );
+                    if egui::color_picker::color_picker_hsva_2d(
+                        ui,
+                        &mut hsva,
+                        egui::color_picker::Alpha::Opaque,
+                    ) {
+                        let rgba = hsva.to_rgba_unmultiplied();
+                        self.draft = [rgba[0], rgba[1], rgba[2]];
                         self.sync_text();
+                        self.invalid = None;
                     }
-                }
-            });
+
+                    ui.horizontal(|ui| {
+                        ui.label("HEX sRGB");
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.hex)
+                                .hint_text("#RRGGBB")
+                                .desired_width(100.0),
+                        );
+                        if self.initial_focus {
+                            response.request_focus();
+                            self.initial_focus = false;
+                        }
+                        if response.changed() {
+                            match parse_hex(&self.hex) {
+                                Ok(color) => {
+                                    self.draft = color;
+                                    self.hex = format_hex(color);
+                                    self.rgb =
+                                        linear_to_srgb_bytes(color).map(|value| value.to_string());
+                                    self.invalid = None;
+                                }
+                                Err(error) => self.invalid = Some(error),
+                            }
+                        }
+                        if response.lost_focus() && response.changed() {
+                            self.hex = format_hex(self.draft);
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("RGB sRGB");
+                        let mut changed = false;
+                        for (axis, value) in ["R", "G", "B"].into_iter().zip(self.rgb.iter_mut()) {
+                            ui.label(axis);
+                            changed |= ui
+                                .add(
+                                    egui::TextEdit::singleline(value)
+                                        .desired_width(48.0)
+                                        .horizontal_align(egui::Align::RIGHT),
+                                )
+                                .changed();
+                        }
+                        if changed {
+                            match parse_rgb(&self.rgb) {
+                                Ok(color) => {
+                                    self.draft = color;
+                                    self.hex = format_hex(color);
+                                    self.invalid = None;
+                                }
+                                Err(error) => self.invalid = Some(error),
+                            }
+                        }
+                    });
+
+                    if let Some(error) = &self.invalid {
+                        ui.colored_label(ui_style::colors(ui.ctx()).error, error);
+                    }
+
+                    ui.separator();
+                    ui.label("Saved swatches");
+                    if palette.swatches.is_empty() {
+                        ui.small("No saved swatches. Save colors from the palette section.");
+                    } else {
+                        ui.horizontal_wrapped(|ui| {
+                            for swatch in &palette.swatches {
+                                if ui.add_swatch(swatch.name.as_str(), swatch.color).clicked() {
+                                    self.draft = swatch.color;
+                                    self.invalid = None;
+                                    self.sync_text();
+                                }
+                            }
+                        });
+                    }
+
+                    ui.label("Recent colors · kept for this session");
+                    ui.horizontal_wrapped(|ui| {
+                        for color in self.recent.clone() {
+                            if ui.add_swatch(&format_hex(color), color).clicked() {
+                                self.draft = color;
+                                self.invalid = None;
+                                self.sync_text();
+                            }
+                        }
+                    });
+                });
 
             ui.separator();
             ui.horizontal(|ui| {

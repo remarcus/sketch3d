@@ -311,6 +311,7 @@ struct AppearanceLayoutVerification {
     zoom_factor: f32,
     zoom_percent: u32,
     viewport_size: [u32; 2],
+    state: String,
     screenshot_requested: bool,
 }
 
@@ -769,6 +770,24 @@ impl SketchApp {
                     .filter(|dimension| (480..=2160).contains(dimension))
                     .unwrap_or(940),
             ];
+            let state = arguments
+                .get(index + 5)
+                .map(String::as_str)
+                .unwrap_or("workspace");
+            let supported_states = [
+                "workspace",
+                "brush",
+                "select",
+                "layers",
+                "color-picker",
+                "library",
+                "recovery-error",
+                "export",
+            ];
+            assert!(
+                supported_states.contains(&state),
+                "Unsupported appearance capture state: {state}"
+            );
             app.presentation.preferences.ui_theme = match theme {
                 "dark" => crate::presentation::UiTheme::Dark,
                 "light" => crate::presentation::UiTheme::Light,
@@ -779,8 +798,44 @@ impl SketchApp {
                 zoom_factor,
                 zoom_percent: (zoom_factor * 100.0).round() as u32,
                 viewport_size,
+                state: state.to_owned(),
                 screenshot_requested: false,
             });
+            match state {
+                "workspace" | "brush" => {}
+                "select" | "layers" => {
+                    app.doc = crate::export_check::brush_fixture();
+                    app.selected = app.doc.strokes.iter().map(|stroke| stroke.id).collect();
+                    app.select_mode = state == "select";
+                    if state == "layers" {
+                        app.presentation.preferences.layout.inspector_tab =
+                            crate::presentation::InspectorTab::Layers;
+                    }
+                    app.camera.align(Plane::Front);
+                }
+                "color-picker" => app
+                    .palette_ui
+                    .open_editor_for_capture(ColorTarget::Brush, app.color),
+                "library" => {
+                    let fixture_dir = std::env::current_dir()
+                        .unwrap()
+                        .join("verification/appearance-layout/library-fixture");
+                    std::fs::create_dir_all(&fixture_dir)
+                        .expect("appearance library fixture directory");
+                    let fixture_path = fixture_dir.join("Sample drawing.sketch.json");
+                    let fixture = crate::export_check::brush_fixture();
+                    std::fs::write(
+                        &fixture_path,
+                        serde_json::to_vec(&fixture).expect("appearance library fixture JSON"),
+                    )
+                    .expect("appearance library fixture writes");
+                    app.drawing_library.record(&fixture_path);
+                    app.show_drawing_library = true;
+                }
+                "recovery-error" => {}
+                "export" => app.png_export.begin(),
+                _ => unreachable!("appearance capture states are validated above"),
+            }
         } else if std::env::args().any(|a| a == "--verify-mixed-resources") {
             app.verification_frame = None;
             app.mixed_resources_verification_frame = Some(0);
@@ -2192,10 +2247,13 @@ impl SketchApp {
         let mut create_folder = false;
         egui::Window::new("Drawing library")
             .open(&mut self.show_drawing_library)
-            .default_width(460.0)
+            .default_width((ctx.screen_rect().width() * 0.8).clamp(460.0, 800.0))
+            .max_width((ctx.screen_rect().width() - 32.0).max(200.0))
+            .max_height((ctx.screen_rect().height() * 0.75).max(160.0))
+            .vscroll(true)
             .show(ctx, |ui| {
                 ui.label("Recently saved or opened drawings. Files and their resource folders stay in their current locations.");
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Search");
                     ui.text_edit_singleline(&mut self.drawing_library_filter);
                     egui::ComboBox::from_id_salt("drawing-library-folder-filter")
@@ -2214,7 +2272,7 @@ impl SketchApp {
                         self.drawing_library.trash_open = true;
                     }
                 });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui.button("Import drawing…").clicked() {
                         if let Some(source) = rfd::FileDialog::new()
                             .add_filter("Sketch3D", &["json"])
@@ -2245,7 +2303,7 @@ impl SketchApp {
                         }
                     }
                 });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.text_edit_singleline(&mut self.new_library_folder);
                     if ui.button("Create folder").clicked() {
                         create_folder = true;
@@ -2255,7 +2313,8 @@ impl SketchApp {
                 let filter = self.drawing_library_filter.trim().to_lowercase();
                 let folder_filter = self.library_folder_filter.clone();
                 let recent_paths = self.drawing_library.recent().to_vec();
-                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                let list_height = (ctx.screen_rect().height() - 240.0).clamp(100.0, 360.0);
+                egui::ScrollArea::vertical().max_height(list_height).show(ui, |ui| {
                     for path in &recent_paths {
                         let label = path.file_name().and_then(|name| name.to_str()).unwrap_or("Untitled drawing");
                         if !filter.is_empty() && !label.to_lowercase().contains(&filter) {
@@ -2291,7 +2350,7 @@ impl SketchApp {
                                     ui.colored_label(ui_style::colors(ui.ctx()).error, "File is missing");
                                 }
                             });
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 let mut selected_folder = current_folder.clone();
                                 egui::ComboBox::from_id_salt(("drawing-library-folder", path.to_string_lossy().to_string()))
                                     .selected_text(selected_folder.as_deref().unwrap_or("Unsorted"))
@@ -3524,6 +3583,22 @@ impl eframe::App for SketchApp {
         self.presentation.apply_theme(ctx);
         self.presentation.poll_layout_save();
         self.poll_recovery(ctx);
+        if self
+            .appearance_layout_verification
+            .as_ref()
+            .is_some_and(|verification| verification.state == "recovery-error")
+        {
+            self.recovery.scan = Some(crate::recovery_store::Scan {
+                candidates: Vec::new(),
+                issues: vec![crate::recovery_store::Issue {
+                    path: PathBuf::from("verification/unreadable-recovery.json"),
+                    message: "Snapshot could not be read: invalid verification fixture.".into(),
+                }],
+            });
+            self.recovery.notice = "One recovery snapshot could not be read.".into();
+            self.recovery_scan_seen = true;
+            self.recovery_prompt = true;
+        }
         self.ensure_workspace();
         if let Some(report_path) = self.camera_bookmark_restart_report.take() {
             if let Err(error) = crate::camera_bookmark_restart_check::verify_loaded(
@@ -4806,11 +4881,17 @@ impl SketchApp {
                 let output = path.join("appearance-layout");
                 std::fs::create_dir_all(&output).expect("appearance screenshot folder");
                 let filename = if verification.viewport_size == [1440, 940] {
-                    format!("{theme}-{}-percent.png", verification.zoom_percent)
+                    format!(
+                        "{theme}-{}-{}-percent.png",
+                        verification.state, verification.zoom_percent
+                    )
                 } else {
                     format!(
-                        "{theme}-viewport-{}x{}.png",
-                        verification.viewport_size[0], verification.viewport_size[1]
+                        "{theme}-{}-viewport-{}x{}-{}-percent.png",
+                        verification.state,
+                        verification.viewport_size[0],
+                        verification.viewport_size[1],
+                        verification.zoom_percent
                     )
                 };
                 let screenshot_path = output.join(&filename);
@@ -4825,12 +4906,13 @@ impl SketchApp {
                 let report = serde_json::json!({
                     "passed": true,
                     "theme": theme,
+                    "state": verification.state,
                     "egui_zoom_percent": verification.zoom_percent,
                     "requested_viewport_points": verification.viewport_size,
                     "screenshot": filename,
                     "screenshot_size_pixels": image.size,
                     "checks": [
-                        "hidden app rendered the complete editing workspace at the requested egui zoom factor",
+                        format!("hidden app rendered the {} UI state at the requested egui zoom factor", verification.state),
                         "the requested appearance theme was applied in memory without saving user preferences"
                     ],
                     "physical_tablet_tested": false

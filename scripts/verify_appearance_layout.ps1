@@ -42,16 +42,31 @@ foreach ($theme in @('dark', 'light')) {
             height = $size[1]
         })
     }
+    foreach ($state in @('brush', 'select', 'layers', 'color-picker', 'library', 'recovery-error', 'export')) {
+        foreach ($zoom in @(1.0, 1.5, 2.0)) {
+            foreach ($size in @(@(1280, 720), @(1920, 1080))) {
+                $captureRequests.Add([pscustomobject]@{
+                    theme = $theme
+                    kind = 'state'
+                    state = $state
+                    zoom = $zoom
+                    width = $size[0]
+                    height = $size[1]
+                })
+            }
+        }
+    }
 }
 try {
     [Environment]::SetEnvironmentVariable('LOCALAPPDATA', $runProfile, 'Process')
     foreach ($request in $captureRequests) {
         $theme = $request.theme
         $zoom = [double]$request.zoom
+        $state = if ($request.PSObject.Properties.Name -contains 'state') { [string]$request.state } else { 'workspace' }
         $width = [int]$request.width
         $height = [int]$request.height
         $percent = [int][Math]::Round($zoom * 100)
-        $suffix = if ($request.kind -eq 'viewport') { "viewport-${width}x${height}" } else { "$percent-percent" }
+        $suffix = if ($request.kind -eq 'zoom') { "$state-$percent-percent" } else { "$state-viewport-${width}x${height}-$percent-percent" }
         $reportPath = Join-Path $outputPath "$theme-$suffix.json"
         $imagePath = Join-Path $outputPath "$theme-$suffix.png"
         $stdoutPath = Join-Path $outputPath ".$theme-$suffix.stdout.log"
@@ -68,7 +83,8 @@ try {
                 $theme,
                 $zoom.ToString([Globalization.CultureInfo]::InvariantCulture),
                 $width.ToString([Globalization.CultureInfo]::InvariantCulture),
-                $height.ToString([Globalization.CultureInfo]::InvariantCulture)
+                $height.ToString([Globalization.CultureInfo]::InvariantCulture),
+                $state
             ) `
             -WorkingDirectory $workspacePath `
             -WindowStyle Hidden `
@@ -97,6 +113,7 @@ try {
         $capture = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
         if ($capture.passed -ne $true -or
             $capture.theme -ne $theme -or
+            $capture.state -ne $state -or
             $capture.egui_zoom_percent -ne $percent -or
             $capture.requested_viewport_points.Count -ne 2 -or
             $capture.requested_viewport_points[0] -ne $width -or
@@ -109,6 +126,7 @@ try {
         $captures.Add([pscustomobject]@{
             theme = $theme
             capture_kind = $request.kind
+            state = $state
             egui_zoom_percent = $percent
             requested_viewport_points = $capture.requested_viewport_points
             screenshot = [IO.Path]::GetFileName($imagePath)
@@ -120,12 +138,18 @@ try {
     [Environment]::SetEnvironmentVariable('LOCALAPPDATA', $previousLocalAppData, 'Process')
 }
 
+$stateCaptures = @($captures | Where-Object { $_.capture_kind -eq 'state' })
+$expectedStateCaptureCount = 7 * 2 * 2 * 3
+if ($stateCaptures.Count -ne $expectedStateCaptureCount) {
+    throw "Expected $expectedStateCaptureCount named UI-state captures; found $($stateCaptures.Count)."
+}
 $summary = [pscustomobject]@{
     passed = $true
     checks = @(
         'the full editing workspace rendered in Dark and Light themes at 80%, 150%, and 200% egui zoom',
         'all hidden app processes used settings separate from the user profile and saved fresh screenshots at their requested dimensions',
         'the workspace rendered in Dark and Light at 1280x720 and 1920x1080 viewport sizes',
+      'Brush, Select, Layers, color picker, library, recovery error, and PNG export states rendered in both themes at 1280x720 and 1920x1080 with 100%, 150%, and 200% egui zoom',
         'the Color control remains visible at 150% and wraps to a second row at 200%',
         'the empty-canvas message remains legible within the reduced canvas width at 200%'
     )
@@ -134,9 +158,10 @@ $summary = [pscustomobject]@{
         'Windows Narrator announcements still require direct assistive-technology testing'
     )
     physical_tablet_tested = $false
+    state_capture_count = $stateCaptures.Count
     screenshots = @($captures)
 }
 $summaryPath = Join-Path $outputPath 'appearance-layout-report.json'
 [IO.File]::WriteAllText($summaryPath, ($summary | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
-Write-Output 'Appearance layout captures passed at 80%, 150%, and 200% in Dark and Light themes.'
+Write-Output "Appearance layout captures passed ($($captures.Count) total; $($stateCaptures.Count) named UI-state captures)."
 Write-Output "Report: $summaryPath"

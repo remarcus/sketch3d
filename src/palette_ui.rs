@@ -145,6 +145,14 @@ impl PaletteUi {
         self.color_editor.is_open()
     }
 
+    pub(super) fn open_editor_for_capture(&mut self, target: ColorTarget, color: [f32; 3]) {
+        self.color_editor.begin(
+            target,
+            color,
+            egui::Id::new("appearance-layout-color-trigger"),
+        );
+    }
+
     pub fn set_color_from_sample(&mut self, color: [f32; 3]) {
         self.color_editor.sampled(color);
         self.sampling = false;
