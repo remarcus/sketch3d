@@ -297,6 +297,14 @@ mod tests {
         assert_eq!(runs[0].radius, original.radius);
         assert_eq!(runs[0].brush.kind, BrushKind::Ribbon);
         assert_eq!(runs[0].brush.angle_degrees, -original.brush.angle_degrees);
+        assert_eq!(
+            runs[0].brush.normal,
+            plane.reflect_vector(original.brush.normal).unwrap()
+        );
+        assert_eq!(
+            runs[0].brush.tangent,
+            plane.reflect_vector(original.brush.tangent).unwrap()
+        );
         assert_eq!(runs[0].points[0].pressure, original.points[0].pressure);
         assert_eq!(runs[0].points[0].tilt, original.points[0].tilt);
         assert_eq!(runs[0].points[1].pressure, original.points[1].pressure);
@@ -313,5 +321,67 @@ mod tests {
         assert!(mirror_stroke_runs(&original, plane, 100, 1e-5)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn transformed_plane_reflection_is_atomic_reversible_persistent_and_exportable() {
+        let mut original = source(vec![point(-1.0), point(-0.25), point(0.5)]);
+        original.layer_id = 1;
+        let plane = MirrorPlane {
+            point: Vec3::new(0.5, -0.25, 0.75),
+            normal: Vec3::new(2.0, 4.0, 1.0),
+        };
+        let copies = mirror_stroke_runs(&original, plane, 100, 1e-5).unwrap();
+        assert_eq!(copies.len(), 1);
+        let reflected = &copies[0];
+        for (before, after) in original.points.iter().zip(&reflected.points) {
+            assert!(
+                (plane.signed_distance(before.position).unwrap()
+                    + plane.signed_distance(after.position).unwrap())
+                .abs()
+                    < 0.00001
+            );
+            assert_eq!(before.pressure, after.pressure);
+            assert_eq!(
+                after.tilt,
+                before.tilt.map(|tilt| plane.reflect_vector(tilt).unwrap())
+            );
+        }
+        assert_eq!(
+            reflected.brush.normal,
+            plane.reflect_vector(original.brush.normal).unwrap()
+        );
+        assert_eq!(
+            reflected.brush.tangent,
+            plane.reflect_vector(original.brush.tangent).unwrap()
+        );
+        assert_eq!(reflected.color, original.color);
+        assert_eq!(reflected.radius, original.radius);
+        assert_eq!(reflected.group_id, original.group_id);
+        assert_eq!(reflected.layer_id, original.layer_id);
+
+        let mut doc = crate::document::Document::default();
+        let edit = crate::editing::Edit::Change {
+            before: Vec::new(),
+            after: vec![(0, original.clone()), (1, reflected.clone())],
+        };
+        edit.apply(&mut doc, true);
+        let committed = doc.strokes.clone();
+        assert_eq!(committed.len(), 2, "source and mirror form one atomic edit");
+        edit.apply(&mut doc, false);
+        assert!(doc.strokes.is_empty());
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes, committed);
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+        let reopened =
+            crate::document::Document::from_json(&std::fs::read_to_string(file.path()).unwrap())
+                .unwrap();
+        assert_eq!(reopened.strokes, doc.strokes);
+
+        let glb = crate::export::encode(&doc, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&glb.bytes).unwrap();
+        assert_eq!(gltf.meshes().count(), 2);
     }
 }
