@@ -294,3 +294,81 @@ impl<W: Write> Write for BudgetWriter<W> {
         self.inner.flush()
     }
 }
+
+#[cfg(test)]
+mod material_tests {
+    use super::*;
+    use crate::document::{Point, StrokeMaterial};
+    use glam::Vec3;
+
+    fn material_stroke(id: u64, material: StrokeMaterial) -> Stroke {
+        Stroke {
+            material,
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id,
+            color: [0.25, 0.5, 0.75],
+            radius: 0.04,
+            brush: Default::default(),
+            points: vec![
+                Point {
+                    position: Vec3::new(0.0, id as f32 * 0.2, 0.0),
+                    pressure: 0.8,
+                    tilt: None,
+                },
+                Point {
+                    position: Vec3::new(1.0, id as f32 * 0.2, 0.0),
+                    pressure: 0.8,
+                    tilt: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn obj_mtl_preserves_material_modes_and_discloses_cutout_fallback() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let destination = root.path().join("materials.obj");
+        let document = Document {
+            strokes: [
+                StrokeMaterial::Shaded,
+                StrokeMaterial::Unlit,
+                StrokeMaterial::Emissive,
+                StrokeMaterial::Cutout,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, material)| material_stroke(index as u64 + 1, material))
+            .collect(),
+            ..Document::default()
+        };
+
+        assert!(write_obj_bundle(&document, None, &destination, false).unwrap() > 0);
+        let obj = std::fs::read_to_string(&destination).unwrap();
+        assert_eq!(obj.matches("usemtl ").count(), 4);
+        let mtl_name = obj
+            .lines()
+            .find_map(|line| line.strip_prefix("mtllib "))
+            .unwrap();
+        let mtl = std::fs::read_to_string(root.path().join(mtl_name)).unwrap();
+        let section = |name: &str| {
+            mtl.split_once(&format!("newmtl {name}\n"))
+                .unwrap()
+                .1
+                .split("\nnewmtl ")
+                .next()
+                .unwrap()
+        };
+
+        assert!(section("material_00000").contains("illum 2"));
+        assert!(section("material_00001").contains("illum 0"));
+        assert!(section("material_00002").contains("illum 0"));
+        assert!(section("material_00002").contains("Ke 0.250000 0.500000 0.750000"));
+        assert!(section("material_00003").contains("d 0.000000"));
+        assert!(section("material_00003").contains("illum 2"));
+        assert!(mtl.contains(
+            "cutout strokes export as fully transparent geometry; destination erasure is not represented"
+        ));
+    }
+}
