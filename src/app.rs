@@ -4380,6 +4380,15 @@ impl SketchApp {
         if frame == 0 {
             self.undo.clear();
             self.redo.clear();
+            assert!(Self::mixed_transform_supported(
+                crate::mixed_resources::TransformMode::Translate
+            ));
+            assert!(!Self::mixed_transform_supported(
+                crate::mixed_resources::TransformMode::Rotate
+            ));
+            assert!(!Self::mixed_transform_supported(
+                crate::mixed_resources::TransformMode::Scale
+            ));
             let mut selection = self.mixed_resources_ui.selection.clone();
             selection.stroke_ids = self.selected.clone();
             let original = crate::mixed_resources::MoveSnapshot::capture(
@@ -4624,7 +4633,7 @@ impl SketchApp {
                 image::ColorType::Rgba8,
             )
             .unwrap();
-            let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","rotated-selection non-uniform X/Y/Z handle and numeric scaling agree for selection-center, world-origin, and custom pivots with one-step undo/redo","Escape cancels non-uniform axis scaling and restores exact document/history","view-plane scaling applies separate camera-plane X/Y factors and preserves depth","scaled stroke remains pickable at transformed geometry","numeric non-uniform scale survives native reload and produces byte-identical GLB output","non-uniform scale survives recovery write, reload, and recovery scan","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload","background GLB export preserves document state"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
+            let report = serde_json::json!({"passed":true,"checks":["single-frame mouse sample order","3D geometry and GPU pipeline","undo/redo","whole-stroke eraser","atomic save","document reload","UI screenshot","Shift multi-selection","axis move and view-plane cancel","rotation and uniform scale handles","rotated-selection non-uniform X/Y/Z handle and numeric scaling agree for selection-center, world-origin, and custom pivots with one-step undo/redo","Escape cancels non-uniform axis scaling and restores exact document/history","view-plane scaling applies separate camera-plane X/Y factors and preserves depth","transformed selection bounds refresh after view-plane scaling","scaled stroke remains pickable at transformed geometry","numeric non-uniform scale survives native reload and produces byte-identical GLB output","non-uniform scale survives recovery write, reload, and recovery scan","group duplicate/delete undo","numeric transform","transformed document reload","stabilized stroke endpoint and undo","custom plane drawing and grid","plane switching preserves geometry","plane alignment and view placement","oriented stroke save/reload","background GLB export preserves document state"],"gpu":self.renderer.adapter,"strokes":self.doc.strokes.len(),"physical_tablet_tested":false});
             let report = if self.group_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["house component grouping","group and individual selection","duplicate independent group","shared pivot transforms","ungroup undo and native persistence","layer protection","GPU groups"],"gpu":self.renderer.adapter})
             } else if self.image_plane_verification_frame.is_some() {
@@ -4636,7 +4645,7 @@ impl SketchApp {
             } else if self.liquify_brush_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["synthetic canvas drag creates a non-destructive preview","front, side, and ground camera views preserve the working-plane depth","unselected and occluding strokes remain unchanged","cancel restores exact source strokes","navigation interruption cancels brush preview without history","apply commits preview as one history edit","undo restores source geometry","redo restores committed deformation","native serialization and recovery scan preserve the deformed geometry","whole-scene and selected-stroke GLB encode the committed result","brush cursor indicates radius and working-plane depth"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.mixed_resources_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["mixed stroke, image plane, OBJ reference, and guide translation preview","preview does not enter history","cancel restores all exact source records","apply commits one mixed-resource history edit","undo restores every selected record","redo reapplies every selected record","active image-plane drawable binding is preserved","rotation and scaling are rejected before mutation"],"resource_counts":{"strokes":self.doc.strokes.len(),"image_planes":self.doc.image_planes.len(),"obj_references":self.doc.model_references.len(),"guides":self.doc.guide_resources.len()},"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["mixed stroke, image plane, OBJ reference, and guide translation preview","preview does not enter history","cancel restores all exact source records","apply commits one mixed-resource history edit","undo restores every selected record","redo reapplies every selected record","active image-plane drawable binding is preserved","mixed-resource UI enables translation and disables rotation and scale","rotation and scaling are rejected before mutation"],"resource_counts":{"strokes":self.doc.strokes.len(),"image_planes":self.doc.image_planes.len(),"obj_references":self.doc.model_references.len(),"guides":self.doc.guide_resources.len()},"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.vase_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["revolved profile drawing","captured guide and surface release tail","pressure tilt brush frames","guide editing preserves ink","selection duplicate undo","native persistence","GPU painted vase"],"gpu":self.renderer.adapter})
             } else if self.layer_verification_frame.is_some() {

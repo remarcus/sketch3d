@@ -1799,6 +1799,28 @@ impl SketchApp {
                 }),
             "the transformed stroke remains pickable at its new geometry"
         );
+        let scaled_bounds = editing::bounds(&self.doc, &self.selected)
+            .expect("scaled selection bounds are available");
+        let original_bounds = editing::bounds(
+            &Document {
+                strokes: before_view_scale.clone(),
+                ..Document::default()
+            },
+            &self.selected,
+        )
+        .expect("original selection bounds are available");
+        assert_ne!(scaled_bounds, original_bounds);
+        self.transform_pivot = PivotMode::SelectionCenter;
+        let scaled_layout = self
+            .layout(rect)
+            .expect("scaled selection gizmo layout is available");
+        assert!(
+            scaled_layout
+                .pivot
+                .distance((scaled_bounds.0 + scaled_bounds.1) * 0.5)
+                < 0.0001
+        );
+        self.transform_pivot = PivotMode::Custom;
         self.undo();
         assert_eq!(self.doc.strokes, before_view_scale);
         self.redo();

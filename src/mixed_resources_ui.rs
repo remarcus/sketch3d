@@ -14,6 +14,10 @@ pub(super) struct MixedResourcesUi {
 }
 
 impl SketchApp {
+    pub(super) fn mixed_transform_supported(mode: TransformMode) -> bool {
+        mode == TransformMode::Translate
+    }
+
     pub(super) fn mixed_resource_preview_active(&self) -> bool {
         self.mixed_resources_ui.draft.is_some()
     }
@@ -22,6 +26,19 @@ impl SketchApp {
         if self.mixed_resources_ui.draft.is_some() {
             ui.group(|ui| {
                 ui.strong("MIXED RESOURCE TRANSLATION");
+                ui.horizontal(|ui| {
+                    ui.label("Transform");
+                    ui.label("Translate");
+                    for (mode, label) in [
+                        (TransformMode::Rotate, "Rotate"),
+                        (TransformMode::Scale, "Scale"),
+                    ] {
+                        ui.add_enabled(
+                            Self::mixed_transform_supported(mode),
+                            egui::Button::new(label),
+                        );
+                    }
+                });
                 let mut changed = false;
                 let mut apply = false;
                 let mut cancel = false;
@@ -245,6 +262,20 @@ impl SketchApp {
         }
         self.renderer.invalidate();
         self.refresh_obj_reference_meshes();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixed_resource_ui_enables_translation_and_disables_rotation_and_scale() {
+        assert!(SketchApp::mixed_transform_supported(
+            TransformMode::Translate
+        ));
+        assert!(!SketchApp::mixed_transform_supported(TransformMode::Rotate));
+        assert!(!SketchApp::mixed_transform_supported(TransformMode::Scale));
     }
 }
 
