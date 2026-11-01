@@ -675,13 +675,18 @@ pub fn backup_native_drawing(source: &Path, destination: &Path) -> Result<(), St
     manifest_file
         .sync_all()
         .map_err(|error| error.to_string())?;
+    drop(manifest_file);
     let stage_path = stage.keep();
     if let Err(error) = fs::rename(&stage_path, destination) {
         let cleanup = fs::remove_dir_all(&stage_path)
             .err()
             .map(|error| format!("; staging cleanup failed: {error}"))
             .unwrap_or_default();
-        return Err(format!("Cannot install backup: {error}{cleanup}"));
+        return Err(format!(
+            "Cannot install backup from {} to {}: {error}{cleanup}",
+            stage_path.display(),
+            destination.display()
+        ));
     }
     Ok(())
 }
@@ -1219,5 +1224,63 @@ mod tests {
         );
         assert!(restore_native_backup(&backup, &restored).is_err());
         assert!(restored.is_file());
+    }
+
+    #[test]
+    fn portable_backup_restores_image_plane_assets_after_sources_are_removed() {
+        use image::ImageEncoder;
+
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source = root.path().join("with-image.sketch.json");
+        let backup = root.path().join("portable.sketch-backup");
+        let restored = root.path().join("restored.sketch.json");
+        let image = crate::image_planes::ImagePlane::from_asset(
+            8,
+            "Reference photo",
+            "image-8.png".into(),
+            [1, 1],
+            glam::Vec3::new(1.0, 2.0, 3.0),
+            glam::Quat::IDENTITY,
+            1.0,
+        )
+        .unwrap();
+        let document = crate::document::Document {
+            image_planes: vec![image.clone()],
+            ..Default::default()
+        };
+        fs::write(&source, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        let source_assets = crate::image_plane_storage::asset_root(&source).unwrap();
+        fs::create_dir_all(&source_assets).unwrap();
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&[12, 34, 56, 255], 1, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        fs::write(source_assets.join("image-8.png"), &png).unwrap();
+
+        backup_native_drawing(&source, &backup).unwrap();
+        fs::remove_file(&source).unwrap();
+        fs::remove_dir_all(&source_assets).unwrap();
+        restore_native_backup(&backup, &restored).unwrap();
+
+        let restored_doc =
+            crate::document::Document::from_json(&fs::read_to_string(&restored).unwrap()).unwrap();
+        assert_eq!(restored_doc.image_planes, vec![image]);
+        let restored_assets = crate::image_plane_storage::asset_root(&restored).unwrap();
+        let restored_image =
+            crate::image_planes::decode_asset(&restored_assets.join("image-8.png")).unwrap();
+        assert_eq!(restored_image.pixels, [12, 34, 56, 255]);
+
+        let missing_source = root.path().join("missing-asset.sketch.json");
+        fs::write(&missing_source, serde_json::to_vec(&document).unwrap()).unwrap();
+        let missing_backup = root.path().join("missing-asset.sketch-backup");
+        assert!(backup_native_drawing(&missing_source, &missing_backup).is_err());
+        assert!(!missing_backup.exists());
+
+        let corrupt = root.path().join("corrupt.sketch-backup");
+        fs::create_dir(&corrupt).unwrap();
+        fs::write(corrupt.join("manifest.json"), b"not json").unwrap();
+        let rejected = root.path().join("should-not-exist.sketch.json");
+        assert!(restore_native_backup(&corrupt, &rejected).is_err());
+        assert!(!rejected.exists());
     }
 }
