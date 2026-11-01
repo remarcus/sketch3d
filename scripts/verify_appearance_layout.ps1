@@ -42,7 +42,7 @@ foreach ($theme in @('dark', 'light')) {
             height = $size[1]
         })
     }
-    foreach ($state in @('brush', 'select', 'layers', 'color-picker', 'library', 'recovery-error', 'export', 'scene-dark-background', 'scene-light-background', 'scene-custom-background', 'scene-image-background', 'scene-mirror-preview-dark', 'scene-mirror-preview-light', 'scene-mirror-preview-custom', 'scene-mirror-preview-image', 'scene-liquify-cursor-light', 'scene-liquify-cursor-image')) {
+    foreach ($state in @('brush', 'select', 'layers', 'color-picker', 'library', 'recovery-error', 'export', 'scene-dark-background', 'scene-light-background', 'scene-custom-background', 'scene-image-background', 'scene-mirror-preview-dark', 'scene-mirror-preview-light', 'scene-mirror-preview-custom', 'scene-mirror-preview-image', 'scene-brush-selection-drag-light', 'scene-brush-selection-drag-image', 'scene-liquify-cursor-light', 'scene-liquify-cursor-image')) {
         foreach ($zoom in @(1.0, 1.5, 2.0)) {
             foreach ($size in @(@(1280, 720), @(1920, 1080))) {
                 $captureRequests.Add([pscustomobject]@{
@@ -151,7 +151,7 @@ try {
 }
 
 $stateCaptures = @($captures | Where-Object { $_.capture_kind -eq 'state' })
-$expectedStateCaptureCount = 17 * 2 * 2 * 3
+$expectedStateCaptureCount = 19 * 2 * 2 * 3
 if ($stateCaptures.Count -ne $expectedStateCaptureCount) {
     throw "Expected $expectedStateCaptureCount named UI-state captures; found $($stateCaptures.Count)."
 }
@@ -167,6 +167,7 @@ $summary = [pscustomobject]@{
         'the workspace rendered in Dark and Light at 1280x720 and 1920x1080 viewport sizes',
         'Brush, Select, Layers, color picker, library, recovery error, PNG export, and light, dark, custom, and image scene backgrounds rendered in both themes at 1280x720 and 1920x1080 with 100%, 150%, and 200% egui zoom',
         'production live line and mirror preview overlays rendered against dark, light, custom, and mixed image backgrounds',
+        'production brush-selection drag paths and radius cursors rendered against light and mixed image backgrounds after crossing a real fixture stroke',
         'the painted Liquify radius cursor rendered at a synthetic in-canvas pointer location on light and image backgrounds',
         'the Color control remains visible at 150% and wraps to a second row at 200%',
         'the empty-canvas message remains legible within the reduced canvas width at 200%'

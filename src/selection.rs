@@ -29,6 +29,12 @@ pub(super) struct BrushSelectionDrag {
     path: Vec<Pos2>,
 }
 
+impl BrushSelectionDrag {
+    pub(super) fn path_len(&self) -> usize {
+        self.path.len()
+    }
+}
+
 pub(super) struct AppearanceDraft {
     before: Snapshot,
     after: Snapshot,
@@ -1325,17 +1331,15 @@ if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete
         }
         let painter = ui.painter().with_clip_rect(rect);
         if let Some(brush) = &self.brush_select_drag {
+            let accent = self.ui_style_selection_color(255);
             for pair in brush.path.windows(2) {
-                painter.line_segment(
-                    [pair[0], pair[1]],
-                    egui::Stroke::new(2.0_f32, Color32::from_rgba_unmultiplied(87, 224, 195, 220)),
-                );
+                painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.0_f32, accent));
             }
             if let Some(last) = brush.path.last() {
                 painter.circle_stroke(
                     *last,
                     self.brush_select_radius,
-                    egui::Stroke::new(1.5_f32, Color32::from_rgb(87, 224, 195)),
+                    egui::Stroke::new(1.5_f32, self.ui_style_selection_color(255)),
                 );
             }
         }
@@ -1364,7 +1368,7 @@ if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete
                 &self.camera,
                 rect,
                 &corners,
-                Color32::from_rgba_unmultiplied(87, 224, 195, 220),
+                self.ui_style_selection_color(220),
             );
         }
     }

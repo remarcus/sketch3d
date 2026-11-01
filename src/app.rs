@@ -791,6 +791,8 @@ impl SketchApp {
                 "scene-mirror-preview-light",
                 "scene-mirror-preview-custom",
                 "scene-mirror-preview-image",
+                "scene-brush-selection-drag-light",
+                "scene-brush-selection-drag-image",
                 "scene-liquify-cursor-light",
                 "scene-liquify-cursor-image",
             ];
@@ -852,6 +854,8 @@ impl SketchApp {
                 | "scene-mirror-preview-light"
                 | "scene-mirror-preview-custom"
                 | "scene-mirror-preview-image"
+                | "scene-brush-selection-drag-light"
+                | "scene-brush-selection-drag-image"
                 | "scene-liquify-cursor-light"
                 | "scene-liquify-cursor-image" => {
                     app.doc = crate::export_check::brush_fixture();
@@ -864,16 +868,26 @@ impl SketchApp {
                             | "scene-mirror-preview-image"
                     );
                     app.select_mode = !mirror_preview;
+                    if matches!(
+                        state,
+                        "scene-brush-selection-drag-light" | "scene-brush-selection-drag-image"
+                    ) {
+                        app.selected.clear();
+                        app.brush_select_enabled = true;
+                        app.brush_select_radius = 22.0;
+                    }
                     app.camera.align(Plane::Front);
                     app.presentation.preferences.background = match state {
                         "scene-dark-background"
                         | "scene-image-background"
                         | "scene-mirror-preview-dark"
                         | "scene-mirror-preview-image"
+                        | "scene-brush-selection-drag-image"
                         | "scene-liquify-cursor-image" => [0.035, 0.045, 0.06],
                         "scene-light-background"
                         | "scene-mirror-preview-light"
-                        | "scene-liquify-cursor-light" => [0.94, 0.95, 0.97],
+                        | "scene-liquify-cursor-light"
+                        | "scene-brush-selection-drag-light" => [0.94, 0.95, 0.97],
                         "scene-custom-background" | "scene-mirror-preview-custom" => {
                             [0.46, 0.31, 0.68]
                         }
@@ -883,6 +897,7 @@ impl SketchApp {
                         state,
                         "scene-image-background"
                             | "scene-mirror-preview-image"
+                            | "scene-brush-selection-drag-image"
                             | "scene-liquify-cursor-image"
                     ) {
                         let light = [238, 236, 224, 255];
@@ -3993,6 +4008,42 @@ impl eframe::App for SketchApp {
                     .map(|verification| verification.state.clone());
                 if matches!(
                     appearance_state.as_deref(),
+                    Some("scene-brush-selection-drag-light" | "scene-brush-selection-drag-image")
+                ) && self.brush_select_drag.is_none()
+                {
+                    let stroke = self
+                        .doc
+                        .strokes
+                        .first()
+                        .expect("brush-selection appearance fixture contains a stroke");
+                    let stroke_id = stroke.id;
+                    let start =
+                        crate::gizmo::project(&self.camera, rect, stroke.points[2].position)
+                            .expect("brush-selection start projects into the canvas")
+                            .0
+                            + egui::vec2(0.0, 32.0);
+                    let end = crate::gizmo::project(
+                        &self.camera,
+                        rect,
+                        stroke.points[stroke.points.len() - 3].position,
+                    )
+                    .expect("brush-selection end projects into the canvas")
+                    .0 - egui::vec2(0.0, 32.0);
+                    self.select_pointer(start, rect, true, false);
+                    self.select_pointer(end, rect, false, false);
+                    assert!(
+                        self.brush_select_drag
+                            .as_ref()
+                            .is_some_and(|drag| drag.path_len() >= 2),
+                        "brush-selection appearance capture must keep a live drag path"
+                    );
+                    assert!(
+                        self.selected.contains(&stroke_id),
+                        "brush-selection appearance capture must select the crossed fixture stroke"
+                    );
+                }
+                if matches!(
+                    appearance_state.as_deref(),
                     Some(
                         "scene-mirror-preview-dark"
                             | "scene-mirror-preview-light"
@@ -5070,6 +5121,25 @@ impl SketchApp {
                 ) {
                     checks.push(
                         "production live line draft and mirror preview overlays were active for this capture".into(),
+                    );
+                }
+                if matches!(
+                    verification.state.as_str(),
+                    "scene-brush-selection-drag-light" | "scene-brush-selection-drag-image"
+                ) {
+                    let drag = self
+                        .brush_select_drag
+                        .as_ref()
+                        .expect("brush-selection drag remains active through screenshot capture");
+                    assert!(drag.path_len() >= 2);
+                    assert!(
+                        self.selected
+                            .iter()
+                            .any(|id| { self.doc.strokes.iter().any(|stroke| stroke.id == *id) }),
+                        "brush-selection capture requires selected fixture geometry"
+                    );
+                    checks.push(
+                        "production brush-selection input crossed the fixture stroke and kept its live drag path visible".into(),
                     );
                 }
                 if matches!(

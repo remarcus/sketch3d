@@ -810,6 +810,42 @@ mod tests {
     }
 
     #[test]
+    fn selection_drag_overlay_keeps_three_to_one_contrast() {
+        let to_color = |rgb: [f32; 3]| {
+            Color32::from_rgb(
+                (rgb[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+                (rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+            )
+        };
+        let composite = |foreground: Color32, background: Color32| {
+            let alpha = f32::from(foreground.a()) / 255.0;
+            Color32::from_rgb(
+                (f32::from(foreground.r()) * alpha + f32::from(background.r()) * (1.0 - alpha))
+                    .round() as u8,
+                (f32::from(foreground.g()) * alpha + f32::from(background.g()) * (1.0 - alpha))
+                    .round() as u8,
+                (f32::from(foreground.b()) * alpha + f32::from(background.b()) * (1.0 - alpha))
+                    .round() as u8,
+            )
+        };
+
+        for (background, has_image) in [
+            ([0.94, 0.95, 0.97], false),
+            ([238.0 / 255.0, 236.0 / 255.0, 224.0 / 255.0], true),
+            ([31.0 / 255.0, 42.0 / 255.0, 55.0 / 255.0], true),
+        ] {
+            let canvas = to_color(background);
+            let accent = canvas_selection_accent(background, has_image);
+            let painted = composite(accent, canvas);
+            assert!(
+                contrast_ratio(painted, canvas) >= 3.0,
+                "selection drag accent {painted:?} lacks 3:1 contrast on {canvas:?}"
+            );
+        }
+    }
+
+    #[test]
     fn compact_icon_buttons_emit_contextual_accesskit_names() {
         let context = egui::Context::default();
         context.enable_accesskit();
