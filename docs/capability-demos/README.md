@@ -6,7 +6,7 @@ This folder defines the capture recipe for SKETCH-066. **No capability clips are
 
 1. Build the application and stage the exact fixture and UI state listed in [shot-list.md](shot-list.md).
 2. Close dialogs, notifications, and unrelated windows. Keep private file paths and account information out of the application window.
-3. Run `scripts/record_capability_demo.ps1` from PowerShell 7 with a short unique name, duration, fixture, theme, DPI, and one `-ShotStep` argument per action. The script finds an exact `Sketch3D` window title and captures that window only; it never captures the desktop.
+3. Run `scripts/record_capability_demo.ps1` from PowerShell 7 with a short unique name, duration, fixture, theme, DPI, and one `-ShotStep` argument per action. The script accepts only the exact `Sketch3D` title and captures that window only; it refuses to proceed if multiple windows have that title and never captures the desktop.
 4. Operate the app manually during the capture. The capture utility does not inject input, synthesize pressure, or measure latency. If a future clip uses deterministic replay, identify that fact in both the clip manifest and its caption.
 5. Review the MP4, GIF loop, poster, and JSON manifest. Correct `review` fields and record the reviewer/notes only after checking the clip at its intended README/tutorial size.
 6. Keep raw masters and unreviewed material under ignored `verification/capability-demos/`. Copy only reviewed, bounded assets into a curated release location. Do not add raw recordings to Git.

@@ -7,6 +7,7 @@ param(
     [ValidateRange(1, 90)]
     [int]$DurationSeconds,
 
+    [ValidateSet('Sketch3D')]
     [string]$WindowTitle = 'Sketch3D',
     [ValidateRange(10, 30)]
     [int]$CaptureFps = 30,
@@ -71,11 +72,13 @@ if (-not $ffmpeg) {
     throw 'FFmpeg is required for capture encoding. Install it and make it available on PATH.'
 }
 
-$appWindow = Get-Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.MainWindowTitle -ceq $WindowTitle -and $_.MainWindowHandle -ne 0 } |
-    Select-Object -First 1
-if (-not $appWindow) {
+$appWindows = @(Get-Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.MainWindowTitle -ceq $WindowTitle -and $_.MainWindowHandle -ne 0 })
+if ($appWindows.Count -eq 0) {
     throw "Could not find an open application window with the exact title '$WindowTitle'. This recorder never captures the desktop."
+}
+if ($appWindows.Count -gt 1) {
+    throw "Found $($appWindows.Count) windows titled '$WindowTitle'. Close duplicate Sketch3D windows so the capture target is unambiguous."
 }
 
 $outputRoot = [System.IO.Path]::GetFullPath($OutputDirectory)
