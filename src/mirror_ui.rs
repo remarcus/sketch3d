@@ -20,6 +20,13 @@ fn mirror_target_supported(drawing_on_model_surface: bool) -> bool {
     !drawing_on_model_surface
 }
 
+fn mirror_checkbox(ui: &mut egui::Ui, enabled: &mut bool, available: bool) -> egui::Response {
+    ui.add_enabled(
+        available,
+        egui::Checkbox::new(enabled, "Mirror brush and line strokes"),
+    )
+}
+
 pub(super) struct MirrorUi {
     pub enabled: bool,
     axis: NormalAxis,
@@ -84,10 +91,7 @@ impl SketchApp {
         let availability = self.mirror_availability();
         ui.separator();
         ui.strong("LIVE MIRROR");
-        ui.add_enabled(
-            availability.is_ok(),
-            egui::Checkbox::new(&mut self.mirror_ui.enabled, "Mirror brush and line strokes"),
-        );
+        mirror_checkbox(ui, &mut self.mirror_ui.enabled, availability.is_ok());
         if let Err(reason) = availability {
             ui.small(reason);
         }
@@ -246,7 +250,8 @@ impl SketchApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{mirror_target_supported, mirror_tool_supported};
+    use super::{mirror_checkbox, mirror_target_supported, mirror_tool_supported};
+    use eframe::egui::{self, Pos2, Rect, Vec2};
 
     #[test]
     fn live_mirror_is_limited_to_brush_and_line_modes() {
@@ -265,5 +270,74 @@ mod tests {
     fn live_mirror_is_disabled_for_model_surface_strokes() {
         assert!(mirror_target_supported(false));
         assert!(!mirror_target_supported(true));
+    }
+
+    #[test]
+    fn mirror_checkbox_rejects_clicks_when_unavailable() {
+        fn frame(
+            ctx: &egui::Context,
+            events: Vec<egui::Event>,
+            available: bool,
+            enabled: &mut bool,
+        ) -> egui::Response {
+            let mut response = None;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(640.0, 480.0))),
+                    focused: true,
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        response = Some(mirror_checkbox(ui, enabled, available));
+                    });
+                },
+            );
+            response.expect("mirror checkbox renders")
+        }
+
+        fn click(ctx: &egui::Context, position: Pos2, available: bool, enabled: &mut bool) {
+            let _ = frame(
+                ctx,
+                vec![egui::Event::PointerMoved(position)],
+                available,
+                enabled,
+            );
+            let _ = frame(
+                ctx,
+                vec![egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                }],
+                available,
+                enabled,
+            );
+            let _ = frame(
+                ctx,
+                vec![egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+                available,
+                enabled,
+            );
+        }
+
+        let ctx = egui::Context::default();
+        let mut enabled = false;
+        let initial = frame(&ctx, Vec::new(), false, &mut enabled);
+        assert!(!initial.enabled());
+        click(&ctx, initial.rect.center(), false, &mut enabled);
+        assert!(!enabled, "an unavailable mirror option cannot turn on");
+
+        let available = frame(&ctx, Vec::new(), true, &mut enabled);
+        assert!(available.enabled());
+        click(&ctx, available.rect.center(), true, &mut enabled);
+        assert!(enabled, "the option can be turned on for supported modes");
     }
 }
