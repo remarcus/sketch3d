@@ -123,6 +123,33 @@ pub fn import_bundle(
     Ok(metadata)
 }
 
+/// Parse an OBJ source, install its managed bundle, then reload the installed
+/// bytes before returning the model that the viewport should use. A bundle
+/// that cannot be reopened is removed so failed imports do not leave an
+/// orphaned resource directory.
+pub fn import_source_bundle(
+    source_obj: &Path,
+    asset_root: &Path,
+    id: u64,
+) -> Result<(ObjReferenceAsset, ObjModel), String> {
+    let source_model = obj_reference::load(source_obj)?;
+    let asset = import_bundle(&source_model, asset_root, id)?;
+    match load_bundle(asset_root, &asset) {
+        Ok(model) => {
+            let extent = (model.bounds[1] - model.bounds[0]).max_element();
+            if !extent.is_finite() || extent <= 1.0e-5 {
+                let _ = remove_bundle(asset_root, &asset);
+                return Err("OBJ geometry has no usable bounds.".into());
+            }
+            Ok((asset, model))
+        }
+        Err(error) => {
+            let _ = remove_bundle(asset_root, &asset);
+            Err(error)
+        }
+    }
+}
+
 /// Load a resource from the managed bundle. The original OBJ and MTL files may
 /// have been deleted or moved after import.
 pub fn load_bundle(asset_root: &Path, asset: &ObjReferenceAsset) -> Result<ObjModel, String> {
@@ -328,20 +355,43 @@ mod tests {
         )
         .unwrap();
         fs::write(&mtl_path, "newmtl red\nKd 0.8 0.1 0.2\nd 0.7\n").unwrap();
-        let parsed = obj_reference::load(&obj_path).unwrap();
         let asset_root = tempfile::tempdir().unwrap();
-        let asset = import_bundle(&parsed, asset_root.path(), 42).unwrap();
+        let (asset, imported) = import_source_bundle(&obj_path, asset_root.path(), 42).unwrap();
         assert_eq!(asset.bundle_dir, "models/42");
+        assert_eq!(imported.triangles.len(), 1);
+        assert_eq!(imported.materials[0].name, "red");
 
         fs::remove_file(&obj_path).unwrap();
         fs::remove_file(&mtl_path).unwrap();
         let reopened = load_bundle(asset_root.path(), &asset).unwrap();
-        assert_eq!(reopened.positions, parsed.positions);
-        assert_eq!(reopened.triangles, parsed.triangles);
-        assert_eq!(reopened.materials, parsed.materials);
+        assert_eq!(reopened.positions, imported.positions);
+        assert_eq!(reopened.triangles, imported.triangles);
+        assert_eq!(reopened.materials, imported.materials);
         assert_eq!(reopened.source_materials.len(), 1);
 
         remove_bundle(asset_root.path(), &asset).unwrap();
         assert!(load_bundle(asset_root.path(), &asset).is_err());
+    }
+
+    #[test]
+    fn rejected_source_does_not_create_a_model_bundle() {
+        let source = tempfile::tempdir().unwrap();
+        let obj_path = source.path().join("invalid.obj");
+        fs::write(&obj_path, "v NaN 0 0\n").unwrap();
+        let asset_root = tempfile::tempdir().unwrap();
+
+        assert!(import_source_bundle(&obj_path, asset_root.path(), 43).is_err());
+        assert!(!asset_root.path().join("models").exists());
+    }
+
+    #[test]
+    fn unusable_geometry_does_not_leave_an_imported_bundle() {
+        let source = tempfile::tempdir().unwrap();
+        let obj_path = source.path().join("point.obj");
+        fs::write(&obj_path, "v 0 0 0\nv 0 0 0\nv 0 0 0\nf 1 2 3\n").unwrap();
+        let asset_root = tempfile::tempdir().unwrap();
+
+        assert!(import_source_bundle(&obj_path, asset_root.path(), 44).is_err());
+        assert!(!asset_root.path().join("models/44").exists());
     }
 }

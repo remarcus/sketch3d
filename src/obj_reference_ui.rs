@@ -156,13 +156,6 @@ impl SketchApp {
         else {
             return;
         };
-        let model = match crate::obj_reference::load(&path) {
-            Ok(model) => model,
-            Err(error) => {
-                self.status = format!("OBJ import failed: {error}");
-                return;
-            }
-        };
         let mut id = self.next_id;
         let model_root = self.image_asset_root.join("models");
         while id != 0 && id != u64::MAX && model_root.join(id.to_string()).exists() {
@@ -172,24 +165,17 @@ impl SketchApp {
             self.status = "No more resource IDs are available.".into();
             return;
         }
-        let asset =
-            match crate::obj_reference_storage::import_bundle(&model, &self.image_asset_root, id) {
-                Ok(asset) => asset,
-                Err(error) => {
-                    self.status = format!("OBJ asset import failed: {error}");
-                    return;
-                }
-            };
-        let bundled_model =
-            match crate::obj_reference_storage::load_bundle(&self.image_asset_root, &asset) {
-                Ok(model) => model,
-                Err(error) => {
-                    self.status = format!("OBJ asset verification failed: {error}");
-                    let _ =
-                        crate::obj_reference_storage::remove_bundle(&self.image_asset_root, &asset);
-                    return;
-                }
-            };
+        let (asset, model) = match crate::obj_reference_storage::import_source_bundle(
+            &path,
+            &self.image_asset_root,
+            id,
+        ) {
+            Ok(imported) => imported,
+            Err(error) => {
+                self.status = format!("OBJ import failed: {error}");
+                return;
+            }
+        };
         let size = model.bounds[1] - model.bounds[0];
         let extent = size.max_element();
         if !extent.is_finite() || extent <= 1.0e-5 {
@@ -232,6 +218,9 @@ impl SketchApp {
             scale,
             asset,
         };
+        let triangle_count = model.triangles.len();
+        let material_count = model.materials.len();
+        let warning_count = model.warnings.len();
         if let Err(error) = resource.validate() {
             self.status = format!("OBJ resource is invalid: {error}");
             let _ = crate::obj_reference_storage::remove_bundle(
@@ -242,7 +231,7 @@ impl SketchApp {
         }
         let before = self.model_reference_edit_state();
         self.doc.model_references.push(resource.clone());
-        self.obj_reference_models.insert(id, bundled_model);
+        self.obj_reference_models.insert(id, model);
         self.next_id = id + 1;
         self.refresh_obj_reference_meshes();
         self.undo.push(Edit::ModelReferences {
@@ -255,9 +244,7 @@ impl SketchApp {
         self.renderer.invalidate();
         self.status = format!(
             "Imported {} triangles and {} materials. Unsupported MTL features: {}.",
-            model.triangles.len(),
-            model.materials.len(),
-            model.warnings.len()
+            triangle_count, material_count, warning_count
         );
     }
 
