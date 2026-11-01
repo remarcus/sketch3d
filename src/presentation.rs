@@ -304,4 +304,37 @@ mod tests {
             assert!((actual - expected).abs() < 1e-7);
         }
     }
+
+    #[test]
+    fn post_effect_preferences_default_off_and_roundtrip_their_bounded_ranges() {
+        assert_eq!(Preferences::default().post_effects, PostEffects::default());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presentation.json");
+        let prefs = Preferences {
+            grain: 0.12,
+            toon_shading: true,
+            post_effects: PostEffects {
+                glow: 1.0,
+                focus_distance: 1000.0,
+                depth_of_field: 16.0,
+                pixel_size: 16.0,
+            },
+            ..Preferences::default()
+        };
+        prefs.save(&path).unwrap();
+        assert_eq!(Preferences::load(&path).unwrap(), prefs);
+
+        let mut invalid = prefs.clone();
+        invalid.post_effects.glow = 1.01;
+        assert!(invalid.save(&path).is_err());
+        invalid = prefs.clone();
+        invalid.post_effects.focus_distance = -0.01;
+        assert!(invalid.save(&path).is_err());
+        invalid = prefs.clone();
+        invalid.post_effects.depth_of_field = 16.01;
+        assert!(invalid.save(&path).is_err());
+        invalid = prefs.clone();
+        invalid.post_effects.pixel_size = 0.5;
+        assert!(invalid.save(&path).is_err());
+    }
 }
