@@ -60,7 +60,7 @@ See the [recording workflow](docs/capability-demos/README.md) and [shot list](do
 
 ## Drawings and exports
 
-Native drawings use the editable `.sketch.json` format. Image and model references are copied into managed asset folders alongside the drawing. Sketch3D also supports PNG/JPEG artwork images, OBJ meshes, GLB scenes, and animated GIF/MP4. MP4 export requires FFmpeg with libx264 on `PATH`.
+Native drawings use the editable `.sketch.json` format. Image and model references are copied into managed asset folders alongside the drawing. Sketch3D also supports PNG/JPEG artwork images, OBJ meshes, GLB scenes, and animated GIF/MP4. MP4 export uses FFmpeg with libx264 when available, then falls back to Blender's H.264 video encoder.
 
 Recovery snapshots protect completed edits separately from deliberate drawing saves. Use **Save** to create or update your native drawing file. Camera bookmarks, view sequences, and local brush settings are stored separately from drawings.
 
