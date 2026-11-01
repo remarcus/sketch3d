@@ -15,6 +15,75 @@ pub(super) struct ExportSnapshot {
     selection: HashSet<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GlbExportAction {
+    InkOnly,
+    WholeScene,
+    SelectedStrokes,
+}
+
+impl GlbExportAction {
+    pub(super) fn scope(self) -> (bool, bool) {
+        match self {
+            Self::InkOnly => (false, false),
+            Self::WholeScene => (false, true),
+            Self::SelectedStrokes => (true, false),
+        }
+    }
+}
+
+pub(super) struct GlbExportMenuResponse {
+    pub action: Option<GlbExportAction>,
+    #[cfg(test)]
+    pub ink_only_rect: Rect,
+    #[cfg(test)]
+    pub whole_scene_rect: Rect,
+    #[cfg(test)]
+    pub selected_rect: Rect,
+    #[cfg(test)]
+    pub enabled_scopes: [bool; 3],
+}
+
+pub(super) fn glb_export_scope_items(
+    ui: &mut egui::Ui,
+    can_export_ink: bool,
+    can_export_scene: bool,
+    can_export_selected: bool,
+) -> GlbExportMenuResponse {
+    let ink_only = ui.add_enabled(
+        can_export_ink,
+        egui::Button::new("Whole drawing · ink only (.glb)"),
+    );
+    let whole_scene = ui.add_enabled(
+        can_export_scene,
+        egui::Button::new("Whole scene · ink + images + OBJ models (.glb)"),
+    );
+    let selected = ui.add_enabled(
+        can_export_selected,
+        egui::Button::new("Selected strokes (.glb)"),
+    );
+    let action = if ink_only.clicked() {
+        Some(GlbExportAction::InkOnly)
+    } else if whole_scene.clicked() {
+        Some(GlbExportAction::WholeScene)
+    } else if selected.clicked() {
+        Some(GlbExportAction::SelectedStrokes)
+    } else {
+        None
+    };
+    GlbExportMenuResponse {
+        action,
+        #[cfg(test)]
+        ink_only_rect: ink_only.rect,
+        #[cfg(test)]
+        whole_scene_rect: whole_scene.rect,
+        #[cfg(test)]
+        selected_rect: selected.rect,
+        #[cfg(test)]
+        enabled_scopes: [can_export_ink, can_export_scene, can_export_selected],
+    }
+}
+
 fn build_export_document_snapshot(
     document: &Document,
     selection: Option<&HashSet<u64>>,
@@ -52,6 +121,9 @@ impl SketchApp {
     pub(super) fn can_export(&self, selected: bool) -> bool {
         self.can_export_scope(selected, false)
     }
+    pub(super) fn can_export_scene(&self) -> bool {
+        self.can_export_scope(false, true)
+    }
     fn can_export_scope(&self, selected: bool, include_images: bool) -> bool {
         !self.liquify_active()
             && self.export_job.is_none()
@@ -67,9 +139,6 @@ impl SketchApp {
                     && !selected
                     && (self.doc.image_planes.iter().any(|plane| plane.visible)
                         || self.doc.model_references.iter().any(|model| model.visible))))
-    }
-    pub(super) fn export_dialog(&mut self, selected: bool, ctx: &egui::Context) {
-        self.export_dialog_with_images(selected, false, ctx);
     }
     pub(super) fn export_dialog_with_images(
         &mut self,
@@ -344,5 +413,106 @@ mod tests {
         assert_eq!(selected.strokes, vec![document.strokes[1].clone()]);
         assert!(selected.image_planes.is_empty());
         assert!(selected.model_references.is_empty());
+    }
+
+    #[test]
+    fn export_scope_clicks_dispatch_each_glb_action() {
+        struct ScopeFrame {
+            items: GlbExportMenuResponse,
+        }
+
+        fn frame(ctx: &egui::Context, events: Vec<egui::Event>) -> ScopeFrame {
+            let mut items = None;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                    focused: true,
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        items = Some(glb_export_scope_items(ui, true, true, true));
+                    });
+                },
+            );
+            ScopeFrame {
+                items: items.expect("scope controls render"),
+            }
+        }
+
+        fn click(ctx: &egui::Context, position: Pos2) -> ScopeFrame {
+            let _ = frame(ctx, vec![egui::Event::PointerMoved(position)]);
+            let _ = frame(
+                ctx,
+                vec![egui::Event::PointerButton {
+                    pos: position,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                }],
+            );
+            frame(
+                ctx,
+                vec![egui::Event::PointerButton {
+                    pos: position,
+                    button: PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+            )
+        }
+
+        fn ink_rect(items: &GlbExportMenuResponse) -> Rect {
+            items.ink_only_rect
+        }
+        fn scene_rect(items: &GlbExportMenuResponse) -> Rect {
+            items.whole_scene_rect
+        }
+        fn selected_rect(items: &GlbExportMenuResponse) -> Rect {
+            items.selected_rect
+        }
+
+        for (expected, expected_scope, rect_for_action) in [
+            (
+                GlbExportAction::InkOnly,
+                (false, false),
+                ink_rect as fn(&GlbExportMenuResponse) -> Rect,
+            ),
+            (GlbExportAction::WholeScene, (false, true), scene_rect),
+            (
+                GlbExportAction::SelectedStrokes,
+                (true, false),
+                selected_rect,
+            ),
+        ] {
+            let ctx = egui::Context::default();
+            let initial = frame(&ctx, Vec::new());
+            let clicked = click(&ctx, rect_for_action(&initial.items).center());
+            let action = clicked
+                .items
+                .action
+                .expect("GLB scope item should dispatch an action");
+            assert_eq!(action, expected);
+            assert_eq!(action.scope(), expected_scope);
+        }
+    }
+
+    #[test]
+    fn scene_only_document_enables_scene_export_without_selectable_ink() {
+        let ctx = egui::Context::default();
+        let mut response = None;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    response = Some(glb_export_scope_items(ui, false, true, false));
+                });
+            },
+        );
+        assert_eq!(response.unwrap().enabled_scopes, [false, true, false]);
     }
 }

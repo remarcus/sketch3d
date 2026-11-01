@@ -2604,26 +2604,17 @@ impl SketchApp {
                 self.save(true);
             }
             ui.menu_button("Export", |ui| {
-                if ui.button("Whole drawing · ink only (.glb)").clicked() {
-                    ui.close_menu();
-                    self.export_dialog(false, ctx);
-                }
-                if ui
-                    .button("Whole scene · ink + images + OBJ models (.glb)")
-                    .clicked()
+                if let Some(action) = export_ui::glb_export_scope_items(
+                    ui,
+                    self.can_export(false),
+                    self.can_export_scene(),
+                    self.can_export(true),
+                )
+                .action
                 {
                     ui.close_menu();
-                    self.export_dialog_with_images(false, true, ctx);
-                }
-                if ui
-                    .add_enabled(
-                        self.can_export(true),
-                        egui::Button::new("Selected strokes (.glb)"),
-                    )
-                    .clicked()
-                {
-                    ui.close_menu();
-                    self.export_dialog(true, ctx);
+                    let (selected, include_images) = action.scope();
+                    self.export_dialog_with_images(selected, include_images, ctx);
                 }
                 if ui
                     .add_enabled(
