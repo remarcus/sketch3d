@@ -370,3 +370,157 @@ fn point_line_distance(point: Vec3, start: Vec3, end: Vec3) -> f32 {
     let t = ((point - start).dot(chord) / chord.length_squared()).clamp(0.0, 1.0);
     point.distance(start + chord * t)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Brush, BrushKind, Document, StrokeMaterial};
+
+    fn prototype() -> Stroke {
+        Stroke {
+            id: 42,
+            color: [0.15, 0.45, 0.8],
+            radius: 0.035,
+            brush: Brush {
+                kind: BrushKind::Ribbon,
+                angle_degrees: 23.0,
+                ..Brush::default()
+            },
+            points: Vec::new(),
+            fill: None,
+            material: StrokeMaterial::Emissive,
+            group_id: Some(8),
+            layer_id: 1,
+        }
+    }
+
+    fn curve(scale: f32) -> CubicBezier {
+        CubicBezier {
+            p0: Vec3::ZERO,
+            p1: Vec3::new(0.0, scale, 0.0),
+            p2: Vec3::new(scale, scale, 0.0),
+            p3: Vec3::new(scale, 0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn adaptive_tessellation_scales_with_world_tolerance_and_preserves_endpoints() {
+        let unit = tessellate_cubic(curve(1.0), 0.01, 4096).unwrap();
+        let scaled = tessellate_cubic(curve(10.0), 0.1, 4096).unwrap();
+        let finer = tessellate_cubic(curve(1.0), 0.002, 4096).unwrap();
+        assert_eq!(unit.len(), scaled.len());
+        assert!(finer.len() > unit.len());
+        assert_eq!(unit.first(), Some(&curve(1.0).p0));
+        assert_eq!(unit.last(), Some(&curve(1.0).p3));
+        for (unit_point, scaled_point) in unit.iter().zip(&scaled) {
+            assert!(unit_point.distance(*scaled_point / 10.0) < 0.00001);
+        }
+    }
+
+    #[test]
+    fn pressure_aware_segments_join_once_and_preserve_brush_metadata() {
+        let left = CubicBezier {
+            p0: Vec3::ZERO,
+            p1: Vec3::new(0.0, 0.3, 0.0),
+            p2: Vec3::new(0.7, 0.3, 0.0),
+            p3: Vec3::X,
+        };
+        let right = CubicBezier {
+            p0: Vec3::X,
+            p1: Vec3::new(1.3, -0.3, 0.0),
+            p2: Vec3::new(1.7, 0.3, 0.0),
+            p3: Vec3::new(2.0, 0.0, 0.0),
+        };
+        let mut source = prototype();
+        source.points = vec![Point {
+            position: Vec3::new(10.0, 20.0, 30.0),
+            pressure: 1.0,
+            tilt: Some(Vec3::Z),
+        }];
+        let stroke = tessellate_stroke(
+            &[
+                PressureSegment {
+                    curve: left,
+                    pressure_start: 0.2,
+                    pressure_end: 0.5,
+                },
+                PressureSegment {
+                    curve: right,
+                    pressure_start: 0.5,
+                    pressure_end: 0.9,
+                },
+            ],
+            &source,
+            0.01,
+            4096,
+        )
+        .unwrap();
+        assert_eq!(stroke.id, source.id);
+        assert_eq!(stroke.color, source.color);
+        assert_eq!(stroke.radius, source.radius);
+        assert_eq!(stroke.brush, source.brush);
+        assert_eq!(stroke.material, source.material);
+        assert_eq!(stroke.group_id, source.group_id);
+        assert_eq!(stroke.layer_id, source.layer_id);
+        assert_eq!(stroke.fill, None);
+        assert_eq!(stroke.points.first().unwrap().position, left.p0);
+        assert_eq!(stroke.points.last().unwrap().position, right.p3);
+        assert_eq!(stroke.points.first().unwrap().pressure, 0.2);
+        assert_eq!(stroke.points.last().unwrap().pressure, 0.9);
+        assert_eq!(
+            stroke
+                .points
+                .iter()
+                .filter(|point| point.position == Vec3::X)
+                .count(),
+            1,
+            "a shared anchor is stored once"
+        );
+        assert!(stroke
+            .points
+            .windows(2)
+            .all(|pair| pair[0].pressure <= pair[1].pressure));
+
+        let mut doc = Document::default();
+        let edit = crate::editing::Edit::Add(stroke.clone());
+        edit.apply(&mut doc, true);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+        let reopened = Document::from_json(&std::fs::read_to_string(file.path()).unwrap()).unwrap();
+        assert_eq!(reopened.strokes, doc.strokes);
+        let glb = crate::export::encode(&reopened, None).unwrap();
+        assert_eq!(
+            gltf::Gltf::from_slice(&glb.bytes).unwrap().meshes().count(),
+            1
+        );
+        edit.apply(&mut doc, false);
+        assert!(doc.strokes.is_empty());
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes, vec![stroke]);
+    }
+
+    #[test]
+    fn cubic_split_and_join_keep_endpoints_and_tangent_directions() {
+        let original = curve(1.0);
+        let (left, right) = original.split(0.37).unwrap();
+        assert!(left.p3.distance(right.p0) < 1e-6);
+        assert!(left.p3.distance(original.evaluate(0.37).unwrap()) < 1e-6);
+        let joined = CubicBezier::join(left, right, 1.0).unwrap();
+        assert_eq!(joined.p0, original.p0);
+        assert_eq!(joined.p3, original.p3);
+        assert!(
+            joined
+                .derivative(0.0)
+                .unwrap()
+                .dot(original.derivative(0.0).unwrap())
+                > 0.0
+        );
+        assert!(
+            joined
+                .derivative(1.0)
+                .unwrap()
+                .dot(original.derivative(1.0).unwrap())
+                > 0.0
+        );
+    }
+}
