@@ -53,6 +53,10 @@ Native drawings use the editable `.sketch.json` format. Image and model referenc
 
 Recovery snapshots protect completed edits separately from deliberate drawing saves. Use **Save** to create or update your native drawing file. Camera bookmarks, view sequences, and local brush settings are stored separately from drawings.
 
+## Releases
+
+After setting the version in `Cargo.toml`, push the matching tag (for example, `v0.1.0`) to build Windows, Linux, and macOS archives and publish them with generated release notes and SHA-256 checksums. The workflow marks tags containing a hyphen, such as `v0.2.0-rc.1`, as prereleases.
+
 ## Project information
 
 - [Architecture notes](ARCHITECTURE.md)

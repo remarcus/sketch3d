@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify tag matches Cargo.toml
+        shell: pwsh
+        run: |
+          $manifest = Get-Content Cargo.toml -Raw
+          $version = [regex]::Match($manifest, '(?m)^version = "([^"]+)"').Groups[1].Value
+          $tagVersion = $env:GITHUB_REF_NAME.TrimStart('v')
+          if ($tagVersion -ne $version) {
+            throw "Release tag $env:GITHUB_REF_NAME does not match Cargo.toml version $version"
+          }
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libvulkan-dev libdbus-1-dev
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package Windows release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $arch = if ($env:RUNNER_ARCH -eq 'X64') { 'x86_64' } else { 'aarch64' }
+          $stage = Join-Path $env:RUNNER_TEMP 'sketch3d-release'
+          New-Item -ItemType Directory -Force -Path $stage, 'dist' | Out-Null
+          Copy-Item 'target/release/sketch3d.exe', 'README.md', 'LICENSE' -Destination $stage
+          $archive = "Sketch3D-$($env:GITHUB_REF_NAME)-windows-$arch.zip"
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath (Join-Path 'dist' $archive)
+
+      - name: Package Unix release
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          case "$RUNNER_ARCH" in
+            X64) arch=x86_64 ;;
+            ARM64) arch=aarch64 ;;
+            *) echo "Unsupported runner architecture: $RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          mkdir -p dist/package
+          cp "target/release/sketch3d" README.md LICENSE dist/package/
+          archive="Sketch3D-${GITHUB_REF_NAME}-${PLATFORM}-${arch}.tar.gz"
+          tar -czf "dist/$archive" -C dist/package .
+        env:
+          PLATFORM: ${{ matrix.platform }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+      - name: Create SHA-256 checksums
+        run: sha256sum dist/* > dist/SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: dist/*
+          fail_on_unmatched_files: true
