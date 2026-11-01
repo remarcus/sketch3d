@@ -261,4 +261,96 @@ mod tests {
         document.strokes[0].fill = Some(crate::document::PlanarFill { offset: 0.01 });
         assert!(edit(&document, &ids, settings()).is_err());
     }
+
+    #[test]
+    fn falloffs_and_direction_change_only_point_positions() {
+        let document = sample_document();
+        let before = editing::snapshot(&document, &HashSet::from([7]));
+        let displacement = Vec3::X * 0.4;
+        let positions: Vec<Vec3> = [Falloff::Linear, Falloff::Smooth, Falloff::Sharp]
+            .into_iter()
+            .map(|falloff| {
+                let mut config = settings();
+                config.displacement = displacement;
+                config.strength = 1.0;
+                config.falloff = falloff;
+                preview(&before, config).unwrap()[0].1.points[0].position
+            })
+            .collect();
+        let linear_amount = positions[0].x - before[0].1.points[0].position.x;
+        let smooth_amount = positions[1].x - before[0].1.points[0].position.x;
+        let sharp_amount = positions[2].x - before[0].1.points[0].position.x;
+        assert!(sharp_amount < linear_amount && linear_amount < smooth_amount);
+
+        let mut pull = settings();
+        pull.direction = Direction::Pull;
+        let pulled = preview(&before, pull).unwrap();
+        assert_eq!(
+            pulled[0].1.points[1].position,
+            before[0].1.points[1].position - pull.displacement * pull.strength
+        );
+        assert_eq!(pulled[0].1.brush, before[0].1.brush);
+        assert_eq!(
+            pulled[0].1.points[1].pressure,
+            before[0].1.points[1].pressure
+        );
+        assert_eq!(pulled[0].1.points[1].tilt, before[0].1.points[1].tilt);
+    }
+
+    #[test]
+    fn deformed_ink_roundtrips_through_native_recovery_and_export() {
+        let mut document = sample_document();
+        let ids = HashSet::from([7]);
+        let edit = edit(&document, &ids, settings()).unwrap();
+        edit.apply(&mut document, true);
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        let reopened = Document::from_json(&std::fs::read_to_string(file.path()).unwrap()).unwrap();
+        assert_eq!(reopened.strokes, document.strokes);
+
+        let recovery_dir = tempfile::tempdir().unwrap();
+        let snapshot = crate::recovery_store::RecoverySnapshot::new(
+            "liquify-session".into(),
+            None,
+            document.clone(),
+        );
+        crate::recovery_store::write(recovery_dir.path(), &snapshot).unwrap();
+        let recovered = crate::recovery_store::scan(recovery_dir.path(), "other-session").unwrap();
+        assert_eq!(recovered.candidates.len(), 1);
+        assert_eq!(
+            recovered.candidates[0].snapshot.document.strokes,
+            document.strokes
+        );
+
+        let exported = crate::export::encode(&document, None).unwrap();
+        let mesh_count = gltf::Gltf::from_slice(&exported.bytes)
+            .unwrap()
+            .meshes()
+            .count();
+        assert_eq!(mesh_count, 1);
+
+        edit.apply(&mut document, false);
+        assert_eq!(document.strokes, sample_document().strokes);
+        edit.apply(&mut document, true);
+        assert_eq!(document.strokes, reopened.strokes);
+    }
+
+    #[test]
+    fn invalid_preview_is_atomic_and_bounded() {
+        let mut before = editing::snapshot(&sample_document(), &HashSet::from([7]));
+        before[0].1.points[1].position = Vec3::new(9_999.9, 0.0, 0.0);
+        let mut config = settings();
+        config.center = before[0].1.points[1].position;
+        config.displacement = Vec3::X;
+        config.strength = 1.0;
+        config.radius = 1.0;
+        let original = before.clone();
+        assert!(preview(&before, config).is_err());
+        assert_eq!(before, original);
+
+        config.center = Vec3::ZERO;
+        config.radius = 0.0;
+        assert!(preview(&before, config).is_err());
+    }
 }
