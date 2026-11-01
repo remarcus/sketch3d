@@ -2,6 +2,48 @@ use super::*;
 use crate::geometry::Plane;
 
 impl SketchApp {
+    fn verify_obj_reference_window_import_click(&mut self, screen_rect: Rect) {
+        let ui_context = egui::Context::default();
+        let raw_input = |events| egui::RawInput {
+            screen_rect: Some(screen_rect),
+            focused: true,
+            events,
+            ..Default::default()
+        };
+        let _ = ui_context.run(raw_input(Vec::new()), |ctx| {
+            self.show_obj_reference_window(ctx);
+        });
+        let import_rect = self
+            .obj_reference_verification_import_rect
+            .expect("OBJ import control is rendered in the actual references window");
+        assert!(screen_rect.contains(import_rect.center()));
+        let position = import_rect.center();
+
+        for events in [
+            vec![egui::Event::PointerMoved(position)],
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        ] {
+            let _ = ui_context.run(raw_input(events), |ctx| {
+                self.show_obj_reference_window(ctx);
+            });
+        }
+        assert!(
+            self.obj_reference_verification_button_clicked,
+            "synthetic pointer move, press, and release reaches the OBJ import handler"
+        );
+    }
+
     pub(super) fn verify_obj_references(&mut self, ctx: &egui::Context, rect: Rect) {
         let Some(frame) = self.obj_reference_verification_frame else {
             return;
@@ -40,18 +82,18 @@ impl SketchApp {
                 self.obj_reference_verification_source_root = Some(source_root);
                 self.obj_reference_window_open = true;
 
-                let import_rect = self
-                    .obj_reference_verification_import_rect
-                    .expect("OBJ import button was rendered");
-                assert!(rect.contains(import_rect.center()));
-                self.import_obj_reference();
+                self.verify_obj_reference_window_import_click(ctx.input(|input| input.screen_rect));
             }
             1 => {
                 assert_eq!(
                     self.doc.model_references.len(),
                     1,
-                    "the import action installs one OBJ: {}",
+                    "the clicked import button installs one OBJ: {}",
                     self.status
+                );
+                assert!(
+                    self.obj_reference_verification_button_clicked,
+                    "synthetic pointer press/release reaches the OBJ import button handler"
                 );
                 assert_eq!(
                     self.obj_reference_models.len(),
@@ -109,10 +151,11 @@ impl SketchApp {
                 assert!(actual_min.abs_diff_eq(expected_min.min(expected_max), 1.0e-5));
                 assert!(actual_max.abs_diff_eq(expected_min.max(expected_max), 1.0e-5));
 
-                self.status = "OBJ viewport import and picking checks passed.".into();
+                self.status =
+                    "OBJ button import, viewport picking, and bundle checks passed.".into();
                 self.dirty = false;
                 self.renderer.invalidate();
-                self.obj_reference_verification_frame = Some(2);
+                self.obj_reference_verification_frame = Some(4);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }
             _ => {}

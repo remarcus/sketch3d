@@ -190,6 +190,7 @@ pub struct SketchApp {
     obj_reference_window_open: bool,
     obj_reference_verification_frame: Option<u32>,
     obj_reference_verification_import_rect: Option<Rect>,
+    obj_reference_verification_button_clicked: bool,
     obj_reference_verification_source: Option<PathBuf>,
     obj_reference_verification_source_root: Option<tempfile::TempDir>,
     obj_reference_verification_asset_root: Option<tempfile::TempDir>,
@@ -611,6 +612,7 @@ impl SketchApp {
             obj_reference_window_open: false,
             obj_reference_verification_frame: None,
             obj_reference_verification_import_rect: None,
+            obj_reference_verification_button_clicked: false,
             obj_reference_verification_source: None,
             obj_reference_verification_source_root: None,
             obj_reference_verification_asset_root: None,
@@ -4910,7 +4912,7 @@ impl SketchApp {
             } else if self.model_surface_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["synthetic pointer samples cross a shared manifold triangle edge in one model-surface stroke","world-space samples remain on the OBJ surface","model-surface commit creates one ordinary undo edit","undo and redo preserve exact model-surface samples","a pointer miss commits the first surface run","recontact after a miss starts a second surface run without bridging the gap","split model-surface runs undo and redo independently"],"stroke_count":self.doc.strokes.len(),"point_count":self.doc.strokes.iter().map(|stroke|stroke.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.obj_reference_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["OBJ References window displays its import control","the tested import action installs and reloads a drawing-local bundle","imported model is registered with the scene renderer","synthetic viewport selection picks the imported model","selected-model bounds match the normalized OBJ bounds"],"model_count":self.doc.model_references.len(),"triangle_count":self.obj_reference_models.values().map(|model|model.triangles.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["OBJ References window displays its import control","synthetic pointer move, press, and release clicks the window's import control","the clicked control invokes the production import handler with an injected file-picker result","the imported drawing-local bundle reloads","imported model is registered with the scene renderer","synthetic viewport selection picks the imported model","selected-model bounds match the normalized OBJ bounds"],"native_file_picker_tested":false,"model_count":self.doc.model_references.len(),"triangle_count":self.obj_reference_models.values().map(|model|model.triangles.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.liquify_brush_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["synthetic canvas drag creates a non-destructive preview","front, side, and ground camera views preserve the working-plane depth","unselected and occluding strokes remain unchanged","cancel restores exact source strokes","navigation interruption cancels brush preview without history","apply commits preview as one history edit","undo restores source geometry","redo restores committed deformation","updated stroke remains pickable at the deformed position and is no longer picked at its original position","native serialization and recovery scan preserve the deformed geometry","whole-scene and selected-stroke GLB encode the committed result","brush cursor indicates radius and working-plane depth"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.mixed_resources_verification_frame.is_some() {

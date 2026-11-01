@@ -69,6 +69,9 @@ impl SketchApp {
                 self.obj_reference_verification_import_rect = Some(import_response.rect);
             }
             if import_response.clicked() {
+                if self.obj_reference_verification_frame.is_some() {
+                    self.obj_reference_verification_button_clicked = true;
+                }
                 self.import_obj_reference();
             }
             ui.small("OBJ models are read-only references. Whole-scene GLB includes visible models; selected-stroke export remains ink-only. Supported MTL properties: Kd diffuse color and d/Tr opacity. Texture maps and other MTL properties are ignored and listed in the GLB metadata.");
