@@ -87,6 +87,7 @@ $manifestPath = Join-Path $outputRoot "$Name.recording.json"
 $tempMasterPath = Join-Path $outputRoot ".$Name.capture.mp4"
 $tempGifPath = Join-Path $outputRoot ".$Name.preview.gif"
 $tempPosterPath = Join-Path $outputRoot ".$Name.poster.png"
+$publishedPaths = [System.Collections.Generic.List[string]]::new()
 
 foreach ($destination in @($masterPath, $gifPath, $posterPath, $manifestPath)) {
     if (Test-Path -LiteralPath $destination) {
@@ -171,7 +172,7 @@ try {
         outputs = [ordered]@{
             mp4 = [ordered]@{ file = "$Name.mp4"; bytes = $masterBytes; sha256 = (Get-FileHash -LiteralPath $tempMasterPath -Algorithm SHA256).Hash.ToLowerInvariant() }
             gif = if ($gifBytes -ne $null) { [ordered]@{ file = "$Name.gif"; bytes = $gifBytes; sha256 = (Get-FileHash -LiteralPath $tempGifPath -Algorithm SHA256).Hash.ToLowerInvariant() } } else { $null }
-            poster = [ordered]@{ file = "$Name.png"; bytes = (Get-Item -LiteralPath $tempPosterPath).Length; alt = 'Reviewed poster frame for the capability clip.' }
+            poster = [ordered]@{ file = "$Name.png"; bytes = (Get-Item -LiteralPath $tempPosterPath).Length; sha256 = (Get-FileHash -LiteralPath $tempPosterPath -Algorithm SHA256).Hash.ToLowerInvariant(); alt = 'Reviewed poster frame for the capability clip.' }
         }
         review = [ordered]@{
             reviewed = $false
@@ -186,15 +187,24 @@ try {
     $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestTemp -Encoding utf8
 
     Move-Item -LiteralPath $tempMasterPath -Destination $masterPath
+    $publishedPaths.Add($masterPath)
     Move-Item -LiteralPath $tempPosterPath -Destination $posterPath
+    $publishedPaths.Add($posterPath)
     if (Test-Path -LiteralPath $tempGifPath) {
         Move-Item -LiteralPath $tempGifPath -Destination $gifPath
+        $publishedPaths.Add($gifPath)
     }
     Move-Item -LiteralPath $manifestTemp -Destination $manifestPath
+    $publishedPaths.Add($manifestPath)
     Write-Host "Saved reviewed-candidate outputs under $outputRoot"
     Write-Host 'Review the MP4, GIF loop, poster, and manifest before adding any asset to README or docs.'
 }
 catch {
+    foreach ($published in $publishedPaths) {
+        if (Test-Path -LiteralPath $published) {
+            Remove-Item -LiteralPath $published -Force -ErrorAction SilentlyContinue
+        }
+    }
     foreach ($temporary in @($tempMasterPath, $tempGifPath, $tempPosterPath, (Join-Path $outputRoot ".$Name.recording.json.tmp"))) {
         if (Test-Path -LiteralPath $temporary) {
             Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue

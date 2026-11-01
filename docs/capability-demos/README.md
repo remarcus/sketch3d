@@ -30,6 +30,8 @@ Example (run from the repository root):
 
 FFmpeg must include the Windows `gdigrab` input and libx264. The script caps captures at 2,700 frames, 7,680×4,320 metadata dimensions, 512 MiB per MP4, and 5 MiB per short GIF. GIF previews are generated only for clips up to 25 seconds; longer tutorials use an MP4 and poster. Output names never overwrite existing files.
 
+The capture manifest includes byte sizes and SHA-256 hashes for the MP4, GIF (when created), and poster. If publishing the completed output set fails partway through, the script removes files already moved by that capture so a retry does not inherit a partial set.
+
 ## Review checklist
 
 - Confirm the recorded window is Sketch3D and no unrelated screen content appears.

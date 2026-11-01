@@ -33,6 +33,7 @@
     "poster": {
       "file": null,
       "bytes": null,
+      "sha256": null,
       "alt": null
     }
   },
