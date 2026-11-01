@@ -1,0 +1,24 @@
+{
+  "backend": "Blender H.264 fallback",
+  "checks": [
+    "odd RGBA frames are padded to even H.264 dimensions",
+    "Blender writes the requested number of H.264 MP4 samples",
+    "VLC playback decode preserves RGB color when VLC is installed"
+  ],
+  "decoded_frame_count": 7,
+  "encoded_dimensions": [
+    64,
+    48
+  ],
+  "encoder_path": "C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe",
+  "fps": 8,
+  "frame_count": 8,
+  "input_dimensions": [
+    63,
+    47
+  ],
+  "mp4_bytes": 1896,
+  "mp4_sample_count": 8,
+  "passed": true,
+  "physical_hardware_tested": false
+}

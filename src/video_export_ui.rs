@@ -531,10 +531,10 @@ impl VideoExportUi {
                     ui.add(egui::Slider::new(&mut self.fps, 4..=24).text("Frames per second"));
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut self.format, VideoFormat::Gif, "GIF");
-                        ui.selectable_value(&mut self.format, VideoFormat::Mp4, "MP4 (FFmpeg)");
+                        ui.selectable_value(&mut self.format, VideoFormat::Mp4, "MP4 (H.264)");
                     });
                     if self.format == VideoFormat::Mp4 {
-                        ui.small("MP4 encoding requires FFmpeg with libx264 on PATH. Odd dimensions are padded by one pixel for H.264.");
+                        ui.small("MP4 encoding uses FFmpeg with libx264, or installed Blender when FFmpeg is unavailable. Odd dimensions are padded by one pixel for H.264.");
                     }
                     ui.label(format!("{} pixels", self.width as u64 * self.height as u64));
                     if let Some(count) = self.frame_count(sequences, history.duration_ms()) {
@@ -1033,10 +1033,237 @@ pub(crate) fn encode_gif(
     Ok(())
 }
 
-/// Stream raw RGBA frames to FFmpeg so encoding stays off the UI/drawing path.
-/// The temporary file uses an .mp4 suffix because FFmpeg selects its muxer from
-/// the output filename. The final destination is installed only after a clean
-/// encoder exit, so cancellation and encoder errors leave no partial movie.
+fn blender_executable() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("SPATIAL_SKETCH_BLENDER") {
+        candidates.push(PathBuf::from(path));
+    }
+    #[cfg(windows)]
+    let executable_name = "blender.exe";
+    #[cfg(not(windows))]
+    let executable_name = "blender";
+    if let Some(path) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&path) {
+            candidates.push(directory.join(executable_name));
+        }
+    }
+    #[cfg(windows)]
+    for root in [
+        std::env::var_os("ProgramFiles"),
+        std::env::var_os("ProgramFiles(x86)"),
+        std::env::var_os("LOCALAPPDATA")
+            .map(|path| PathBuf::from(path).join("Programs").into_os_string()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let root = PathBuf::from(root).join("Blender Foundation");
+        if let Ok(entries) = std::fs::read_dir(root) {
+            let mut installs: Vec<_> = entries
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("Blender "))
+                .map(|entry| entry.path().join(executable_name))
+                .collect();
+            installs.sort_by(|left, right| right.cmp(left));
+            candidates.extend(installs);
+        }
+    }
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn pad_rgba_frame(pixels: &[u8], size: [u32; 2], padded_size: [u32; 2]) -> Option<Vec<u8>> {
+    if size.contains(&0) || padded_size[0] < size[0] || padded_size[1] < size[1] {
+        return None;
+    }
+    let row_bytes = size[0] as usize * 4;
+    if pixels.len() != row_bytes.checked_mul(size[1] as usize)? {
+        return None;
+    }
+    let padded_row_bytes = padded_size[0] as usize * 4;
+    let mut padded = vec![0; padded_row_bytes.checked_mul(padded_size[1] as usize)?];
+    for row in 0..size[1] as usize {
+        let source_start = row * row_bytes;
+        let target_start = row * padded_row_bytes;
+        padded[target_start..target_start + row_bytes]
+            .copy_from_slice(&pixels[source_start..source_start + row_bytes]);
+        if padded_size[0] > size[0] {
+            padded[target_start + row_bytes + 3] = 255;
+        }
+    }
+    if padded_size[1] > size[1] {
+        let bottom_row_start = size[1] as usize * padded_row_bytes;
+        for pixel in padded[bottom_row_start..].as_chunks_mut::<4>().0 {
+            pixel[3] = 255;
+        }
+    }
+    Some(padded)
+}
+
+fn encode_mp4_with_blender(
+    receiver: Receiver<Option<Vec<u8>>>,
+    destination: &std::path::Path,
+    size: [u32; 2],
+    fps: u32,
+    frame_count: usize,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    let blender = blender_executable().ok_or_else(|| {
+        "MP4 export requires FFmpeg with libx264 or Blender with its H.264 video encoder."
+            .to_owned()
+    })?;
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    let work = tempfile::Builder::new()
+        .prefix(".sketch3d-mp4-")
+        .tempdir_in(parent)
+        .map_err(|error| error.to_string())?;
+    let frames = work.path().join("frames");
+    std::fs::create_dir(&frames).map_err(|error| error.to_string())?;
+    let script = work.path().join("encode_mp4.py");
+    std::fs::write(&script, include_str!("../scripts/blender_mp4_encoder.py"))
+        .map_err(|error| error.to_string())?;
+    let encoded_path = work.path().join("encoded.mp4");
+    let padded_size = [size[0] + size[0] % 2, size[1] + size[1] % 2];
+    let expected_len = size[0] as usize * size[1] as usize * 4;
+
+    for frame_index in 0..frame_count {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Export cancelled".into());
+        }
+        let pixels = match receiver.recv() {
+            Ok(Some(pixels)) => pixels,
+            Ok(None) | Err(_) => return Err("Export cancelled".into()),
+        };
+        if pixels.len() != expected_len {
+            return Err("Rendered frame has invalid dimensions".into());
+        }
+        let padded;
+        let frame = if padded_size == size {
+            pixels.as_slice()
+        } else {
+            padded = pad_rgba_frame(&pixels, size, padded_size)
+                .ok_or_else(|| "Could not pad an RGBA video frame".to_owned())?;
+            padded.as_slice()
+        };
+        let frame_path = frames.join(format!("frame_{:06}.png", frame_index + 1));
+        image::save_buffer(
+            &frame_path,
+            frame,
+            padded_size[0],
+            padded_size[1],
+            image::ColorType::Rgba8,
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Export cancelled".into());
+    }
+
+    let stdout_log_path = work.path().join("blender.stdout.log");
+    let stderr_log_path = work.path().join("blender.stderr.log");
+    let stdout_log = std::fs::File::create(&stdout_log_path).map_err(|error| error.to_string())?;
+    let stderr_log = std::fs::File::create(&stderr_log_path).map_err(|error| error.to_string())?;
+    let mut command = Command::new(&blender);
+    command
+        .args([
+            "--background",
+            "--factory-startup",
+            "--python-exit-code",
+            "1",
+            "--python",
+        ])
+        .arg(&script)
+        .args(["--"])
+        .arg(&frames)
+        .arg(&encoded_path)
+        .arg(padded_size[0].to_string())
+        .arg(padded_size[1].to_string())
+        .arg(fps.to_string())
+        .arg(frame_count.to_string())
+        .current_dir(work.path())
+        .stdout(Stdio::from(stdout_log))
+        .stderr(Stdio::from(stderr_log));
+    for (setting, directory) in [
+        ("BLENDER_USER_CONFIG", "config"),
+        ("BLENDER_USER_SCRIPTS", "scripts"),
+        ("BLENDER_USER_DATAFILES", "datafiles"),
+        ("BLENDER_USER_EXTENSIONS", "extensions"),
+    ] {
+        let path = work.path().join(directory);
+        std::fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+        command.env(setting, path);
+    }
+    let mut child = command
+        .stdin(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Could not start Blender MP4 encoder: {error}"))?;
+    let status = loop {
+        if cancelled.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Export cancelled".into());
+        }
+        match child.try_wait().map_err(|error| error.to_string())? {
+            Some(status) => break status,
+            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    };
+    if !status.success() {
+        let detail = std::fs::read_to_string(&stderr_log_path)
+            .unwrap_or_default()
+            .lines()
+            .rev()
+            .take(8)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join(" ");
+        return Err(if detail.is_empty() {
+            "Blender could not encode MP4 with its H.264 video encoder".into()
+        } else {
+            format!("Blender MP4 encoding failed: {detail}")
+        });
+    }
+    let mut movie = std::fs::File::open(&encoded_path)
+        .map_err(|error| format!("Blender did not produce an MP4: {error}"))?;
+    if movie.metadata().map_err(|error| error.to_string())?.len() <= 64 {
+        return Err("Blender produced an empty MP4 file".into());
+    }
+    use std::io::{Read, Seek, SeekFrom};
+    movie
+        .seek(SeekFrom::Start(4))
+        .map_err(|error| error.to_string())?;
+    let mut signature = [0; 4];
+    movie
+        .read_exact(&mut signature)
+        .map_err(|error| error.to_string())?;
+    if &signature != b"ftyp" {
+        return Err("Blender output is not an MP4 container".into());
+    }
+    movie
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| error.to_string())?;
+    let mut temporary = tempfile::Builder::new()
+        .suffix(".mp4")
+        .tempfile_in(parent)
+        .map_err(|error| error.to_string())?;
+    std::io::copy(&mut movie, temporary.as_file_mut()).map_err(|error| error.to_string())?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    temporary
+        .persist(destination)
+        .map_err(|error| error.error.to_string())?;
+    Ok(())
+}
+
+/// Stream raw RGBA frames to FFmpeg; if it is absent, encode a temporary PNG
+/// sequence through Blender's bundled FFmpeg video writer. The final file is
+/// installed only after a clean encoder exit.
 fn encode_mp4(
     receiver: Receiver<Option<Vec<u8>>>,
     destination: &std::path::Path,
@@ -1053,7 +1280,7 @@ fn encode_mp4(
         .suffix(".mp4")
         .tempfile_in(parent)
         .map_err(|error| error.to_string())?;
-    let mut child = Command::new("ffmpeg")
+    let ffmpeg = Command::new("ffmpeg")
         .args([
             "-hide_banner",
             "-loglevel",
@@ -1081,18 +1308,26 @@ fn encode_mp4(
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                "MP4 export requires FFmpeg with libx264 installed and available on PATH".to_owned()
-            } else {
-                format!("Could not start FFmpeg: {error}")
-            }
-        })?;
+        .spawn();
+    let mut child = match ffmpeg {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            drop(temporary);
+            return encode_mp4_with_blender(
+                receiver,
+                destination,
+                size,
+                fps,
+                frame_count,
+                cancelled,
+            );
+        }
+        Err(error) => return Err(format!("Could not start FFmpeg: {error}")),
+    };
     let Some(mut stdin) = child.stdin.take() else {
         let _ = child.kill();
         let _ = child.wait();
-        return Err("FFmpeg did not open its input stream".into());
+        return Err("MP4 encoder did not open its input stream".into());
     };
     let expected_len = size[0] as usize * size[1] as usize * 4;
     for _ in 0..frame_count {
@@ -1190,6 +1425,116 @@ mod tests {
         }
     }
 
+    fn mp4_sample_count(bytes: &[u8]) -> Option<u32> {
+        bytes
+            .windows(4)
+            .enumerate()
+            .filter(|(_, window)| *window == b"stsz")
+            .filter_map(|(index, _)| {
+                bytes
+                    .get(index + 12..index + 16)
+                    .and_then(|sample_count| sample_count.try_into().ok())
+                    .map(u32::from_be_bytes)
+            })
+            .max()
+    }
+
+    fn mp4_media_data(bytes: &[u8]) -> Option<&[u8]> {
+        let mut offset = 0usize;
+        while offset.checked_add(8)? <= bytes.len() {
+            let box_size = u32::from_be_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?);
+            let kind = bytes.get(offset + 4..offset + 8)?;
+            let (box_size, header_size) = match box_size {
+                0 => (bytes.len() - offset, 8usize),
+                1 => (
+                    usize::try_from(u64::from_be_bytes(
+                        bytes.get(offset + 8..offset + 16)?.try_into().ok()?,
+                    ))
+                    .ok()?,
+                    16usize,
+                ),
+                size => (size as usize, 8usize),
+            };
+            let end = offset.checked_add(box_size)?;
+            if box_size < header_size || end > bytes.len() {
+                return None;
+            }
+            if kind == b"mdat" {
+                return bytes.get(offset + header_size..end);
+            }
+            offset = end;
+        }
+        None
+    }
+
+    fn ffmpeg_is_available() -> bool {
+        Command::new("ffmpeg")
+            .arg("-version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok()
+    }
+
+    fn vlc_executable() -> Option<PathBuf> {
+        let mut candidates = Vec::new();
+        if let Some(path) = std::env::var_os("PATH") {
+            for directory in std::env::split_paths(&path) {
+                candidates.push(directory.join(if cfg!(windows) { "vlc.exe" } else { "vlc" }));
+            }
+        }
+        #[cfg(windows)]
+        for root in [
+            std::env::var_os("ProgramFiles"),
+            std::env::var_os("ProgramFiles(x86)"),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            candidates.push(PathBuf::from(root).join("VideoLAN/VLC/vlc.exe"));
+        }
+        candidates.into_iter().find(|candidate| candidate.is_file())
+    }
+
+    fn decode_mp4_with_vlc(vlc: &std::path::Path, movie: &std::path::Path, raw: &std::path::Path) {
+        let sout = format!(
+            "#transcode{{vcodec=RV24}}:standard{{access=file,mux=raw,dst=\"{}\"}}",
+            raw.display()
+        );
+        let mut decoder = Command::new(vlc);
+        decoder
+            .args([
+                "-I",
+                "dummy",
+                "--ignore-config",
+                "--no-media-library",
+                "--no-one-instance",
+                "--no-audio",
+            ])
+            .arg(format!("--sout={sout}"))
+            .arg(movie)
+            .arg("--play-and-exit")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = decoder.spawn().expect("VLC decoder starts");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let status = loop {
+            match child.try_wait().expect("poll VLC decoder") {
+                Some(status) => break status,
+                None if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                None => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("VLC MP4 decoder timed out");
+                }
+            }
+        };
+        assert!(status.success(), "VLC decodes the MP4 without errors");
+    }
+
     fn render_video_dialog(
         ctx: &egui::Context,
         ui: &mut VideoExportUi,
@@ -1271,6 +1616,112 @@ mod tests {
                 modifiers: Default::default(),
             }],
         );
+    }
+
+    #[test]
+    fn blender_padded_frame_adds_opaque_black_right_and_bottom_edges() {
+        let source = [10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255];
+        let padded = pad_rgba_frame(&source, [1, 3], [2, 4]).unwrap();
+        assert_eq!(
+            padded,
+            [
+                10, 20, 30, 255, 0, 0, 0, 255, // first row and right edge
+                40, 50, 60, 255, 0, 0, 0, 255, // second row and right edge
+                70, 80, 90, 255, 0, 0, 0, 255, // third row and right edge
+                0, 0, 0, 255, 0, 0, 0, 255, // opaque black padded bottom row
+            ]
+        );
+        assert!(pad_rgba_frame(&source, [1, 3], [1, 4]).is_some());
+        assert!(pad_rgba_frame(&source, [1, 3], [0, 4]).is_none());
+    }
+
+    #[test]
+    fn production_mp4_fallback_encodes_and_decodes_when_blender_is_installed() {
+        let Some(blender) = blender_executable() else {
+            eprintln!("Skipping Blender MP4 fallback check: Blender is not installed.");
+            return;
+        };
+        if ffmpeg_is_available() {
+            eprintln!("Skipping Blender fallback check: FFmpeg is installed and takes priority.");
+            return;
+        }
+
+        const SIZE: [u32; 2] = [63, 47];
+        const PADDED_SIZE: [u32; 2] = [64, 48];
+        const FPS: u32 = 8;
+        const FRAME_COUNT: usize = 8;
+        let output_root = std::env::current_dir()
+            .expect("workspace directory")
+            .join("verification");
+        std::fs::create_dir_all(&output_root).expect("verification directory exists");
+        let temporary = tempfile::tempdir_in(&output_root).expect("MP4 test temp directory");
+        let movie_path = temporary.path().join("odd size H264 preview.mp4");
+        let (sender, receiver) = mpsc::channel();
+        for frame_index in 0..FRAME_COUNT {
+            let mut frame = vec![0; SIZE[0] as usize * SIZE[1] as usize * 4];
+            for pixel in frame.as_chunks_mut::<4>().0 {
+                pixel.copy_from_slice(&[220, 80, 20 + frame_index as u8, 255]);
+            }
+            sender.send(Some(frame)).expect("send rendered frame");
+        }
+        drop(sender);
+        encode_mp4(
+            receiver,
+            &movie_path,
+            SIZE,
+            FPS,
+            FRAME_COUNT,
+            &AtomicBool::new(false),
+        )
+        .expect("installed Blender encodes the MP4 stream");
+
+        let movie = std::fs::read(&movie_path).expect("encoded MP4 exists");
+        assert!(movie.len() > 64, "encoded MP4 is nonempty");
+        assert_eq!(&movie[4..8], b"ftyp", "output is an MP4 container");
+        assert_eq!(mp4_sample_count(&movie), Some(FRAME_COUNT as u32));
+        assert!(mp4_media_data(&movie).is_some_and(|payload| !payload.is_empty()));
+
+        let mut decoded_frame_count = None;
+        if let Some(vlc) = vlc_executable() {
+            let decoded_path = temporary.path().join("decoded RGB frames.raw");
+            decode_mp4_with_vlc(&vlc, &movie_path, &decoded_path);
+            let decoded = std::fs::read(&decoded_path).expect("VLC produces decoded frames");
+            let frame_bytes = PADDED_SIZE[0] as usize * PADDED_SIZE[1] as usize * 3;
+            assert!(decoded.len() >= frame_bytes);
+            let center = (PADDED_SIZE[1] as usize / 2 * PADDED_SIZE[0] as usize
+                + PADDED_SIZE[0] as usize / 2)
+                * 3;
+            for (actual, expected) in decoded[center..center + 3].iter().zip([220u8, 80, 20]) {
+                assert!(
+                    actual.abs_diff(expected) <= 20,
+                    "decoded RGB color is preserved: actual={actual}, expected={expected}"
+                );
+            }
+            decoded_frame_count = Some(decoded.len() / frame_bytes);
+        }
+
+        let report = serde_json::json!({
+            "passed": true,
+            "backend": "Blender H.264 fallback",
+            "encoder_path": blender,
+            "input_dimensions": SIZE,
+            "encoded_dimensions": PADDED_SIZE,
+            "fps": FPS,
+            "frame_count": FRAME_COUNT,
+            "mp4_sample_count": mp4_sample_count(&movie),
+            "decoded_frame_count": decoded_frame_count,
+            "mp4_bytes": movie.len(),
+            "checks": ["odd RGBA frames are padded to even H.264 dimensions", "Blender writes the requested number of H.264 MP4 samples", "VLC playback decode preserves RGB color when VLC is installed"],
+            "physical_hardware_tested": false
+        });
+        let report_directory = output_root.join("video-export-check");
+        std::fs::create_dir_all(&report_directory).expect("video export report directory exists");
+        let report_path = report_directory.join("mp4-runtime-report.json");
+        std::fs::write(
+            report_path,
+            serde_json::to_vec_pretty(&report).expect("MP4 report serializes"),
+        )
+        .expect("MP4 runtime report writes");
     }
 
     #[test]
@@ -1480,6 +1931,58 @@ mod tests {
             "opposite turntable views visibly differ, changed pixels: {changed_pixels}"
         );
 
+        let mp4_theme_check = if ffmpeg_is_available() || blender_executable().is_some() {
+            let dark_mp4 = output.join("turntable-dark.mp4");
+            let light_mp4 = output.join("turntable-light.mp4");
+            for path in [&dark_mp4, &light_mp4] {
+                if path.is_file() {
+                    std::fs::remove_file(path).expect("remove prior generated MP4 artifact");
+                }
+            }
+            for (theme_frames, path) in
+                [(&rendered, &dark_mp4), (&light_theme_rendered, &light_mp4)]
+            {
+                let (sender, receiver) = mpsc::channel();
+                for frame in theme_frames {
+                    sender.send(Some(frame.clone())).expect("send MP4 frame");
+                }
+                drop(sender);
+                encode_mp4(
+                    receiver,
+                    path,
+                    SIZE,
+                    FPS,
+                    FRAME_COUNT,
+                    &AtomicBool::new(false),
+                )
+                .expect("production H.264 encoder writes the turntable");
+            }
+            let dark_bytes = std::fs::read(&dark_mp4).expect("Dark MP4 exists");
+            let light_bytes = std::fs::read(&light_mp4).expect("Light MP4 exists");
+            let dark_samples = mp4_sample_count(&dark_bytes).expect("Dark MP4 sample table");
+            let light_samples = mp4_sample_count(&light_bytes).expect("Light MP4 sample table");
+            assert_eq!(dark_samples, FRAME_COUNT as u32);
+            assert_eq!(light_samples, FRAME_COUNT as u32);
+            let dark_video = mp4_media_data(&dark_bytes).expect("Dark MP4 media samples");
+            let light_video = mp4_media_data(&light_bytes).expect("Light MP4 media samples");
+            assert_eq!(dark_video, light_video);
+            serde_json::json!({
+                "passed": true,
+                "backend": if ffmpeg_is_available() { "FFmpeg H.264" } else { "Blender H.264 fallback" },
+                "sample_count": dark_samples,
+                "encoded_dimensions": SIZE,
+                "fps": FPS,
+                "theme_video_payloads_identical": true,
+                "video_payload_bytes": dark_video.len(),
+                "physical_hardware_tested": false,
+            })
+        } else {
+            serde_json::json!({
+                "passed": false,
+                "skipped": "FFmpeg and Blender H.264 encoders are unavailable",
+            })
+        };
+
         let mut contact_sheet = RgbaImage::new(SIZE[0] * 4, SIZE[1] * 2);
         for (index, frame) in frames.iter().enumerate() {
             let x = (index % 4) as i64 * i64::from(SIZE[0]);
@@ -1500,14 +2003,16 @@ mod tests {
                     "production GIF encoder emits all requested frames at the requested dimensions",
                     "GIF playback decoding preserves visible camera motion between opposing views",
                     "production turntable GIF decoded frames are identical across Dark and Light UI themes",
+                    "production H.264 MP4 samples are identical across Dark and Light UI themes",
                 ],
+                "mp4": mp4_theme_check,
                 "frame_count": frames.len(),
                 "size": SIZE,
                 "fps": FPS,
                 "frame_delay_ms": frame_delay_ms,
                 "changed_pixels_first_to_half_turn": changed_pixels,
                 "physical_hardware_tested": false,
-                "artifacts": ["turntable.gif", "turntable-contact.png"],
+                "artifacts": ["turntable.gif", "turntable-contact.png", "turntable-dark.mp4", "turntable-light.mp4"],
             }))
             .unwrap(),
         )

@@ -2,7 +2,9 @@
   "adapter": "test GPU",
   "artifacts": [
     "turntable.gif",
-    "turntable-contact.png"
+    "turntable-contact.png",
+    "turntable-dark.mp4",
+    "turntable-light.mp4"
   ],
   "backend": "Vulkan",
   "changed_pixels_first_to_half_turn": 8172,
@@ -10,11 +12,25 @@
     "all turntable frames render through the production offscreen PNG renderer",
     "production GIF encoder emits all requested frames at the requested dimensions",
     "GIF playback decoding preserves visible camera motion between opposing views",
-    "production turntable GIF decoded frames are identical across Dark and Light UI themes"
+    "production turntable GIF decoded frames are identical across Dark and Light UI themes",
+    "production H.264 MP4 samples are identical across Dark and Light UI themes"
   ],
   "fps": 8,
   "frame_count": 8,
   "frame_delay_ms": 120,
+  "mp4": {
+    "backend": "Blender H.264 fallback",
+    "encoded_dimensions": [
+      320,
+      240
+    ],
+    "fps": 8,
+    "passed": true,
+    "physical_hardware_tested": false,
+    "sample_count": 8,
+    "theme_video_payloads_identical": true,
+    "video_payload_bytes": 18004
+  },
   "passed": true,
   "physical_hardware_tested": false,
   "size": [
