@@ -1,6 +1,6 @@
 use eframe::egui;
 
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Phase {
     Down,
@@ -180,9 +180,465 @@ mod native {
 #[cfg(windows)]
 pub use native::PenInput;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+mod linux_x11 {
+    use super::*;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::{
+        collections::{HashMap, HashSet},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
+        },
+        thread::{self, JoinHandle},
+        time::Duration,
+    };
+    use x11rb::{
+        connection::Connection,
+        protocol::{
+            xinput::ConnectionExt as XInputConnectionExt,
+            xinput::{self, DeviceClassData, EventMask, XIEventMask},
+            xproto::ConnectionExt as XprotoConnectionExt,
+            Event,
+        },
+        rust_connection::RustConnection,
+    };
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct Axes {
+        pressure: Option<(u16, f64, f64)>,
+        tilt_x: Option<(u16, f64, f64)>,
+        tilt_y: Option<(u16, f64, f64)>,
+        eraser: bool,
+    }
+
+    #[derive(Clone, Copy)]
+    struct SampleState {
+        eraser: bool,
+        barrel: bool,
+        contact: bool,
+        phase: Phase,
+    }
+
+    pub struct PenInput {
+        stop: Arc<AtomicBool>,
+        worker: Option<JoinHandle<()>>,
+        samples: Arc<Mutex<Vec<PenSample>>>,
+    }
+
+    impl PenInput {
+        pub fn install(cc: &eframe::CreationContext<'_>) -> Result<Self, String> {
+            let handle = cc.window_handle().map_err(|e| e.to_string())?;
+            let window = match handle.as_raw() {
+                RawWindowHandle::Xlib(handle) => handle.window as u32,
+                RawWindowHandle::Xcb(handle) => handle.window.get(),
+                RawWindowHandle::Wayland(_) => {
+                    return Err(
+                        "Native pen input currently supports X11 only; Wayland is not yet supported."
+                            .into(),
+                    );
+                }
+                _ => return Err("Native pen input requires an X11 window.".into()),
+            };
+
+            let (connection, _) = x11rb::connect(None)
+                .map_err(|error| format!("Could not connect to the X server: {error}"))?;
+            connection
+                .xinput_xi_query_version(2, 0)
+                .map_err(|error| format!("XInput2 is unavailable: {error}"))?
+                .reply()
+                .map_err(|error| format!("XInput2 is unavailable: {error}"))?;
+
+            let masks = [EventMask {
+                deviceid: 0, // XIAllDevices
+                mask: vec![
+                    XIEventMask::DEVICE_CHANGED
+                        | XIEventMask::BUTTON_PRESS
+                        | XIEventMask::BUTTON_RELEASE
+                        | XIEventMask::MOTION
+                        | XIEventMask::FOCUS_OUT
+                        | XIEventMask::HIERARCHY,
+                ],
+            }];
+            connection
+                .xinput_xi_select_events(window, &masks)
+                .map_err(|error| format!("Could not select XInput2 pen events: {error}"))?
+                .check()
+                .map_err(|error| format!("Could not select XInput2 pen events: {error}"))?;
+            connection
+                .flush()
+                .map_err(|error| format!("Could not start XInput2 event stream: {error}"))?;
+
+            let stop = Arc::new(AtomicBool::new(false));
+            let samples = Arc::new(Mutex::new(Vec::new()));
+            let worker_stop = stop.clone();
+            let worker_samples = samples.clone();
+            let context = cc.egui_ctx.clone();
+            let worker = thread::Builder::new()
+                .name("sketch3d-xinput2-pen".into())
+                .spawn(move || run_listener(connection, worker_stop, worker_samples, context))
+                .map_err(|error| format!("Could not start XInput2 listener: {error}"))?;
+
+            Ok(Self {
+                stop,
+                worker: Some(worker),
+                samples,
+            })
+        }
+
+        pub fn drain(&self) -> Vec<PenSample> {
+            self.samples
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .drain(..)
+                .collect()
+        }
+    }
+
+    impl Drop for PenInput {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+
+    fn run_listener(
+        connection: RustConnection,
+        stop: Arc<AtomicBool>,
+        samples: Arc<Mutex<Vec<PenSample>>>,
+        context: egui::Context,
+    ) {
+        let mut axes = match query_tablet_axes(&connection) {
+            Ok(axes) => axes,
+            Err(_) => return,
+        };
+        let mut contact = HashSet::new();
+
+        while !stop.load(Ordering::Acquire) {
+            let event = match connection.poll_for_event() {
+                Ok(Some(event)) => event,
+                Ok(None) => {
+                    thread::sleep(Duration::from_millis(8));
+                    continue;
+                }
+                Err(_) => break,
+            };
+
+            match event {
+                Event::XinputDeviceChanged(_) | Event::XinputHierarchy(_) => {
+                    contact.clear();
+                    push_sample(&samples, canceled_sample());
+                    axes = query_tablet_axes(&connection).unwrap_or_default();
+                    context.request_repaint();
+                }
+                Event::XinputFocusOut(_) => {
+                    if !contact.is_empty() {
+                        contact.clear();
+                        push_sample(&samples, canceled_sample());
+                        context.request_repaint();
+                    }
+                }
+                Event::XinputButtonPress(event) => {
+                    let source = event.sourceid;
+                    let Some(device_axes) = axes.get(&source).copied() else {
+                        continue;
+                    };
+                    let position = event_position(event.event_x, event.event_y);
+                    let barrel = event.detail == 2 || event.detail == 3;
+                    if event.detail == 1 {
+                        contact.insert(source);
+                    }
+                    push_sample(
+                        &samples,
+                        sample_from_event(
+                            position,
+                            &event.valuator_mask,
+                            &event.axisvalues,
+                            device_axes,
+                            SampleState {
+                                eraser: device_axes.eraser,
+                                barrel,
+                                contact: contact.contains(&source),
+                                phase: if event.detail == 1 {
+                                    Phase::Down
+                                } else {
+                                    Phase::Move
+                                },
+                            },
+                        ),
+                    );
+                    context.request_repaint();
+                }
+                Event::XinputButtonRelease(event) => {
+                    let source = event.sourceid;
+                    let Some(device_axes) = axes.get(&source).copied() else {
+                        continue;
+                    };
+                    if event.detail == 1 {
+                        contact.remove(&source);
+                    }
+                    push_sample(
+                        &samples,
+                        sample_from_event(
+                            event_position(event.event_x, event.event_y),
+                            &event.valuator_mask,
+                            &event.axisvalues,
+                            device_axes,
+                            SampleState {
+                                eraser: device_axes.eraser,
+                                barrel: false,
+                                contact: contact.contains(&source),
+                                phase: if event.detail == 1 {
+                                    Phase::Up
+                                } else {
+                                    Phase::Move
+                                },
+                            },
+                        ),
+                    );
+                    context.request_repaint();
+                }
+                Event::XinputMotion(event) => {
+                    let source = event.sourceid;
+                    let Some(device_axes) = axes.get(&source).copied() else {
+                        continue;
+                    };
+                    push_sample(
+                        &samples,
+                        sample_from_event(
+                            event_position(event.event_x, event.event_y),
+                            &event.valuator_mask,
+                            &event.axisvalues,
+                            device_axes,
+                            SampleState {
+                                eraser: device_axes.eraser,
+                                barrel: button_is_down(&event.button_mask, 2)
+                                    || button_is_down(&event.button_mask, 3),
+                                contact: contact.contains(&source),
+                                phase: Phase::Move,
+                            },
+                        ),
+                    );
+                    context.request_repaint();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn query_tablet_axes(
+        connection: &RustConnection,
+    ) -> Result<HashMap<xinput::DeviceId, Axes>, String> {
+        let devices = connection
+            .xinput_xi_query_device(0u16) // XIAllDevices
+            .map_err(|error| error.to_string())?
+            .reply()
+            .map_err(|error| error.to_string())?
+            .infos;
+        let mut axes = HashMap::new();
+
+        for device in devices.into_iter().filter(|device| device.enabled) {
+            let mut device_axes = Axes {
+                eraser: String::from_utf8_lossy(&device.name)
+                    .to_ascii_lowercase()
+                    .contains("eraser"),
+                ..Axes::default()
+            };
+            for class in device.classes {
+                let DeviceClassData::Valuator(valuator) = class.data else {
+                    continue;
+                };
+                let label = connection
+                    .get_atom_name(valuator.label)
+                    .ok()
+                    .and_then(|cookie| cookie.reply().ok())
+                    .map(|reply| String::from_utf8_lossy(&reply.name).to_ascii_lowercase())
+                    .unwrap_or_default();
+                let range = (valuator.number, fp3232(valuator.min), fp3232(valuator.max));
+                if label.contains("pressure") {
+                    device_axes.pressure = Some(range);
+                } else if label.contains("tilt") && label.ends_with('x') {
+                    device_axes.tilt_x = Some(range);
+                } else if label.contains("tilt") && label.ends_with('y') {
+                    device_axes.tilt_y = Some(range);
+                }
+            }
+            if device_axes.pressure.is_some()
+                || device_axes.tilt_x.is_some()
+                || device_axes.tilt_y.is_some()
+            {
+                axes.insert(device.deviceid, device_axes);
+            }
+        }
+        Ok(axes)
+    }
+
+    fn sample_from_event(
+        position: egui::Pos2,
+        valuator_mask: &[u32],
+        axis_values: &[xinput::Fp3232],
+        axes: Axes,
+        state: SampleState,
+    ) -> PenSample {
+        PenSample {
+            position,
+            pressure: axes.pressure.and_then(|axis| {
+                valuator_value(valuator_mask, axis_values, axis.0)
+                    .map(|value| normalize_axis(value, axis.1, axis.2))
+            }),
+            tilt: [
+                axes.tilt_x.and_then(|axis| {
+                    valuator_value(valuator_mask, axis_values, axis.0)
+                        .map(|value| normalize_tilt(value, axis.1, axis.2))
+                }),
+                axes.tilt_y.and_then(|axis| {
+                    valuator_value(valuator_mask, axis_values, axis.0)
+                        .map(|value| normalize_tilt(value, axis.1, axis.2))
+                }),
+            ],
+            eraser: state.eraser,
+            barrel: state.barrel,
+            contact: state.contact,
+            phase: state.phase,
+        }
+    }
+
+    fn valuator_value(mask: &[u32], values: &[xinput::Fp3232], number: u16) -> Option<f64> {
+        let axis = usize::from(number);
+        let word = axis / 32;
+        let bit = axis % 32;
+        let is_set = mask.get(word).is_some_and(|value| value & (1 << bit) != 0);
+        if !is_set {
+            return None;
+        }
+        let value_index = mask
+            .iter()
+            .take(word)
+            .map(|value| value.count_ones() as usize)
+            .sum::<usize>()
+            + (mask[word] & ((1 << bit) - 1)).count_ones() as usize;
+        values.get(value_index).copied().map(fp3232)
+    }
+
+    fn fp3232(value: xinput::Fp3232) -> f64 {
+        f64::from(value.integral) + f64::from(value.frac) / 4_294_967_296.0
+    }
+
+    fn normalize_axis(value: f64, min: f64, max: f64) -> f32 {
+        if max <= min {
+            return 0.0;
+        }
+        ((value - min) / (max - min)).clamp(0.0, 1.0) as f32
+    }
+
+    fn normalize_tilt(value: f64, min: f64, max: f64) -> f32 {
+        if max <= min {
+            return 0.0;
+        }
+        (value.clamp(min, max) as f32).clamp(-90.0, 90.0)
+    }
+
+    fn event_position(x: xinput::Fp1616, y: xinput::Fp1616) -> egui::Pos2 {
+        egui::pos2(fixed_16_16(x), fixed_16_16(y))
+    }
+
+    fn fixed_16_16(value: xinput::Fp1616) -> f32 {
+        value as f32 / 65_536.0
+    }
+
+    fn button_is_down(mask: &[u32], button: usize) -> bool {
+        let bit = button.saturating_sub(1);
+        mask.get(bit / 32)
+            .is_some_and(|word| word & (1 << (bit % 32)) != 0)
+    }
+
+    fn push_sample(samples: &Mutex<Vec<PenSample>>, sample: PenSample) {
+        let mut samples = samples
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if samples.len() >= 32_768 {
+            samples.clear();
+            samples.push(canceled_sample());
+        } else {
+            samples.push(sample);
+        }
+    }
+
+    fn canceled_sample() -> PenSample {
+        PenSample {
+            position: egui::Pos2::ZERO,
+            pressure: None,
+            tilt: [None, None],
+            eraser: false,
+            barrel: false,
+            contact: false,
+            phase: Phase::Cancel,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn maps_sparse_xinput_valuators_and_pressure_range() {
+            let sample = sample_from_event(
+                egui::pos2(24.5, 11.25),
+                &[0b1010],
+                &[
+                    xinput::Fp3232 {
+                        integral: 20,
+                        frac: 0,
+                    },
+                    xinput::Fp3232 {
+                        integral: -30,
+                        frac: 0,
+                    },
+                ],
+                Axes {
+                    pressure: Some((1, 0.0, 100.0)),
+                    tilt_x: Some((3, -60.0, 60.0)),
+                    ..Axes::default()
+                },
+                SampleState {
+                    eraser: false,
+                    barrel: false,
+                    contact: true,
+                    phase: Phase::Move,
+                },
+            );
+
+            assert_eq!(sample.position, egui::pos2(24.5, 11.25));
+            assert_eq!(sample.pressure, Some(0.2));
+            assert_eq!(sample.tilt[0], Some(-30.0));
+            assert_eq!(sample.phase, Phase::Move);
+            assert!(sample.contact);
+        }
+
+        #[test]
+        fn normalizes_out_of_range_pressure_and_rejects_missing_axes() {
+            assert_eq!(normalize_axis(125.0, 0.0, 100.0), 1.0);
+            assert_eq!(normalize_axis(5.0, 7.0, 7.0), 0.0);
+            assert_eq!(
+                valuator_value(&[0b10], &[xinput::Fp3232::default()], 0),
+                None
+            );
+        }
+
+        #[test]
+        fn maps_xinput_fixed_point_window_coordinates() {
+            assert_eq!(event_position(1 << 16, -(2 << 16)), egui::pos2(1.0, -2.0));
+        }
+    }
+}
+#[cfg(target_os = "linux")]
+pub use linux_x11::PenInput;
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub struct PenInput;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 impl PenInput {
     pub fn install(_: &eframe::CreationContext<'_>) -> Result<Self, String> {
         Err(

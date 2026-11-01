@@ -2867,6 +2867,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
+name = "sketch3d"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "eframe",
+ "glam",
+ "gltf",
+ "image",
+ "raw-window-handle",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "windows-sys 0.59.0",
+ "x11rb",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2957,23 +2975,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "sketch3d"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "eframe",
- "glam",
- "gltf",
- "image",
- "raw-window-handle",
- "rfd",
- "serde",
- "serde_json",
- "tempfile",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
