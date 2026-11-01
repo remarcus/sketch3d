@@ -276,7 +276,7 @@ pub(super) struct VideoExportUi {
     request: Option<VideoRequest>,
     job: Option<VideoJob>,
     #[cfg(test)]
-    test_save_path: Option<PathBuf>,
+    test_save_path: Option<Option<PathBuf>>,
     #[cfg(test)]
     test_reconstructed_mode_rect: Option<egui::Rect>,
     #[cfg(test)]
@@ -586,7 +586,7 @@ impl VideoExportUi {
                     VideoFormat::Gif => ("gif", "Animated GIF", "animation.gif"),
                     VideoFormat::Mp4 => ("mp4", "MP4 video", "animation.mp4"),
                 };
-                let selected_path = {
+                let picker_result: Option<Option<PathBuf>> = {
                     #[cfg(test)]
                     {
                         self.test_save_path.take()
@@ -595,8 +595,8 @@ impl VideoExportUi {
                     {
                         None
                     }
-                }
-                .or_else(|| {
+                };
+                let selected_path = picker_result.unwrap_or_else(|| {
                     rfd::FileDialog::new()
                         .add_filter(filter, &[extension])
                         .set_file_name(filename)
@@ -1766,11 +1766,35 @@ mod tests {
         assert_eq!(ui.frame_count(&[], history.duration_ms()), Some(60));
 
         let output = tempfile::tempdir().unwrap();
-        let selected_path = output.path().join("reconstructed.gif");
-        ui.test_save_path = Some(selected_path.clone());
         let choose_position = ui
             .test_choose_file_rect
             .expect("GIF file selection control is visible")
+            .center();
+        ui.test_save_path = Some(None);
+        click_video_dialog(
+            &ctx,
+            &mut ui,
+            &mut history,
+            &document,
+            &camera,
+            &tool_settings,
+            choose_position,
+        );
+        assert!(
+            ui.take_request().is_none(),
+            "canceling the save picker queues no export"
+        );
+        assert!(
+            ui.dialog_open,
+            "canceling the save picker leaves the export dialog open"
+        );
+
+        let selected_path = output.path().join("reconstructed.preview.png");
+        let expected_path = output.path().join("reconstructed.preview.gif");
+        ui.test_save_path = Some(Some(selected_path));
+        let choose_position = ui
+            .test_choose_file_rect
+            .expect("GIF file selection control remains available after picker cancel")
             .center();
         click_video_dialog(
             &ctx,
@@ -1785,7 +1809,10 @@ mod tests {
         let request = ui
             .take_request()
             .expect("clicking Choose GIF file queues the export request");
-        assert_eq!(request.path, selected_path);
+        assert_eq!(
+            request.path, expected_path,
+            "the selected path uses the requested GIF extension"
+        );
         assert_eq!(request.mode, ExportMode::ReconstructedReveal);
         assert_eq!(request.format, VideoFormat::Gif);
         assert_eq!(request.size, [640, 360]);
