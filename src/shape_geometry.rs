@@ -298,3 +298,171 @@ fn validate_common_values(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{document::Document, geometry::Camera};
+    use eframe::egui::{Pos2, Rect};
+
+    fn rotated_plane() -> DrawingPlane {
+        DrawingPlane {
+            anchor: Vec3::new(1.0, -2.0, 0.5),
+            rotation_degrees: Vec3::new(23.0, 41.0, -17.0),
+            depth: 0.7,
+        }
+    }
+
+    fn check_plane_and_closed_shape(stroke: &Stroke, plane: DrawingPlane, pressure: f32) {
+        let (origin, _, _, normal) = plane_frame(plane).unwrap();
+        assert!(
+            stroke
+                .points
+                .first()
+                .unwrap()
+                .position
+                .distance_squared(stroke.points.last().unwrap().position)
+                <= 1.0e-12,
+            "closed marker must repeat the first point within the geometry seam tolerance"
+        );
+        assert!(stroke.points.len() >= MIN_SEGMENTS + 1);
+        assert!(stroke.points.iter().all(|point| {
+            ((point.position - origin).dot(normal)).abs() < 0.0001 && point.pressure == pressure
+        }));
+        assert_eq!(stroke.brush.normal, normal);
+        assert_eq!(
+            crate::geometry::stroke_mesh(stroke).len(),
+            (stroke.points.len() - 1) * 48,
+            "closed round outline should join its seam without endpoint-cap geometry"
+        );
+    }
+
+    #[test]
+    fn typed_circle_and_drag_ellipse_use_the_rotated_plane_and_uniform_pressure() {
+        let plane = rotated_plane();
+        let (origin, u, v, _) = plane_frame(plane).unwrap();
+        let center = origin + u * 0.45 + v * 0.3;
+        let pressure = 0.62;
+        let circle = circle_from_center(
+            plane,
+            center + plane.basis().2 * 0.4,
+            0.75,
+            11,
+            1,
+            [0.1, 0.2, 0.3],
+            0.03,
+            pressure,
+            Brush::default(),
+        )
+        .unwrap();
+        check_plane_and_closed_shape(&circle, plane, pressure);
+        for point in &circle.points {
+            assert!((point.position.distance(center) - 0.75).abs() < 0.0001);
+        }
+
+        let first = center - u * 1.2 - v * 0.6 + plane.basis().2;
+        let opposite = center + u * 1.2 + v * 0.6 - plane.basis().2;
+        let ellipse = ellipse_from_bounds(
+            plane,
+            first,
+            opposite,
+            12,
+            1,
+            [0.3, 0.5, 0.7],
+            0.02,
+            pressure,
+            Brush::default(),
+        )
+        .unwrap();
+        check_plane_and_closed_shape(&ellipse, plane, pressure);
+        let (radius_u, radius_v) = ellipse
+            .points
+            .iter()
+            .fold((0.0f32, 0.0f32), |radii, point| {
+                let delta = point.position - center;
+                (
+                    radii.0.max(delta.dot(u).abs()),
+                    radii.1.max(delta.dot(v).abs()),
+                )
+            });
+        assert!((radius_u - 1.2).abs() < 0.0001);
+        assert!((radius_v - 0.6).abs() < 0.0001);
+    }
+
+    #[test]
+    fn typed_shape_is_pickable_persistent_exportable_and_one_reversible_edit() {
+        let plane = rotated_plane();
+        let (origin, u, v, _) = plane_frame(plane).unwrap();
+        let center = origin + u * 0.2 - v * 0.1;
+        let stroke = ellipse_from_center(
+            plane,
+            center,
+            0.8,
+            0.45,
+            21,
+            1,
+            [0.8, 0.4, 0.2],
+            0.025,
+            0.9,
+            Brush::default(),
+        )
+        .unwrap();
+        let mut doc = Document::default();
+        let edit = crate::editing::Edit::Add(stroke.clone());
+        edit.apply(&mut doc, true);
+
+        let mut camera = Camera::default();
+        camera.align_guide(plane);
+        let canvas = Rect::from_min_size(Pos2::ZERO, eframe::egui::vec2(400.0, 300.0));
+        let screen = crate::gizmo::project(&camera, canvas, stroke.points[0].position)
+            .unwrap()
+            .0;
+        assert_eq!(
+            crate::gizmo::pick(&doc, &camera, canvas, screen),
+            Some(stroke.id)
+        );
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+        let reopened = Document::from_json(&std::fs::read_to_string(file.path()).unwrap()).unwrap();
+        assert_eq!(reopened.strokes, doc.strokes);
+        let glb = crate::export::encode(&reopened, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&glb.bytes).unwrap();
+        assert_eq!(gltf.meshes().count(), 1);
+
+        edit.apply(&mut doc, false);
+        assert!(doc.strokes.is_empty());
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes, vec![stroke]);
+    }
+
+    #[test]
+    fn shape_builders_reject_zero_or_nonfinite_dimensions() {
+        let plane = DrawingPlane::default();
+        assert!(ellipse_from_center(
+            plane,
+            Vec3::ZERO,
+            0.0,
+            0.2,
+            1,
+            1,
+            [0.0, 0.0, 0.0],
+            0.02,
+            1.0,
+            Brush::default(),
+        )
+        .is_err());
+        assert!(circle_from_center(
+            plane,
+            Vec3::ZERO,
+            f32::INFINITY,
+            1,
+            1,
+            [0.0, 0.0, 0.0],
+            0.02,
+            1.0,
+            Brush::default(),
+        )
+        .is_err());
+    }
+}
