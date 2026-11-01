@@ -318,6 +318,7 @@ const CAPABILITY_REPLAY_MAX_MP4_BYTES: u64 = 512 * 1024 * 1024;
 enum CapabilityClip {
     DrawOrbit,
     CurvedGuides,
+    EditErase,
 }
 
 impl CapabilityClip {
@@ -325,6 +326,7 @@ impl CapabilityClip {
         match name {
             "draw-orbit" => Some(Self::DrawOrbit),
             "curved-guides" => Some(Self::CurvedGuides),
+            "edit-erase" => Some(Self::EditErase),
             _ => None,
         }
     }
@@ -333,11 +335,16 @@ impl CapabilityClip {
         match self {
             Self::DrawOrbit => "draw-orbit",
             Self::CurvedGuides => "curved-guides",
+            Self::EditErase => "edit-erase",
         }
     }
 
     fn is_curved_guides(self) -> bool {
         self == Self::CurvedGuides
+    }
+
+    fn is_edit_erase(self) -> bool {
+        self == Self::EditErase
     }
 }
 
@@ -377,7 +384,12 @@ struct CapabilityReplay {
     pointer_cue: Option<Pos2>,
     contact: bool,
     barrel: bool,
+    eraser: bool,
     setup_verified: bool,
+    undo_applied: bool,
+    gesture_start: Option<Pos2>,
+    gesture_end: Option<Pos2>,
+    expected_undo_strokes: Option<Vec<Stroke>>,
     sender: Option<SyncSender<Option<Vec<u8>>>>,
     encoder: Option<JoinHandle<Result<(), String>>>,
     mp4_sender: Option<SyncSender<Option<Vec<u8>>>>,
@@ -445,7 +457,7 @@ impl CapabilityReplay {
             let start = rect.center() + egui::vec2(0.0, 12.0);
             let end = start + egui::vec2(270.0, -55.0);
             match frame {
-                0..=4 => (start, Phase::Move, false, false),
+                0..=4 => (start, Phase::Move, false, false, false),
                 5..=50 => {
                     let t = (frame - 5) as f32 / 45.0;
                     (
@@ -456,17 +468,72 @@ impl CapabilityReplay {
                         if frame == 5 { Phase::Down } else { Phase::Move },
                         true,
                         true,
+                        false,
                     )
                 }
-                51 => (end, Phase::Up, false, false),
-                _ => (end, Phase::Move, false, false),
+                51 => (end, Phase::Up, false, false, false),
+                _ => (end, Phase::Move, false, false, false),
+            }
+        } else if self.clip.is_edit_erase() {
+            let start = self
+                .gesture_start
+                .expect("edit-erase replay setup provides a gesture start");
+            let end = self
+                .gesture_end
+                .expect("edit-erase replay setup provides a gesture end");
+            match frame {
+                0..=3 => (start, Phase::Move, false, false, false),
+                4..=25 => {
+                    let t = (frame - 4) as f32 / 21.0;
+                    (
+                        egui::pos2(
+                            start.x + (end.x - start.x) * t,
+                            start.y + (end.y - start.y) * t,
+                        ),
+                        if frame == 4 { Phase::Down } else { Phase::Move },
+                        true,
+                        false,
+                        true,
+                    )
+                }
+                26 => (end, Phase::Up, false, false, true),
+                27..=33 => (end, Phase::Move, false, false, false),
+                34..=36 => (end, Phase::Move, false, false, false),
+                37..=50 => {
+                    let t = (frame - 37) as f32 / 13.0;
+                    (
+                        rect.center() + egui::vec2(t * 220.0, -t * 45.0),
+                        if frame == 37 {
+                            Phase::Down
+                        } else {
+                            Phase::Move
+                        },
+                        true,
+                        true,
+                        false,
+                    )
+                }
+                51 => (
+                    rect.center() + egui::vec2(220.0, -45.0),
+                    Phase::Up,
+                    false,
+                    false,
+                    false,
+                ),
+                _ => (
+                    rect.center() + egui::vec2(220.0, -45.0),
+                    Phase::Move,
+                    false,
+                    false,
+                    false,
+                ),
             }
         } else {
             let start = rect.center() + egui::vec2(-150.0, -65.0);
             let end = rect.center() + egui::vec2(150.0, -35.0);
             match frame {
-                0..=2 => (start, Phase::Move, false, false),
-                3 => (start, Phase::Down, true, false),
+                0..=2 => (start, Phase::Move, false, false, false),
+                3 => (start, Phase::Down, true, false, false),
                 4..=25 => {
                     let t = (frame - 4) as f32 / 21.0;
                     (
@@ -479,10 +546,11 @@ impl CapabilityReplay {
                         Phase::Move,
                         true,
                         false,
+                        false,
                     )
                 }
-                26 => (end, Phase::Up, false, false),
-                27..=33 => (end, Phase::Move, false, false),
+                26 => (end, Phase::Up, false, false, false),
+                27..=33 => (end, Phase::Move, false, false, false),
                 34..=50 => {
                     let t = (frame - 34) as f32 / 16.0;
                     (
@@ -493,21 +561,29 @@ impl CapabilityReplay {
                         Phase::Move,
                         true,
                         true,
+                        false,
                     )
                 }
-                51 => (end + egui::vec2(210.0, 0.0), Phase::Up, false, false),
-                _ => (end + egui::vec2(210.0, 0.0), Phase::Move, false, false),
+                51 => (end + egui::vec2(210.0, 0.0), Phase::Up, false, false, false),
+                _ => (
+                    end + egui::vec2(210.0, 0.0),
+                    Phase::Move,
+                    false,
+                    false,
+                    false,
+                ),
             }
         };
-        let (position, phase, contact, barrel) = orbit_sample;
+        let (position, phase, contact, barrel, eraser) = orbit_sample;
         self.pointer_cue = Some(position);
         self.contact = contact;
         self.barrel = barrel;
+        self.eraser = eraser;
         Some(PenSample {
             position,
             pressure: None,
             tilt: [None, None],
-            eraser: false,
+            eraser,
             barrel,
             contact,
             phase,
@@ -541,7 +617,13 @@ impl CapabilityReplay {
         );
         painter.circle_filled(position, 2.5, accent);
         if self.contact {
-            let label = if self.barrel { "ORBIT" } else { "DRAW" };
+            let label = if self.barrel {
+                "ORBIT"
+            } else if self.eraser {
+                "ERASE"
+            } else {
+                "DRAW"
+            };
             let label_rect =
                 Rect::from_min_size(position + egui::vec2(14.0, -20.0), egui::vec2(56.0, 18.0));
             painter.rect_filled(label_rect, 3.0, Color32::from_black_alpha(210));
@@ -630,7 +712,23 @@ impl CapabilityReplay {
         }
         let manifest_path = self.path("recording.json");
         let captions_path = self.path("en.vtt");
-        let captions = if self.clip.is_curved_guides() {
+        let captions = if self.clip.is_edit_erase() {
+            concat!(
+                "WEBVTT\n\n",
+                "00:00:00.000 --> 00:00:00.400\n",
+                "The editable stroke was selected and recolored before capture.\n\n",
+                "00:00:00.400 --> 00:00:02.700\n",
+                "Drag the partial eraser across the stroke to split it.\n\n",
+                "00:00:02.700 --> 00:00:03.400\n",
+                "Two editable fragments remain.\n\n",
+                "00:00:03.400 --> 00:00:03.700\n",
+                "Undo restores the edited stroke.\n\n",
+                "00:00:03.700 --> 00:00:05.200\n",
+                "A synthetic barrel gesture orbits the restored stroke.\n\n",
+                "00:00:05.200 --> 00:00:06.000\n",
+                "The replay uses synthetic input with no pressure data.\n"
+            )
+        } else if self.clip.is_curved_guides() {
             concat!(
                 "WEBVTT\n\n",
                 "00:00:00.000 --> 00:00:00.500\n",
@@ -696,6 +794,7 @@ impl CapabilityReplay {
                 "--",
                 "src/app.rs",
                 "src/main.rs",
+                "src/selection.rs",
                 "src/tutorial_ui.rs",
                 "src/presentation_ui.rs",
                 "src/video_export_ui.rs",
@@ -707,8 +806,18 @@ impl CapabilityReplay {
             .frame_size
             .ok_or_else(|| "Capability demo did not capture any frames".to_owned())?;
         let clip_name = self.clip.name();
-        let (fixture, fixture_provenance, shot_steps, poster_alt) = if self.clip.is_curved_guides()
-        {
+        let (fixture, fixture_provenance, shot_steps, poster_alt) = if self.clip.is_edit_erase() {
+            (
+                "Selected editable stroke",
+                "Procedurally generated from an empty Sketch3D document by the production pointer-action handler; no external artwork or assets.",
+                vec![
+                    "Create an editable stroke through the production pointer-action handler and change its appearance through the selection editor handler.",
+                    "Drag the partial eraser through the stroke using synthetic input through canvas_input.",
+                    "Undo restores the edited source stroke; a short orbit reveals the result.",
+                ],
+                "An orange editable stroke on the Sketch3D front plane with a synthetic-input disclosure.",
+            )
+        } else if self.clip.is_curved_guides() {
             (
                 "Saved cylinder mirror study",
                 "Procedurally generated from an empty Sketch3D document by the production pointer-action handlers; no external artwork or assets.",
@@ -748,11 +857,11 @@ impl CapabilityReplay {
             "dpi_percent": (self.pixels_per_point * 100.0).round() as u32,
             "theme": "Dark",
             "capture_mode": "deterministic hidden in-app replay through canvas_input",
-            "input_note": "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured.",
+            "input_note": if self.clip.is_edit_erase() { "The fixture stroke is created through the production pointer-action handler and its appearance edit through the production selection handler. Captured PenSample input uses pressure=None and no tilt; no tablet pressure or latency was measured." } else { "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured." },
             "window_visible": false,
             "frame_rate": CAPABILITY_REPLAY_FPS,
             "shot_steps": shot_steps,
-            "cursor_cue": if self.clip.is_curved_guides() { "The curved-guide strokes are prepared by scripted production handlers before capture; playback shows a synthetic ORBIT cursor and a persistent no-pressure disclosure." } else { "A synthetic pointer ring is labeled DRAW or ORBIT while input is active; a persistent banner discloses synthetic replay and no pressure data." },
+            "cursor_cue": if self.clip.is_edit_erase() { "A synthetic pointer ring is labeled ERASE or ORBIT during the captured workflow; the selected stroke and appearance are prepared by production handlers before capture, and a persistent banner discloses no pressure data." } else if self.clip.is_curved_guides() { "The curved-guide strokes are prepared by scripted production handlers before capture; playback shows a synthetic ORBIT cursor and a persistent no-pressure disclosure." } else { "A synthetic pointer ring is labeled DRAW or ORBIT while input is active; a persistent banner discloses synthetic replay and no pressure data." },
             "encoding": {
                 "mp4": format!("Captured full-viewport RGBA frames; {mp4_backend}; 10 fps."),
                 "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; 6 seconds; <=5 MiB.",
@@ -780,7 +889,7 @@ impl CapabilityReplay {
                 "private_content_checked": false,
                 "captions_timing_checked": false,
                 "reviewer": null,
-                "notes": if self.clip.is_curved_guides() { "Synthetic curved-guide draft. The strokes are scripted through production handlers before the captured orbit; review playback and visual readability before use." } else { "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use." }
+                "notes": if self.clip.is_edit_erase() { "Synthetic edit-erase draft. The selected stroke and appearance are prepared by production handlers before the captured eraser and undo sequence; review playback and readability before use." } else if self.clip.is_curved_guides() { "Synthetic curved-guide draft. The strokes are scripted through production handlers before the captured orbit; review playback and visual readability before use." } else { "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use." }
             }
         });
         let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
@@ -1244,7 +1353,12 @@ impl SketchApp {
                 pointer_cue: None,
                 contact: false,
                 barrel: false,
-                setup_verified: !clip.is_curved_guides(),
+                eraser: false,
+                setup_verified: !clip.is_curved_guides() && !clip.is_edit_erase(),
+                undo_applied: false,
+                gesture_start: None,
+                gesture_end: None,
+                expected_undo_strokes: None,
                 sender: None,
                 encoder: None,
                 mp4_sender: None,
@@ -1253,7 +1367,7 @@ impl SketchApp {
             app.stabilization = 0.0;
             if clip.is_curved_guides() {
                 app.mirror_verification_frame = Some(0);
-            } else {
+            } else if !clip.is_edit_erase() {
                 app.load_house();
                 app.guide = DrawingPlane::from_preset(Plane::Front);
                 app.guide.depth = app.camera.target.z;
@@ -4706,6 +4820,45 @@ impl eframe::App for SketchApp {
                     replay.initial_camera = self.camera;
                     replay.setup_verified = true;
                 }
+                let prepare_edit_erase = self
+                    .capability_replay
+                    .as_ref()
+                    .is_some_and(|replay| {
+                        replay.clip.is_edit_erase() && !replay.setup_verified
+                    });
+                if prepare_edit_erase {
+                    let (gesture_start, gesture_end) =
+                        self.prepare_capability_edit_erase(rect);
+                    let replay = self.capability_replay.as_mut().unwrap();
+                    replay.initial_stroke_count = self.doc.strokes.len();
+                    replay.initial_camera = self.camera;
+                    replay.gesture_start = Some(gesture_start);
+                    replay.gesture_end = Some(gesture_end);
+                    replay.expected_undo_strokes = Some(self.doc.strokes.clone());
+                    replay.setup_verified = self.doc.strokes.len() == 1
+                        && self.selected.len() == 1
+                        && self.undo.len() == 1
+                        && self.eraser
+                        && self.partial_eraser.enabled;
+                    assert!(
+                        replay.setup_verified,
+                        "edit-erase setup creates, selects, and changes one editable stroke"
+                    );
+                }
+                let undo_edit_erase = self.capability_replay.as_ref().is_some_and(|replay| {
+                    replay.clip.is_edit_erase()
+                        && replay.setup_verified
+                        && replay.captured_frames == 34
+                        && !replay.undo_applied
+                });
+                if undo_edit_erase {
+                    self.undo();
+                    let replay = self.capability_replay.as_mut().unwrap();
+                    replay.undo_applied = replay.expected_undo_strokes.as_ref()
+                        == Some(&self.doc.strokes)
+                        && self.undo.len() == 1;
+                    assert!(replay.undo_applied, "undo restores the selected edited stroke");
+                }
                 self.verify_ring(ctx, rect);
                 self.verify_model_surfaces(ctx, rect);
                 self.verify_obj_references(ctx, rect);
@@ -6084,6 +6237,20 @@ impl SketchApp {
                 replay.setup_verified
                     && self.doc.strokes.len() == replay.initial_stroke_count
                     && self.doc.active_guide.is_some()
+            } else if replay.clip.is_edit_erase() {
+                let split_strokes = self.doc.strokes.as_slice();
+                replay.setup_verified
+                    && replay.eraser
+                    && split_strokes.len() == replay.initial_stroke_count + 1
+                    && split_strokes.first().is_some_and(|left| {
+                        split_strokes.last().is_some_and(|right| {
+                            left.points.len() > 2
+                                && right.points.len() > 2
+                                && left.points.last().unwrap().position.x
+                                    < right.points.first().unwrap().position.x
+                        })
+                    })
+                    && self.undo.len() == 2
             } else {
                 self.doc.strokes.len() > replay.initial_stroke_count
                     && self.doc.strokes.last().is_some_and(|stroke| {
@@ -6101,6 +6268,16 @@ impl SketchApp {
                 eprintln!("Capability demo replay did not retain its verified drawing workflow");
                 std::process::exit(1);
             }
+        }
+        if replay.clip.is_edit_erase()
+            && replay.captured_frames == 35
+            && (!replay.undo_applied
+                || replay.expected_undo_strokes.as_ref() != Some(&self.doc.strokes)
+                || self.undo.len() != 1)
+        {
+            self.capability_replay.take().unwrap().abort();
+            eprintln!("Capability demo undo did not restore the edited source stroke");
+            std::process::exit(1);
         }
         if replay.captured_frames == 51 {
             let camera_changed = (self.camera.yaw - replay.initial_camera.yaw).abs() > 0.001

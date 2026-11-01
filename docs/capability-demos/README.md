@@ -22,6 +22,14 @@ cargo run --locked -j1 -- --record-capability-demo curved-guides
 
 This replay first runs the saved-cylinder mirror verifier, which creates the editable source and reflected strokes with production pointer handlers. It then records a synthetic barrel orbit through `canvas_input`. It writes `curved-guides.gif`, `curved-guides.mp4`, `curved-guides.png`, `curved-guides.en.vtt`, and `curved-guides.recording.json` alongside the first preview. Its captions and manifest describe the scripted setup and disclose that replay input has no pressure data. Output names are checked independently for each clip; existing drafts are not overwritten. Review playback and visual readability before README or tutorial use.
 
+The selection and partial-erase preview can also be regenerated deterministically:
+
+```powershell
+cargo run --locked -j1 -- --record-capability-demo edit-erase
+```
+
+Before capture, this replay creates an editable stroke through the production pointer handler, selects it, and applies an appearance change through the selection editor. The recorded section sends a pressure-free eraser gesture through `canvas_input`, verifies that the stroke splits, undoes the erase, and orbits to show the restored mark. Its manifest and captions disclose the pre-capture setup and synthetic input with no pressure data. It writes the corresponding `edit-erase.*` GIF, MP4, poster, WebVTT, and manifest files, refusing to overwrite an existing set.
+
 ## Capture a clip
 
 1. Build the application and stage the exact fixture and UI state listed in [shot-list.md](shot-list.md).

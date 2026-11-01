@@ -1405,6 +1405,91 @@ fn paint_selection_box(
 }
 
 impl SketchApp {
+    pub(super) fn prepare_capability_edit_erase(&mut self, rect: Rect) -> (Pos2, Pos2) {
+        self.doc = Document::default();
+        self.selected.clear();
+        self.undo.clear();
+        self.redo.clear();
+        self.next_id = 1;
+        self.camera = Camera {
+            projection: crate::geometry::Projection::Orthographic,
+            distance: 5.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            ..Camera::default()
+        };
+        self.guide = DrawingPlane::from_preset(Plane::Front);
+        self.guide.depth = 0.0;
+        self.stabilization = 0.0;
+        self.radius = 0.035;
+        self.brush = Brush::default();
+        self.color = [0.25, 0.55, 0.85];
+        self.select_mode = false;
+        self.eraser = false;
+        self.partial_eraser.enabled = false;
+        self.line.enabled = false;
+        self.shape_tool.mode = None;
+        self.curve_tool.enabled = false;
+        self.fills.enabled = false;
+
+        let source_at = |t: f32| {
+            Vec3::new(
+                -1.8 + 3.6 * t,
+                0.12 + 0.15 * (t * std::f32::consts::TAU).sin(),
+                0.0,
+            )
+        };
+        for index in 0..=48 {
+            let t = index as f32 / 48.0;
+            let position = gizmo::project(&self.camera, rect, source_at(t))
+                .expect("edit-erase fixture samples project")
+                .0;
+            assert!(rect.contains(position));
+            self.pointer_action(position, 0.8, rect, index == 0, false);
+        }
+        self.finish();
+        assert_eq!(self.doc.strokes.len(), 1);
+        self.undo.clear();
+        self.redo.clear();
+        self.dirty = false;
+        let source_id = self.doc.strokes[0].id;
+        let selection_point = gizmo::project(&self.camera, rect, source_at(0.5))
+            .expect("edit-erase stroke center projects")
+            .0;
+        self.select_mode = true;
+        self.select_pointer(selection_point, rect, true, false);
+        assert_eq!(self.selected, HashSet::from([source_id]));
+        self.begin_appearance_edit();
+        let appearance = self
+            .appearance_draft
+            .as_mut()
+            .expect("selected edit-erase stroke opens appearance editing");
+        appearance.color = [0.92, 0.22, 0.045];
+        appearance.set_color = true;
+        self.refresh_appearance_preview();
+        self.finish_appearance_edit(true);
+        assert_ne!(self.doc.strokes[0].color, [0.25, 0.55, 0.85]);
+        assert_eq!(self.undo.len(), 1, "appearance change is one undo edit");
+
+        self.select_mode = false;
+        self.eraser = true;
+        self.partial_eraser.enabled = true;
+        self.partial_eraser.radius = 16.0;
+        let crossing_t = 0.52;
+        let crossing = source_at(crossing_t);
+        let start = gizmo::project(&self.camera, rect, crossing + Vec3::new(0.0, -0.55, 0.0))
+            .expect("edit-erase gesture start projects")
+            .0;
+        let end = gizmo::project(&self.camera, rect, crossing + Vec3::new(0.0, 0.55, 0.0))
+            .expect("edit-erase gesture end projects")
+            .0;
+        assert!(rect.contains(start) && rect.contains(end));
+        self.status =
+            "Selected stroke appearance changed. Drag the partial eraser; undo restores it.".into();
+        self.renderer.invalidate();
+        (start, end)
+    }
+
     pub(super) fn verify_selection(&mut self, ctx: &egui::Context, rect: Rect) {
         fn replay(
             app: &mut SketchApp,
