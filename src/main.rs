@@ -3,6 +3,7 @@
 mod app;
 mod atomic_file;
 mod brush_selection;
+mod brush_tip;
 mod camera_bookmark_restart_check;
 mod camera_bookmarks;
 mod construction_history;

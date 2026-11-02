@@ -52,6 +52,9 @@ pub struct Brush {
     /// Stable per-stroke random stream; drawing tools replace preset seeds.
     #[serde(default)]
     pub dab_seed: u64,
+    /// Content fingerprint of an optional imported image-tip PNG.
+    #[serde(default)]
+    pub tip_asset_id: u64,
     /// Arc-length phase retained by fragments created through partial erasing.
     #[serde(default)]
     pub dab_distance_origin: f32,
@@ -74,6 +77,7 @@ impl Default for Brush {
             dynamics: Dynamics::default(),
             dabs: DabSettings::default(),
             dab_seed: 0,
+            tip_asset_id: 0,
             dab_distance_origin: 0.0,
             dab_total_length: 0.0,
             texture: TextureSettings::default(),
@@ -186,13 +190,16 @@ pub struct Document {
     pub model_references: Vec<model_references::ObjReferenceResource>,
     #[serde(default)]
     pub active_model_reference: Option<u64>,
+    /// Self-contained imported tip images keyed by their content fingerprint.
+    #[serde(default)]
+    pub brush_tip_assets: Vec<crate::brush_tip::BrushTipAsset>,
 }
 impl Default for Document {
     fn default() -> Self {
         Self {
             layers: layers_default(),
             active_layer: 1,
-            version: 15,
+            version: 16,
             strokes: Vec::new(),
             image_planes: Vec::new(),
             active_image_plane: None,
@@ -200,10 +207,33 @@ impl Default for Document {
             active_guide: None,
             model_references: Vec::new(),
             active_model_reference: None,
+            brush_tip_assets: Vec::new(),
         }
     }
 }
 impl Document {
+    pub fn add_brush_tip_asset(
+        &mut self,
+        asset: crate::brush_tip::BrushTipAsset,
+    ) -> Result<(), String> {
+        asset.validate()?;
+        if let Some(existing) = self
+            .brush_tip_assets
+            .iter()
+            .find(|existing| existing.id == asset.id)
+        {
+            if existing.png != asset.png {
+                return Err("Brush tip content identity collision".into());
+            }
+            return Ok(());
+        }
+        let mut changed = self.brush_tip_assets.clone();
+        changed.push(asset);
+        crate::brush_tip::validate_catalog(&changed)?;
+        self.brush_tip_assets = changed;
+        Ok(())
+    }
+
     pub fn visible(&self, stroke: &Stroke) -> bool {
         self.layers
             .iter()
@@ -247,7 +277,7 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=15)) {
+        if !matches!(version, Some(1..=16)) {
             return Err("Unsupported document version".into());
         }
         if matches!(version, Some(1..=6)) {
@@ -317,7 +347,7 @@ impl Document {
             }
         }
         let mut doc: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
-        doc.version = 15;
+        doc.version = 16;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
         }
@@ -343,6 +373,9 @@ impl Document {
             return Err("Active layer does not exist".into());
         }
         crate::image_planes::validate_catalog(&doc.image_planes)?;
+        crate::brush_tip::validate_catalog(&doc.brush_tip_assets)?;
+        let tip_asset_ids: std::collections::HashSet<_> =
+            doc.brush_tip_assets.iter().map(|asset| asset.id).collect();
         if doc.active_image_plane.is_some_and(|id| {
             !doc.image_planes
                 .iter()
@@ -404,6 +437,8 @@ impl Document {
             }
             if total > 2_000_000
                 || !stroke.brush.is_valid()
+                || (stroke.brush.tip_asset_id != 0
+                    && !tip_asset_ids.contains(&stroke.brush.tip_asset_id))
                 || !stroke.radius.is_finite()
                 || !(0.001..=1.0).contains(&stroke.radius)
                 || stroke
@@ -479,7 +514,7 @@ mod tests {
                 active_model_reference: None,
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-            assert_eq!(loaded.version, 15);
+            assert_eq!(loaded.version, 16);
             assert_eq!(loaded.strokes, doc.strokes);
         }
     }
@@ -503,7 +538,7 @@ mod tests {
         // a new shape, or prevent an otherwise valid legacy file from opening.
         old["strokes"][0]["brush"] = serde_json::json!({"kind": "future_brush"});
         let loaded = Document::from_json(&old.to_string()).unwrap();
-        assert_eq!(loaded.version, 15);
+        assert_eq!(loaded.version, 16);
         assert_eq!(loaded.strokes, vec![original]);
         old["strokes"][0].as_object_mut().unwrap().remove("brush");
         let without_extension = Document::from_json(&old.to_string()).unwrap();
@@ -531,7 +566,7 @@ mod tests {
             .remove("opacity");
 
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 15);
+        assert_eq!(loaded.version, 16);
         assert_eq!(loaded.strokes[0].brush.opacity, 1.0);
         assert_eq!(loaded.strokes[0].brush.softness, 0.0);
         assert_eq!(
@@ -541,7 +576,7 @@ mod tests {
 
         let saved = serde_json::to_string(&loaded).unwrap();
         let reopened = Document::from_json(&saved).unwrap();
-        assert_eq!(reopened.version, 15);
+        assert_eq!(reopened.version, 16);
         assert_eq!(reopened.strokes, loaded.strokes);
     }
     #[test]
@@ -674,7 +709,7 @@ mod tests {
         value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
         value["strokes"][0]["points"][0]["tilt"] = serde_json::json!("unknown extension");
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 15);
+        assert_eq!(loaded.version, 16);
         assert_eq!(loaded.strokes, vec![original]);
     }
     #[test]
@@ -770,7 +805,7 @@ mod tests {
         legacy["strokes"][0]["brush"]["texture"] = serde_json::json!({"kind":"future_pattern"});
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
         mark.brush.texture = TextureSettings::default();
-        assert_eq!(loaded.version, 15);
+        assert_eq!(loaded.version, 16);
         assert_eq!(loaded.strokes, vec![mark]);
     }
     #[test]
@@ -835,7 +870,7 @@ mod layer_tests {
         value["active_layer"] = serde_json::json!(99);
         value["strokes"][0]["layer_id"] = serde_json::json!("unknown");
         let migrated = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(migrated.version, 15);
+        assert_eq!(migrated.version, 16);
         assert_eq!(migrated.strokes, vec![original]);
         assert_eq!(migrated.layers, layers_default());
         assert_eq!(migrated.active_layer, 1);
@@ -1183,7 +1218,7 @@ mod saved_guide_document_tests {
         legacy.as_object_mut().unwrap().remove("guide_resources");
         legacy.as_object_mut().unwrap().remove("active_guide");
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
-        assert_eq!(loaded.version, 15);
+        assert_eq!(loaded.version, 16);
         assert!(loaded.guide_resources.is_empty());
         assert_eq!(loaded.active_guide, None);
         assert_eq!(loaded.strokes, doc.strokes);
@@ -1235,7 +1270,7 @@ mod group_tests {
             s.group_id = None;
         }
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 15);
+        assert_eq!(loaded.version, 16);
         assert_eq!(loaded.strokes, doc.strokes);
         assert_eq!(loaded.layers, doc.layers);
     }

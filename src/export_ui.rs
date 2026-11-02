@@ -108,6 +108,7 @@ fn build_export_document_snapshot(
             Vec::new()
         },
         active_model_reference: None,
+        brush_tip_assets: Vec::new(),
         strokes: document
             .strokes
             .iter()

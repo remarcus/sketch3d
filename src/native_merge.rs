@@ -15,6 +15,7 @@ pub struct InsertedDrawing {
     pub next_id: u64,
     pub image_assets: HashMap<u64, image_planes::ImageAsset>,
     pub obj_models: HashMap<u64, ObjModel>,
+    pub brush_tip_assets: Vec<crate::brush_tip::BrushTipAsset>,
 }
 
 /// Validate a native source and stage its content and dependent resources for
@@ -124,6 +125,21 @@ pub fn prepare_insert(
     if destination.layers.len().saturating_add(source.layers.len()) > 256 {
         return Err("Insertion would exceed the 256-layer document limit".into());
     }
+
+    let mut merged_tip_assets = destination.brush_tip_assets.clone();
+    for asset in &source.brush_tip_assets {
+        if let Some(existing) = merged_tip_assets
+            .iter()
+            .find(|existing| existing.id == asset.id)
+        {
+            if existing.png != asset.png {
+                return Err("Brush tip content identity collision during insertion".into());
+            }
+        } else {
+            merged_tip_assets.push(asset.clone());
+        }
+    }
+    crate::brush_tip::validate_catalog(&merged_tip_assets)?;
 
     let mut ids = Ids::new(first_id, destination_assets.to_path_buf());
     let mut layer_ids = Ids::new(first_layer_id, destination_assets.to_path_buf());
@@ -262,6 +278,7 @@ pub fn prepare_insert(
     };
 
     let mut merged = destination.clone();
+    merged.brush_tip_assets = merged_tip_assets;
     crate::editing::Edit::Merge(edit.clone()).apply(&mut merged, true);
     // Run the combined catalogs through the same schema and bounds checks used
     // by normal native open/save before writing any destination assets.
@@ -275,6 +292,7 @@ pub fn prepare_insert(
         next_id: ids.next,
         image_assets,
         obj_models,
+        brush_tip_assets: source.brush_tip_assets,
     })
 }
 

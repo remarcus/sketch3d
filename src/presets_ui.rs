@@ -10,8 +10,9 @@ use eframe::egui::WidgetInfo;
 use eframe::{egui, egui_wgpu};
 use glam::Vec3;
 use std::{
+    collections::HashMap,
     fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -26,6 +27,7 @@ pub struct PresetUi {
     repair_needed: bool,
     preview_preset: Option<Preset>,
     preview_doc: Document,
+    tip_previews: HashMap<u64, egui::TextureHandle>,
     search: String,
     browser_open: bool,
     focus_search: bool,
@@ -58,6 +60,7 @@ impl PresetUi {
             repair_needed,
             preview_preset: None,
             preview_doc: Document::default(),
+            tip_previews: HashMap::new(),
             search: String::new(),
             browser_open: false,
             focus_search: false,
@@ -156,6 +159,20 @@ impl PresetUi {
                 }
                 if let Some(preset) = self.library.get(self.selected).cloned() {
                     self.preview(ui, &preset);
+                    self.tip_preview(ui, &preset);
+                    if ui.button("Import PNG tip…").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("PNG image", &["png"])
+                            .pick_file()
+                        {
+                            match self.import_tip(&path, preset.id) {
+                                Ok(file_name) => self.persist(&format!("Imported {file_name}")),
+                                Err(error) => {
+                                    self.notice = format!("Brush tip import failed: {error}")
+                                }
+                            }
+                        }
+                    }
                     let shape = match preset.brush.kind {
                         crate::document::BrushKind::Round => "Round",
                         crate::document::BrushKind::Ribbon => "Ribbon",
@@ -430,7 +447,10 @@ impl PresetUi {
                                 .set_file_name(&suggested)
                                 .save_file()
                             {
-                                let result = BrushPackage::from_preset(preset).save(&path);
+                                let tip_asset =
+                                    self.library.tip_asset(preset.brush.tip_asset_id).cloned();
+                                let result =
+                                    BrushPackage::from_preset(preset, tip_asset).save(&path);
                                 self.notice = match result {
                                     Ok(()) => {
                                         format!("Brush package exported to {}", path.display())
@@ -541,6 +561,7 @@ impl PresetUi {
                     ui.separator();
                     ui.strong(format!("Preview: {}", preset.name));
                     self.preview(ui, &preset);
+                    self.tip_preview(ui, &preset);
                     describe_preset(ui, &preset);
                     if ui.button("Use selected preset").clicked() {
                         use_id = Some(selected_id);
@@ -593,6 +614,67 @@ impl PresetUi {
             );
         }
         ui.small("Preview uses synthetic pressure and tilt.");
+    }
+
+    fn tip_preview(&mut self, ui: &mut egui::Ui, preset: &Preset) {
+        let id = preset.brush.tip_asset_id;
+        if id == 0 {
+            return;
+        }
+        let Some(asset) = self.library.tip_asset(id) else {
+            ui.small("Image tip asset is unavailable.");
+            return;
+        };
+        if !self.tip_previews.contains_key(&id) {
+            let Ok(decoded) = asset.decoded() else {
+                ui.small("Image tip preview could not be decoded.");
+                return;
+            };
+            let size = [decoded.size[0] as usize, decoded.size[1] as usize];
+            let image = egui::ColorImage::from_rgba_unmultiplied(size, &decoded.pixels);
+            let texture = ui.ctx().load_texture(
+                format!("brush-tip-{id:016x}"),
+                image,
+                egui::TextureOptions::NEAREST,
+            );
+            self.tip_previews.insert(id, texture);
+        }
+        if let Some(texture) = self.tip_previews.get(&id) {
+            ui.label(format!(
+                "PNG tip · {} × {} · alpha preserved",
+                asset.size[0], asset.size[1]
+            ));
+            ui.image((texture.id(), egui::vec2(96.0, 96.0)));
+        }
+        if let Some(provenance) = &asset.provenance {
+            ui.small(format!("Source: {provenance}"));
+        }
+    }
+
+    fn import_tip(&mut self, path: &Path, preset_id: u64) -> Result<String, String> {
+        let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err("Choose a regular PNG image file".into());
+        }
+        let mut bytes =
+            Vec::with_capacity(metadata.len().min(crate::brush_tip::MAX_PNG_BYTES as u64) as usize);
+        fs::File::open(path)
+            .map_err(|error| error.to_string())?
+            .take(crate::brush_tip::MAX_PNG_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() > crate::brush_tip::MAX_PNG_BYTES {
+            return Err("Brush tip PNG must be no larger than 512 KiB".into());
+        }
+        let provenance = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| name.chars().count() <= 240 && !name.chars().any(char::is_control))
+            .map(|name| format!("Imported from {name}"));
+        let asset = crate::brush_tip::BrushTipAsset::from_png(bytes, provenance)?;
+        let file_name = asset.file_name();
+        self.library.assign_tip_asset(preset_id, asset)?;
+        Ok(file_name)
     }
 }
 

@@ -15,8 +15,8 @@ const BUILTIN_PRESET_COUNT: usize = 10;
 const MAX_PERSONAL_PRESETS: usize = 250;
 const MAX_PRESETS: usize = MAX_PERSONAL_PRESETS + BUILTIN_PRESET_COUNT;
 const FIRST_PERSONAL_ID: u64 = 100;
-const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
-const MAX_PACKAGE_BYTES: u64 = 64 * 1024;
+const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_PACKAGE_BYTES: u64 = 1024 * 1024;
 const PACKAGE_FORMAT: &str = "spatial-sketch-brush";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -29,13 +29,15 @@ pub struct Preset {
     pub stabilization: f32,
 }
 
-/// Portable, self-contained brush definition. Version 1 supports built-in
-/// procedural brush and texture features; it contains no external assets.
+/// Portable, self-contained brush definition. Version 1 is settings-only;
+/// version 2 can carry a bounded PNG tip without a source path.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushPackage {
     pub format: String,
     pub version: u32,
     pub preset: PackagePreset,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip_asset: Option<crate::brush_tip::BrushTipAsset>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -48,10 +50,13 @@ pub struct PackagePreset {
 }
 
 impl BrushPackage {
-    pub fn from_preset(preset: &Preset) -> Self {
+    pub fn from_preset(
+        preset: &Preset,
+        tip_asset: Option<crate::brush_tip::BrushTipAsset>,
+    ) -> Self {
         Self {
             format: PACKAGE_FORMAT.into(),
-            version: 1,
+            version: if tip_asset.is_some() { 2 } else { 1 },
             preset: PackagePreset {
                 name: preset.name.clone(),
                 brush: preset.brush,
@@ -59,12 +64,13 @@ impl BrushPackage {
                 color: preset.color,
                 stabilization: preset.stabilization,
             },
+            tip_asset,
         }
     }
 
     pub fn to_json(&self) -> Result<String, String> {
         let preset = self.as_preset()?;
-        let canonical = Self::from_preset(&preset);
+        let canonical = Self::from_preset(&preset, self.tip_asset.clone());
         let text = serde_json::to_string_pretty(&canonical).map_err(|e| e.to_string())?;
         if text.len() as u64 > MAX_PACKAGE_BYTES {
             return Err("Brush package is too large".into());
@@ -86,8 +92,17 @@ impl BrushPackage {
         if self.format != PACKAGE_FORMAT {
             return Err("This is not a Sketch3D brush package".into());
         }
-        if self.version != 1 {
+        if !matches!(self.version, 1 | 2) {
             return Err("Unsupported brush package version".into());
+        }
+        match (
+            &self.tip_asset,
+            self.version,
+            self.preset.brush.tip_asset_id,
+        ) {
+            (None, 1, 0) | (None, 2, 0) => {}
+            (Some(asset), 2, id) if id == asset.id => asset.validate()?,
+            _ => return Err("Brush package tip asset reference is missing or inconsistent".into()),
         }
         let preset = Preset {
             id: FIRST_PERSONAL_ID,
@@ -106,7 +121,12 @@ impl BrushPackage {
     /// Imports by allocating a fresh local ID and resolving name collisions
     /// with an explicit, deterministic suffix.
     pub fn import_into(&self, library: &mut Library) -> Result<u64, String> {
-        let preset = self.as_preset()?;
+        let mut preset = self.as_preset()?;
+        let mut changed = library.clone();
+        if let Some(asset) = &self.tip_asset {
+            changed.add_tip_asset(asset.clone())?;
+            preset.brush.tip_asset_id = asset.id;
+        }
         let base = format!("{} (imported)", preset.name);
         let mut name = base.clone();
         let mut suffix = 2_u32;
@@ -120,13 +140,15 @@ impl BrushPackage {
                 .checked_add(1)
                 .ok_or("No unique preset names available")?;
         }
-        library.create(
+        let id = changed.create(
             &name,
             preset.brush,
             preset.radius,
             preset.color,
             preset.stabilization,
-        )
+        )?;
+        *library = changed;
+        Ok(id)
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -179,6 +201,8 @@ pub struct Library {
     pub version: u32,
     pub presets: Vec<Preset>,
     pub next_id: u64,
+    #[serde(default)]
+    pub tip_assets: Vec<crate::brush_tip::BrushTipAsset>,
 }
 impl Default for Library {
     fn default() -> Self {
@@ -186,6 +210,7 @@ impl Default for Library {
             version: 1,
             presets: defaults(),
             next_id: FIRST_PERSONAL_ID,
+            tip_assets: Vec::new(),
         }
     }
 }
@@ -324,11 +349,16 @@ impl Library {
         if self.next_id < FIRST_PERSONAL_ID || self.next_id == u64::MAX {
             return Err("Invalid next preset ID".into());
         }
+        crate::brush_tip::validate_catalog(&self.tip_assets)?;
+        let tip_ids: HashSet<_> = self.tip_assets.iter().map(|asset| asset.id).collect();
         let mut names = HashSet::new();
         let mut ids = HashSet::new();
         for preset in &self.presets {
             if !preset.is_valid() || preset.name != preset.name.trim() {
                 return Err("Invalid preset settings or name".into());
+            }
+            if preset.brush.tip_asset_id != 0 && !tip_ids.contains(&preset.brush.tip_asset_id) {
+                return Err("Preset refers to a missing brush tip asset".into());
             }
             if !preset.is_builtin() && !(FIRST_PERSONAL_ID..self.next_id).contains(&preset.id) {
                 return Err("Invalid preset ID".into());
@@ -340,6 +370,39 @@ impl Library {
                 return Err("Preset names must be unique".into());
             }
         }
+        Ok(())
+    }
+
+    pub fn tip_asset(&self, id: u64) -> Option<&crate::brush_tip::BrushTipAsset> {
+        self.tip_assets.iter().find(|asset| asset.id == id)
+    }
+
+    fn add_tip_asset(&mut self, asset: crate::brush_tip::BrushTipAsset) -> Result<(), String> {
+        asset.validate()?;
+        if let Some(existing) = self.tip_asset(asset.id) {
+            if existing.png != asset.png {
+                return Err("Brush tip content identity collision".into());
+            }
+            return Ok(());
+        }
+        self.tip_assets.push(asset);
+        crate::brush_tip::validate_catalog(&self.tip_assets)
+    }
+    pub fn assign_tip_asset(
+        &mut self,
+        preset_id: u64,
+        asset: crate::brush_tip::BrushTipAsset,
+    ) -> Result<(), String> {
+        let mut changed = self.clone();
+        changed.add_tip_asset(asset.clone())?;
+        let preset = changed
+            .presets
+            .iter_mut()
+            .find(|preset| preset.id == preset_id)
+            .ok_or("Selected brush preset no longer exists")?;
+        preset.brush.tip_asset_id = asset.id;
+        changed.validate()?;
+        *self = changed;
         Ok(())
     }
     pub fn from_json(text: &str) -> Result<Self, String> {
@@ -599,7 +662,7 @@ mod tests {
     fn brush_package_roundtrip_allocates_local_id_and_resolves_name_collisions() {
         let mut source = Library::default();
         let id = source.duplicate(4, "Custom Chalk").unwrap();
-        let package = BrushPackage::from_preset(source.get(id).unwrap());
+        let package = BrushPackage::from_preset(source.get(id).unwrap(), None);
         let json = package.to_json().unwrap();
         let decoded = BrushPackage::from_json(&json).unwrap();
         let mut destination = Library::default();
@@ -622,7 +685,7 @@ mod tests {
 
     #[test]
     fn brush_package_file_roundtrip_is_atomic_and_portable() {
-        let package = BrushPackage::from_preset(&Library::default().presets[0]);
+        let package = BrushPackage::from_preset(&Library::default().presets[0], None);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/Round Ink.brush.json");
         package.save(&path).unwrap();
@@ -631,7 +694,7 @@ mod tests {
 
     #[test]
     fn brush_package_rejects_wrong_format_version_invalid_settings_and_oversize() {
-        let package = BrushPackage::from_preset(&Library::default().presets[0]);
+        let package = BrushPackage::from_preset(&Library::default().presets[0], None);
         let mut value = serde_json::to_value(&package).unwrap();
         value["format"] = serde_json::json!("other-brush-format");
         assert!(BrushPackage::from_json(&value.to_string()).is_err());
