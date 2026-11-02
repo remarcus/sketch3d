@@ -59,6 +59,7 @@ impl SketchApp {
                     100.0,
                     "× radius",
                 );
+                ui.small("Lower spacing places more dabs along the same path length.");
                 ui_style::slider_row(
                     ui,
                     "Scatter",

@@ -35,6 +35,12 @@ display, picking, selection bounds, GLB, and OBJ export.
   and full length. The global dab phase, random values, and taper survive a
   split. Rigid transforms preserve the phase; uniform scaling scales its
   distance values with the drawing.
+- Stipple and spray presets use this same saved geometry path. Stipple uses
+  regular spacing with no scatter; spray uses a bounded uniform-area offset in
+  the captured plane. Scatter is rejected for curved guides and model targets,
+  so spray does not detach marks from those surfaces. Taps remain one dab, and
+  dabs are ordinary selectable, erasable, transformable, and exportable mesh
+  geometry.
 
 ## Versioning and budgets
 

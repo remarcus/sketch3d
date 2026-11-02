@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const BUILTIN_PRESET_COUNT: usize = 8;
+const BUILTIN_PRESET_COUNT: usize = 10;
 const MAX_PERSONAL_PRESETS: usize = 250;
 const MAX_PRESETS: usize = MAX_PERSONAL_PRESETS + BUILTIN_PRESET_COUNT;
 const FIRST_PERSONAL_ID: u64 = 100;
@@ -211,6 +211,8 @@ fn defaults() -> Vec<Preset> {
         ),
         ("Graphite", BrushKind::Ribbon, TextureKind::Graphite, 0.055),
         ("Charcoal", BrushKind::Chisel, TextureKind::Charcoal, 0.09),
+        ("Stipple", BrushKind::Round, TextureKind::Solid, 0.035),
+        ("Spray", BrushKind::Round, TextureKind::Solid, 0.024),
     ]
     .into_iter()
     .enumerate()
@@ -223,6 +225,41 @@ fn defaults() -> Vec<Preset> {
             },
             ..Default::default()
         };
+        if name == "Stipple" {
+            brush.dabs.enabled = true;
+            brush.dabs.spacing = 2.4;
+            brush.dabs.size_variation = 0.08;
+            brush.dabs.pressure_size = crate::document::PressureMapping {
+                enabled: true,
+                minimum: 0.28,
+                curve: 1.15,
+            };
+            brush.dynamics.width.enabled = false;
+            brush.dynamics.opacity = crate::document::PressureMapping {
+                enabled: true,
+                minimum: 0.06,
+                curve: 1.2,
+            };
+            brush.opacity = 0.86;
+        } else if name == "Spray" {
+            brush.dabs.enabled = true;
+            brush.dabs.spacing = 0.7;
+            brush.dabs.scatter = 2.8;
+            brush.dabs.size_variation = 0.62;
+            brush.dabs.angle_variation_degrees = 180.0;
+            brush.dabs.pressure_size = crate::document::PressureMapping {
+                enabled: true,
+                minimum: 0.08,
+                curve: 1.35,
+            };
+            brush.dynamics.width.enabled = false;
+            brush.dynamics.opacity = crate::document::PressureMapping {
+                enabled: true,
+                minimum: 0.025,
+                curve: 1.1,
+            };
+            brush.opacity = 0.62;
+        }
         let color = match texture {
             TextureKind::Graphite => {
                 brush.dynamics.opacity = crate::document::PressureMapping {
@@ -250,7 +287,11 @@ fn defaults() -> Vec<Preset> {
                 brush.opacity = 0.92;
                 [0.14, 0.13, 0.12]
             }
-            _ => [0.17, 0.82, 0.74],
+            _ => match name {
+                "Stipple" => [0.12, 0.11, 0.1],
+                "Spray" => [0.24, 0.25, 0.29],
+                _ => [0.17, 0.82, 0.74],
+            },
         };
         Preset {
             id: i as u64 + 1,
@@ -551,7 +592,7 @@ mod tests {
         library.delete(6).unwrap();
         assert!(library.duplicate(1, "Still overflow").is_err());
         library.restore_defaults().unwrap();
-        assert_eq!(library.presets.len(), 258);
+        assert_eq!(library.presets.len(), 260);
     }
 
     #[test]
