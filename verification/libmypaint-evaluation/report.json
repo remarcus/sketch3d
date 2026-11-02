@@ -1,0 +1,10 @@
+{
+  "engine":"libmypaint 1.6.1",
+  "surface":{"width":1024,"height":1024,"format":"RGBA8","texture_bytes":4194304,"undo_scratch_bytes":4194304,"cpu_pixel_storage_bytes":8388608,"memory_budget_bytes":33554432},
+  "stroke":{"input_samples":256,"timed_runs":5,"elapsed_time_s":2.133333,"pressure_min":0.18,"pressure_max":0.96,"tilt_x_range":[-0.36,0.36],"tilt_y_range":[-0.32,0.32],"median_cpu_ms":38.332348,"accepted_cpu_ms":38.743362,"engine_stroke_time_s":2.133333},
+  "callbacks":{"dabs":1167,"shaded_pixels":21304044,"engine_color_reads":1167,"manual_color_sample_calls":1,"aspect_ratio_min":3.5200,"aspect_ratio_max":3.5733,"atomic_begin":7,"atomic_end":7,"cancel":6,"undo":1},
+  "dirty_rect":{"x":0,"y":223,"width":1024,"height":575,"estimated_rgba8_upload_bytes":2355200,"estimated_full_upload_bytes":4194304},
+  "memory":{"peak_rss_kib":10580,"gpu_upload_measured":false,"upload_estimate_only":true},
+  "color_sample":[0.89804,0.47843,0.09020,0.99608],
+  "hashes":{"blank":"f748eed8b69d0383","after_cancel":"f748eed8b69d0383","painted":"86a7ef46384e0a30","after_undo":"f748eed8b69d0383","cancel_restored":true,"undo_restored":true}
+}

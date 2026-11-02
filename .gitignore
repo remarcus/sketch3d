@@ -6,3 +6,5 @@
 /verification/*
 !/verification/lyon-evaluation/
 !/verification/lyon-evaluation/**
+!/verification/libmypaint-evaluation/
+!/verification/libmypaint-evaluation/**
