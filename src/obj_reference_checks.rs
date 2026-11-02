@@ -56,7 +56,7 @@ impl SketchApp {
         self.process_line_art_command(canvas);
     }
 
-    fn verify_obj_reference_window_import_click(&mut self, screen_rect: Rect) {
+    pub(super) fn verify_obj_reference_window_import_click(&mut self, screen_rect: Rect) {
         let ui_context = egui::Context::default();
         let raw_input = |events| egui::RawInput {
             screen_rect: Some(screen_rect),

@@ -1,28 +1,31 @@
 # SKETCH-066 coverage and freshness audit
 
-Audited 2026-11-02 against app commit `ecb4229`. Sources: the five top-level local draft manifests and their output files, two committed tutorials and fixtures, capture implementation in `src/app.rs`, current UI code, task acceptance/status, and changes since capture. This is a source/metadata audit with inspection of the mirror-shapes and edit-erase posters, not a new full-playback or current-build visual review.
+Audited 2026-11-02 against the current capture implementation and local draft manifests. The eight current-build output sets are refreshed after the implementation commit; the final curated hashes live in each media manifest. This is a source/metadata and selected-frame review, not a full playback or intended-surface sign-off. Manifest review flags remain false until a human reviews those outputs.
 
-The drafts demonstrate a subset of the original capabilities. All five predate SKETCH-071–086 implementation and need current-build comparison before publication. Their age alone does not establish that the shown behavior is broken. Several clips need additional recorded actions to teach the workflow their names suggest.
+The five focused clips, 18-second overview, and two 60-second tutorials now have bounded current-build replays. Each uses synthetic pressure-free input and discloses that no tablet pressure or latency was measured. The reference-export replay uses an injected generated file-picker result and does not show the native picker or insert-preview dialog.
 
 ## Existing clips
 
-All are six seconds, 10 fps, Dark theme, 1280×720 MP4/poster, and 640×360 single-play GIF. All 20 primary media/caption files exist and match manifest byte sizes. All five manifests have `reviewed`, intended README surface, boundary, and privacy checks false. Earlier task notes describe some frame/privacy inspection, but the manifest sign-offs remain incomplete.
+The five focused clips are six seconds at 10 fps with full-size MP4/posters and bounded 640×360 single-play GIFs. The overview is an 18-second 10-fps MP4; tutorials are 60-second 10-fps MP4s. Their six-second GIFs are accelerated previews, not normal-speed instruction. Every clip has a VTT and manifest; long tutorials include native sample files saved/reopened through production handlers. All manifests retain review flags as false pending complete playback, caption, privacy, and README-size review.
 
 | Clip | Recorded app commit | What is actually captured | Gap and refresh action |
 | --- | --- | --- | --- |
-| `draw-orbit` | `d134602` | Drawing through the canvas handler, then orbit | Closest match to its planned workflow. Recheck drawing appearance and brush UI after the dab/brush changes; caption timing remains unsigned. Does not demonstrate newer brush families. |
-| `curved-guides` | `c44f980` | Orbit of a cylinder and mirrored strokes prepared before capture | Does not show guide activation, drawing, periodic-seam crossing, or a ring guide despite cylinder/ring shot-list coverage. Capture the guide interaction and seam gesture; add a ring shot or narrow the advertised coverage to cylinder results. |
-| `mirror-shapes` | `c44f980` | Orbit of a prepared mirrored line pair and ellipse | Does not show enabling mirror, drawing the line, or placing the ellipse. Mirror UI has since gained radial symmetry controls. Refresh the UI and record creation; keep radial symmetry separate until SKETCH-085 acceptance passes. |
-| `edit-erase` | `e60b7ef` | Partial erase, undo, and orbit; selection/recolor happen before capture | Captured erase/undo is useful, but selection, appearance editing, and transforms are not taught. Add those actions; recheck partial erasing with the changed stroke metadata. Caption timing remains unsigned. |
-| `reference-export` | `b8ea60b` | Orbit of staged image/OBJ references and an inserted lantern; GLB export happens before capture | A result preview, not an import/export walkthrough. Record the controls, insertion/placement and export result. Do not claim native file-picker interaction has been verified by this replay. Mixed-resource rotation/scale is newer and still awaiting acceptance. |
+| `draw-orbit` | Current implementation commit | Draw through `canvas_input`, then orbit | Current focused action clip. Synthetic input; no tablet measurements. |
+| `curved-guides` | Current implementation commit | Create and draw across a saved cylinder via production pointer handler; orbit | Cylinder guide/mirror action is shown. Ring guide remains outside this clip. |
+| `mirror-shapes` | Current implementation commit | Create a mirrored line and editable ellipse through production handlers; orbit | Radial symmetry remains outside this clip and must not be inferred. |
+| `edit-erase` | Current implementation commit | Select and recolor during capture; partially erase; inspect fragments; undo; orbit | Native selection/appearance/erase handlers are used. |
+| `reference-export` | Current implementation commit | Production OBJ Import control with injected path; native merge; whole-scene GLB export; orbit | The OS picker and insertion preview are not displayed. |
+| `overview` | Current implementation commit | Draw; select/move/undo/redo; orbit; show production GLB export options | 18-second overview, synthetic replay. |
+| `house-tutorial` | Current implementation commit | Draw; select/move/undo/redo; orbit; production native save/reopen | 60-second MP4, accelerated GIF preview, captioned and paired with saved sample. |
+| `curved-tutorial` | Current implementation commit | Draw/reflected stroke; select/move/undo/redo; orbit; native save/reopen | 60-second MP4, accelerated GIF preview, captioned and paired with saved cylinder sample. |
 
-Curved-guides, mirror-shapes, and reference-export manifests mark caption timing checked. The source currently sets that flag automatically by clip type; a fresh recording must receive a fresh timing review rather than inherit this historical sign-off.
+All refreshed outputs leave caption timing and review flags false. The long-form VTT cues correspond to the replay checkpoint intervals but still need human synchronization against the complete MP4.
 
 ## What remains to finish the original 066 acceptance
 
-- Record the 15–25 second overview. No overview capture mode or output was found; the CLI supports only the five focus names.
-- Complete the five focused clips' action coverage above, then review full MP4/GIF playback, final frame/boundary behavior, captions, cursor cues, privacy, and readability on the intended surfaces.
-- Record both 45–90 second tutorials. The house and lantern walkthroughs, narration and 60-second VTT drafts exist; tutorial footage does not. Synchronize captions to the eventual recordings and show save/reopen where promised.
+- Review full MP4/GIF playback, final-frame behavior, VTT timing, cursor cues, privacy, and readability at intended README/tutorial sizes. Keep the review flags false until that pass is complete.
+- The native file picker and insertion preview are not shown in `reference-export`; describe this limitation wherever that clip is embedded.
+- Long-form GIFs are accelerated six-second previews. Link the full MP4 and VTT for normal-speed tutorials and keep the static written alternatives available.
 - Add the planned Light/Dark comparison. Existing footage is Dark-only. SKETCH-056 has substantial software theme evidence, with OS/manual checks still open; identify exactly which software-verified state a comparison demonstrates.
 - Resolve the 640px draft versus initial 960px README budget using actual embed review. Upscaling a draft does not add UI detail. Use a suitable fresh capture/preview or a poster-linked MP4 if the GIF is unreadable or over budget.
 - Complete reproducibility and review metadata, then publish bounded curated assets or stable project-controlled links. The README currently offers two static tutorial rows, not a published five-clip gallery. Keep the written alternatives, posters/alt text and user-controlled video playback.
@@ -49,9 +52,8 @@ SKETCH-087/088 are feasibility work, not finished painting/tessellation features
 ## Tooling, fixtures, and documentation drift
 
 - The two committed fixtures use native format **13**; the current writer uses **24**, and the loader accepts **1–24**. They are older baseline samples, not proof of incompatibility. Reopen/save/reload them in the selected recording build before tutorials. They do not exercise the newer brush, editable-curve, layer, gradient, or linked-group metadata. Keep format version distinct from the manifest's fixture revision (`fixture_version: 1`).
-- Hidden-replay manifests omit SHA-256 hashes for every output, although the manual recorder/template includes them. Add hashes to future replay output sets for provenance. Existing byte-size agreement does not establish content identity.
-- Replay `source_tree_dirty` checks only a named subset of source files. Newer geometry, brush, document, shader, and other dependencies can change without that flag noticing. Use full relevant-tree state and record the build identity when refreshing; `git rev-parse HEAD` at recording time alone cannot prove an already-built executable matches that commit.
-- Three replay caption-review flags are hard-coded true by clip type. Reset review state on capture and record explicit review of each output set.
+- `scripts/curate_capability_demos.ps1` copies bounded outputs into the local media folder, requires `source_tree_dirty=false`, and records SHA-256 hashes for clips, posters, captions, samples, and the scene GLB. Hashes identify exact files but are not a review sign-off.
+- Replay `source_tree_dirty` checks the implementation source files that define the replays and production paths. `app_commit` records the build source revision; generate final assets from the committed build before curation.
 - The TASKS progress summary still said actual recordings were pending even though five focus drafts exist. That wording is corrected with this audit. The native-format summary there is historical and does not describe the current writer.
 
 ## Refresh rule and order

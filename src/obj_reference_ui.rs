@@ -261,11 +261,15 @@ impl SketchApp {
             .default_open(true)
             .show(ui, |ui| {
             let import_response = import_obj_reference_button(ui);
-            if self.obj_reference_verification_frame.is_some() {
+            let capability_import = self
+                .capability_replay
+                .as_ref()
+                .is_some_and(|replay| replay.clip.is_reference_export());
+            if self.obj_reference_verification_frame.is_some() || capability_import {
                 self.obj_reference_verification_import_rect = Some(import_response.rect);
             }
             if import_response.clicked() {
-                if self.obj_reference_verification_frame.is_some() {
+                if self.obj_reference_verification_frame.is_some() || capability_import {
                     self.obj_reference_verification_button_clicked = true;
                 }
                 self.import_obj_reference();

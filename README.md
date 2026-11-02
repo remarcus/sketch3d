@@ -64,26 +64,26 @@ To refine an ordinary stroke, select it with **V** and choose **Edit points…**
 
 ## Capability gallery
 
-Click a preview to open its MP4. These six-second app captures use synthetic input without pressure data. They show earlier builds; newer features are not covered, and full playback/current-build review remains pending. GIF previews play once; open the MP4 to replay.
+Click a preview to open its captioned MP4. These deterministic current-build replays use synthetic input without pressure data; they do not measure tablet pressure or latency. GIF previews play once, and the longer ones are accelerated six-second summaries. Full playback, caption, privacy, and embed-size review remains pending.
 
-| Draw and orbit | Partial erase and undo |
-| --- | --- |
-| [![Draw a cyan stroke in the garden-house scene, then orbit to inspect its depth](docs/capability-demos/media/draw-orbit.gif)](docs/capability-demos/media/draw-orbit.mp4) | [![Erase the middle of an orange stroke, undo, then orbit](docs/capability-demos/media/edit-erase.gif)](docs/capability-demos/media/edit-erase.mp4) |
-| Drawing through the canvas handler, followed by a camera orbit. | Partial erasing and restoration; selection and recoloring were prepared before capture. |
+| Overview | Draw and orbit | Partial erase and undo |
+| --- | --- | --- |
+| [![Sketch3D overview: draw, edit, orbit, and inspect export options](docs/capability-demos/media/overview.gif)](docs/capability-demos/media/overview.mp4) | [![Draw a cyan stroke in the garden-house scene, then orbit to inspect its depth](docs/capability-demos/media/draw-orbit.gif)](docs/capability-demos/media/draw-orbit.mp4) | [![Select and recolor a stroke, partially erase it, undo, then orbit](docs/capability-demos/media/edit-erase.gif)](docs/capability-demos/media/edit-erase.mp4) |
+| An 18-second overview with a production selection transform, undo/redo, and GLB export options. | Drawing through the canvas handler, followed by a camera orbit. | Live selection and appearance editing, partial erase, undo, and orbit. |
 
-| Curved drawing | Mirror and shapes | References and scene export |
+| Curved guides | Mirror and shapes | References and scene export |
 | --- | --- | --- |
 | [![Orbit a saved cylinder with curved mirrored strokes](docs/capability-demos/media/curved-guides.gif)](docs/capability-demos/media/curved-guides.mp4) | [![Orbit a mirrored line pair and editable ellipse](docs/capability-demos/media/mirror-shapes.gif)](docs/capability-demos/media/mirror-shapes.mp4) | [![Orbit a garden-house scene with an inserted lantern, image plane and OBJ reference](docs/capability-demos/media/reference-export.gif)](docs/capability-demos/media/reference-export.mp4) |
-| Prepared cylinder drawing, shown from changing angles. | Prepared mirrored lines and ellipse, shown in 3D. | Prepared imported references and inserted drawing; GLB export runs before capture. |
+| Draw a mirrored stroke across a saved cylinder, then orbit. | Draw the mirrored line and ellipse through production handlers. | Run the production OBJ Import control with a generated picker result, insert through native merge, then export the scene. The native picker and preview dialog are not shown. |
 
-The last three clips show the resulting scenes. Their setup actions happen before recording. [Posters, captions, source commits and capture manifests](docs/capability-demos/media/README.md) accompany the clips. Written walkthroughs and editable samples are below.
+Posters, captions, file hashes, source commits and capture manifests accompany the clips in the [media index](docs/capability-demos/media/README.md). Written tutorials and native sample documents are below.
 
 | Workflow | Recording | Static tutorial | Editable fixture |
 | --- | --- | --- | --- |
-| Explore and edit a curved drawing | Pending review | [Curved drawing tutorial](docs/capability-demos/tutorials/curved-drawing.md) | [Cylindrical lantern](docs/capability-demos/fixtures/cylindrical-lantern.sketch.json) |
-| Select, transform, and save a scene | Pending review | [House editing tutorial](docs/capability-demos/tutorials/house-editing.md) | [Garden house](docs/capability-demos/fixtures/garden-house.sketch.json) |
+| Explore and edit a curved drawing | [![Open the captioned 60-second curved-drawing tutorial](docs/capability-demos/media/curved-tutorial.png)](docs/capability-demos/media/curved-tutorial.mp4) · [WebVTT](docs/capability-demos/media/curved-tutorial.en.vtt) | [Static steps and transcript](docs/capability-demos/tutorials/curved-drawing.md) | [Captured native sample](docs/capability-demos/media/curved-tutorial-saved.sketch.json) · [Cylindrical lantern](docs/capability-demos/fixtures/cylindrical-lantern.sketch.json) |
+| Select, transform, and save a scene | [![Open the captioned 60-second house-editing tutorial](docs/capability-demos/media/house-tutorial.png)](docs/capability-demos/media/house-tutorial.mp4) · [WebVTT](docs/capability-demos/media/house-tutorial.en.vtt) | [Static steps and transcript](docs/capability-demos/tutorials/house-editing.md) | [Captured native sample](docs/capability-demos/media/house-tutorial-saved.sketch.json) · [Garden house](docs/capability-demos/fixtures/garden-house.sketch.json) |
 
-See the [recording workflow](docs/capability-demos/README.md) and [shot list](docs/capability-demos/shot-list.md) for additional captures. Tutorials include draft narration for future recordings.
+See the [recording workflow](docs/capability-demos/README.md) and [shot list](docs/capability-demos/shot-list.md) for action coverage, prerequisites, provenance, and review limits. Tutorial GIFs are accelerated previews; use the MP4 with its VTT captions for normal-speed instruction.
 
 ## Drawings and exports
 

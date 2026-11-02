@@ -1,8 +1,8 @@
 # Explore and edit a curved drawing
 
-**Status:** Static tutorial and narration draft. No video has been recorded or reviewed.
+**Status:** Static steps pair with the current-build 60-second [captioned capture](../media/curved-tutorial.mp4) and [VTT captions](../media/curved-tutorial.en.vtt). Review timing, playback, and readability before publication. The clip uses synthetic pressure-free input.
 
-**Sample:** [Cylindrical lantern](../fixtures/cylindrical-lantern.sketch.json), generated from the built-in original fixture in `src/scenes.rs`.
+**Samples:** [Captured cylinder drawing](../media/curved-tutorial-saved.sketch.json), saved and reopened during the capture; also try the [cylindrical lantern](../fixtures/cylindrical-lantern.sketch.json), generated from the built-in original fixture.
 
 **Draft timed captions:** [WebVTT sidecar](curved-drawing.en.vtt), planned for a 60-second tutorial. Check every cue against the final recording before publishing.
 
@@ -10,19 +10,20 @@
 
 ## Steps
 
-1. Open the lantern fixture and frame the artwork. The strokes form a three-dimensional lantern around a cylindrical shape.
-2. Orbit with right-mouse drag. Pause at the side and back so the curvature and depth are visible.
-3. Press **V** and select one stroke. Move it with **G**, then use **Ctrl/Cmd+Z** and **Ctrl/Cmd+Shift+Z** to compare the original and moved positions.
-4. Orbit again to inspect the result from a second angle. Existing strokes remain editable world-space geometry.
-5. Use **Save As** to keep a copy of the edited fixture.
+1. Open the captured cylinder drawing or lantern sample and inspect its editable world-space strokes.
+2. Orbit with right-mouse drag to see the curvature and depth.
+3. Draw across the saved cylinder guide; its mirrored copy follows around the cylinder axis.
+4. Press **V** and select a stroke. Move it with **G**, then use **Ctrl/Cmd+Z** and **Ctrl/Cmd+Shift+Z** to compare the original and moved positions.
+5. Save a copy and reopen it to confirm the curved source and reflected strokes remain editable.
 
 ## Draft narration / caption transcript
 
-This narration draft is also available as the linked 60-second WebVTT timing draft. Confirm cue timing and shortcut visibility against the final capture before publication.
+This narration transcript follows the visible action order in the recording. Confirm cue timing and control visibility before publication.
 
-- “Open the editable lantern sample and inspect its curved strokes.”
+- “Inspect the saved cylinder and its editable guide.”
+- “Draw across the cylinder. The mirrored copy follows the same axis.”
 - “Orbit around the drawing to see how the marks wrap through three dimensions.”
 - “Select one stroke, move it, then undo and redo to compare both positions.”
 - “The drawing remains editable from every view. Save a copy to preserve your changes.”
 
-**Recording metadata:** Use the reviewed app commit, fixture version, viewport, DPI, theme, and capture method in the per-clip manifest. Keep the clip unpublished until the guide-drawing interaction and resulting capture have been reviewed.
+**Recording metadata:** The manifest records the app commit, fixture provenance, viewport/DPI/theme, output sizes, native sample, and review flags. The native file picker is not used in this tutorial.

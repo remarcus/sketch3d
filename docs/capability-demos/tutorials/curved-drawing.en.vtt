@@ -1,19 +1,22 @@
 WEBVTT
 
-00:00:00.000 --> 00:00:05.000
-Open the editable cylindrical lantern sample.
+00:00:00.000 --> 00:00:04.000
+Inspect the saved cylinder and its editable drawing guide.
 
-00:00:05.000 --> 00:00:14.000
-Frame the drawing, then orbit to reveal its curved strokes.
+00:00:04.000 --> 00:00:20.000
+Draw across the cylinder surface; mirror adds the reflected stroke.
 
-00:00:14.000 --> 00:00:27.000
-Orbit around the lantern to see how the marks wrap through three dimensions.
+00:00:20.000 --> 00:00:27.000
+The source stroke and reflected copy remain editable around the saved cylinder.
 
-00:00:27.000 --> 00:00:41.000
-Select one stroke with V. Move it with G, then undo and redo to compare.
+00:00:27.000 --> 00:00:33.000
+Select the curved stroke, move it, then undo and redo the transform.
 
-00:00:41.000 --> 00:00:51.000
-Inspect the edited stroke from a second angle; the drawing remains editable.
+00:00:33.000 --> 00:00:42.000
+Continue orbiting to inspect the curved result and seam.
 
-00:00:51.000 --> 00:01:00.000
-Save a separate copy to keep the original sample unchanged.
+00:00:42.000 --> 00:00:48.000
+Save the native cylinder drawing through the production save path.
+
+00:00:48.000 --> 00:01:00.000
+Reopen the saved native drawing. Curved strokes remain editable; no tablet pressure was measured.

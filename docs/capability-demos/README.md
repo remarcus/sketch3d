@@ -1,52 +1,44 @@
 # Capability demo recording workflow
 
-This folder defines the capture recipe for SKETCH-066. **Five historical synthetic previews are now included in the main README.** Their original manifests retain incomplete review flags; current-build refresh and full review remain open. Light/Dark comparison is optional per user direction. Record and review each clip only after the workflow it demonstrates has passed its feature checks.
+This folder contains the current-build SKETCH-066 capture recipe, editable samples, action-focused replays, and static tutorial alternatives. Every replay uses synthetic pressure-free input; none measures tablet pressure or latency. Review every MP4, caption, poster, and manifest before publication. Review flags stay false until that review is complete.
 
-See the [2026-11-02 coverage and freshness audit](coverage-audit.md) for each draft's actual action coverage, missing deliverables, newer functionality, and refresh rules. The existing drafts predate SKETCH-071–086 and require current-build comparison before publication.
+See the [coverage audit](coverage-audit.md) for action coverage, provenance, remaining review checks, and newer functionality that is outside the original 066 acceptance.
 
-The editable sample documents are generated from the built-in original scenes with `cargo run -- --write-capability-fixtures docs/capability-demos/fixtures`. The command refuses to overwrite existing files and removes files it created if fixture generation stops partway through. Static tutorial alternatives, caption transcripts, and draft 60-second WebVTT tracks are in `tutorials/`.
+The editable sample documents are generated from built-in original scenes with `cargo run -- --write-capability-fixtures docs/capability-demos/fixtures`. Tutorial runs also save a native sample through the production save path and reopen it through the production open path. Static alternatives and caption transcripts are in `tutorials/`.
 
 ## Deterministic hidden preview
 
-The first focused preview can be regenerated without opening a visible app window:
+Run each bounded replay from the repository root. Existing outputs are never overwritten; move the complete set aside before recapturing.
 
 ```powershell
 cargo run --locked -j1 -- --record-capability-demo draw-orbit
 ```
 
-This bounded 6-second replay draws a stroke and orbits the camera through `canvas_input`, captures one full app frame at a time, and writes an H.264 MP4 master, a 640×360 GIF preview configured to play once, a full-size PNG poster, a WebVTT sidecar, and a JSON manifest under ignored `verification/capability-demos/drafts/`. The single-play GIF avoids an abrupt loop reset; use the poster-linked MP4 where user-controlled playback is preferred. The replay adds visible `DRAW` and `ORBIT` cursor cues and a synthetic-input disclosure. MP4 encoding uses FFmpeg when available and Blender's H.264 encoder otherwise. The command refuses to overwrite any of these outputs; remove or move the complete draft set before regenerating it. The manifest discloses synthetic `pressure=None` input, records the source commit and capture details, and leaves review flags false. This draft does not measure tablet pressure or latency and must pass the review checklist before it can be used in the README.
+Each short focus clip produces a six-second MP4 and a 640×360 GIF preview (≤5 MiB), full-size poster, VTT, and JSON manifest in ignored `verification/capability-demos/drafts/`. The GIF plays once. The app displays synthetic-input/no-pressure disclosure and action-specific pointer cues. MP4 uses FFmpeg/libx264 when installed and the application’s Blender H.264 fallback otherwise. Manifests record the source commit, capture dimensions, fixture provenance, output sizes, and review fields; caption timing and privacy flags remain false until reviewed.
 
-The curved-guide preview uses the same hidden capture pipeline:
+The five focus replays are:
+
+- `draw-orbit`: draw through `canvas_input`, then orbit.
+- `curved-guides`: create mirrored strokes across a saved cylinder with the production pointer handler, then orbit.
+- `mirror-shapes`: create the mirrored line and ellipse through production line/shape handlers, then orbit.
+- `edit-erase`: select a stroke, change its appearance, partially erase it, undo, and orbit through production handlers.
+- `reference-export`: use the production OBJ Import button with an injected generated file result, insert a saved lantern through native merge, and export GLB during capture. The native picker and insertion preview are deliberately not displayed.
+
+Example:
 
 ```powershell
 cargo run --locked -j1 -- --record-capability-demo curved-guides
 ```
 
-This replay first runs the saved-cylinder mirror verifier, which creates the editable source and reflected strokes with production pointer handlers. It then records a synthetic barrel orbit through `canvas_input`. It writes `curved-guides.gif`, `curved-guides.mp4`, `curved-guides.png`, `curved-guides.en.vtt`, and `curved-guides.recording.json` alongside the first preview. Its captions and manifest describe the scripted setup and disclose that replay input has no pressure data. Output names are checked independently for each clip; existing drafts are not overwritten. Review playback and visual readability before README or tutorial use.
-
-The selection and partial-erase preview can also be regenerated deterministically:
+The overview and two long-form tutorials use 60 deterministic app checkpoints. Overview checkpoints are held three times to create an 18-second 10-fps MP4; tutorial checkpoints are held ten times to create 60-second MP4s. Their GIFs are accelerated six-second previews only. Use the MP4 and VTT for normal-speed instruction.
 
 ```powershell
-cargo run --locked -j1 -- --record-capability-demo edit-erase
+cargo run --locked -j1 -- --record-capability-demo overview
+cargo run --locked -j1 -- --record-capability-demo house-tutorial
+cargo run --locked -j1 -- --record-capability-demo curved-tutorial
 ```
 
-Before capture, this replay creates an editable stroke through the production pointer handler, selects it, and applies an appearance change through the selection editor. The recorded section sends a pressure-free eraser gesture through `canvas_input`, verifies that the stroke splits, undoes the erase, and orbits to show the restored mark. Its manifest and captions disclose the pre-capture setup and synthetic input with no pressure data. It writes the corresponding `edit-erase.*` GIF, MP4, poster, WebVTT, and manifest files, refusing to overwrite an existing set.
-
-The mirrored line and shape preview uses the same hidden capture pipeline:
-
-```powershell
-cargo run --locked -j1 -- --record-capability-demo mirror-shapes
-```
-
-Before capture, production line-mirror and ellipse handlers create an editable reflected line pair and an ellipse on the front guide. The recorded section sends a synthetic barrel orbit through `canvas_input`; its captions and manifest disclose the scripted setup and the lack of pressure data. The `mirror-shapes.*` output set is independent and refuses to overwrite existing files.
-
-The reference/import/export preview stages a mixed-resource scene through the production paths before recording:
-
-```powershell
-cargo run --locked -j1 -- --record-capability-demo reference-export
-```
-
-It generates an original reference image and OBJ mesh, imports both through managed asset storage and renderer setup, inserts the saved lantern with native merge, and writes a whole-scene GLB through the production exporter. The six-second capture then records only a synthetic camera orbit over the staged scene; it does not show live menu or file-picker operations. The manifest records the editable native fixture, embedded-resource counts, geometry summary, and export byte size. GIF, MP4, poster, VTT, manifest, fixture, and GLB outputs refuse overwrite and remain under ignored `verification/capability-demos/drafts/` until reviewed.
+The overview shows drawing, a selection transform with undo/redo, camera orbit, and production GLB export options. Both tutorials show drawing, selection, move, undo/redo, orbit, native save and native reopen; each manifest links a matching saved native sample. House and curved tutorial VTT files correspond to the capture checkpoints and include visible-action descriptions. The local [static tutorial alternatives](tutorials/house-editing.md) and [curved-drawing steps](tutorials/curved-drawing.md) remain available when video cannot be played.
 
 ## Capture a clip
 

@@ -327,11 +327,18 @@ fn main() -> eframe::Result {
         let name = args.get(index + 1).map(String::as_str).unwrap_or_default();
         if !matches!(
             name,
-            "draw-orbit" | "curved-guides" | "mirror-shapes" | "edit-erase" | "reference-export"
+            "draw-orbit"
+                | "curved-guides"
+                | "mirror-shapes"
+                | "edit-erase"
+                | "reference-export"
+                | "overview"
+                | "house-tutorial"
+                | "curved-tutorial"
         ) || args.len() != index + 2
         {
             eprintln!(
-                "Usage: sketch3d --record-capability-demo <draw-orbit|curved-guides|mirror-shapes|edit-erase|reference-export>"
+                "Usage: sketch3d --record-capability-demo <draw-orbit|curved-guides|mirror-shapes|edit-erase|reference-export|overview|house-tutorial|curved-tutorial>"
             );
             std::process::exit(2);
         }

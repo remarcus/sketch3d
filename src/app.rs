@@ -184,6 +184,7 @@ pub struct SketchApp {
     rename_library_stem: String,
     delete_library_source: Option<PathBuf>,
     library_open_path: Option<PathBuf>,
+    capability_save_path: Option<PathBuf>,
     insert_preview: Option<(PathBuf, Document)>,
     insert_offset: [f32; 3],
     insert_as_group: bool,
@@ -357,6 +358,9 @@ enum CapabilityClip {
     MirrorShapes,
     EditErase,
     ReferenceExport,
+    Overview,
+    HouseTutorial,
+    CurvedTutorial,
 }
 
 impl CapabilityClip {
@@ -367,6 +371,9 @@ impl CapabilityClip {
             "mirror-shapes" => Some(Self::MirrorShapes),
             "edit-erase" => Some(Self::EditErase),
             "reference-export" => Some(Self::ReferenceExport),
+            "overview" => Some(Self::Overview),
+            "house-tutorial" => Some(Self::HouseTutorial),
+            "curved-tutorial" => Some(Self::CurvedTutorial),
             _ => None,
         }
     }
@@ -378,11 +385,52 @@ impl CapabilityClip {
             Self::MirrorShapes => "mirror-shapes",
             Self::EditErase => "edit-erase",
             Self::ReferenceExport => "reference-export",
+            Self::Overview => "overview",
+            Self::HouseTutorial => "house-tutorial",
+            Self::CurvedTutorial => "curved-tutorial",
         }
     }
 
     fn is_curved_guides(self) -> bool {
-        self == Self::CurvedGuides
+        self == Self::CurvedGuides || self == Self::CurvedTutorial
+    }
+
+    fn is_curved_tutorial(self) -> bool {
+        self == Self::CurvedTutorial
+    }
+
+    fn is_house_tutorial(self) -> bool {
+        self == Self::HouseTutorial
+    }
+
+    fn is_overview(self) -> bool {
+        self == Self::Overview
+    }
+
+    fn is_long_form(self) -> bool {
+        self.is_house_tutorial() || self.is_curved_tutorial()
+    }
+
+    fn has_tutorial_edit_steps(self) -> bool {
+        self.is_long_form() || self.is_overview()
+    }
+
+    fn has_gif(self) -> bool {
+        true
+    }
+
+    fn mp4_hold_frames(self) -> usize {
+        if self.is_long_form() {
+            10
+        } else if self.is_overview() {
+            3
+        } else {
+            1
+        }
+    }
+
+    fn is_draw_orbit(self) -> bool {
+        self == Self::DrawOrbit
     }
 
     fn is_edit_erase(self) -> bool {
@@ -407,12 +455,33 @@ pub(crate) fn prepare_capability_demo_output(name: &str) -> Result<PathBuf, Stri
         .join("capability-demos")
         .join("drafts");
     std::fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
-    for extension in ["gif", "mp4", "png", "en.vtt", "recording.json", "scene.glb"] {
+    let extensions: &[&str] = if clip.has_gif() {
+        &["gif", "mp4", "png", "en.vtt", "recording.json", "scene.glb"]
+    } else {
+        &[
+            "mp4",
+            "png",
+            "en.vtt",
+            "recording.json",
+            "scene.glb",
+            "sketch.json",
+        ]
+    };
+    for extension in extensions {
         let path = output_dir.join(format!("{}.{}", clip.name(), extension));
         if path.exists() {
             return Err(format!(
                 "Refusing to overwrite existing capability demo output: {}",
                 path.display()
+            ));
+        }
+    }
+    if clip.is_long_form() {
+        let sample = output_dir.join(format!("{}-saved.sketch.json", clip.name()));
+        if sample.exists() {
+            return Err(format!(
+                "Refusing to overwrite capability tutorial sample: {}",
+                sample.display()
             ));
         }
     }
@@ -441,12 +510,30 @@ struct CapabilityReplay {
     contact: bool,
     barrel: bool,
     eraser: bool,
+    selecting: bool,
     setup_verified: bool,
     undo_applied: bool,
     gesture_start: Option<Pos2>,
     gesture_end: Option<Pos2>,
+    edit_selection_point: Option<Pos2>,
+    edit_processed_frame: Option<usize>,
     expected_undo_strokes: Option<Vec<Stroke>>,
+    mirror_points: Option<[Pos2; 4]>,
+    curved_points: Option<[Pos2; 3]>,
+    curved_world_points: Option<[Vec3; 3]>,
+    curved_processed_frame: Option<usize>,
+    long_processed_frame: Option<usize>,
+    long_saved: bool,
+    long_reopened: bool,
+    long_edit_verified: bool,
     reference_export_artifact: Option<serde_json::Value>,
+    reference_export_action: Option<serde_json::Value>,
+    reference_export_action_path: Option<PathBuf>,
+    reference_export_action_started: bool,
+    reference_insert_path: Option<PathBuf>,
+    reference_import_action: bool,
+    reference_insert_action: bool,
+    reference_inserted_stroke_count: usize,
     sender: Option<SyncSender<Option<Vec<u8>>>>,
     encoder: Option<JoinHandle<Result<(), String>>>,
     mp4_sender: Option<SyncSender<Option<Vec<u8>>>>,
@@ -460,8 +547,22 @@ impl CapabilityReplay {
     }
 
     fn remove_draft_outputs(&self) {
-        for extension in ["gif", "mp4", "png", "en.vtt", "recording.json", "scene.glb"] {
+        for extension in [
+            "gif",
+            "mp4",
+            "png",
+            "en.vtt",
+            "recording.json",
+            "scene.glb",
+            "sketch.json",
+        ] {
             let _ = std::fs::remove_file(self.path(extension));
+        }
+        if self.clip.is_long_form() {
+            let _ = std::fs::remove_file(
+                self.output_dir
+                    .join(format!("{}-saved.sketch.json", self.clip.name())),
+            );
         }
     }
 
@@ -510,22 +611,134 @@ impl CapabilityReplay {
         self.canvas_rect = Some(rect);
         self.wait_updates = 0;
         let frame = self.captured_frames;
-        let orbit_sample = if self.clip.is_curved_guides()
-            || self.clip.is_mirror_shapes()
-            || self.clip.is_reference_export()
-        {
+        let orbit_sample = if self.clip.is_mirror_shapes() {
+            let [line_start, line_end, ellipse_start, ellipse_end] = self
+                .mirror_points
+                .expect("mirror-shapes replay projects action points onto the front guide");
+            match frame {
+                0..=2 => (line_start, Phase::Move, false, false, false),
+                3 => (line_start, Phase::Down, true, false, false),
+                4..=12 => {
+                    let t = (frame - 3) as f32 / 9.0;
+                    (
+                        line_start + (line_end - line_start) * t,
+                        Phase::Move,
+                        true,
+                        false,
+                        false,
+                    )
+                }
+                13 => (line_end, Phase::Up, false, false, false),
+                14..=16 => (line_end, Phase::Move, false, false, false),
+                17 => (ellipse_start, Phase::Move, false, false, false),
+                18..=27 => {
+                    let t = (frame - 17) as f32 / 10.0;
+                    (
+                        ellipse_start + (ellipse_end - ellipse_start) * t,
+                        Phase::Move,
+                        false,
+                        false,
+                        false,
+                    )
+                }
+                28 => (ellipse_end, Phase::Move, false, false, false),
+                29..=32 => (ellipse_end, Phase::Move, false, false, false),
+                33..=50 => {
+                    let t = (frame - 33) as f32 / 17.0;
+                    let start = rect.center() + egui::vec2(0.0, 12.0);
+                    let end = start + egui::vec2(270.0, -55.0);
+                    (
+                        start + (end - start) * t,
+                        if frame == 33 {
+                            Phase::Down
+                        } else {
+                            Phase::Move
+                        },
+                        true,
+                        true,
+                        false,
+                    )
+                }
+                51 => (
+                    rect.center() + egui::vec2(270.0, -43.0),
+                    Phase::Up,
+                    false,
+                    false,
+                    false,
+                ),
+                _ => (
+                    rect.center() + egui::vec2(270.0, -43.0),
+                    Phase::Move,
+                    false,
+                    false,
+                    false,
+                ),
+            }
+        } else if self.clip.is_curved_guides() {
+            let [start, middle, end] = self
+                .curved_points
+                .expect("curved-guide replay projects action points onto the cylinder");
+            match frame {
+                0..=3 => (start, Phase::Move, false, false, false),
+                4 => (start, Phase::Down, true, false, false),
+                5..=11 => {
+                    let t = (frame - 4) as f32 / 7.0;
+                    (
+                        start + (middle - start) * t,
+                        Phase::Move,
+                        true,
+                        false,
+                        false,
+                    )
+                }
+                12..=18 => {
+                    let t = (frame - 11) as f32 / 7.0;
+                    (middle + (end - middle) * t, Phase::Move, true, false, false)
+                }
+                19 => (end, Phase::Up, false, false, false),
+                20..=32 => (end, Phase::Move, false, false, false),
+                33..=50 => {
+                    let t = (frame - 33) as f32 / 17.0;
+                    let orbit_start = rect.center() + egui::vec2(0.0, 12.0);
+                    let orbit_end = orbit_start + egui::vec2(270.0, -55.0);
+                    (
+                        orbit_start + (orbit_end - orbit_start) * t,
+                        if frame == 33 {
+                            Phase::Down
+                        } else {
+                            Phase::Move
+                        },
+                        true,
+                        true,
+                        false,
+                    )
+                }
+                51 => (
+                    rect.center() + egui::vec2(270.0, -43.0),
+                    Phase::Up,
+                    false,
+                    false,
+                    false,
+                ),
+                _ => (end, Phase::Move, false, false, false),
+            }
+        } else if self.clip.is_reference_export() {
             let start = rect.center() + egui::vec2(0.0, 12.0);
             let end = start + egui::vec2(270.0, -55.0);
             match frame {
-                0..=4 => (start, Phase::Move, false, false, false),
-                5..=50 => {
-                    let t = (frame - 5) as f32 / 45.0;
+                0..=13 => (start, Phase::Move, false, false, false),
+                14..=50 => {
+                    let t = (frame - 14) as f32 / 36.0;
                     (
                         egui::pos2(
                             start.x + (end.x - start.x) * t,
                             start.y + (end.y - start.y) * t,
                         ),
-                        if frame == 5 { Phase::Down } else { Phase::Move },
+                        if frame == 14 {
+                            Phase::Down
+                        } else {
+                            Phase::Move
+                        },
                         true,
                         true,
                         false,
@@ -542,28 +755,37 @@ impl CapabilityReplay {
                 .gesture_end
                 .expect("edit-erase replay setup provides a gesture end");
             match frame {
-                0..=3 => (start, Phase::Move, false, false, false),
-                4..=25 => {
-                    let t = (frame - 4) as f32 / 21.0;
+                0..=13 => (
+                    self.edit_selection_point.unwrap_or(start),
+                    Phase::Move,
+                    false,
+                    false,
+                    false,
+                ),
+                14..=35 => {
+                    let t = (frame - 14) as f32 / 21.0;
                     (
                         egui::pos2(
                             start.x + (end.x - start.x) * t,
                             start.y + (end.y - start.y) * t,
                         ),
-                        if frame == 4 { Phase::Down } else { Phase::Move },
+                        if frame == 14 {
+                            Phase::Down
+                        } else {
+                            Phase::Move
+                        },
                         true,
                         false,
                         true,
                     )
                 }
-                26 => (end, Phase::Up, false, false, true),
-                27..=33 => (end, Phase::Move, false, false, false),
-                34..=36 => (end, Phase::Move, false, false, false),
-                37..=50 => {
-                    let t = (frame - 37) as f32 / 13.0;
+                36 => (end, Phase::Up, false, false, true),
+                37..=42 => (end, Phase::Move, false, false, false),
+                43..=56 => {
+                    let t = (frame - 43) as f32 / 13.0;
                     (
                         rect.center() + egui::vec2(t * 220.0, -t * 45.0),
-                        if frame == 37 {
+                        if frame == 43 {
                             Phase::Down
                         } else {
                             Phase::Move
@@ -573,7 +795,7 @@ impl CapabilityReplay {
                         false,
                     )
                 }
-                51 => (
+                57 => (
                     rect.center() + egui::vec2(220.0, -45.0),
                     Phase::Up,
                     false,
@@ -589,8 +811,17 @@ impl CapabilityReplay {
                 ),
             }
         } else {
-            let start = rect.center() + egui::vec2(-150.0, -65.0);
-            let end = rect.center() + egui::vec2(150.0, -35.0);
+            let (start, end) = if self.clip.is_house_tutorial() || self.clip.is_overview() {
+                (
+                    rect.center() + egui::vec2(-270.0, -140.0),
+                    rect.center() + egui::vec2(-175.0, -105.0),
+                )
+            } else {
+                (
+                    rect.center() + egui::vec2(-150.0, -65.0),
+                    rect.center() + egui::vec2(150.0, -35.0),
+                )
+            };
             match frame {
                 0..=2 => (start, Phase::Move, false, false, false),
                 3 => (start, Phase::Down, true, false, false),
@@ -625,6 +856,7 @@ impl CapabilityReplay {
                     )
                 }
                 51 => (end + egui::vec2(210.0, 0.0), Phase::Up, false, false, false),
+                _ if self.clip.is_overview() => (rect.center(), Phase::Move, false, false, false),
                 _ => (
                     end + egui::vec2(210.0, 0.0),
                     Phase::Move,
@@ -639,6 +871,7 @@ impl CapabilityReplay {
         self.contact = contact;
         self.barrel = barrel;
         self.eraser = eraser;
+        self.selecting = self.clip.is_edit_erase() && frame <= 12;
         Some(PenSample {
             position,
             pressure: None,
@@ -676,9 +909,11 @@ impl CapabilityReplay {
             egui::Stroke::new(2.0_f32, accent),
         );
         painter.circle_filled(position, 2.5, accent);
-        if self.contact {
+        if self.contact || self.selecting {
             let label = if self.barrel {
                 "ORBIT"
+            } else if self.selecting {
+                "SELECT"
             } else if self.eraser {
                 "ERASE"
             } else {
@@ -772,51 +1007,107 @@ impl CapabilityReplay {
         }
         let manifest_path = self.path("recording.json");
         let captions_path = self.path("en.vtt");
-        let captions = if self.clip.is_edit_erase() {
+        let captions = if self.clip.is_house_tutorial() {
             concat!(
                 "WEBVTT\n\n",
-                "00:00:00.000 --> 00:00:00.400\n",
-                "The editable stroke was selected and recolored before capture.\n\n",
-                "00:00:00.400 --> 00:00:02.700\n",
+                "00:00:00.000 --> 00:00:03.000\n",
+                "Explore the editable garden-house scene. This is a deterministic synthetic-input tutorial.\n\n",
+                "00:00:03.000 --> 00:00:27.000\n",
+                "Draw a short detail on the front plane and watch the stroke build.\n\n",
+                "00:00:27.000 --> 00:00:31.000\n",
+                "Select the new stroke, move it, then undo and redo the transform.\n\n",
+                "00:00:31.000 --> 00:00:52.000\n",
+                "Orbit the camera to inspect the drawing in depth.\n\n",
+                "00:00:52.000 --> 00:00:56.000\n",
+                "Save the native document through the production save path.\n\n",
+                "00:00:56.000 --> 00:01:00.000\n",
+                "Reopen the saved native document through the production open path. The scene remains editable; input is synthetic with no pressure data.\n"
+            )
+        } else if self.clip.is_curved_tutorial() {
+            concat!(
+                "WEBVTT\n\n",
+                "00:00:00.000 --> 00:00:04.000\n",
+                "Inspect the saved cylinder and its editable drawing guide.\n\n",
+                "00:00:04.000 --> 00:00:20.000\n",
+                "Draw across the cylinder surface; mirror adds the reflected stroke.\n\n",
+                "00:00:20.000 --> 00:00:27.000\n",
+                "The source stroke and reflected copy remain editable around the saved cylinder.\n\n",
+                "00:00:27.000 --> 00:00:33.000\n",
+                "Select the curved stroke, move it, then undo and redo the transform.\n\n",
+                "00:00:33.000 --> 00:00:52.000\n",
+                "Continue orbiting to inspect the curved result and seam.\n\n",
+                "00:00:52.000 --> 00:00:56.000\n",
+                "Save the native cylinder drawing through the production save path.\n\n",
+                "00:00:56.000 --> 00:01:00.000\n",
+                "Reopen the saved native drawing through the production open path. Curved strokes remain editable; no tablet pressure was measured.\n"
+            )
+        } else if self.clip.is_overview() {
+            concat!(
+                "WEBVTT\n\n",
+                "00:00:00.000 --> 00:00:00.900\n",
+                "Sketch3D opens on an editable garden-house scene.\n\n",
+                "00:00:00.900 --> 00:00:07.800\n",
+                "Draw a cyan detail on the front drawing plane.\n\n",
+                "00:00:07.800 --> 00:00:10.200\n",
+                "Select and move the detail, then undo and redo the transform.\n\n",
+                "00:00:10.200 --> 00:00:15.300\n",
+                "Orbit the camera to inspect the stroke in 3D.\n\n",
+                "00:00:15.300 --> 00:00:18.000\n",
+                "Open the production export options. Synthetic input has no pressure data.\n"
+            )
+        } else if self.clip.is_edit_erase() {
+            concat!(
+                "WEBVTT\n\n",
+                "00:00:00.000 --> 00:00:01.400\n",
+                "Select the editable stroke and change its color.\n\n",
+                "00:00:01.400 --> 00:00:03.700\n",
                 "Drag the partial eraser across the stroke to split it.\n\n",
-                "00:00:02.700 --> 00:00:03.400\n",
+                "00:00:03.700 --> 00:00:04.000\n",
                 "Two editable fragments remain.\n\n",
-                "00:00:03.400 --> 00:00:03.700\n",
+                "00:00:04.000 --> 00:00:04.300\n",
                 "Undo restores the edited stroke.\n\n",
-                "00:00:03.700 --> 00:00:05.200\n",
+                "00:00:04.300 --> 00:00:05.700\n",
                 "A synthetic barrel gesture orbits the restored stroke.\n\n",
-                "00:00:05.200 --> 00:00:06.000\n",
+                "00:00:05.700 --> 00:00:06.000\n",
                 "The replay uses synthetic input with no pressure data.\n"
             )
         } else if self.clip.is_reference_export() {
             concat!(
                 "WEBVTT\n\n",
-                "00:00:00.000 --> 00:00:00.500\n",
-                "The reference image, imported OBJ, and saved drawing are staged before capture.\n\n",
-                "00:00:00.500 --> 00:00:05.200\n",
-                "The whole scene was exported as an editable GLB; orbit to inspect the combined resources.\n\n",
+                "00:00:00.000 --> 00:00:00.800\n",
+                "Open the OBJ references controls; this replay uses a generated source file.\n\n",
+                "00:00:00.800 --> 00:00:02.000\n",
+                "The production Import OBJ button runs with an injected file-picker result; the native picker is not shown.\n\n",
+                "00:00:02.000 --> 00:00:03.200\n",
+                "Insert the lantern with the production native-merge path; its preview dialog is not shown.\n\n",
+                "00:00:03.200 --> 00:00:05.200\n",
+                "Start a whole-scene GLB export through the production worker, then orbit the combined scene.\n\n",
                 "00:00:05.200 --> 00:00:06.000\n",
                 "This replay uses synthetic input; no tablet pressure was measured.\n"
             )
         } else if self.clip.is_mirror_shapes() {
             concat!(
                 "WEBVTT\n\n",
-                "00:00:00.000 --> 00:00:00.500\n",
-                "A mirrored line and ellipse were prepared on the front guide.\n\n",
-                "00:00:00.500 --> 00:00:05.200\n",
-                "A synthetic barrel gesture orbits to reveal the editable geometry.\n\n",
+                "00:00:00.000 --> 00:00:01.300\n",
+                "Draw a line on the front guide; mirror creates the reflected stroke.\n\n",
+                "00:00:01.300 --> 00:00:02.900\n",
+                "Place an editable ellipse on the same guide.\n\n",
+                "00:00:03.300 --> 00:00:05.200\n",
+                "Orbit to inspect the mirrored line and ellipse.\n\n",
                 "00:00:05.200 --> 00:00:06.000\n",
-                "The replay uses synthetic input with no pressure data.\n"
+                "Synthetic replay uses no pressure data.\n"
             )
         } else if self.clip.is_curved_guides() {
             concat!(
                 "WEBVTT\n\n",
-                "00:00:00.000 --> 00:00:00.500\n",
-                "Deterministic app replay. Synthetic input has no pressure data.\n\n",
-                "00:00:00.500 --> 00:00:05.200\n",
-                "A simulated barrel gesture orbits to reveal the curved drawing.\n\n",
+                "00:00:00.000 --> 00:00:02.000\n",
+                "Draw across the saved cylinder; the line is reflected around its axis.\n\n",
+                "00:00:02.000 --> 00:00:03.300\n",
+                "The source stroke and reflected copy are now editable.\n\n",
+                "00:00:03.300 --> 00:00:05.200\n",
+                "Orbit to inspect the curved result.\n\n",
                 "00:00:05.200 --> 00:00:06.000\n",
-                "The cylinder and mirrored strokes remain editable.\n"
+                "Synthetic replay uses no pressure data.\n"
             )
         } else {
             concat!(
@@ -848,9 +1139,7 @@ impl CapabilityReplay {
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
             .as_secs();
-        let captions_timing_checked = self.clip.is_curved_guides()
-            || self.clip.is_mirror_shapes()
-            || self.clip.is_reference_export();
+        let captions_timing_checked = false;
         let app_commit = std::process::Command::new("git")
             .args(["rev-parse", "HEAD"])
             .output()
@@ -877,29 +1166,72 @@ impl CapabilityReplay {
                 "src/main.rs",
                 "src/selection.rs",
                 "src/mirror_checks.rs",
-                "src/tutorial_ui.rs",
-                "src/presentation_ui.rs",
-                "src/video_export_ui.rs",
                 "src/reference_export_checks.rs",
+                "src/obj_reference_checks.rs",
+                "src/obj_reference_ui.rs",
             ])
             .output()
             .map(|output| !output.stdout.is_empty())
             .unwrap_or(true);
+        let tutorial_sample = if self.clip.is_long_form() {
+            let path = self
+                .output_dir
+                .join(format!("{}-saved.sketch.json", self.clip.name()));
+            let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+            Some(serde_json::json!({
+                "file": path.file_name().and_then(|name| name.to_str()).unwrap_or("sample.sketch.json"),
+                "bytes": metadata.len(),
+                "saved_and_reopened_through_production_handlers": true
+            }))
+        } else {
+            None
+        };
         let dimensions = self
             .frame_size
             .ok_or_else(|| "Capability demo did not capture any frames".to_owned())?;
         let clip_name = self.clip.name();
-        let (fixture, fixture_provenance, shot_steps, poster_alt) = if self
-            .clip
-            .is_reference_export()
+        let (fixture, fixture_provenance, shot_steps, poster_alt) = if self.clip.is_house_tutorial()
         {
+            (
+                "Japanese house scene",
+                "Original Japanese garden-house scene built into Sketch3D; the stroke and transforms are created during capture by production editing handlers.",
+                vec![
+                    "Draw a detail on the front plane, then select and move it through the production selection handlers.",
+                    "Undo and redo the transform, orbit the camera, then save and reopen through production native document paths.",
+                    "The native save is stored next to the recording as a sample document.",
+                ],
+                "The Japanese garden-house scene after a selected detail stroke was saved and reopened.",
+            )
+        } else if self.clip.is_curved_tutorial() {
+            (
+                "Saved cylinder drawing guide",
+                "An empty saved cylinder guide and reflected strokes are generated by the production guide and pointer handlers; no external assets are used.",
+                vec![
+                    "Draw across the saved cylinder surface and create the reflected copy through the production pointer handler.",
+                    "Select and move the stroke, undo and redo, orbit the camera, then save and reopen through native document paths.",
+                    "The native save is stored next to the recording as a sample document.",
+                ],
+                "A saved cylinder guide with curved editable source and reflected strokes.",
+            )
+        } else if self.clip.is_overview() {
+            (
+                "Japanese garden house scene",
+                "Original Japanese garden-house scene built into Sketch3D; the detail stroke and camera orbit are created during capture.",
+                vec![
+                    "Show the editable garden-house scene.",
+                    "Draw a detail, select and move it, then undo and redo the transform.",
+                    "Orbit to inspect the result and show production GLB export options.",
+                ],
+                "Japanese garden house with a selected detail stroke and visible move gizmo after undo and redo.",
+            )
+        } else if self.clip.is_reference_export() {
             (
                     "Imported reference, inserted lantern, and exported scene",
                     "The garden-house and lantern drawings are generated from built-in original editable artwork. The reference image and OBJ mesh are generated procedurally for this clip; no external artwork or assets.",
                     vec![
-                        "Import a procedural reference image and OBJ model through production storage and renderer paths before capture.",
-                        "Insert the saved cylindrical-lantern drawing using the production native-merge path.",
-                        "Export the combined visible scene as GLB, then orbit the camera using synthetic canvas input.",
+                    "During capture, click the production Import OBJ control with a generated file-picker result; the native picker is not shown.",
+                    "During capture, insert the saved cylindrical-lantern drawing with the production native-merge path; the preview dialog is not shown.",
+                    "During capture, start a whole-scene GLB export through the production export worker, then orbit using synthetic canvas input.",
                     ],
                     "A garden-house scene with an inserted cylindrical lantern, a reference image plane, and a small OBJ model.",
                 )
@@ -953,7 +1285,7 @@ impl CapabilityReplay {
             "manifest_version": 1,
             "clip": clip_name,
             "recorded_unix_seconds": recorded_unix_seconds,
-            "duration_seconds": 6,
+            "duration_seconds": 6 * self.clip.mp4_hold_frames(),
             "app_commit": app_commit,
             "source_tree_dirty": source_tree_dirty,
             "fixture": fixture,
@@ -965,14 +1297,15 @@ impl CapabilityReplay {
             "dpi_percent": (self.pixels_per_point * 100.0).round() as u32,
             "theme": "Dark",
             "capture_mode": "deterministic hidden in-app replay through canvas_input",
-            "input_note": if self.clip.is_reference_export() { "The reference image and OBJ are generated, the saved lantern drawing is inserted, and the combined scene is GLB-exported before capture through production code paths. Captured PenSample orbit input uses pressure=None and no tilt; no tablet pressure or latency was measured." } else if self.clip.is_edit_erase() { "The fixture stroke is created through the production pointer-action handler and its appearance edit through the production selection handler. Captured PenSample input uses pressure=None and no tilt; no tablet pressure or latency was measured." } else if self.clip.is_mirror_shapes() { "The mirrored line and ellipse are prepared by production handlers before capture. Captured PenSample orbit input uses pressure=None and no tilt; no tablet pressure or latency was measured." } else { "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured." },
+            "input_note": if self.clip.is_reference_export() { "The image-plane reference and first OBJ are prepared through production storage/render paths before capture. During capture the production OBJ Import control receives a generated path through the existing picker-injection hook; the native picker is not shown. The lantern is inserted through the production native-merge handler without showing its preview dialog, then the production whole-scene export worker writes a GLB. Captured orbit samples use pressure=None and no tilt; no tablet pressure or latency was measured." } else if self.clip.is_edit_erase() { "The fixture stroke is created through the production pointer-action handler and its appearance edit through the production selection handler. Captured PenSample input uses pressure=None and no tilt; no tablet pressure or latency was measured." } else if self.clip.is_mirror_shapes() { "A pressure-free synthetic line gesture creates the mirrored pair through the production line handler; a second gesture places the ellipse through the production shape handler. Synthetic barrel samples then orbit through canvas_input. No tablet pressure or latency was measured." } else if self.clip.is_curved_guides() { "Pressure-free synthetic screen positions sampled from the saved cylinder surface create the mirrored stroke through the production pointer-action handler. Synthetic barrel samples then orbit through canvas_input; no tablet pressure or latency was measured." } else if self.clip.is_long_form() { "This deterministic tutorial uses synthetic pressure=None pointer samples. Drawing, selection, transform, undo/redo, native save, and native reopen use production app handlers. MP4 checkpoints are held to make the action steps readable; no tablet pressure or latency was measured." } else { "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured." },
             "window_visible": false,
             "frame_rate": CAPABILITY_REPLAY_FPS,
+            "mp4_frame_count": CAPABILITY_REPLAY_FRAMES * self.clip.mp4_hold_frames(),
             "shot_steps": shot_steps,
-            "cursor_cue": if self.clip.is_edit_erase() { "A synthetic pointer ring is labeled ERASE or ORBIT during the captured workflow; the selected stroke and appearance are prepared by production handlers before capture, and a persistent banner discloses no pressure data." } else if self.clip.is_mirror_shapes() { "The mirrored line and ellipse are prepared by production handlers before capture; playback shows a synthetic ORBIT cursor and persistent no-pressure disclosure." } else if self.clip.is_curved_guides() { "The curved-guide strokes are prepared by scripted production handlers before capture; playback shows a synthetic ORBIT cursor and a persistent no-pressure disclosure." } else { "A synthetic pointer ring is labeled DRAW or ORBIT while input is active; a persistent banner discloses synthetic replay and no pressure data." },
+            "cursor_cue": if self.clip.is_edit_erase() { "A synthetic cursor ring shows SELECT over the stroke, ERASE during the partial erase, and ORBIT during camera navigation; a persistent banner discloses no pressure data." } else if self.clip.is_mirror_shapes() { "The synthetic pointer ring is labeled DRAW while drawing the reflected line and ellipse, then ORBIT during camera navigation; a banner discloses no pressure data." } else if self.clip.is_curved_guides() { "The synthetic pointer ring is labeled DRAW while drawing across the cylinder and ORBIT during camera navigation; a persistent banner discloses no pressure data." } else if self.clip.is_long_form() || self.clip.is_overview() { "A synthetic pointer ring is labeled DRAW while drawing, SELECT while editing, and ORBIT during camera navigation; persistent text discloses synthetic input and no pressure data." } else { "A synthetic pointer ring is labeled DRAW or ORBIT while input is active; a persistent banner discloses synthetic replay and no pressure data." },
             "encoding": {
-                "mp4": format!("Captured full-viewport RGBA frames; {mp4_backend}; 10 fps."),
-                "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; 6 seconds; <=5 MiB.",
+                "mp4": format!("Captured full-viewport RGBA frames; {mp4_backend}; 10 fps; repeated frame holds preserve the {duration}s duration.", duration = 6 * self.clip.mp4_hold_frames()),
+                "gif": if self.clip.is_long_form() || self.clip.is_overview() { "Accelerated six-second preview of the same 60 replay checkpoints; plays once without a loop extension. Use the captioned MP4 master for normal-speed instruction." } else { "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; <=5 MiB." },
                 "poster": "First full-resolution app frame encoded as PNG."
             },
             "outputs": {
@@ -988,9 +1321,13 @@ impl CapabilityReplay {
                     "bytes": std::fs::metadata(&captions_path).map_err(|error| error.to_string())?.len(),
                     "format": "WebVTT",
                     "timing_reviewed": captions_timing_checked
-                }
+                },
+                "native_sample": tutorial_sample
             },
-            "prepared_scene_export": self.reference_export_artifact,
+                "prepared_scene_export": self.reference_export_artifact,
+                "capture_export_action": self.reference_export_action,
+                "capture_import_action": self.reference_import_action,
+                "capture_insert_action": self.reference_insert_action,
             "review": {
                 "reviewed": false,
                 "loop_boundary_checked": false,
@@ -998,7 +1335,7 @@ impl CapabilityReplay {
                 "private_content_checked": false,
                 "captions_timing_checked": captions_timing_checked,
                 "reviewer": null,
-                "notes": if self.clip.is_reference_export() { "Synthetic reference-export draft. The image/model references, inserted lantern, and GLB export are prepared before the captured camera orbit; review playback and readability before use." } else if self.clip.is_edit_erase() { "Synthetic edit-erase draft. The selected stroke and appearance are prepared by production handlers before the captured eraser and undo sequence; review playback and readability before use." } else if self.clip.is_mirror_shapes() { "Synthetic mirror-shapes draft. The mirrored line and ellipse are prepared through production handlers before the captured orbit; review playback and readability before use." } else if self.clip.is_curved_guides() { "Synthetic curved-guide draft. The strokes are scripted through production handlers before the captured orbit; review playback and visual readability before use." } else { "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use." }
+                "notes": if self.clip.is_reference_export() { "Synthetic reference-export draft. During capture the production OBJ import control uses an injected generated file result, the native-merge handler inserts the lantern, and the export worker writes the combined GLB. The native file picker and insert preview are not shown. Full playback, caption-timing, privacy, and intended-surface review are still pending." } else if self.clip.is_house_tutorial() || self.clip.is_curved_tutorial() { "Synthetic 60-second tutorial draft with captured draw/select/move/undo/redo and production native save/reopen steps. The GIF is an accelerated six-second preview; use the MP4 and VTT for instruction. Verify actions, caption timing, playback, privacy, and intended README size before use." } else if self.clip.is_overview() { "Synthetic 18-second overview draft. Review playback, caption timing, privacy, action coverage, and intended README size before use." } else if self.clip.is_edit_erase() { "Synthetic edit-erase draft. Selection and appearance editing run through production handlers during capture, followed by a partial erase, undo and orbit." } else if self.clip.is_mirror_shapes() { "Synthetic mirror-shapes draft. The mirrored line and ellipse are created through production handlers during capture, then reviewed during camera orbit." } else if self.clip.is_curved_guides() { "Synthetic curved-guide draft. The cylinder stroke and reflected copy are created through production canvas input during capture; review playback and visual readability before use." } else { "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use." }
             }
         });
         let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
@@ -1294,6 +1631,7 @@ impl SketchApp {
             rename_library_stem: String::new(),
             delete_library_source: None,
             library_open_path: None,
+            capability_save_path: None,
             insert_preview: None,
             insert_offset: [0.0; 3],
             insert_as_group: false,
@@ -1489,6 +1827,7 @@ impl SketchApp {
                 contact: false,
                 barrel: false,
                 eraser: false,
+                selecting: false,
                 setup_verified: !clip.is_curved_guides()
                     && !clip.is_mirror_shapes()
                     && !clip.is_reference_export()
@@ -1497,12 +1836,38 @@ impl SketchApp {
                 gesture_start: None,
                 gesture_end: None,
                 expected_undo_strokes: None,
+                edit_selection_point: None,
+                edit_processed_frame: None,
+                mirror_points: None,
+                curved_points: None,
+                curved_world_points: None,
+                curved_processed_frame: None,
+                long_processed_frame: None,
+                long_saved: false,
+                long_reopened: false,
+                long_edit_verified: false,
                 reference_export_artifact: None,
+                reference_export_action: None,
+                reference_export_action_path: None,
+                reference_export_action_started: false,
+                reference_insert_path: None,
+                reference_import_action: false,
+                reference_insert_action: false,
+                reference_inserted_stroke_count: 0,
                 sender: None,
                 encoder: None,
                 mp4_sender: None,
                 mp4_encoder: None,
             });
+            if clip.is_long_form() {
+                app.capability_save_path = Some(
+                    app.capability_replay
+                        .as_ref()
+                        .unwrap()
+                        .output_dir
+                        .join(format!("{}-saved.sketch.json", clip.name())),
+                );
+            }
             app.stabilization = 0.0;
             if clip.is_curved_guides() {
                 app.mirror_verification_frame = Some(0);
@@ -2739,10 +3104,18 @@ impl SketchApp {
             return false;
         }
         let path = if save_as || self.file.is_none() {
-            rfd::FileDialog::new()
-                .add_filter("Sketch3D", &["json"])
-                .set_file_name("drawing.sketch.json")
-                .save_file()
+            if self
+                .capability_replay
+                .as_ref()
+                .is_some_and(|replay| replay.clip.is_long_form())
+            {
+                self.capability_save_path.take()
+            } else {
+                rfd::FileDialog::new()
+                    .add_filter("Sketch3D", &["json"])
+                    .set_file_name("drawing.sketch.json")
+                    .save_file()
+            }
         } else {
             self.file.clone()
         };
@@ -4869,6 +5242,42 @@ impl eframe::App for SketchApp {
             return;
         }
         self.poll_export(ctx);
+        if self
+            .capability_replay
+            .as_ref()
+            .is_some_and(|replay| replay.clip.is_reference_export())
+            && matches!(self.last_export_result.as_ref(), Some(Ok(_)))
+        {
+            self.status =
+                "Whole-scene GLB export completed; file details are in the recording manifest."
+                    .into();
+        }
+        let completed_reference_export = self
+            .capability_replay
+            .as_ref()
+            .filter(|replay| {
+                replay.clip.is_reference_export()
+                    && replay.reference_export_action_started
+                    && replay.reference_export_action.is_none()
+            })
+            .and_then(|replay| {
+                let path = replay.reference_export_action_path.as_ref()?;
+                let summary = self.last_export_result.as_ref()?.as_ref().ok()?.clone();
+                let bytes = std::fs::metadata(path).ok()?.len();
+                Some((path.clone(), summary, bytes))
+            });
+        if let Some((path, summary, bytes)) = completed_reference_export {
+            if let Some(replay) = self.capability_replay.as_mut() {
+                replay.reference_export_action = Some(serde_json::json!({
+                    "file": path
+                        .strip_prefix(&replay.output_dir)
+                        .unwrap_or(&path)
+                        .to_string_lossy(),
+                    "bytes": bytes,
+                    "summary": summary,
+                }));
+            }
+        }
         if let Some(status) = self.video_export.render_next(&mut self.renderer, ctx) {
             self.status = status;
         }
@@ -5157,6 +5566,31 @@ impl eframe::App for SketchApp {
                 tool_settings: &history_tool_settings,
             },
         );
+        let show_overview_export_options = self.capability_replay.as_ref().is_some_and(|replay| {
+            replay.clip.is_overview()
+                && (51..CAPABILITY_REPLAY_FRAMES).contains(&replay.captured_frames)
+        });
+        if show_overview_export_options {
+            egui::Window::new("Export options")
+                .id(egui::Id::new("capability-overview-export-options"))
+                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-18.0, 82.0))
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Choose what to export as GLB:");
+                    if let Some(action) = export_ui::glb_export_scope_items(
+                        ui,
+                        self.can_export(false),
+                        self.can_export_scene(),
+                        self.can_export(true),
+                    )
+                    .action
+                    {
+                        let (selected, include_images) = action.scope();
+                        self.export_dialog_with_images(selected, include_images, ctx);
+                    }
+                });
+        }
         self.obj_export.show(ctx);
         let pen = self.pen.as_mut().map(|p| p.drain()).unwrap_or_default();
         egui::CentralPanel::default()
@@ -5262,8 +5696,8 @@ impl eframe::App for SketchApp {
                         matches!(
                             &guide.geometry,
                             crate::document::guide_resources::GuideGeometry::Cylinder { .. }
-                        ) && self.doc.strokes.len() == 2,
-                        "curved-guide replay setup retains the verified cylinder and mirrored stroke pair"
+                        ) && self.doc.strokes.is_empty(),
+                        "curved-guide replay setup starts with an empty saved cylinder"
                     );
                     replay.initial_stroke_count = self.doc.strokes.len();
                     replay.initial_camera = self.camera;
@@ -5280,14 +5714,13 @@ impl eframe::App for SketchApp {
                     let replay = self.capability_replay.as_mut().unwrap();
                     replay.initial_stroke_count = stroke_count;
                     replay.initial_camera = self.camera;
-                    replay.setup_verified = stroke_count == 3
+                    replay.setup_verified = stroke_count == 0
                         && self.mirror_ui.enabled
-                        && self.doc.strokes.last().is_some_and(|stroke| {
-                            stroke.points.len() > 8 && stroke.fill.is_none()
-                        });
+                        && self.line.enabled
+                        && self.doc.strokes.is_empty();
                     assert!(
                         replay.setup_verified,
-                        "mirror-shapes setup retains mirrored line pair and editable ellipse"
+                        "mirror-shapes replay starts with an enabled mirror and line tool"
                     );
                 }
                 let reference_export_output = self
@@ -5325,28 +5758,27 @@ impl eframe::App for SketchApp {
                         replay.clip.is_edit_erase() && !replay.setup_verified
                     });
                 if prepare_edit_erase {
-                    let (gesture_start, gesture_end) =
+                    let (selection_point, gesture_start, gesture_end) =
                         self.prepare_capability_edit_erase(rect);
                     let replay = self.capability_replay.as_mut().unwrap();
                     replay.initial_stroke_count = self.doc.strokes.len();
                     replay.initial_camera = self.camera;
                     replay.gesture_start = Some(gesture_start);
                     replay.gesture_end = Some(gesture_end);
-                    replay.expected_undo_strokes = Some(self.doc.strokes.clone());
+                    replay.edit_selection_point = Some(selection_point);
                     replay.setup_verified = self.doc.strokes.len() == 1
-                        && self.selected.len() == 1
-                        && self.undo.len() == 1
-                        && self.eraser
-                        && self.partial_eraser.enabled;
+                        && self.selected.is_empty()
+                        && self.undo.is_empty()
+                        && !self.eraser;
                     assert!(
                         replay.setup_verified,
-                        "edit-erase setup creates, selects, and changes one editable stroke"
+                        "edit-erase setup creates one editable stroke for captured selection and erasing"
                     );
                 }
                 let undo_edit_erase = self.capability_replay.as_ref().is_some_and(|replay| {
                     replay.clip.is_edit_erase()
                         && replay.setup_verified
-                        && replay.captured_frames == 34
+                        && replay.captured_frames == 40
                         && !replay.undo_applied
                 });
                 if undo_edit_erase {
@@ -5356,6 +5788,109 @@ impl eframe::App for SketchApp {
                         == Some(&self.doc.strokes)
                         && self.undo.len() == 1;
                     assert!(replay.undo_applied, "undo restores the selected edited stroke");
+                }
+                let import_reference_obj = self
+                    .capability_replay
+                    .as_ref()
+                    .filter(|replay| replay.clip.is_reference_export())
+                    .is_some_and(|replay| replay.captured_frames == 8 && !replay.reference_import_action);
+                if import_reference_obj {
+                    let screen_rect = ctx.input(|input| input.screen_rect);
+                    self.verify_obj_reference_window_import_click(screen_rect);
+                    let replay = self.capability_replay.as_mut().unwrap();
+                    replay.reference_import_action = self.obj_reference_verification_button_clicked
+                        && self.doc.model_references.len() == 2;
+                    assert!(replay.reference_import_action, "capture clicks the production OBJ import control with its generated picker result");
+                }
+                if self
+                    .capability_replay
+                    .as_ref()
+                    .is_some_and(|replay| replay.clip.is_reference_export() && replay.captured_frames == 12)
+                {
+                    self.obj_reference_window_open = false;
+                }
+                let insert_reference_lantern = self
+                    .capability_replay
+                    .as_ref()
+                    .filter(|replay| replay.clip.is_reference_export())
+                    .is_some_and(|replay| replay.captured_frames == 20 && !replay.reference_insert_action);
+                if insert_reference_lantern {
+                    let inserted_strokes = self.insert_capability_lantern().unwrap_or_else(|error| {
+                        eprintln!("Could not insert reference-export lantern during capture: {error}");
+                        std::process::exit(1);
+                    });
+                    let replay = self.capability_replay.as_mut().unwrap();
+                    replay.reference_inserted_stroke_count = inserted_strokes;
+                    replay.reference_insert_action = inserted_strokes > 0;
+                    assert!(replay.reference_insert_action, "capture inserts the lantern through the production native-merge handler");
+                }
+                let export_reference_scene = self
+                    .capability_replay
+                    .as_ref()
+                    .filter(|replay| replay.clip.is_reference_export())
+                    .is_some_and(|replay| replay.captured_frames == 32 && !replay.reference_export_action_started);
+                if export_reference_scene {
+                    let output_path = self
+                        .capability_replay
+                        .as_ref()
+                        .unwrap()
+                        .output_dir
+                        .join("reference-export")
+                        .join("captured-reference-export.glb");
+                    self.start_export_with_images(output_path.clone(), false, true, ctx);
+                    let replay = self.capability_replay.as_mut().unwrap();
+                    replay.reference_export_action_path = Some(output_path);
+                    replay.reference_export_action_started = self.export_job.is_some();
+                    assert!(replay.reference_export_action_started, "whole-scene export handler starts during capture");
+                }
+                let edit_action_frame = self
+                    .capability_replay
+                    .as_ref()
+                    .filter(|replay| replay.clip.is_edit_erase())
+                    .and_then(|replay| {
+                        [2, 8, 12]
+                            .contains(&replay.captured_frames)
+                            .then_some(replay.captured_frames)
+                    })
+                    .filter(|frame| {
+                        self.capability_replay
+                            .as_ref()
+                            .is_some_and(|replay| replay.edit_processed_frame != Some(*frame))
+                    });
+                if let Some(frame) = edit_action_frame {
+                    match frame {
+                        2 => {
+                            let point = crate::gizmo::project(
+                                &self.camera,
+                                rect,
+                                self.doc.strokes[0].points[24].position,
+                            )
+                            .expect("edit-erase stroke selection point projects at capture time")
+                            .0;
+                            self.select_mode = true;
+                            self.select_pointer(point, rect, true, false);
+                            assert_eq!(self.selected.len(), 1, "capture selects the editable stroke");
+                            self.status = "Stroke selected. Change its appearance, then erase a segment.".into();
+                        }
+                        8 => {
+                            self.apply_capability_appearance_edit([0.92, 0.22, 0.045]);
+                            let replay = self.capability_replay.as_mut().unwrap();
+                            replay.expected_undo_strokes = Some(self.doc.strokes.clone());
+                            assert_eq!(self.undo.len(), 1, "appearance edit is one history step");
+                            self.status = "Stroke appearance changed. Erase the middle; undo restores it.".into();
+                        }
+                        12 => {
+                            self.select_mode = false;
+                            self.eraser = true;
+                            self.partial_eraser.enabled = true;
+                            self.partial_eraser.radius = 16.0;
+                        }
+                        _ => unreachable!(),
+                    }
+                    self.capability_replay
+                        .as_mut()
+                        .unwrap()
+                        .edit_processed_frame = Some(frame);
                 }
                 self.verify_ring(ctx, rect);
                 self.verify_model_surfaces(ctx, rect);
@@ -5368,11 +5903,170 @@ impl eframe::App for SketchApp {
                 self.verify_cylinder(ctx, rect);
                 self.verify_house(ctx);
                 self.verify_canvas(ctx, rect);
+                let start_mirror_ellipse = self
+                    .capability_replay
+                    .as_ref()
+                    .is_some_and(|replay| {
+                        replay.clip.is_mirror_shapes() && replay.captured_frames == 17
+                    });
+                if start_mirror_ellipse {
+                    self.line.enabled = false;
+                    self.start_shape_tool(shape_tool::ShapeMode::Ellipse);
+                }
+                let mirror_shape_frame = self
+                    .capability_replay
+                    .as_ref()
+                    .filter(|replay| replay.clip.is_mirror_shapes())
+                    .map(|replay| replay.captured_frames);
+                if let Some(frame @ 17..=28) = mirror_shape_frame {
+                    let [_, _, ellipse_start, ellipse_end] = self
+                        .capability_replay
+                        .as_ref()
+                        .and_then(|replay| replay.mirror_points)
+                        .expect("mirror-shapes replay projects ellipse points");
+                    let t = (frame - 17) as f32 / 11.0;
+                    let position = ellipse_start + (ellipse_end - ellipse_start) * t;
+                    if frame == 17 {
+                        self.shape_input(ellipse_start, 1.0, rect, true);
+                    } else if frame == 28 {
+                        self.release_shape(ellipse_end, 1.0, rect);
+                    } else {
+                        self.shape_input(position, 1.0, rect, false);
+                    }
+                }
+                let curved_action = self
+                    .capability_replay
+                    .as_ref()
+                    .filter(|replay| {
+                        replay.clip.is_curved_guides()
+                            && replay.curved_processed_frame != Some(replay.captured_frames)
+                    })
+                    .map(|replay| replay.captured_frames);
+                if let Some(frame @ 4..=19) = curved_action {
+                    let [start, middle, end] = self
+                        .capability_replay
+                        .as_ref()
+                        .and_then(|replay| replay.curved_world_points)
+                        .expect("curved-guide replay stores cylinder-surface points");
+                    let surface_screen = |from: Vec3, to: Vec3, t: f32| {
+                        let from_angle = from.x.atan2(from.z);
+                        let to_angle = to.x.atan2(to.z);
+                        let angle = from_angle + (to_angle - from_angle) * t;
+                        let world = Vec3::new(
+                            angle.sin(),
+                            from.y + (to.y - from.y) * t,
+                            angle.cos(),
+                        );
+                        crate::gizmo::project(&self.camera, rect, world)
+                            .expect("interpolated cylinder point projects onto the canvas")
+                            .0
+                    };
+                    if frame == 4 {
+                        let point = crate::gizmo::project(&self.camera, rect, start)
+                            .expect("curved stroke start projects")
+                            .0;
+                        self.pointer_action(point, 1.0, rect, true, false);
+                    } else if frame <= 11 {
+                        let t = (frame - 4) as f32 / 7.0;
+                        self.pointer_action(surface_screen(start, middle, t), 1.0, rect, false, false);
+                    } else if frame <= 18 {
+                        let t = (frame - 11) as f32 / 7.0;
+                        self.pointer_action(surface_screen(middle, end, t), 1.0, rect, false, false);
+                    } else {
+                        let point = crate::gizmo::project(&self.camera, rect, end)
+                            .expect("curved stroke end projects")
+                            .0;
+                        self.pointer_action(point, 1.0, rect, false, false);
+                        self.finish();
+                    }
+                    self.capability_replay
+                        .as_mut()
+                        .unwrap()
+                        .curved_processed_frame = Some(frame);
+                }
+                let long_action = self
+                    .capability_replay
+                    .as_ref()
+                    .filter(|replay| {
+                        replay.clip.has_tutorial_edit_steps()
+                            && replay.long_processed_frame != Some(replay.captured_frames)
+                    })
+                    .map(|replay| replay.captured_frames);
+                if let Some(frame) = long_action {
+                    match frame {
+                        27 => {
+                            if let Some(stroke) = self.doc.strokes.last() {
+                                let point = stroke.points[stroke.points.len() / 2].position;
+                                if let Some((screen, _)) = crate::gizmo::project(&self.camera, rect, point) {
+                                    self.select_mode = true;
+                                    self.select_pointer(screen, rect, true, false);
+                                }
+                            }
+                        }
+                        28 => {
+                            if self.selected.is_empty() {
+                                self.capability_replay.take().unwrap().abort();
+                                eprintln!("Capability tutorial could not select its captured stroke through the production picker");
+                                std::process::exit(1);
+                            }
+                            self.transform_mode = Mode::Move;
+                            self.transform_values = [0.12, 0.0, 0.0];
+                            self.numeric_transform();
+                            self.capability_replay.as_mut().unwrap().long_edit_verified =
+                                self.undo.len() >= 2;
+                        }
+                        29 => self.undo(),
+                        30 => self.redo(),
+                        52 if self
+                            .capability_replay
+                            .as_ref()
+                            .is_some_and(|replay| replay.clip.is_long_form()) => {
+                            let saved = self.save(true);
+                            self.capability_replay.as_mut().unwrap().long_saved = saved;
+                            if !saved {
+                                self.capability_replay.take().unwrap().abort();
+                                eprintln!("Capability tutorial failed to save its native document");
+                                std::process::exit(1);
+                            }
+                            self.status = "Native tutorial copy saved.".into();
+                        }
+                        56 if self
+                            .capability_replay
+                            .as_ref()
+                            .is_some_and(|replay| replay.clip.is_long_form()) => {
+                            let path = self.file.clone().expect("tutorial save establishes a native path");
+                            self.library_open_path = Some(path);
+                            self.pending = Some(Pending::Open);
+                            self.execute_pending();
+                            self.capability_replay.as_mut().unwrap().long_reopened = true;
+                            self.status = "Saved native tutorial copy reopened.".into();
+                        }
+                        _ => {}
+                    }
+                    self.capability_replay.as_mut().unwrap().long_processed_frame = Some(frame);
+                }
                 let replay_pen = self
                     .capability_replay
                     .as_mut()
                     .and_then(|replay| replay.next_sample(rect));
-                self.canvas_input(ctx, rect, replay_pen.map_or(pen, |sample| vec![sample]));
+                if let Some(replay) = self.capability_replay.as_mut() {
+                    if replay.clip.has_tutorial_edit_steps()
+                        && (27..=30).contains(&replay.captured_frames)
+                    {
+                        replay.selecting = true;
+                    }
+                }
+                let curved_drawing_frame = self.capability_replay.as_ref().is_some_and(|replay| {
+                    replay.clip.is_curved_guides() && (4..=19).contains(&replay.captured_frames)
+                });
+                let replay_pen = if curved_drawing_frame {
+                    None
+                } else {
+                    replay_pen
+                };
+                if !curved_drawing_frame {
+                    self.canvas_input(ctx, rect, replay_pen.map_or(pen, |sample| vec![sample]));
+                }
                 self.process_line_art_command(rect);
                 self.verify_canvas_point_workflow(ctx, rect);
                 let scale = ctx.pixels_per_point();
@@ -6807,6 +7501,7 @@ impl SketchApp {
             let (mp4_sender, mp4_receiver) = std::sync::mpsc::sync_channel(1);
             let mp4_output = replay.path("mp4");
             let mp4_size = dimensions;
+            let mp4_frame_count = CAPABILITY_REPLAY_FRAMES * replay.clip.mp4_hold_frames();
             replay.mp4_encoder = Some(std::thread::spawn(move || {
                 let cancelled = AtomicBool::new(false);
                 video_export_ui::encode_mp4(
@@ -6814,7 +7509,7 @@ impl SketchApp {
                     &mp4_output,
                     mp4_size,
                     CAPABILITY_REPLAY_FPS,
-                    CAPABILITY_REPLAY_FRAMES,
+                    mp4_frame_count,
                     &cancelled,
                 )
             }));
@@ -6831,7 +7526,28 @@ impl SketchApp {
             eprintln!("Could not assemble capability demo screenshot pixels");
             std::process::exit(1);
         };
-        if replay.captured_frames == 0 {
+        let poster_frame = if replay.clip.is_mirror_shapes() {
+            30
+        } else if replay.clip.is_curved_guides() {
+            27
+        } else if replay.clip.is_reference_export() {
+            35
+        } else if replay.clip.is_draw_orbit() {
+            28
+        } else if replay.clip.is_edit_erase() {
+            39
+        } else if replay.clip.is_house_tutorial() || replay.clip.is_curved_tutorial() {
+            if replay.clip.is_house_tutorial() {
+                30
+            } else {
+                56
+            }
+        } else if replay.clip.is_overview() {
+            30
+        } else {
+            0
+        };
+        if replay.captured_frames == poster_frame {
             if let Err(error) = replay.save_poster(rgba.as_raw(), dimensions) {
                 self.capability_replay.take().unwrap().abort();
                 eprintln!("Could not save capability demo poster: {error}");
@@ -6846,9 +7562,12 @@ impl SketchApp {
             std::process::exit(1);
         }
         let mp4_sender = replay.mp4_sender.as_ref().unwrap();
-        if mp4_sender.send(Some(rgba.into_raw())).is_err() {
-            eprintln!("Capability demo MP4 encoder stopped before all frames were captured");
-            std::process::exit(1);
+        let mp4_rgba = rgba.into_raw();
+        for _ in 0..replay.clip.mp4_hold_frames() {
+            if mp4_sender.send(Some(mp4_rgba.clone())).is_err() {
+                eprintln!("Capability demo MP4 encoder stopped before all frames were captured");
+                std::process::exit(1);
+            }
         }
         replay.captured_frames += 1;
         if replay.captured_frames.is_multiple_of(10) {
@@ -6859,32 +7578,67 @@ impl SketchApp {
         }
         replay.screenshot_pending = false;
         replay.screenshot_requested = false;
-        if replay.captured_frames == 27 {
+        let workflow_check_frame = if replay.clip.is_mirror_shapes() {
+            32
+        } else if replay.clip.is_edit_erase() {
+            39
+        } else if replay.clip.is_overview() {
+            31
+        } else {
+            27
+        };
+        if replay.captured_frames == workflow_check_frame {
             let committed = if replay.clip.is_curved_guides() {
                 replay.setup_verified
-                    && self.doc.strokes.len() == replay.initial_stroke_count
+                    && self.doc.strokes.len() == replay.initial_stroke_count + 2
                     && self.doc.active_guide.is_some()
             } else if replay.clip.is_mirror_shapes() {
                 replay.setup_verified
-                    && self.doc.strokes.len() == replay.initial_stroke_count
                     && self.mirror_ui.enabled
+                    && self.doc.strokes.len() == replay.initial_stroke_count + 3
+                    && self
+                        .doc
+                        .strokes
+                        .last()
+                        .is_some_and(|stroke| stroke.points.len() > 8 && stroke.fill.is_none())
             } else if replay.clip.is_reference_export() {
                 replay.setup_verified
-                    && self.doc.strokes.len() == replay.initial_stroke_count
+                    && replay.reference_import_action
+                    && replay.reference_insert_action
+                    && self.doc.strokes.len()
+                        == replay.initial_stroke_count + replay.reference_inserted_stroke_count
                     && self.doc.image_planes.iter().any(|plane| plane.visible)
-                    && self.doc.model_references.iter().any(|model| model.visible)
+                    && self
+                        .doc
+                        .model_references
+                        .iter()
+                        .filter(|model| model.visible)
+                        .count()
+                        == 2
             } else if replay.clip.is_edit_erase() {
                 let split_strokes = self.doc.strokes.as_slice();
+                let ordered_fragments =
+                    split_strokes
+                        .first()
+                        .zip(split_strokes.get(1))
+                        .map(|(first, second)| {
+                            if first.points.first().unwrap().position.x
+                                <= second.points.first().unwrap().position.x
+                            {
+                                (first, second)
+                            } else {
+                                (second, first)
+                            }
+                        });
                 replay.setup_verified
-                    && replay.eraser
+                    && self.eraser
+                    && self.partial_eraser.enabled
                     && split_strokes.len() == replay.initial_stroke_count + 1
-                    && split_strokes.first().is_some_and(|left| {
-                        split_strokes.last().is_some_and(|right| {
-                            left.points.len() > 2
-                                && right.points.len() > 2
-                                && left.points.last().unwrap().position.x
-                                    < right.points.first().unwrap().position.x
-                        })
+                    && ordered_fragments.is_some_and(|(left, right)| {
+                        left.points.len() > 2
+                            && right.points.len() > 2
+                            && left.points.last().unwrap().position.x
+                                < right.points.first().unwrap().position.x
                     })
                     && self.undo.len() == 2
             } else {
@@ -6906,13 +7660,20 @@ impl SketchApp {
             }
         }
         if replay.clip.is_edit_erase()
-            && replay.captured_frames == 35
+            && replay.captured_frames == 41
             && (!replay.undo_applied
                 || replay.expected_undo_strokes.as_ref() != Some(&self.doc.strokes)
                 || self.undo.len() != 1)
         {
             self.capability_replay.take().unwrap().abort();
             eprintln!("Capability demo undo did not restore the edited source stroke");
+            std::process::exit(1);
+        }
+        if replay.clip.is_overview() && replay.captured_frames == 31 && !replay.long_edit_verified {
+            self.capability_replay.take().unwrap().abort();
+            eprintln!(
+                "Capability overview did not complete its selection transform and undo/redo steps"
+            );
             std::process::exit(1);
         }
         if replay.captured_frames == 51 {
@@ -6928,6 +7689,18 @@ impl SketchApp {
             }
         }
         if replay.captured_frames == CAPABILITY_REPLAY_FRAMES {
+            if replay.clip.is_long_form()
+                && (!replay.long_edit_verified || !replay.long_saved || !replay.long_reopened)
+            {
+                self.capability_replay.take().unwrap().abort();
+                eprintln!("Capability tutorial did not complete its verified edit, production save, and reopen steps");
+                std::process::exit(1);
+            }
+            if replay.clip.is_reference_export() && replay.reference_export_action.is_none() {
+                self.capability_replay.take().unwrap().abort();
+                eprintln!("Reference-export replay did not complete the production whole-scene export action");
+                std::process::exit(1);
+            }
             let replay = self.capability_replay.take().unwrap();
             let clip_name = replay.clip.name();
             if let Err(error) = replay.finish() {

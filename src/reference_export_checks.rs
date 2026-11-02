@@ -1,12 +1,12 @@
 use super::*;
 use crate::{
-    document::model_references::ObjReferenceResource, editing::Edit, export::ExportSummary,
-    image_plane_storage, image_planes::ImagePlane, obj_reference_storage,
+    document::model_references::ObjReferenceResource, export::ExportSummary, image_plane_storage,
+    image_planes::ImagePlane, obj_reference_storage,
 };
 use glam::Quat;
 use image::{ImageFormat, Rgba, RgbaImage};
 use serde::Serialize;
-use std::{collections::HashMap, io::Cursor, path::Path};
+use std::{io::Cursor, path::Path};
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct ReferenceExportArtifact {
@@ -61,30 +61,10 @@ impl SketchApp {
             .map_err(|error| format!("Could not serialize insert fixture: {error}"))?;
         std::fs::write(&inserted_path, inserted_bytes)
             .map_err(|error| format!("Could not write insert fixture: {error}"))?;
-        let first_layer_id = self
-            .doc
-            .layers
-            .iter()
-            .map(|layer| layer.id)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
-        let first_group_id = self.doc.next_group_resource_id();
-        let inserted = super::native_merge::prepare_insert(
-            &self.doc,
-            &inserted_path,
-            &asset_root,
-            self.next_id,
-            first_layer_id,
-            first_group_id,
-            Vec3::new(5.2, 0.0, 1.0),
-            false,
-            &HashMap::new(),
-        )?;
-        let inserted_ids = inserted.edit.strokes.len();
-        let inserted_next_id = inserted.next_id;
-        Edit::Merge(inserted.edit).apply(&mut self.doc, true);
-        self.next_id = inserted_next_id;
+        self.capability_replay
+            .as_mut()
+            .expect("reference-export capture is active")
+            .reference_insert_path = Some(inserted_path.clone());
 
         let source_root = tempfile::tempdir_in(&fixture_dir).map_err(|error| error.to_string())?;
         let reference_png = source_root.path().join("garden-reference.png");
@@ -166,6 +146,11 @@ impl SketchApp {
             ),
         )
         .map_err(|error| format!("Could not write OBJ material fixture: {error}"))?;
+        let injected_obj_path = fixture_dir.join("sapling-import.obj");
+        std::fs::copy(&obj_path, &injected_obj_path)
+            .map_err(|error| format!("Could not retain injected OBJ fixture: {error}"))?;
+        std::fs::copy(&mtl_path, fixture_dir.join("sapling.mtl"))
+            .map_err(|error| format!("Could not retain injected MTL fixture: {error}"))?;
         let model_id = self.next_id;
         let (model_asset, model) =
             obj_reference_storage::import_source_bundle(&obj_path, &asset_root, model_id)?;
@@ -191,6 +176,7 @@ impl SketchApp {
         self.obj_reference_models.insert(model_id, model);
         self.next_id = model_id.saturating_add(1);
         self.image_asset_root = asset_root.clone();
+        self.obj_reference_verification_source = Some(Some(injected_obj_path));
         self.refresh_image_plane_textures();
         self.refresh_obj_reference_meshes();
 
@@ -199,7 +185,8 @@ impl SketchApp {
         self.camera.distance = 15.5;
         self.guide = DrawingPlane::from_preset(Plane::Front);
         self.guide.depth = 0.0;
-        self.status = "Imported garden reference, inserted lantern drawing, and exported scene before capture.".into();
+        self.obj_reference_window_open = true;
+        self.status = "Garden reference and OBJ model are ready. Insert the lantern, then export the whole scene.".into();
         self.dirty = true;
         self.renderer.invalidate();
 
@@ -213,7 +200,6 @@ impl SketchApp {
             || summary.image_planes != 1
             || summary.model_references != 1
             || model_triangle_count == 0
-            || inserted_ids == 0
             || summary.triangles == 0
         {
             return Err(format!(
@@ -235,5 +221,51 @@ impl SketchApp {
             summary,
             glb_bytes,
         })
+    }
+
+    pub(super) fn insert_capability_lantern(&mut self) -> Result<usize, String> {
+        let path = self
+            .capability_replay
+            .as_ref()
+            .and_then(|replay| replay.reference_insert_path.clone())
+            .ok_or_else(|| "Reference-export replay has no lantern fixture path".to_owned())?;
+        let next_layer_id = self
+            .doc
+            .layers
+            .iter()
+            .map(|layer| layer.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let inserted = super::native_merge::prepare_insert(
+            &self.doc,
+            &path,
+            &self.image_asset_root,
+            self.next_id,
+            next_layer_id,
+            self.doc.next_group_resource_id(),
+            Vec3::new(5.2, 0.0, 1.0),
+            false,
+            &self.obj_reference_models,
+        )?;
+        let stroke_count = super::apply_inserted_drawing_state(
+            super::InsertedDrawingTarget {
+                doc: &mut self.doc,
+                selected: &mut self.selected,
+                undo: &mut self.undo,
+                redo: &mut self.redo,
+                next_id: &mut self.next_id,
+                dirty: &mut self.dirty,
+                image_assets: &mut self.image_plane_assets,
+                obj_models: &mut self.obj_reference_models,
+            },
+            inserted,
+        );
+        self.record_recovery_edit_labeled("Insert drawing");
+        self.refresh_image_plane_textures();
+        self.refresh_obj_reference_meshes();
+        self.renderer.invalidate();
+        self.status = format!("Inserted {stroke_count} lantern strokes from the native fixture.");
+        Ok(stroke_count)
     }
 }

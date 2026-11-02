@@ -1895,7 +1895,7 @@ fn paint_selection_box(
 }
 
 impl SketchApp {
-    pub(super) fn prepare_capability_edit_erase(&mut self, rect: Rect) -> (Pos2, Pos2) {
+    pub(super) fn prepare_capability_edit_erase(&mut self, rect: Rect) -> (Pos2, Pos2, Pos2) {
         self.doc = Document::default();
         self.selected.clear();
         self.undo.clear();
@@ -1942,29 +1942,10 @@ impl SketchApp {
         self.undo.clear();
         self.redo.clear();
         self.dirty = false;
-        let source_id = self.doc.strokes[0].id;
-        let selection_point = gizmo::project(&self.camera, rect, source_at(0.5))
+        let selection_world = self.doc.strokes[0].points[24].position;
+        let selection_point = gizmo::project(&self.camera, rect, selection_world)
             .expect("edit-erase stroke center projects")
             .0;
-        self.select_mode = true;
-        self.select_pointer(selection_point, rect, true, false);
-        assert_eq!(self.selected, HashSet::from([source_id]));
-        self.begin_appearance_edit();
-        let appearance = self
-            .appearance_draft
-            .as_mut()
-            .expect("selected edit-erase stroke opens appearance editing");
-        appearance.color = [0.92, 0.22, 0.045];
-        appearance.set_color = true;
-        self.refresh_appearance_preview();
-        self.finish_appearance_edit(true);
-        assert_ne!(self.doc.strokes[0].color, [0.25, 0.55, 0.85]);
-        assert_eq!(self.undo.len(), 1, "appearance change is one undo edit");
-
-        self.select_mode = false;
-        self.eraser = true;
-        self.partial_eraser.enabled = true;
-        self.partial_eraser.radius = 16.0;
         let crossing_t = 0.52;
         let crossing = source_at(crossing_t);
         let start = gizmo::project(&self.camera, rect, crossing + Vec3::new(0.0, -0.55, 0.0))
@@ -1974,10 +1955,22 @@ impl SketchApp {
             .expect("edit-erase gesture end projects")
             .0;
         assert!(rect.contains(start) && rect.contains(end));
-        self.status =
-            "Selected stroke appearance changed. Drag the partial eraser; undo restores it.".into();
+        self.status = "Select the stroke and change its appearance, then erase a segment.".into();
         self.renderer.invalidate();
-        (start, end)
+        (selection_point, start, end)
+    }
+
+    pub(super) fn apply_capability_appearance_edit(&mut self, color: [f32; 3]) {
+        self.begin_appearance_edit();
+        let appearance = self
+            .appearance_draft
+            .as_mut()
+            .expect("selected edit-erase stroke opens appearance editing");
+        appearance.color = color;
+        appearance.set_color = true;
+        self.refresh_appearance_preview();
+        self.finish_appearance_edit(true);
+        assert_ne!(self.doc.strokes[0].color, [0.25, 0.55, 0.85]);
     }
 
     pub(super) fn verify_selection(&mut self, ctx: &egui::Context, rect: Rect) {

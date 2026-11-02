@@ -1,13 +1,24 @@
-# README capability previews
+# Capability demo media
 
-These bounded original app captures are published as historical synthetic previews. All use pressure-free input and Dark theme. Full playback, current-build comparison and final surface review remain pending; copied manifests retain their original review flags. They are not tablet-validation evidence. Light/Dark comparison is not required for this gallery.
+These locally curated outputs are current-build SKETCH-066 drafts. Every replay uses deterministic synthetic input with `pressure=None`; none is tablet-pressure or latency evidence. The native picker and insert-preview dialog are not shown in the reference-export clip. Review flags in the manifests remain false until complete playback, captions, privacy, and intended-surface review is finished.
 
-| Clip | Video | Static poster | Captions | Capture provenance |
+Click any poster or GIF to open its MP4. Short clips have six-second single-play GIF previews. The overview and tutorials use accelerated six-second GIF previews; use their full captioned MP4s for normal-speed viewing. VTT captions and static tutorial alternatives are available for every instructional workflow.
+
+| Clip | Poster / MP4 | Captions | Native sample / export | Manifest |
 | --- | --- | --- | --- | --- |
-| Draw/orbit | [MP4](draw-orbit.mp4) | [PNG](draw-orbit.png) | [VTT](draw-orbit.en.vtt) | [Manifest](draw-orbit.recording.json) |
-| Partial erase/undo | [MP4](edit-erase.mp4) | [PNG](edit-erase.png) | [VTT](edit-erase.en.vtt) | [Manifest](edit-erase.recording.json) |
-| Curved drawing result | [MP4](curved-guides.mp4) | [PNG](curved-guides.png) | [VTT](curved-guides.en.vtt) | [Manifest](curved-guides.recording.json) |
-| Mirror/shape result | [MP4](mirror-shapes.mp4) | [PNG](mirror-shapes.png) | [VTT](mirror-shapes.en.vtt) | [Manifest](mirror-shapes.recording.json) |
-| References/export result | [MP4](reference-export.mp4) | [PNG](reference-export.png) | [VTT](reference-export.en.vtt) | [Manifest](reference-export.recording.json) |
+| Overview | [![Overview](overview.png)](overview.mp4) | [VTT](overview.en.vtt) | — | [JSON](overview.recording.json) |
+| Draw and orbit | [![Draw/orbit](draw-orbit.png)](draw-orbit.mp4) | [VTT](draw-orbit.en.vtt) | — | [JSON](draw-orbit.recording.json) |
+| Curved guide drawing | [![Curved guides](curved-guides.png)](curved-guides.mp4) | [VTT](curved-guides.en.vtt) | — | [JSON](curved-guides.recording.json) |
+| Mirror and shapes | [![Mirror/shapes](mirror-shapes.png)](mirror-shapes.mp4) | [VTT](mirror-shapes.en.vtt) | — | [JSON](mirror-shapes.recording.json) |
+| Selection and partial erase | [![Edit/erase](edit-erase.png)](edit-erase.mp4) | [VTT](edit-erase.en.vtt) | — | [JSON](edit-erase.recording.json) |
+| Reference import and export | [![Reference/export](reference-export.png)](reference-export.mp4) | [VTT](reference-export.en.vtt) | [GLB scene](reference-export-scene.glb) | [JSON](reference-export.recording.json) |
+| Curved drawing tutorial | [![Curved tutorial](curved-tutorial.png)](curved-tutorial.mp4) | [VTT](curved-tutorial.en.vtt) | [Saved native sample](curved-tutorial-saved.sketch.json) | [JSON](curved-tutorial.recording.json) |
+| House editing tutorial | [![House tutorial](house-tutorial.png)](house-tutorial.mp4) | [VTT](house-tutorial.en.vtt) | [Saved native sample](house-tutorial-saved.sketch.json) | [JSON](house-tutorial.recording.json) |
 
-Artwork and procedural reference assets are original to Sketch3D, as recorded in each manifest. GIFs play once and link to MP4s for replay. Captions are sidecars. The reference-export manifest also describes local verification fixture/GLB paths; those generated verification files are not distributed here.
+Each JSON manifest records output byte sizes and SHA-256 hashes, the app commit, capture dimensions/theme, fixture provenance, and limitations. Hashes identify the captured files; they do not mark a clip reviewed. The curation command verifies required files, size bounds, and a clean replay source tree before copying the local draft set:
+
+```powershell
+.\scripts\curate_capability_demos.ps1 -Refresh
+```
+
+The generated GIF previews use original Sketch3D scenes and scripted app actions. The reference image and OBJ in the import/export clip are procedurally generated for that replay. No outside artwork is embedded.

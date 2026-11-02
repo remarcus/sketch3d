@@ -36,57 +36,23 @@ impl SketchApp {
                 .expect("mirror-shapes fixture projects into the canvas")
                 .0
         };
-        let line_start_world = Vec3::new(-1.35, -0.55, 0.0);
-        let line_end_world = Vec3::new(-0.25, 0.5, 0.0);
-        let line_start = screen(line_start_world);
-        let line_end = screen(line_end_world);
+        let points = [
+            screen(Vec3::new(-1.35, -0.55, 0.0)),
+            screen(Vec3::new(-0.25, 0.5, 0.0)),
+            screen(Vec3::new(0.48, -1.5, 0.0)),
+            screen(Vec3::new(1.25, -0.65, 0.0)),
+        ];
+        self.capability_replay
+            .as_mut()
+            .expect("mirror replay is active while its stroke path is prepared")
+            .mirror_points = Some(points);
         self.start_line_tool();
-        self.line_input(line_start, 1.0, None, rect, true);
-        self.line_input(line_end, 1.0, None, rect, false);
-        self.release_line(line_end, rect);
-        assert_eq!(self.doc.strokes.len(), 2, "mirrored line commits both runs");
-        let mirror_plane = crate::mirror::MirrorPlane {
-            point: Vec3::ZERO,
-            normal: Vec3::X,
-        };
-        let (source, reflected) = (&self.doc.strokes[0], &self.doc.strokes[1]);
-        assert_eq!(source.points.len(), 2);
-        assert_eq!(reflected.points.len(), 2);
-        for (source_point, reflected_point) in source.points.iter().zip(&reflected.points) {
-            assert!(
-                reflected_point
-                    .position
-                    .distance(mirror_plane.reflect_point(source_point.position).unwrap())
-                    < 0.0001,
-                "captured mirror line matches production reflection geometry"
-            );
-        }
-
-        self.line.enabled = false;
-        self.start_shape_tool(shape_tool::ShapeMode::Ellipse);
-        let ellipse_start = screen(Vec3::new(0.48, -1.5, 0.0));
-        let ellipse_end = screen(Vec3::new(1.25, -0.65, 0.0));
-        self.shape_input(ellipse_start, 1.0, rect, true);
-        self.shape_input(ellipse_end, 1.0, rect, false);
-        assert!(self.shape_draft_active(), "ellipse creates a live preview");
-        self.release_shape(ellipse_end, 1.0, rect);
-        assert_eq!(
-            self.doc.strokes.len(),
-            3,
-            "ellipse commits after the mirror pair"
-        );
-        let ellipse = self.doc.strokes.last().unwrap();
-        assert!(ellipse.points.len() > 8);
-        assert!(ellipse
-            .points
-            .iter()
-            .all(|point| point.position.z.abs() < 0.001));
-        self.shape_tool.mode = None;
         self.status =
-            "Mirrored line and editable ellipse prepared on the front guide; synthetic orbit reveals the layout.".into();
+            "Draw a line to create its reflected stroke, then place an editable ellipse.".into();
         self.dirty = true;
         self.renderer.invalidate();
-        self.doc.strokes.len()
+        let _ = rect;
+        0
     }
 
     /// Exercise saved curved-guide live mirror through the canvas pointer handlers.
@@ -163,6 +129,31 @@ impl SketchApp {
             Vec3::new(0.72, 0.0, (1.0_f32 - 0.72_f32.powi(2)).sqrt()),
             Vec3::new(0.8, 0.55, 0.6),
         ];
+        if self
+            .capability_replay
+            .as_ref()
+            .is_some_and(|replay| replay.clip.is_curved_guides())
+        {
+            let points = world_points.map(|point| {
+                crate::gizmo::project(&self.camera, rect, point)
+                    .expect("curved-guide replay point projects onto the canvas")
+                    .0
+            });
+            assert!(points.iter().all(|point| rect.contains(*point)));
+            self.capability_replay
+                .as_mut()
+                .expect("curved-guide replay is active")
+                .curved_points = Some(points);
+            self.capability_replay
+                .as_mut()
+                .expect("curved-guide replay is active")
+                .curved_world_points = Some(world_points);
+            self.status =
+                "Draw across the saved cylinder to create a reflected curved stroke.".into();
+            self.renderer.invalidate();
+            self.mirror_verification_frame = Some(1);
+            return;
+        }
         let screen_points: Vec<_> = world_points
             .iter()
             .map(|point| {
