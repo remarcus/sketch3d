@@ -527,4 +527,51 @@ mod material_tests {
             "cutout strokes export as fully transparent geometry; destination erasure is not represented"
         ));
     }
+
+    #[test]
+    fn graphite_and_charcoal_obj_bundles_embed_continuous_alpha_masks() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let destination = root.path().join("textures.obj");
+        let strokes = [TextureKind::Graphite, TextureKind::Charcoal]
+            .into_iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                let mut stroke = material_stroke(index as u64 + 1, StrokeMaterial::Shaded);
+                stroke.brush.texture = TextureSettings {
+                    kind,
+                    strength: 0.8,
+                    seed: 41 + index as u32,
+                    ..Default::default()
+                };
+                stroke
+            })
+            .collect();
+        let document = Document {
+            linked_stroke_groups: Default::default(),
+            strokes,
+            ..Document::default()
+        };
+        assert!(write_obj_bundle(&document, None, &destination, false).unwrap() > 0);
+
+        let obj = std::fs::read_to_string(&destination).unwrap();
+        let mtl_name = obj
+            .lines()
+            .find_map(|line| line.strip_prefix("mtllib "))
+            .unwrap();
+        let mtl = std::fs::read_to_string(root.path().join(mtl_name)).unwrap();
+        let masks: Vec<_> = mtl
+            .lines()
+            .filter_map(|line| line.strip_prefix("map_d "))
+            .collect();
+        assert_eq!(masks.len(), 2);
+        for path in masks {
+            let mask = image::open(root.path().join(path)).unwrap().to_rgba8();
+            assert_eq!(
+                [mask.width(), mask.height()],
+                [texture::SIZE, texture::SIZE]
+            );
+            assert!(mask.pixels().any(|pixel| (1..255).contains(&pixel[3])));
+        }
+        assert!(obj.contains("vt "));
+    }
 }

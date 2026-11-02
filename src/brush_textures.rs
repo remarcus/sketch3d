@@ -1,7 +1,7 @@
 use super::ui_style;
 use super::*;
 use crate::{
-    editing, export_check, geometry,
+    editing, export_check, geometry, gizmo,
     texture::{TextureKind, TextureSettings},
 };
 
@@ -20,7 +20,7 @@ impl SketchApp {
                 ui.add(egui::Slider::new(&mut self.brush.texture.strength,0.0..=1.0).text("Strength"));
                 if ui.button("Vary pattern").clicked() {self.brush.texture.seed=self.brush.texture.seed.wrapping_add(1);}
                 if self.brush.texture.kind.uses_continuous_alpha() {
-                    ui.small("Soft alpha grain stays fixed in world space. Pressure opacity and tilt broadening shape graphite/charcoal coverage.");
+                    ui.small("Soft alpha grain stays fixed in world space. Pressure controls coverage; reported tilt broadens graphite/charcoal. Mouse or missing tilt uses the No-tilt fallback width.");
                 } else {
                     ui.small("Spacing is in world units. Gaps remain part of the selectable stroke footprint.");
                 }
@@ -40,6 +40,8 @@ impl SketchApp {
         };
         match frame {
             1 => {
+                self.recovery_scan_seen = true;
+                self.recovery_prompt = false;
                 let original = self.doc.strokes.clone();
                 let stroke = original
                     .iter()
@@ -69,6 +71,39 @@ impl SketchApp {
                 );
                 self.undo();
                 assert_eq!(self.doc.strokes, original);
+
+                for kind in [TextureKind::Graphite, TextureKind::Charcoal] {
+                    let stroke = original
+                        .iter()
+                        .find(|stroke| stroke.brush.texture.kind == kind && stroke.points.len() > 1)
+                        .expect("texture study contains the requested continuous-alpha brush");
+                    self.selected = HashSet::from([stroke.id]);
+                    let before = editing::snapshot(&self.doc, &self.selected);
+                    let after = editing::transformed(
+                        &before,
+                        Vec3::ZERO,
+                        Vec3::new(0.1, 0.2, 0.3),
+                        glam::Quat::from_rotation_y(0.4),
+                        1.5,
+                    )
+                    .unwrap();
+                    let transformed_texture = after[0].1.brush.texture;
+                    assert_eq!(transformed_texture.kind, stroke.brush.texture.kind);
+                    assert_eq!(transformed_texture.strength, stroke.brush.texture.strength);
+                    assert_eq!(transformed_texture.seed, stroke.brush.texture.seed);
+                    assert!(
+                        (transformed_texture.scale - stroke.brush.texture.scale * 1.5).abs()
+                            < 1.0e-5,
+                        "uniform scaling carries the world-space grain scale"
+                    );
+                    let before_mesh = geometry::stroke_mesh(&before[0].1);
+                    let after_mesh = geometry::stroke_mesh(&after[0].1);
+                    assert_eq!(before_mesh.len(), after_mesh.len());
+                    assert!(before_mesh.iter().zip(&after_mesh).all(|(a, b)| {
+                        glam::Vec2::from(a.uv).distance(glam::Vec2::from(b.uv)) < 1.0e-4
+                    }));
+                }
+
                 self.camera.align_guide(self.guide);
                 self.brush.kind = BrushKind::Ribbon;
                 self.brush.texture = TextureSettings {
@@ -81,7 +116,22 @@ impl SketchApp {
                 self.finish();
                 let added = self.doc.strokes.last().unwrap().clone();
                 assert_eq!(added.brush.texture, self.brush.texture);
-                self.erase(start + egui::vec2(100.0, 0.0), rect);
+                let erase_position = geometry::stroke_mesh(&added)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .find_map(|triangle| {
+                        let world = triangle
+                            .iter()
+                            .map(|vertex| Vec3::from(vertex.position))
+                            .sum::<Vec3>()
+                            / 3.0;
+                        let screen = gizmo::project(&self.camera, rect, world)?.0;
+                        (gizmo::pick(&self.doc, &self.camera, rect, screen) == Some(added.id))
+                            .then_some(screen)
+                    })
+                    .expect("textured stroke contains a covered point for erasing");
+                self.erase(erase_position, rect);
                 assert!(!self.doc.strokes.iter().any(|s| s.id == added.id));
                 self.undo();
                 assert_eq!(self.doc.strokes.last().unwrap(), &added);
@@ -100,16 +150,83 @@ impl SketchApp {
                     kind: TextureKind::Grain,
                     ..Default::default()
                 };
-                // Highlight one masked stroke without filling its gaps.
-                let id = self
-                    .doc
-                    .strokes
-                    .iter()
-                    .find(|s| s.brush.texture.kind == TextureKind::DryBrush && s.points.len() > 1)
+                self.selected.clear();
+                self.select_mode = false;
+                self.camera.align_guide(self.guide);
+
+                for kind in [TextureKind::Graphite, TextureKind::Charcoal] {
+                    let stroke = self
+                        .doc
+                        .strokes
+                        .iter()
+                        .find(|stroke| stroke.brush.texture.kind == kind && stroke.points.len() > 1)
+                        .expect("texture study contains the requested pick target")
+                        .clone();
+                    let covered_point = geometry::stroke_mesh(&stroke)
+                        .as_chunks::<3>()
+                        .0
+                        .iter()
+                        .find_map(|triangle| {
+                            let world = triangle
+                                .iter()
+                                .map(|vertex| Vec3::from(vertex.position))
+                                .sum::<Vec3>()
+                                / 3.0;
+                            let screen = gizmo::project(&self.camera, rect, world)?.0;
+                            (gizmo::pick(&self.doc, &self.camera, rect, screen) == Some(stroke.id))
+                                .then_some(screen)
+                        })
+                        .expect("continuous-alpha texture has a pickable covered point");
+                    self.erase(covered_point, rect);
+                    assert!(!self.doc.strokes.iter().any(|item| item.id == stroke.id));
+                    self.undo();
+                    assert!(self.doc.strokes.iter().any(|item| item == &stroke));
+                }
+
+                let output = std::env::current_dir()
                     .unwrap()
-                    .id;
-                self.selected = HashSet::from([id]);
-                self.select_mode = true;
+                    .join("verification/sketch-072");
+                std::fs::create_dir_all(&output).unwrap();
+                let camera = self.camera;
+                let lighting = crate::lighting::Lighting {
+                    ground: false,
+                    shadows: false,
+                    ..Default::default()
+                };
+                let background = [0.94, 0.93, 0.89];
+                let mut rendered = Vec::new();
+                for size in [[640, 360], [1280, 720], [2560, 1440]] {
+                    for (view, yaw_offset) in [("front", 0.0), ("orbit", 0.65)] {
+                        let mut view_camera = camera;
+                        view_camera.yaw += yaw_offset;
+                        let pixels = self
+                            .renderer
+                            .render_png_pixels(&self.doc, &view_camera, size, background, lighting)
+                            .expect("texture study renders at each export size");
+                        let image = image::RgbaImage::from_raw(size[0], size[1], pixels)
+                            .expect("texture export dimensions match pixel count");
+                        let file_name = format!("textures-{view}-{}x{}.png", size[0], size[1]);
+                        image.save(output.join(&file_name)).unwrap();
+                        rendered.push(serde_json::json!({
+                            "view": view,
+                            "yaw_offset": yaw_offset,
+                            "size": size,
+                            "file": file_name,
+                        }));
+                    }
+                }
+                std::fs::write(
+                    output.join("texture-render-report.json"),
+                    serde_json::to_vec_pretty(&serde_json::json!({
+                        "passed": true,
+                        "fixture": "textured_fixture",
+                        "background_linear_rgb": background,
+                        "renders": rendered,
+                        "physical_tablet_tested": false,
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
             }
             3 => ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())),
             100 => panic!("Texture screenshot timed out"),

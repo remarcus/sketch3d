@@ -422,6 +422,55 @@ mod tests {
         }
         .is_valid());
     }
+
+    #[test]
+    fn graphite_and_charcoal_use_manual_width_without_tilt_and_scaled_width_with_tilt() {
+        for (texture, manual, tilt_width) in [
+            (crate::texture::TextureKind::Graphite, 1.45, 3.5),
+            (crate::texture::TextureKind::Charcoal, 2.1, 5.0),
+        ] {
+            let settings = Dynamics {
+                tilt_shading: true,
+                tilt_shading_scale: tilt_width,
+                manual_shading_scale: manual,
+                ..Default::default()
+            };
+            assert_eq!(shading_width_scale(settings, texture, None), manual);
+            assert_eq!(
+                shading_width_scale(settings, texture, Some(Vec3::ZERO)),
+                1.0
+            );
+            assert!(
+                (shading_width_scale(settings, texture, Some(Vec3::Y * 0.5))
+                    - (1.0 + (tilt_width - 1.0) * 0.5))
+                    .abs()
+                    < 1.0e-6
+            );
+            assert_eq!(
+                shading_width_scale(
+                    Dynamics {
+                        tilt_shading: false,
+                        ..settings
+                    },
+                    texture,
+                    Some(Vec3::Y)
+                ),
+                1.0
+            );
+        }
+        assert_eq!(
+            shading_width_scale(
+                Dynamics {
+                    tilt_shading: true,
+                    ..Default::default()
+                },
+                crate::texture::TextureKind::Grain,
+                Some(Vec3::Y)
+            ),
+            1.0,
+            "older binary chalk masks do not acquire the new broad-shading behavior"
+        );
+    }
     #[test]
     fn taper_is_distance_based_and_handles_short_strokes_and_dots() {
         let sparse = arc_lengths(&[point(0.0), point(0.25), point(1.0)]);

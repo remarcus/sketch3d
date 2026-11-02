@@ -243,6 +243,32 @@ mod tests {
             assert!(rgba(changed).iter().all(|v| *v == 255));
         }
     }
+
+    #[test]
+    fn graphite_and_charcoal_masks_have_distinct_deterministic_soft_alpha() {
+        let graphite = settings(TextureKind::Graphite);
+        let charcoal = settings(TextureKind::Charcoal);
+        let graphite_mask = rgba(graphite);
+        let charcoal_mask = rgba(charcoal);
+        for (settings, mask) in [(graphite, &graphite_mask), (charcoal, &charcoal_mask)] {
+            assert_eq!(rgba(settings).as_slice(), mask.as_slice());
+            assert!(mask
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|pixel| (1..255).contains(&pixel[3])));
+            let mut changed_seed = settings;
+            changed_seed.seed = changed_seed.seed.wrapping_add(1);
+            assert_ne!(mask.as_slice(), rgba(changed_seed).as_slice());
+        }
+        assert_ne!(graphite_mask, charcoal_mask);
+        assert!(rgba(settings(TextureKind::Grain))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| matches!(pixel[3], 0 | 255)));
+    }
+
     #[test]
     fn uv_coverage_matches_nearest_repeating_mask_texels() {
         for kind in [

@@ -1043,6 +1043,34 @@ mod tests {
     }
 
     #[test]
+    fn graphite_and_charcoal_presets_roundtrip_through_brush_packages() {
+        let source = Library::default();
+        let mut destination = Library::default();
+        for name in ["Graphite", "Charcoal"] {
+            let preset = source
+                .presets
+                .iter()
+                .find(|preset| preset.name == name)
+                .expect("built-in texture preset exists");
+            let package = BrushPackage::from_preset(preset, None);
+            let decoded = BrushPackage::from_json(&package.to_json().unwrap()).unwrap();
+            let imported_id = decoded.import_into(&mut destination).unwrap();
+            let imported = destination.get(imported_id).unwrap();
+            assert_eq!(imported.brush, preset.brush);
+            assert_eq!(imported.radius, preset.radius);
+            assert_eq!(imported.color, preset.color);
+            assert_eq!(
+                imported.brush.texture.kind,
+                match name {
+                    "Graphite" => TextureKind::Graphite,
+                    "Charcoal" => TextureKind::Charcoal,
+                    _ => unreachable!(),
+                }
+            );
+        }
+    }
+
+    #[test]
     fn brush_package_file_roundtrip_is_atomic_and_portable() {
         let package = BrushPackage::from_preset(&Library::default().presets[0], None);
         let dir = tempfile::tempdir().unwrap();
