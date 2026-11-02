@@ -3,7 +3,9 @@
 //! This module does not mutate a document. Callers can preview the returned
 //! stroke and add it in the same undo transaction as its source stroke.
 use crate::document::{Point, Stroke};
-use glam::Vec3;
+use glam::{Quat, Vec3};
+
+pub const MAX_RADIAL_COPIES: usize = 24;
 
 /// A world-space mirror plane. The normal need not be unit length; public
 /// operations normalize it before use.
@@ -212,6 +214,136 @@ pub fn mirror_stroke_runs(
         }
     }
     Ok(mirrored)
+}
+
+/// Rotate an independent editable stroke around a world-space axis.
+pub fn rotate_stroke(
+    source: &Stroke,
+    center: Vec3,
+    axis: Vec3,
+    angle_radians: f32,
+    fresh_id: u64,
+) -> Result<Option<Stroke>, String> {
+    if fresh_id == u64::MAX || fresh_id == source.id {
+        return Err("Radial copy needs a distinct, available ID".into());
+    }
+    if !center.is_finite()
+        || !angle_radians.is_finite()
+        || angle_radians.abs() > std::f32::consts::TAU
+    {
+        return Err("Radial transform contains an invalid center or angle".into());
+    }
+    if source.points.is_empty() {
+        return Err("Cannot repeat a stroke without points".into());
+    }
+    let axis = axis
+        .try_normalize()
+        .ok_or_else(|| "Radial symmetry axis must have a non-zero length".to_owned())?;
+    if !source.brush.is_valid()
+        || !source.radius.is_finite()
+        || !(0.001..=1.0).contains(&source.radius)
+        || source
+            .color
+            .iter()
+            .any(|component| !component.is_finite() || !(0.0..=1.0).contains(component))
+        || source.gradient.is_some_and(|gradient| !gradient.is_valid())
+        || source.points.iter().any(|point| !point.is_valid())
+    {
+        return Err("Cannot repeat invalid stroke data".into());
+    }
+
+    let rotation = Quat::from_axis_angle(axis, angle_radians);
+    let mut repeated = source.clone();
+    repeated.id = fresh_id;
+    repeated.curve = None;
+    for point in &mut repeated.points {
+        point.position = center + rotation * (point.position - center);
+        point.tilt = point.tilt.map(|tilt| rotation * tilt);
+        if !point.is_valid() {
+            return Err("Rotated stroke exceeds document point limits".into());
+        }
+    }
+    repeated.brush.normal = rotation * source.brush.normal;
+    repeated.brush.tangent = rotation * source.brush.tangent;
+    if !repeated.brush.is_valid() {
+        return Err("Rotated brush frame is invalid".into());
+    }
+    if repeated.fill.is_some() && crate::polygon::triangulate(&repeated).is_err() {
+        return Err("Rotated fill would exceed planar fill limits".into());
+    }
+    if source
+        .points
+        .iter()
+        .zip(&repeated.points)
+        .all(|(before, after)| before.position.distance_squared(after.position) <= 1.0e-8)
+    {
+        return Ok(None);
+    }
+    Ok(Some(repeated))
+}
+
+/// Build a bounded radial fan. `copy_count` excludes the source mark. The
+/// offset rotates the duplicate fan while leaving the gesture's source fixed.
+pub fn radial_copies(
+    source: &Stroke,
+    center: Vec3,
+    axis: Vec3,
+    copy_count: usize,
+    angular_offset_degrees: f32,
+    first_fresh_id: u64,
+) -> Result<Vec<Stroke>, String> {
+    if !(1..=MAX_RADIAL_COPIES).contains(&copy_count) {
+        return Err(format!(
+            "Radial symmetry supports 1–{MAX_RADIAL_COPIES} additional copies"
+        ));
+    }
+    if !angular_offset_degrees.is_finite() || !(-180.0..=180.0).contains(&angular_offset_degrees) {
+        return Err("Radial angular offset must be between -180 and 180 degrees".into());
+    }
+    if first_fresh_id == u64::MAX
+        || first_fresh_id
+            .checked_add(copy_count as u64)
+            .is_none_or(|end| end == u64::MAX)
+    {
+        return Err("Radial copies exceed the available stroke IDs".into());
+    }
+    let axis = axis
+        .try_normalize()
+        .ok_or_else(|| "Radial symmetry axis must have a non-zero length".to_owned())?;
+    let step = std::f32::consts::TAU / (copy_count + 1) as f32;
+    let offset = angular_offset_degrees.to_radians();
+    let mut copies: Vec<Stroke> = Vec::with_capacity(copy_count);
+    for index in 0..copy_count {
+        let angle = (offset + step * (index + 1) as f32 + std::f32::consts::PI)
+            .rem_euclid(std::f32::consts::TAU)
+            - std::f32::consts::PI;
+        let Some(candidate) = rotate_stroke(
+            source,
+            center,
+            axis,
+            angle,
+            first_fresh_id + copies.len() as u64,
+        )?
+        else {
+            continue;
+        };
+        let mut candidate = candidate;
+        candidate.group_id = None;
+        let duplicates = std::iter::once(source)
+            .chain(copies.iter())
+            .any(|existing| {
+                existing.points.len() == candidate.points.len()
+                    && existing
+                        .points
+                        .iter()
+                        .zip(&candidate.points)
+                        .all(|(a, b)| a.position.distance_squared(b.position) <= 1.0e-8)
+            });
+        if !duplicates {
+            copies.push(candidate);
+        }
+    }
+    Ok(copies)
 }
 
 /// Reflect a point sample while retaining pressure and tilt exactly apart from

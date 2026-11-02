@@ -6,6 +6,13 @@ enum NormalAxis {
     V,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SymmetryMode {
+    #[default]
+    Mirror,
+    Radial,
+}
+
 fn mirror_tool_supported(
     selecting: bool,
     erasing: bool,
@@ -21,24 +28,38 @@ fn mirror_target_supported(drawing_on_model_surface: bool) -> bool {
 }
 
 fn mirror_checkbox(ui: &mut egui::Ui, enabled: &mut bool, available: bool) -> egui::Response {
-    ui.add_enabled(
-        available,
-        egui::Checkbox::new(enabled, "Mirror brush and line strokes"),
-    )
+    symmetry_checkbox(ui, enabled, available, "Mirror brush and line strokes")
+}
+
+fn symmetry_checkbox(
+    ui: &mut egui::Ui,
+    enabled: &mut bool,
+    available: bool,
+    label: &str,
+) -> egui::Response {
+    ui.add_enabled(available, egui::Checkbox::new(enabled, label))
 }
 
 pub(super) struct MirrorUi {
     pub enabled: bool,
+    mode: SymmetryMode,
     axis: NormalAxis,
     offset: f32,
+    radial_copy_count: usize,
+    radial_offset_degrees: f32,
+    radial_center: Option<Vec3>,
 }
 
 impl Default for MirrorUi {
     fn default() -> Self {
         Self {
             enabled: false,
+            mode: SymmetryMode::Mirror,
             axis: NormalAxis::U,
             offset: 0.0,
+            radial_copy_count: 5,
+            radial_offset_degrees: 0.0,
+            radial_center: None,
         }
     }
 }
@@ -87,34 +108,190 @@ impl SketchApp {
         self.mirror_plane()
     }
 
+    fn radial_axis_center(&self) -> Result<(Vec3, Vec3), String> {
+        if !mirror_tool_supported(
+            self.select_mode,
+            self.eraser,
+            self.fills.enabled,
+            self.shape_tool.mode.is_some(),
+            self.curve_tool.enabled,
+        ) {
+            return Err(
+                "Radial symmetry is available for brush and straight-line strokes only.".into(),
+            );
+        }
+        if !mirror_target_supported(self.doc.active_model_reference.is_some()) {
+            return Err("Radial symmetry is unavailable while drawing on a model surface.".into());
+        }
+        let target = self.planar_drawing_target().ok_or_else(|| {
+            "Radial symmetry needs an active planar drawing guide; curved and model surfaces are unsupported.".to_owned()
+        })?;
+        let (_, _, axis) = target.plane.basis();
+        let center = self
+            .mirror_ui
+            .radial_center
+            .unwrap_or_else(|| target.plane.origin());
+        if !center.is_finite()
+            || center.abs().max_element() > 10_000.0
+            || (center - target.plane.origin()).dot(axis).abs() > 0.001
+        {
+            return Err("Radial center must be a valid point on the active drawing plane.".into());
+        }
+        Ok((center, axis))
+    }
+
     pub(super) fn mirrored_runs_for(&self, source: &Stroke) -> Result<Vec<Stroke>, String> {
         self.mirror_availability().and_then(|plane| {
             crate::mirror::mirror_stroke_runs(source, plane, self.next_id, 0.0001)
         })
     }
 
+    pub(super) fn symmetry_copies_for(&self, source: &Stroke) -> Result<Vec<Stroke>, String> {
+        match self.mirror_ui.mode {
+            SymmetryMode::Mirror => self.mirrored_runs_for(source),
+            SymmetryMode::Radial => {
+                let (center, axis) = self.radial_axis_center()?;
+                let already_present = self.doc.strokes.iter().any(|stroke| stroke.id == source.id);
+                let current_points: usize = self
+                    .doc
+                    .strokes
+                    .iter()
+                    .map(|stroke| stroke.points.len())
+                    .sum();
+                let proposed_points = source
+                    .points
+                    .len()
+                    .checked_mul(self.mirror_ui.radial_copy_count)
+                    .and_then(|count| {
+                        count.checked_add(usize::from(!already_present) * source.points.len())
+                    })
+                    .and_then(|count| count.checked_add(current_points));
+                let proposed_strokes = self
+                    .doc
+                    .strokes
+                    .len()
+                    .checked_add(self.mirror_ui.radial_copy_count)
+                    .and_then(|count| count.checked_add(usize::from(!already_present)));
+                if proposed_points.is_none_or(|count| count > 2_000_000)
+                    || proposed_strokes.is_none_or(|count| count > 100_000)
+                {
+                    return Err("Radial copies would exceed document stroke or point limits".into());
+                }
+                crate::mirror::radial_copies(
+                    source,
+                    center,
+                    axis,
+                    self.mirror_ui.radial_copy_count,
+                    self.mirror_ui.radial_offset_degrees,
+                    self.next_id,
+                )
+            }
+        }
+    }
+
     pub(super) fn mirror_controls(&mut self, ui: &mut egui::Ui) {
-        let availability = self.mirror_availability();
         ui.separator();
-        ui.strong("LIVE MIRROR");
-        mirror_checkbox(ui, &mut self.mirror_ui.enabled, availability.is_ok());
+        ui.strong("LIVE SYMMETRY");
+        egui::ComboBox::from_id_salt("live-symmetry-mode")
+            .selected_text(match self.mirror_ui.mode {
+                SymmetryMode::Mirror => "Mirror",
+                SymmetryMode::Radial => "Radial",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.mirror_ui.mode, SymmetryMode::Mirror, "Mirror");
+                ui.selectable_value(&mut self.mirror_ui.mode, SymmetryMode::Radial, "Radial");
+            });
+        let availability = match self.mirror_ui.mode {
+            SymmetryMode::Mirror => self.mirror_availability().map(|_| ()),
+            SymmetryMode::Radial => self.radial_axis_center().map(|_| ()),
+        };
+        let label = match self.mirror_ui.mode {
+            SymmetryMode::Mirror => "Mirror brush and line strokes",
+            SymmetryMode::Radial => "Repeat brush and line strokes radially",
+        };
+        if self.mirror_ui.mode == SymmetryMode::Mirror {
+            mirror_checkbox(ui, &mut self.mirror_ui.enabled, availability.is_ok());
+        } else {
+            symmetry_checkbox(ui, &mut self.mirror_ui.enabled, availability.is_ok(), label);
+        }
         if let Err(reason) = availability {
             ui.small(reason);
         }
         if self.mirror_ui.enabled {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.mirror_ui.axis, NormalAxis::U, "Plane normal U");
-                ui.selectable_value(&mut self.mirror_ui.axis, NormalAxis::V, "Plane normal V");
-            });
-            ui_style::numeric_row(
-                ui,
-                "Plane offset",
-                "mirror-offset",
-                &mut self.mirror_ui.offset,
-                Some(-10000.0..=10000.0),
-                "wu",
-            );
-            ui.small("On curved guides, the reflected ink follows a world-space symmetry plane and does not snap back to the guide.");
+            match self.mirror_ui.mode {
+                SymmetryMode::Mirror => {
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(
+                            &mut self.mirror_ui.axis,
+                            NormalAxis::U,
+                            "Plane normal U",
+                        );
+                        ui.selectable_value(
+                            &mut self.mirror_ui.axis,
+                            NormalAxis::V,
+                            "Plane normal V",
+                        );
+                    });
+                    ui_style::numeric_row(
+                        ui,
+                        "Plane offset",
+                        "mirror-offset",
+                        &mut self.mirror_ui.offset,
+                        Some(-10000.0..=10000.0),
+                        "wu",
+                    );
+                    ui.small("On curved guides, reflected ink follows a world-space plane and does not snap back to the guide.");
+                }
+                SymmetryMode::Radial => {
+                    let mut center = self.mirror_ui.radial_center.unwrap_or_else(|| {
+                        self.planar_drawing_target()
+                            .map_or(Vec3::ZERO, |target| target.plane.origin())
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("World center");
+                        ui.add(
+                            egui::DragValue::new(&mut center.x)
+                                .speed(0.05)
+                                .range(-10000.0..=10000.0)
+                                .prefix("X "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut center.y)
+                                .speed(0.05)
+                                .range(-10000.0..=10000.0)
+                                .prefix("Y "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut center.z)
+                                .speed(0.05)
+                                .range(-10000.0..=10000.0)
+                                .prefix("Z "),
+                        );
+                    });
+                    self.mirror_ui.radial_center = Some(center);
+                    ui.add(
+                        egui::Slider::new(
+                            &mut self.mirror_ui.radial_copy_count,
+                            1..=crate::mirror::MAX_RADIAL_COPIES,
+                        )
+                        .text("Additional copies"),
+                    );
+                    ui.add(
+                        egui::Slider::new(
+                            &mut self.mirror_ui.radial_offset_degrees,
+                            -180.0..=180.0,
+                        )
+                        .text("Copy fan offset"),
+                    );
+                    if let Ok((_, axis)) = self.radial_axis_center() {
+                        ui.small(format!(
+                            "World rotation axis: {:.3}, {:.3}, {:.3}. Change the active plane to reorient it.",
+                            axis.x, axis.y, axis.z
+                        ));
+                    }
+                    ui.small("The source remains fixed; the offset rotates only the evenly spaced duplicate fan. Planar guides only.");
+                }
+            }
         }
     }
 
@@ -128,7 +305,7 @@ impl SketchApp {
         let mut mirrored = Vec::new();
         let mut mirror_warning = None;
         if self.mirror_ui.enabled {
-            match self.mirrored_runs_for(&source) {
+            match self.symmetry_copies_for(&source) {
                 Ok(copies) => mirrored = copies,
                 Err(error) => mirror_warning = Some(error),
             }
@@ -189,7 +366,7 @@ impl SketchApp {
                 self.record_recovery_stroke_labeled("Draw", &recorded_stroke, duration_ms);
                 self.renderer.invalidate();
                 self.status = format!(
-                    "Stroke and {copy_count} mirrored run(s) committed together. One undo removes them all."
+                    "Stroke and {copy_count} symmetry copy/copies committed together. One undo removes them all."
                 );
                 return;
             }
@@ -213,7 +390,7 @@ impl SketchApp {
         if !self.mirror_ui.enabled {
             return;
         }
-        let Ok(mirrored) = self.mirrored_runs_for(source) else {
+        let Ok(mirrored) = self.symmetry_copies_for(source) else {
             return;
         };
         let painter = ui.painter().with_clip_rect(rect);
@@ -222,6 +399,23 @@ impl SketchApp {
             self.presentation.preferences.background_image.is_some(),
         )
         .linear_multiply(0.72);
+        if self.mirror_ui.mode == SymmetryMode::Radial {
+            if let Ok((center, axis)) = self.radial_axis_center() {
+                let axis_half_length = self.camera.world_per_pixel(center, rect.height()) * 40.0;
+                if let (Some((center_screen, _)), Some((axis_start, _)), Some((axis_end, _))) = (
+                    crate::gizmo::project(&self.camera, rect, center),
+                    crate::gizmo::project(&self.camera, rect, center - axis * axis_half_length),
+                    crate::gizmo::project(&self.camera, rect, center + axis * axis_half_length),
+                ) {
+                    painter.line_segment([axis_start, axis_end], egui::Stroke::new(1.5_f32, color));
+                    painter.circle_stroke(
+                        center_screen,
+                        5.0_f32,
+                        egui::Stroke::new(2.0_f32, color),
+                    );
+                }
+            }
+        }
         for mirrored in mirrored {
             let points: Vec<_> = mirrored
                 .points
