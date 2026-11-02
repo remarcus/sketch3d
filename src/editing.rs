@@ -393,7 +393,28 @@ pub fn transformed_with_scale(
             - next_normal * transformed_tangent.dot(next_normal))
         .try_normalize()
         .ok_or("Brush frame collapsed")?;
-        let width_scale = if scale_brush_width {
+        let profiled_tube = stroke.brush.kind == BrushKind::Round
+            && stroke.brush.tube_profile != crate::document::TubeProfile::Round
+            && !stroke.brush.flow.enabled
+            && !stroke.brush.strands.enabled
+            && !stroke.brush.dabs.enabled
+            && stroke.brush.tip_asset_id == 0;
+        let width_scale = if scale_brush_width && profiled_tube {
+            let next_width = next_normal.cross(next_tangent).normalize_or_zero();
+            let transformed_width = (linear * old_side).dot(next_width).abs();
+            let transformed_depth = (linear * old_normal).dot(next_normal).abs();
+            let area_scale = (transformed_width * transformed_depth).sqrt();
+            let tangent_scale = (linear * old_tangent).length();
+            if !area_scale.is_finite() || area_scale <= 1e-8 || !tangent_scale.is_finite() {
+                return Err("Brush profile collapsed");
+            }
+            stroke.brush.tube_profile_scale *= Vec3::new(
+                transformed_width / area_scale,
+                transformed_depth / area_scale,
+                tangent_scale / area_scale,
+            );
+            area_scale
+        } else if scale_brush_width {
             ((linear * old_tangent).length() * (linear * old_side).length()).sqrt()
         } else {
             1.0

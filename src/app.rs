@@ -1995,9 +1995,10 @@ impl SketchApp {
                         stroke.points.push(point);
                         if crate::dab_placement::point_count(stroke).is_err()
                             || strand_vertex_budget_exceeded(stroke)
+                            || profile_tube_vertex_budget_exceeded(stroke)
                         {
                             stroke.points.pop();
-                            self.status = "Stroke reached its dab or strand geometry limit; the remaining release tail was omitted.".into();
+                            self.status = "Stroke reached its dab, strand, or tube-profile geometry limit; the remaining release tail was omitted.".into();
                             break;
                         }
                     }
@@ -2341,6 +2342,7 @@ impl SketchApp {
                     if crate::dab_placement::point_count(stroke).is_err()
                         || strand_vertex_budget_exceeded(stroke)
                         || airbrush_vertex_budget_exceeded(stroke)
+                        || profile_tube_vertex_budget_exceeded(stroke)
                     {
                         stroke.points.pop();
                         over_geometry_limit = true;
@@ -2349,7 +2351,7 @@ impl SketchApp {
                 }
             }
             if over_geometry_limit {
-                self.status = "Stroke reached its airbrush, dab, or strand geometry limit; further input was ignored.".into();
+                self.status = "Stroke reached its airbrush, dab, strand, or tube-profile geometry limit; further input was ignored.".into();
             }
         }
     }
@@ -2510,9 +2512,10 @@ impl SketchApp {
                 if crate::dab_placement::point_count(stroke).is_err()
                     || strand_vertex_budget_exceeded(stroke)
                     || airbrush_vertex_budget_exceeded(stroke)
+                    || profile_tube_vertex_budget_exceeded(stroke)
                 {
                     stroke.points.pop();
-                    self.status = "Stroke reached its airbrush, dab, or strand geometry limit; further input was ignored.".into();
+                    self.status = "Stroke reached its airbrush, dab, strand, or tube-profile geometry limit; further input was ignored.".into();
                 }
             }
         }
@@ -4674,6 +4677,17 @@ fn airbrush_vertex_budget_exceeded(stroke: &Stroke) -> bool {
                 > crate::geometry::MAX_AIRBRUSH_VERTICES)
 }
 
+fn profile_tube_vertex_budget_exceeded(stroke: &Stroke) -> bool {
+    stroke.brush.kind == BrushKind::Round
+        && stroke.brush.tube_profile != crate::document::TubeProfile::Round
+        && !stroke.brush.flow.enabled
+        && !stroke.brush.strands.enabled
+        && !stroke.brush.dabs.enabled
+        && stroke.brush.tip_asset_id == 0
+        && crate::geometry::profile_tube_vertex_estimate(stroke)
+            > crate::geometry::MAX_PROFILE_TUBE_VERTICES
+}
+
 impl eframe::App for SketchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let start = Instant::now();
@@ -6390,11 +6404,11 @@ impl SketchApp {
             } else if self.preset_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["preset application captures resolved settings","create duplicate rename update delete and defaults","restart persistence","live GPU previews","library edits preserve existing ink and export","corrupt library fallback and explicit repair backup"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.texture_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 19 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 20 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.dynamics_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 19 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 20 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 19 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 20 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {

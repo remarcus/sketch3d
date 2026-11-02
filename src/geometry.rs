@@ -385,6 +385,163 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
     }
     out
 }
+
+pub(crate) const MAX_PROFILE_TUBE_VERTICES: usize = 1_000_000;
+
+fn profile_sides(profile: crate::document::TubeProfile) -> usize {
+    match profile {
+        crate::document::TubeProfile::Round => 8,
+        crate::document::TubeProfile::Square => 4,
+        crate::document::TubeProfile::Triangle => 3,
+        crate::document::TubeProfile::Star => 10,
+    }
+}
+
+pub(crate) fn profile_tube_vertex_estimate(stroke: &Stroke) -> usize {
+    if stroke.brush.kind != BrushKind::Round
+        || stroke.brush.tube_profile == crate::document::TubeProfile::Round
+        || stroke.brush.flow.enabled
+        || stroke.brush.strands.enabled
+        || stroke.brush.dabs.enabled
+        || stroke.brush.tip_asset_id != 0
+        || stroke.points.is_empty()
+    {
+        return 0;
+    }
+    let sides = profile_sides(stroke.brush.tube_profile);
+    let segments = stroke.points.len().saturating_sub(1).max(1);
+    let side_vertices = segments.saturating_mul(sides).saturating_mul(6);
+    let cap_vertices = if is_closed_stroke(stroke) {
+        0
+    } else {
+        sides.saturating_mul(6)
+    };
+    side_vertices.saturating_add(cap_vertices)
+}
+
+fn profile_tube_mesh(stroke: &Stroke) -> Vec<Vertex> {
+    let capacity = profile_tube_vertex_estimate(stroke);
+    if capacity == 0 || capacity > MAX_PROFILE_TUBE_VERTICES {
+        return Vec::new();
+    }
+    let sides = profile_sides(stroke.brush.tube_profile);
+    let angle_offset = match stroke.brush.tube_profile {
+        crate::document::TubeProfile::Triangle => -std::f32::consts::FRAC_PI_2,
+        crate::document::TubeProfile::Square => std::f32::consts::FRAC_PI_4,
+        crate::document::TubeProfile::Round | crate::document::TubeProfile::Star => 0.0,
+    };
+    let mut frames = brush_frames(stroke);
+    if frames.is_empty() {
+        return Vec::new();
+    }
+    let closed = is_closed_stroke(stroke);
+    if frames.len() == 1 {
+        let frame = frames[0];
+        let half = (frame.radius * stroke.brush.tube_profile_scale.z).max(0.001) * 0.65;
+        let mut start = frame;
+        start.center -= frame.tangent * half;
+        start.u -= half / stroke.brush.texture.scale;
+        let mut end = frame;
+        end.center += frame.tangent * half;
+        end.u += half / stroke.brush.texture.scale;
+        frames = vec![start, end];
+    }
+    let rings: Vec<Vec<(Vec3, [f32; 2])>> = frames
+        .iter()
+        .map(|frame| {
+            (0..sides)
+                .map(|side| {
+                    let angle = side as f32 * std::f32::consts::TAU / sides as f32 + angle_offset;
+                    let factor = if stroke.brush.tube_profile == crate::document::TubeProfile::Star
+                        && side % 2 == 1
+                    {
+                        0.42
+                    } else {
+                        1.0
+                    };
+                    (
+                        frame.center
+                            + frame.width
+                                * (angle.cos()
+                                    * frame.radius
+                                    * factor
+                                    * stroke.brush.tube_profile_scale.x)
+                            + frame.normal
+                                * (angle.sin()
+                                    * frame.radius
+                                    * factor
+                                    * stroke.brush.tube_profile_scale.y),
+                        [frame.u, side as f32 / sides as f32],
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    let mut out = Vec::with_capacity(capacity);
+    for (frame_pair, ring_pair) in frames.windows(2).zip(rings.windows(2)) {
+        let (start, end) = (frame_pair[0], frame_pair[1]);
+        for side in 0..sides {
+            let next = (side + 1) % sides;
+            let edge = ring_pair[0][next].0 - ring_pair[0][side].0;
+            let outward = edge
+                .cross(end.tangent + start.tangent)
+                .try_normalize()
+                .unwrap_or_else(|| start.width);
+            let uv_start_next = [start.u, (side + 1) as f32 / sides as f32];
+            let uv_end_next = [end.u, (side + 1) as f32 / sides as f32];
+            flat_quad(
+                &mut out,
+                [
+                    ring_pair[0][side].0,
+                    ring_pair[1][side].0,
+                    ring_pair[1][next].0,
+                    ring_pair[0][next].0,
+                ],
+                [
+                    ring_pair[0][side].1,
+                    ring_pair[1][side].1,
+                    uv_end_next,
+                    uv_start_next,
+                ],
+                outward,
+                stroke.color,
+                [start.opacity, end.opacity, end.opacity, start.opacity],
+                (start.softness + end.softness) * 0.5,
+            );
+        }
+    }
+    if !closed {
+        for (frame, ring, outward) in [
+            (frames[0], &rings[0], -frames[0].tangent),
+            (
+                *frames.last().unwrap(),
+                rings.last().unwrap(),
+                frames.last().unwrap().tangent,
+            ),
+        ] {
+            for side in 0..sides {
+                let next = (side + 1) % sides;
+                let radial_uv = |position: Vec3| {
+                    let offset = position - frame.center;
+                    [
+                        0.5 + offset.dot(frame.width) / stroke.brush.texture.scale,
+                        0.5 + offset.dot(frame.normal) / stroke.brush.texture.scale,
+                    ]
+                };
+                flat_triangle(
+                    &mut out,
+                    [frame.center, ring[side].0, ring[next].0],
+                    [[0.5, 0.5], radial_uv(ring[side].0), radial_uv(ring[next].0)],
+                    outward,
+                    stroke.color,
+                    [frame.opacity; 3],
+                    frame.softness,
+                );
+            }
+        }
+    }
+    out
+}
 /// Conservative brush radius, shared by selection and geometry bounds.
 pub fn stroke_extent(stroke: &Stroke) -> f32 {
     if stroke.fill.is_some() {
@@ -406,6 +563,24 @@ pub fn stroke_extent(stroke: &Stroke) -> f32 {
             } else {
                 1.0
             }
+    } else if stroke.brush.kind == BrushKind::Round
+        && stroke.brush.tube_profile != crate::document::TubeProfile::Round
+        && !stroke.brush.flow.enabled
+        && !stroke.brush.strands.enabled
+        && !stroke.brush.dabs.enabled
+        && stroke.brush.tip_asset_id == 0
+    {
+        let radial = stroke.radius
+            * stroke
+                .brush
+                .tube_profile_scale
+                .x
+                .max(stroke.brush.tube_profile_scale.y);
+        if dot {
+            radial.hypot(stroke.radius * stroke.brush.tube_profile_scale.z * 0.65)
+        } else {
+            radial
+        }
     } else if stroke.brush.strands.enabled {
         let settings = stroke.brush.strands;
         stroke.radius
@@ -511,7 +686,11 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
             } else {
                 stroke
             };
-        if stroke.brush.kind != BrushKind::Round {
+        if stroke.brush.kind == BrushKind::Round
+            && stroke.brush.tube_profile != crate::document::TubeProfile::Round
+        {
+            profile_tube_mesh(stroke)
+        } else if stroke.brush.kind != BrushKind::Round {
             flat_brush(stroke)
         } else {
             // Retain the original round brush's positions and pressure profile. Give caps

@@ -11,14 +11,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const BUILTIN_PRESET_COUNT: usize = 16;
+const BUILTIN_PRESET_COUNT: usize = 19;
 const MAX_PERSONAL_PRESETS: usize = 250;
 const MAX_PRESETS: usize = MAX_PERSONAL_PRESETS + BUILTIN_PRESET_COUNT;
 const FIRST_PERSONAL_ID: u64 = 100;
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_PACKAGE_BYTES: u64 = 1024 * 1024;
 const PACKAGE_FORMAT: &str = "spatial-sketch-brush";
-const LIBRARY_VERSION: u32 = 4;
+const LIBRARY_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Preset {
@@ -479,6 +479,47 @@ fn defaults(tip_assets: &[crate::brush_tip::BrushTipAsset]) -> Vec<Preset> {
         color: [0.82, 0.28, 0.19],
         stabilization: 0.35,
     });
+    for (id, name, profile, radius, color, tilt_orientation) in [
+        (
+            17,
+            "Square Tube",
+            crate::document::TubeProfile::Square,
+            0.07,
+            [0.26, 0.62, 0.85],
+            false,
+        ),
+        (
+            18,
+            "Triangular Tube",
+            crate::document::TubeProfile::Triangle,
+            0.07,
+            [0.46, 0.78, 0.34],
+            true,
+        ),
+        (
+            19,
+            "Star Tube",
+            crate::document::TubeProfile::Star,
+            0.075,
+            [0.9, 0.54, 0.19],
+            false,
+        ),
+    ] {
+        let mut brush = Brush {
+            kind: BrushKind::Round,
+            tube_profile: profile,
+            ..Brush::default()
+        };
+        brush.dynamics.tilt_orientation = tilt_orientation;
+        presets.push(Preset {
+            id,
+            name: name.into(),
+            brush,
+            radius,
+            color,
+            stabilization: 0.35,
+        });
+    }
     presets
 }
 
@@ -654,13 +695,14 @@ impl Library {
         }
         let mut library: Self =
             serde_json::from_str(text).map_err(|e| format!("Cannot read brush library: {e}"))?;
-        if matches!(library.version, 1 | 2 | 3) {
+        if matches!(library.version, 1..=4) {
             let previous_version = library.version;
             let defaults = Library::default();
             let first_new_id = match previous_version {
                 1 => 11,
                 2 => 14,
-                _ => 16,
+                3 => 16,
+                _ => 17,
             };
             for preset in defaults
                 .presets
@@ -972,7 +1014,7 @@ mod tests {
         library.delete(6).unwrap();
         assert!(library.duplicate(1, "Still overflow").is_err());
         library.restore_defaults().unwrap();
-        assert_eq!(library.presets.len(), 260);
+        assert_eq!(library.presets.len(), 269);
     }
 
     #[test]

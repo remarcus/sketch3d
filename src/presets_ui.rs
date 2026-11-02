@@ -174,7 +174,7 @@ impl PresetUi {
                         }
                     }
                     let shape = match preset.brush.kind {
-                        crate::document::BrushKind::Round => "Round",
+                        crate::document::BrushKind::Round => preset.brush.tube_profile.label(),
                         crate::document::BrushKind::Ribbon => "Ribbon",
                         crate::document::BrushKind::Chisel => "Flat/chisel",
                     };
@@ -208,7 +208,9 @@ impl PresetUi {
                         preset.brush.dynamics.taper_end,
                         preset.stabilization * 100.0
                     ));
-                    if preset.brush.kind != crate::document::BrushKind::Round {
+                    if preset.brush.kind != crate::document::BrushKind::Round
+                        || preset.brush.tube_profile != crate::document::TubeProfile::Round
+                    {
                         ui.small(format!(
                             "Angle {:.0}° · tilt {}",
                             preset.brush.angle_degrees,
@@ -718,7 +720,7 @@ fn safe_file_stem(name: &str) -> String {
 
 fn brush_kind_label(preset: &Preset) -> &'static str {
     match preset.brush.kind {
-        crate::document::BrushKind::Round => "Round",
+        crate::document::BrushKind::Round => preset.brush.tube_profile.label(),
         crate::document::BrushKind::Ribbon => "Ribbon",
         crate::document::BrushKind::Chisel => "Chisel",
     }

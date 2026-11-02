@@ -8,6 +8,12 @@ impl SketchApp {
         let image_tip = self.brush.tip_asset_id != 0;
         let strand_mode = self.brush.strands.enabled;
         let flow_mode = self.brush.flow.enabled;
+        let profiled_tube = self.brush.kind == BrushKind::Round
+            && self.brush.tube_profile != crate::document::TubeProfile::Round
+            && !flow_mode
+            && !strand_mode
+            && !self.brush.dabs.enabled
+            && !image_tip;
         ui_style::section(ui, "Brush shape");
         if image_tip {
             let aspect = self
@@ -63,7 +69,26 @@ impl SketchApp {
         if !image_tip && self.brush.kind == BrushKind::Chisel && before.kind != BrushKind::Chisel {
             self.brush.softness = 0.0;
         }
-        if !image_tip && self.brush.kind != BrushKind::Round {
+        if !image_tip
+            && self.brush.kind == BrushKind::Round
+            && !flow_mode
+            && !strand_mode
+            && !self.brush.dabs.enabled
+        {
+            ui_style::field_row(ui, "Tube profile", |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for profile in [
+                        crate::document::TubeProfile::Round,
+                        crate::document::TubeProfile::Square,
+                        crate::document::TubeProfile::Triangle,
+                        crate::document::TubeProfile::Star,
+                    ] {
+                        ui.radio_value(&mut self.brush.tube_profile, profile, profile.label());
+                    }
+                });
+            });
+        }
+        if !image_tip && (self.brush.kind != BrushKind::Round || profiled_tube) {
             ui_style::slider_row(
                 ui,
                 "Angle",
@@ -390,7 +415,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 19);
+                assert_eq!(loaded.version, 20);
                 assert_eq!(loaded.strokes, original);
                 self.load_brushes();
                 self.brush = Brush {

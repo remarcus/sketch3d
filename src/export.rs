@@ -1250,7 +1250,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 19);
+        assert_eq!(loaded.version, 20);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -1555,7 +1555,7 @@ mod group_export_tests {
     fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
         let doc = crate::export_check::grouped_fixture();
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-        assert_eq!(loaded.version, 19);
+        assert_eq!(loaded.version, 20);
         assert_eq!(loaded.strokes, doc.strokes);
         let encoded = encode(&doc, None).unwrap();
         let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();

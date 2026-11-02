@@ -45,8 +45,9 @@ display, picking, selection bounds, GLB, and OBJ export.
 ## Versioning and budgets
 
 SKETCH-071 introduced native schema version 14. Current drawings use schema
-version 19, which adds timestamped airbrush flow settings. Version 18 added
-bounded bristle/rake strand settings. Version 17 added
+version 20, which adds bounded tube profiles. Version 19 added timestamped
+airbrush flow settings. Version 18 added bounded bristle/rake strand settings.
+Version 17 added
 the resolved image-tip aspect ratio used by stamp geometry; version 16 added
 bounded embedded brush-tip PNG assets; version 15 added captured tilt magnitude
 for tilt-driven shading. Missing
@@ -99,3 +100,20 @@ alpha as coverage. OBJ/MTL has no per-vertex alpha support, so it keeps deposit
 geometry and base material opacity while losing soft accumulation detail.
 Partial erasing keeps interpolated timestamps on retained points; it does not
 rerun a preset or replace captured pressures.
+
+## Tube profiles
+
+SKETCH-078 adds square, triangular, and five-point star cross-sections to the
+round tube brush. Profile geometry uses the captured guide frame and manual
+angle; optional tilt orientation uses reported pen lean and falls back to that
+manual frame when tilt is missing or upright. Pressure width, opacity, and
+distance taper share the existing brush response settings. Flat profile faces
+have face normals and the open ends use triangulated caps. A dot is a short
+extruded profile with two caps. Coincident samples collapse before tessellation;
+the maximum generated profile mesh is one million vertices per stroke.
+
+The standard round profile keeps its original eight-sided geometry. Profiled
+stroke selection, screen-space erasing bounds, surface picking, and GLB/OBJ
+exports all consume the shared profile mesh. Non-uniform scaling stores separate
+width, depth, and dot-axis adjustments so the generated profile tracks the
+transformed cross-section.

@@ -68,7 +68,7 @@ impl SketchApp {
             self.file = Some(path.clone());
             assert!(self.save(false));
             let loaded = Document::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
-            assert_eq!(loaded.version, 19);
+            assert_eq!(loaded.version, 20);
             assert_eq!(loaded.strokes, self.doc.strokes);
             let mesh = crate::geometry::stroke_mesh(&self.doc.strokes[0]);
             let center = mesh
