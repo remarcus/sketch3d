@@ -469,6 +469,21 @@ mod tests {
         assert_eq!(doc.strokes[0].points, original.points[..=1]);
         assert_eq!(doc.strokes[1].points, original.points[1..]);
         assert_eq!(doc.strokes[0].points[1], doc.strokes[1].points[0]);
+        let first_dabs = crate::dab_placement::sample(&doc.strokes[0]).unwrap();
+        let second_dabs = crate::dab_placement::sample(&doc.strokes[1]).unwrap();
+        let split_dabs: Vec<_> = first_dabs.iter().chain(&second_dabs).collect();
+        assert_eq!(
+            split_dabs.len(),
+            dabs.len(),
+            "the shared split seam emits one dab"
+        );
+        assert!(first_dabs.last().unwrap().position.distance(Vec3::X) < 1.0e-5);
+        assert!(second_dabs[0].position.distance(Vec3::X) > 1.0e-5);
+        for (split_dab, original_dab) in split_dabs.iter().zip(&dabs) {
+            assert!(split_dab.position.distance(original_dab.position) < 1.0e-4);
+            assert!((split_dab.pressure - original_dab.pressure).abs() < 1.0e-5);
+            assert!((split_dab.size_scale - original_dab.size_scale).abs() < 1.0e-5);
+        }
         assert!(doc.strokes[0]
             .gradient
             .unwrap()

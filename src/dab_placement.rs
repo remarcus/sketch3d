@@ -4,7 +4,7 @@
 //! multiples of the stroke's base radius. Dab indices are global to the
 //! original stroke, so splitting a stroke preserves its spacing and random
 //! sequence. The default endpoint rule places dabs at index zero and each
-//! following spacing interval; it does not snap an extra dab to pen-up.
+//! following spacing interval; fragments exclude repeated dabs at exact phase-aligned starts.
 
 use crate::{
     document::{Document, Stroke},
@@ -15,6 +15,20 @@ use glam::Vec3;
 pub const MAX_DABS_PER_STROKE: usize = 8_192;
 pub const MAX_DOCUMENT_DABS: usize = 50_000;
 const DISTANCE_EPSILON: f32 = 1.0e-5;
+const PHASE_INDEX_EPSILON: f32 = 1.0e-4;
+
+fn first_dab_index(origin: f32, step: f32) -> f32 {
+    if origin <= DISTANCE_EPSILON {
+        return 0.0;
+    }
+    let phase = origin / step;
+    let nearest = phase.round();
+    if (phase - nearest).abs() <= PHASE_INDEX_EPSILON {
+        nearest + 1.0
+    } else {
+        phase.ceil()
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolvedDab {
@@ -75,7 +89,7 @@ pub fn point_count(stroke: &Stroke) -> Result<usize, String> {
     if local_length <= DISTANCE_EPSILON {
         return Ok(usize::from(origin <= DISTANCE_EPSILON));
     }
-    let first = ((origin - DISTANCE_EPSILON).max(0.0) / step).ceil();
+    let first = first_dab_index(origin, step);
     let last = ((origin + local_length + DISTANCE_EPSILON) / step).floor();
     if !first.is_finite() || !last.is_finite() || last < first {
         return Ok(0);
@@ -120,7 +134,7 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
         ));
         return Ok(out);
     }
-    let first = ((origin - DISTANCE_EPSILON).max(0.0) / step).ceil() as u64;
+    let first = first_dab_index(origin, step) as u64;
     let last = ((origin + local_length + DISTANCE_EPSILON) / step).floor() as u64;
     for index in first..=last {
         let global_distance = index as f32 * step;
