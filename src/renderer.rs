@@ -2,7 +2,7 @@ use crate::lighting::{self, Lighting, SHADOW_SIZE};
 use crate::surface::GuidePreview;
 use crate::texture::{self, TextureKind, TextureSettings};
 use crate::{
-    document::{BrushKind, Document, Stroke, StrokeMaterial},
+    document::{BrushKind, Document, LayerBlendMode, Stroke, StrokeMaterial},
     geometry::{self, Camera, Vertex},
 };
 use eframe::{
@@ -124,11 +124,12 @@ fn canvas_sample_count(adapter: &wgpu::Adapter) -> u32 {
     }
 }
 
-fn is_translucent(stroke: &Stroke, layer_opacity: f32) -> bool {
+fn is_translucent(stroke: &Stroke, layer_opacity: f32, layer_blend_mode: LayerBlendMode) -> bool {
     if stroke.material == StrokeMaterial::Cutout {
         return false;
     }
     layer_opacity < 0.999_999
+        || layer_blend_mode != LayerBlendMode::Normal
         || stroke.brush.opacity < 0.999_999
         || stroke.brush.tip_asset_id != 0
         || (stroke.brush.dynamics.opacity.enabled
@@ -229,6 +230,7 @@ fn screen_background_vertices(
 fn back_to_front<'a>(
     mut strokes: Vec<(&'a Stroke, &'a Mesh)>,
     camera: &Camera,
+    doc: &Document,
 ) -> Vec<(&'a Stroke, &'a Mesh)> {
     let axis = camera.basis().2;
     strokes.sort_by(|(stroke_a, a), (stroke_b, b)| {
@@ -240,7 +242,49 @@ fn back_to_front<'a>(
         (center(a) - camera.target)
             .dot(axis)
             .total_cmp(&(center(b) - camera.target).dot(axis))
+            .then_with(|| {
+                let layer_order = |layer_id| {
+                    doc.layers
+                        .iter()
+                        .position(|layer| layer.id == layer_id)
+                        .unwrap_or(usize::MAX)
+                };
+                layer_order(stroke_a.layer_id).cmp(&layer_order(stroke_b.layer_id))
+            })
             .then_with(|| stroke_a.id.cmp(&stroke_b.id))
+    });
+    strokes
+}
+
+fn bottom_to_top<'a>(mut strokes: Vec<&'a Stroke>, doc: &Document) -> Vec<&'a Stroke> {
+    let layer_order = |layer_id| {
+        doc.layers
+            .iter()
+            .position(|layer| layer.id == layer_id)
+            .unwrap_or(usize::MAX)
+    };
+    strokes.sort_by(|a, b| {
+        layer_order(a.layer_id)
+            .cmp(&layer_order(b.layer_id))
+            .then(a.id.cmp(&b.id))
+    });
+    strokes
+}
+
+fn bottom_to_top_meshes<'a>(
+    mut strokes: Vec<(&'a Stroke, &'a Mesh)>,
+    doc: &Document,
+) -> Vec<(&'a Stroke, &'a Mesh)> {
+    let layer_order = |layer_id| {
+        doc.layers
+            .iter()
+            .position(|layer| layer.id == layer_id)
+            .unwrap_or(usize::MAX)
+    };
+    strokes.sort_by(|a, b| {
+        layer_order(a.0.layer_id)
+            .cmp(&layer_order(b.0.layer_id))
+            .then(a.0.id.cmp(&b.0.id))
     });
     strokes
 }
@@ -251,6 +295,7 @@ pub struct SceneRenderer {
     cutout_triangles: wgpu::RenderPipeline,
     coverage_triangles: wgpu::RenderPipeline,
     transparent_triangles: wgpu::RenderPipeline,
+    blend_pipelines: HashMap<(LayerBlendMode, u32), wgpu::RenderPipeline>,
     lines: wgpu::RenderPipeline,
     single_triangles: wgpu::RenderPipeline,
     single_cutout_triangles: wgpu::RenderPipeline,
@@ -436,12 +481,68 @@ impl SceneRenderer {
                       transparent: bool,
                       alpha_blend: bool,
                       cutout: bool,
-                      pipeline_samples| {
+                      pipeline_samples,
+                      blend_mode: Option<LayerBlendMode>| {
+            let entry_point = if cutout {
+                "fs_cutout"
+            } else {
+                match blend_mode {
+                    Some(LayerBlendMode::Multiply) => "fs_multiply",
+                    Some(LayerBlendMode::Screen) => "fs_screen",
+                    Some(LayerBlendMode::Add) => "fs_add",
+                    _ if transparent => "fs_transparent",
+                    _ => "fs_main",
+                }
+            };
+            let color_blend = if cutout {
+                Some(wgpu::BlendState::REPLACE)
+            } else {
+                match blend_mode {
+                    Some(LayerBlendMode::Multiply) => Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Dst,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    Some(LayerBlendMode::Screen) => Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    Some(LayerBlendMode::Add) => Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    _ if alpha_blend => Some(wgpu::BlendState::ALPHA_BLENDING),
+                    _ => None,
+                }
+            };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:Some("3D strokes"),layout:Some(&pipeline_layout),
             vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32]}]},
-            fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some(if cutout {"fs_cutout"} else if transparent {"fs_transparent"} else {"fs_main"}),compilation_options:Default::default(),targets:&[
-                Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:if cutout {Some(wgpu::BlendState::REPLACE)} else {alpha_blend.then_some(wgpu::BlendState::ALPHA_BLENDING)},write_mask:wgpu::ColorWrites::ALL}),
+            fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some(entry_point),compilation_options:Default::default(),targets:&[
+                Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:color_blend,write_mask:wgpu::ColorWrites::ALL}),
                 Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8Unorm,blend:Some(wgpu::BlendState {color:wgpu::BlendComponent {src_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},dst_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},operation:wgpu::BlendOperation::Add},alpha:wgpu::BlendComponent {src_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},dst_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},operation:wgpu::BlendOperation::Add}}),write_mask:wgpu::ColorWrites::ALL})
             ]}),
             primitive:wgpu::PrimitiveState {topology,cull_mode:None,..Default::default()},
@@ -455,6 +556,7 @@ impl SceneRenderer {
             false,
             false,
             sample_count,
+            None,
         );
         let cutout_triangles = create(
             wgpu::PrimitiveTopology::TriangleList,
@@ -462,6 +564,7 @@ impl SceneRenderer {
             false,
             true,
             sample_count,
+            None,
         );
         let coverage_triangles = create(
             wgpu::PrimitiveTopology::TriangleList,
@@ -469,6 +572,7 @@ impl SceneRenderer {
             true,
             false,
             sample_count,
+            None,
         );
         let transparent_triangles = create(
             wgpu::PrimitiveTopology::TriangleList,
@@ -476,6 +580,7 @@ impl SceneRenderer {
             true,
             false,
             sample_count,
+            None,
         );
         let lines = create(
             wgpu::PrimitiveTopology::LineList,
@@ -483,6 +588,7 @@ impl SceneRenderer {
             false,
             false,
             sample_count,
+            None,
         );
         let single_triangles = create(
             wgpu::PrimitiveTopology::TriangleList,
@@ -490,14 +596,64 @@ impl SceneRenderer {
             false,
             false,
             1,
+            None,
         );
-        let single_cutout_triangles =
-            create(wgpu::PrimitiveTopology::TriangleList, false, false, true, 1);
-        let single_coverage_triangles =
-            create(wgpu::PrimitiveTopology::TriangleList, false, true, false, 1);
-        let single_transparent_triangles =
-            create(wgpu::PrimitiveTopology::TriangleList, true, true, false, 1);
-        let single_lines = create(wgpu::PrimitiveTopology::LineList, false, false, false, 1);
+        let single_cutout_triangles = create(
+            wgpu::PrimitiveTopology::TriangleList,
+            false,
+            false,
+            true,
+            1,
+            None,
+        );
+        let single_coverage_triangles = create(
+            wgpu::PrimitiveTopology::TriangleList,
+            false,
+            true,
+            false,
+            1,
+            None,
+        );
+        let single_transparent_triangles = create(
+            wgpu::PrimitiveTopology::TriangleList,
+            true,
+            true,
+            false,
+            1,
+            None,
+        );
+        let single_lines = create(
+            wgpu::PrimitiveTopology::LineList,
+            false,
+            false,
+            false,
+            1,
+            None,
+        );
+        let mut blend_pipelines = HashMap::new();
+        for mode in [
+            LayerBlendMode::Multiply,
+            LayerBlendMode::Screen,
+            LayerBlendMode::Add,
+        ] {
+            for samples in if sample_count == 1 {
+                vec![1]
+            } else {
+                vec![sample_count, 1]
+            } {
+                blend_pipelines.insert(
+                    (mode, samples),
+                    create(
+                        wgpu::PrimitiveTopology::TriangleList,
+                        true,
+                        true,
+                        false,
+                        samples,
+                        Some(mode),
+                    ),
+                );
+            }
+        }
         let image_plane_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Image plane texture layout"),
@@ -749,6 +905,7 @@ impl SceneRenderer {
             cutout_triangles,
             coverage_triangles,
             transparent_triangles,
+            blend_pipelines,
             lines,
             single_triangles,
             single_cutout_triangles,
@@ -1483,6 +1640,11 @@ impl SceneRenderer {
         let effects = self.post_effects;
         let effects_enabled =
             effects.glow > 0.0 || effects.depth_of_field > 0.0 || effects.pixel_size > 1.0;
+        let requested_samples = if effects_enabled {
+            1
+        } else {
+            canvas_sample_count(&self.state.adapter)
+        };
         let (triangles, cutout_triangles, transparent_triangles, lines, image_planes_pipeline) =
             if effects_enabled {
                 (
@@ -1505,11 +1667,6 @@ impl SceneRenderer {
             &self.single_screen_background_pipeline
         } else {
             &self.screen_background_pipeline
-        };
-        let requested_samples = if effects_enabled {
-            1
-        } else {
-            canvas_sample_count(&self.state.adapter)
         };
         if self
             .target
@@ -1849,11 +2006,20 @@ impl SceneRenderer {
             });
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.bind, &[]);
-            for stroke in doc
-                .strokes
-                .iter()
-                .filter(|s| doc.visible(s) && !is_translucent(s, doc.layer_opacity(s.layer_id)))
-            {
+            for stroke in bottom_to_top(
+                doc.strokes
+                    .iter()
+                    .filter(|s| {
+                        doc.visible(s)
+                            && !is_translucent(
+                                s,
+                                doc.layer_opacity(s.layer_id),
+                                doc.layer_blend_mode(s.layer_id),
+                            )
+                    })
+                    .collect(),
+                doc,
+            ) {
                 if let Some(mesh) = self.meshes.get(&stroke.id) {
                     pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                     pass.set_vertex_buffer(0, mesh.buffer.slice(..));
@@ -1957,11 +2123,20 @@ impl SceneRenderer {
                     }
                 }
             }
-            for stroke in doc
-                .strokes
-                .iter()
-                .filter(|s| doc.visible(s) && !is_translucent(s, doc.layer_opacity(s.layer_id)))
-            {
+            for stroke in bottom_to_top(
+                doc.strokes
+                    .iter()
+                    .filter(|s| {
+                        doc.visible(s)
+                            && !is_translucent(
+                                s,
+                                doc.layer_opacity(s.layer_id),
+                                doc.layer_blend_mode(s.layer_id),
+                            )
+                    })
+                    .collect(),
+                doc,
+            ) {
                 if let Some(mesh) = self.meshes.get(&stroke.id) {
                     pass.set_pipeline(if stroke.material == StrokeMaterial::Cutout {
                         cutout_triangles
@@ -1973,29 +2148,44 @@ impl SceneRenderer {
                     pass.draw(0..mesh.count, 0..1);
                 }
             }
-            pass.set_pipeline(transparent_triangles);
             for (stroke, mesh) in back_to_front(
                 doc.strokes
                     .iter()
                     .filter(|s| {
                         doc.visible(s)
-                            && is_translucent(s, doc.layer_opacity(s.layer_id))
+                            && is_translucent(
+                                s,
+                                doc.layer_opacity(s.layer_id),
+                                doc.layer_blend_mode(s.layer_id),
+                            )
                             && s.material != StrokeMaterial::Cutout
                     })
                     .filter_map(|s| self.meshes.get(&s.id).map(|m| (s, m)))
                     .collect(),
                 camera,
+                doc,
             ) {
+                let mode = doc.layer_blend_mode(stroke.layer_id);
+                let pipeline = if mode == LayerBlendMode::Normal {
+                    transparent_triangles
+                } else {
+                    &self.blend_pipelines[&(mode, requested_samples)]
+                };
+                pass.set_pipeline(pipeline);
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
             for (stroke, mesh) in &self.repeat_preview {
-                pass.set_pipeline(if stroke.material == StrokeMaterial::Cutout {
+                let mode = doc.layer_blend_mode(stroke.layer_id);
+                let pipeline = if stroke.material == StrokeMaterial::Cutout {
                     &self.cutout_triangles
-                } else {
+                } else if mode == LayerBlendMode::Normal {
                     &self.transparent_triangles
-                });
+                } else {
+                    &self.blend_pipelines[&(mode, requested_samples)]
+                };
+                pass.set_pipeline(pipeline);
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
@@ -2367,10 +2557,20 @@ impl SceneRenderer {
             });
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.bind, &[]);
-            for (stroke, mesh) in meshes
-                .iter()
-                .filter(|(stroke, _)| !is_translucent(stroke, doc.layer_opacity(stroke.layer_id)))
-            {
+            for (stroke, mesh) in bottom_to_top_meshes(
+                meshes
+                    .iter()
+                    .filter(|(stroke, _)| {
+                        !is_translucent(
+                            stroke,
+                            doc.layer_opacity(stroke.layer_id),
+                            doc.layer_blend_mode(stroke.layer_id),
+                        )
+                    })
+                    .map(|(stroke, mesh)| (*stroke, mesh))
+                    .collect(),
+                doc,
+            ) {
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
@@ -2450,10 +2650,13 @@ impl SceneRenderer {
                     }
                 }
             }
-            for (stroke, mesh) in meshes
-                .iter()
-                .filter(|(stroke, _)| !is_translucent(stroke, doc.layer_opacity(stroke.layer_id)))
-            {
+            for (stroke, mesh) in meshes.iter().filter(|(stroke, _)| {
+                !is_translucent(
+                    stroke,
+                    doc.layer_opacity(stroke.layer_id),
+                    doc.layer_blend_mode(stroke.layer_id),
+                )
+            }) {
                 pass.set_pipeline(if stroke.material == StrokeMaterial::Cutout {
                     cutout_triangles
                 } else if background.is_none() {
@@ -2469,14 +2672,29 @@ impl SceneRenderer {
                 meshes
                     .iter()
                     .filter(|(stroke, _)| {
-                        is_translucent(stroke, doc.layer_opacity(stroke.layer_id))
-                            && stroke.material != StrokeMaterial::Cutout
+                        is_translucent(
+                            stroke,
+                            doc.layer_opacity(stroke.layer_id),
+                            doc.layer_blend_mode(stroke.layer_id),
+                        ) && stroke.material != StrokeMaterial::Cutout
                     })
                     .map(|(stroke, mesh)| (*stroke, mesh))
                     .collect(),
                 camera,
+                doc,
             ) {
-                pass.set_pipeline(transparent_triangles);
+                let mode = doc.layer_blend_mode(stroke.layer_id);
+                let mode = if background.is_none() && mode == LayerBlendMode::Multiply {
+                    LayerBlendMode::Normal
+                } else {
+                    mode
+                };
+                let pipeline = if mode == LayerBlendMode::Normal {
+                    transparent_triangles
+                } else {
+                    &self.blend_pipelines[&(mode, sample_count)]
+                };
+                pass.set_pipeline(pipeline);
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);

@@ -164,6 +164,7 @@ pub fn prepare_insert(
                 visible: layer.visible,
                 locked: layer.locked,
                 opacity: layer.opacity,
+                blend_mode: layer.blend_mode,
             })
         })
         .collect::<Result<_, String>>()?;

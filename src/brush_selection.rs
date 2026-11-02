@@ -311,6 +311,7 @@ mod tests {
                 visible: true,
                 locked: true,
                 opacity: 1.0,
+                blend_mode: crate::document::LayerBlendMode::Normal,
             },
             Layer {
                 id: 3,
@@ -318,6 +319,7 @@ mod tests {
                 visible: false,
                 locked: false,
                 opacity: 1.0,
+                blend_mode: crate::document::LayerBlendMode::Normal,
             },
         ]);
         let point = Vec3::ZERO;

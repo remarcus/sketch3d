@@ -72,9 +72,26 @@ fn material_output(in: Output, alpha: f32, sampled_color: vec3<f32>) -> Fragment
     if mask_alpha*in.opacity<0.5 { discard; }
     return FragmentOutput(scene.background,vec4<f32>(0.0));
 }
-@fragment fn fs_transparent(in: Output) -> FragmentOutput {
+fn transparent_output(in: Output) -> FragmentOutput {
     let sampled_texture=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0);
     let mask_alpha=sampled_texture.a;
     if mask_alpha<0.001 { discard; }
     return material_output(in, in.opacity*mask_alpha, sampled_texture.rgb);
+}
+fn premultiplied_transparent_output(in: Output) -> FragmentOutput {
+    var output = transparent_output(in);
+    output.color = vec4<f32>(output.color.rgb * output.color.a, output.color.a);
+    return output;
+}
+@fragment fn fs_transparent(in: Output) -> FragmentOutput {
+    return transparent_output(in);
+}
+@fragment fn fs_multiply(in: Output) -> FragmentOutput {
+    return premultiplied_transparent_output(in);
+}
+@fragment fn fs_screen(in: Output) -> FragmentOutput {
+    return premultiplied_transparent_output(in);
+}
+@fragment fn fs_add(in: Output) -> FragmentOutput {
+    return premultiplied_transparent_output(in);
 }

@@ -1,5 +1,5 @@
 //! Reversible edits and transforms, independent of the interface and GPU.
-use crate::document::{BrushKind, Document, Layer, Stroke, StrokeMaterial};
+use crate::document::{BrushKind, Document, Layer, LayerBlendMode, Stroke, StrokeMaterial};
 use glam::{Mat3, Quat, Vec3};
 use std::collections::HashSet;
 
@@ -994,6 +994,8 @@ impl LayerState {
 pub enum LayerAction {
     Add(String),
     Rename(u64, String),
+    Opacity(u64, f32),
+    BlendMode(u64, LayerBlendMode),
     Visible(u64, bool),
     Lock(u64, bool),
     Activate(u64),
@@ -1023,6 +1025,7 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 visible: true,
                 locked: false,
                 opacity: 1.0,
+                blend_mode: crate::document::LayerBlendMode::Normal,
             });
             after.active_layer = id;
         }
@@ -1033,6 +1036,25 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 .find(|l| l.id == id)
                 .ok_or("Layer not found")?
                 .name = name.trim().into()
+        }
+        LayerAction::Opacity(id, value) => {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err("Layer opacity must be a finite value from 0 to 1".into());
+            }
+            after
+                .layers
+                .iter_mut()
+                .find(|l| l.id == id)
+                .ok_or("Layer not found")?
+                .opacity = value;
+        }
+        LayerAction::BlendMode(id, value) => {
+            after
+                .layers
+                .iter_mut()
+                .find(|l| l.id == id)
+                .ok_or("Layer not found")?
+                .blend_mode = value;
         }
         LayerAction::Visible(id, value) => {
             after

@@ -182,6 +182,11 @@ pub fn write_obj_bundle(
     {
         mtl.push_str("# Layer opacity is folded into MTL material opacity; OBJ/MTL cannot preserve per-point alpha or layer compositing.\n");
     }
+    if strokes.iter().any(|stroke| {
+        doc.layer_blend_mode(stroke.layer_id) != crate::document::LayerBlendMode::Normal
+    }) {
+        mtl.push_str("# Layer Multiply, Screen, and Add modes fall back to Normal in OBJ/MTL.\n");
+    }
     for material in &materials {
         writeln!(mtl, "newmtl {}", material.name).unwrap();
         writeln!(
@@ -326,6 +331,13 @@ pub fn write_obj_bundle(
                 continue;
             }
             let material = material_ids[&material_key(stroke, doc.layer_opacity(stroke.layer_id))];
+            writeln!(
+                writer,
+                "# layer {} blend {} fallback normal",
+                stroke.layer_id,
+                doc.layer_blend_mode(stroke.layer_id).label()
+            )
+            .map_err(|error| error.to_string())?;
             writeln!(writer, "\ng stroke_{}", stroke.id).map_err(|error| error.to_string())?;
             writeln!(writer, "usemtl material_{material:05}").map_err(|error| error.to_string())?;
             for vertex in &mesh.vertices {

@@ -8,7 +8,8 @@ use eframe::egui::{WidgetInfo, WidgetType};
 const RENAMING_LAYER_ID: &str = "layer-list-renaming-id";
 const FOCUS_RENAME_LAYER_ID: &str = "layer-list-focus-rename-id";
 
-pub(super) struct LayerOpacityDraft {
+pub(super) struct LayerPropertiesDraft {
+    layer_id: u64,
     before: LayerState,
 }
 
@@ -43,7 +44,7 @@ fn layer_actions_menu(
 
 impl SketchApp {
     pub(super) fn apply_layer_action(&mut self, action: LayerAction) {
-        self.finish_layer_opacity_edit(true);
+        self.finish_layer_properties_edit(true);
         self.finish();
         match editing::layer_edit(&self.doc, action) {
             Ok(edit) => {
@@ -60,8 +61,8 @@ impl SketchApp {
         }
     }
 
-    pub(super) fn finish_layer_opacity_edit(&mut self, apply: bool) {
-        let Some(draft) = self.layer_opacity_draft.take() else {
+    pub(super) fn finish_layer_properties_edit(&mut self, apply: bool) {
+        let Some(draft) = self.layer_properties_draft.take() else {
             return;
         };
         let edit = editing::Edit::Layers {
@@ -78,18 +79,49 @@ impl SketchApp {
                 self.redo.clear();
                 self.dirty = true;
                 self.record_recovery_edit();
-                self.status = "Layer opacity updated. One undo restores the previous value.".into();
+                self.status =
+                    "Layer properties updated. One undo restores the previous values.".into();
             }
         } else {
             edit.apply(&mut self.doc, false);
-            self.status = "Layer opacity preview cancelled.".into();
+            self.status = "Layer property preview cancelled.".into();
         }
         self.renderer.invalidate();
+    }
+
+    fn begin_layer_properties_preview(&mut self, layer_id: u64) {
+        if self
+            .layer_properties_draft
+            .as_ref()
+            .is_some_and(|draft| draft.layer_id == layer_id)
+        {
+            return;
+        }
+        self.finish_layer_properties_edit(true);
+        self.finish();
+        self.layer_properties_draft = Some(LayerPropertiesDraft {
+            layer_id,
+            before: LayerState::capture(&self.doc),
+        });
+    }
+
+    fn preview_layer_action(&mut self, action: LayerAction) {
+        match editing::layer_edit(&self.doc, action) {
+            Ok(edit) => {
+                edit.apply(&mut self.doc, true);
+                self.renderer.invalidate();
+                self.status =
+                    "Layer property preview. Apply to keep it or Cancel to restore.".into();
+            }
+            Err(error) => self.status = error,
+        }
     }
 
     pub(super) fn layer_controls(&mut self, ui: &mut egui::Ui) {
         let mut action = None;
         let mut opacity_responses = Vec::new();
+        let mut blend_changes = Vec::new();
+        let mut property_buttons = Vec::new();
         let rename_id = egui::Id::new(RENAMING_LAYER_ID);
         let focus_rename_id = egui::Id::new(FOCUS_RENAME_LAYER_ID);
         let renaming = ui.memory(|memory| memory.data.get_temp::<u64>(rename_id));
@@ -271,6 +303,42 @@ impl SketchApp {
                                         response.lost_focus(),
                                     ));
                                 });
+
+                                ui.horizontal(|ui| {
+                                    ui.label("Blend mode");
+                                    let mut blend_mode = layer.blend_mode;
+                                    let mut changed = false;
+                                    egui::ComboBox::from_id_salt(("layer-blend-mode", layer_id))
+                                        .selected_text(blend_mode.label())
+                                        .show_ui(ui, |ui| {
+                                            for mode in [
+                                                crate::document::LayerBlendMode::Normal,
+                                                crate::document::LayerBlendMode::Multiply,
+                                                crate::document::LayerBlendMode::Screen,
+                                                crate::document::LayerBlendMode::Add,
+                                            ] {
+                                                changed |= ui
+                                                    .selectable_value(
+                                                        &mut blend_mode,
+                                                        mode,
+                                                        mode.label(),
+                                                    )
+                                                    .changed();
+                                            }
+                                        });
+                                    if changed {
+                                        blend_changes.push((layer_id, blend_mode));
+                                    }
+                                    if self
+                                        .layer_properties_draft
+                                        .as_ref()
+                                        .is_some_and(|draft| draft.layer_id == layer_id)
+                                    {
+                                        let apply = ui.button("Apply").clicked();
+                                        let cancel = ui.button("Cancel").clicked();
+                                        property_buttons.push((layer_id, apply, cancel));
+                                    }
+                                });
                             });
                     });
 
@@ -359,32 +427,53 @@ impl SketchApp {
                 ui.small("F2 renames the active layer. Hidden ink is excluded from view and export; locked ink stays visible but cannot be edited. Only empty layers can be deleted.");
             });
 
-        let cancel_opacity =
-            ui.input(|input| input.key_pressed(Key::Escape)) && self.layer_opacity_draft.is_some();
-        if cancel_opacity {
-            self.finish_layer_opacity_edit(false);
+        let cancel_properties = ui.input(|input| input.key_pressed(Key::Escape))
+            && self.layer_properties_draft.is_some();
+        if cancel_properties {
+            self.finish_layer_properties_edit(false);
         } else {
             for (layer_id, opacity, changed, drag_stopped, lost_focus) in opacity_responses {
                 if changed {
-                    if self.layer_opacity_draft.is_none() {
-                        self.finish();
-                        self.layer_opacity_draft = Some(LayerOpacityDraft {
-                            before: LayerState::capture(&self.doc),
-                        });
-                    }
-                    if let Some(layer) = self.doc.layers.iter_mut().find(|l| l.id == layer_id) {
-                        layer.opacity = opacity;
-                        self.renderer.invalidate();
-                        self.status =
-                            "Previewing layer opacity. Release to apply or press Escape to cancel."
-                                .into();
-                    }
+                    self.begin_layer_properties_preview(layer_id);
+                    self.preview_layer_action(LayerAction::Opacity(layer_id, opacity));
                 }
                 if drag_stopped {
-                    self.finish_layer_opacity_edit(true);
+                    if self
+                        .layer_properties_draft
+                        .as_ref()
+                        .is_some_and(|draft| draft.layer_id == layer_id)
+                    {
+                        self.finish_layer_properties_edit(true);
+                    }
                 }
-                if lost_focus && self.layer_opacity_draft.is_some() {
-                    self.finish_layer_opacity_edit(true);
+                if lost_focus
+                    && self
+                        .layer_properties_draft
+                        .as_ref()
+                        .is_some_and(|draft| draft.layer_id == layer_id)
+                {
+                    self.finish_layer_properties_edit(true);
+                }
+            }
+            for (layer_id, blend_mode) in blend_changes {
+                self.begin_layer_properties_preview(layer_id);
+                self.preview_layer_action(LayerAction::BlendMode(layer_id, blend_mode));
+            }
+            for (layer_id, apply, cancel) in property_buttons {
+                if cancel
+                    && self
+                        .layer_properties_draft
+                        .as_ref()
+                        .is_some_and(|draft| draft.layer_id == layer_id)
+                {
+                    self.finish_layer_properties_edit(false);
+                } else if apply
+                    && self
+                        .layer_properties_draft
+                        .as_ref()
+                        .is_some_and(|draft| draft.layer_id == layer_id)
+                {
+                    self.finish_layer_properties_edit(true);
                 }
             }
         }
@@ -437,7 +526,7 @@ impl SketchApp {
                 assert!(editing::layer_edit(&self.doc, LayerAction::Delete(1)).is_err());
                 let loaded =
                     Document::from_json(&serde_json::to_string(&self.doc).unwrap()).unwrap();
-                assert_eq!(loaded.version, 20);
+                assert_eq!(loaded.version, 22);
                 assert_eq!(loaded.layers, self.doc.layers);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.status = "Layer drawing, lock/visibility, reassignment, undo, and persistence checks passed.".into();

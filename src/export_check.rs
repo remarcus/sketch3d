@@ -394,6 +394,7 @@ pub fn layered_fixture() -> Document {
         visible: false,
         locked: false,
         opacity: 1.0,
+        blend_mode: crate::document::LayerBlendMode::Normal,
     });
     doc.layers.push(crate::document::Layer {
         id: 3,
@@ -401,6 +402,7 @@ pub fn layered_fixture() -> Document {
         visible: true,
         locked: true,
         opacity: 1.0,
+        blend_mode: crate::document::LayerBlendMode::Normal,
     });
     doc.strokes[1].layer_id = 2;
     doc.strokes[1].color = [1.0, 0.0, 1.0];

@@ -204,7 +204,7 @@ pub fn encode_with_images(
     selected: Option<&HashSet<u64>>,
     image_root: Option<&Path>,
 ) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=21) {
+    if !matches!(doc.version, 1..=22) {
         return Err("Unsupported source document version".into());
     }
     crate::brush_tip::validate_catalog(&doc.brush_tip_assets)?;
@@ -439,7 +439,12 @@ pub fn encode_with_images(
         let color = accessors.len();
         accessors.push(json!({"bufferView":vertex_view,"byteOffset":32,"componentType":5126,"count":mesh.vertices.len(),"type":"VEC4"}));
         meshes.push(json!({"name":name,"primitives":[{"attributes":{"POSITION":position,"NORMAL":normal,"TEXCOORD_0":uv,"COLOR_0":color},"indices":indices,"material":material,"mode":4}]}));
-        let mut node = json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":doc.layers.iter().find(|l|l.id==stroke.layer_id).unwrap().name,"spatialSketchLayerOpacity":layer_opacity}});
+        let layer = doc
+            .layers
+            .iter()
+            .find(|layer| layer.id == stroke.layer_id)
+            .unwrap();
+        let mut node = json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":layer.name,"spatialSketchLayerOpacity":layer_opacity,"spatialSketchLayerBlendMode":layer.blend_mode.label(),"spatialSketchLayerBlendFallback":"normal"}});
         node["extras"]["spatialSketchMaterial"] = json!(match stroke.material {
             crate::document::StrokeMaterial::Shaded => "shaded",
             crate::document::StrokeMaterial::Unlit => "unlit",
@@ -1258,7 +1263,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 20);
+        assert_eq!(loaded.version, 22);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -1563,7 +1568,7 @@ mod group_export_tests {
     fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
         let doc = crate::export_check::grouped_fixture();
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-        assert_eq!(loaded.version, 20);
+        assert_eq!(loaded.version, 22);
         assert_eq!(loaded.strokes, doc.strokes);
         let encoded = encode(&doc, None).unwrap();
         let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
