@@ -1320,6 +1320,83 @@ impl SketchApp {
             }
         }
     }
+    fn point_edit_controls(&mut self, ui: &mut egui::Ui) {
+        if self.selected.len() != 1
+            || self.drag.is_some()
+            || self.repeat.is_some()
+            || self.curve_draft_active()
+        {
+            return;
+        }
+        let id = *self.selected.iter().next().unwrap();
+        let Some(stroke) = self.doc.strokes.iter().find(|stroke| stroke.id == id) else {
+            return;
+        };
+        if !self.doc.editable(stroke)
+            || stroke.fill.is_some()
+            || stroke.curve.is_some()
+            || self.doc.has_linked_source(id)
+            || self.doc.linked_instance_for_stroke(id).is_some()
+            || stroke.points.is_empty()
+        {
+            return;
+        }
+        let points = &stroke.points;
+        let state_id = ui.make_persistent_id(("stroke-point-edit", id));
+        let mut state = ui
+            .ctx()
+            .data_mut(|data| data.get_temp::<(usize, [f32; 3], Vec3)>(state_id))
+            .unwrap_or((0, points[0].position.to_array(), points[0].position));
+        state.0 = state.0.min(points.len() - 1);
+        if points[state.0].position != state.2 {
+            state.1 = points[state.0].position.to_array();
+            state.2 = points[state.0].position;
+        }
+        let mut move_point = false;
+        let mut delete_point = false;
+        ui.collapsing("Stroke points", |ui| {
+            ui.small("Choose a sampled point (0-based). Coordinates are world units. Apply is one undo step.");
+            ui.horizontal(|ui| {
+                ui.label("Point");
+                if ui.add(egui::DragValue::new(&mut state.0).range(0..=points.len()-1)).changed() {
+                    state.1 = points[state.0].position.to_array();
+                    state.2 = points[state.0].position;
+                }
+                ui.label(format!("of {}", points.len()));
+            });
+            for (axis, label) in ["X", "Y", "Z"].into_iter().enumerate() {
+                ui_style::numeric_row(ui, label, ("stroke-point-coordinate", axis), &mut state.1[axis], Some(-10000.0..=10000.0), "wu");
+            }
+            ui.horizontal(|ui| {
+                move_point = ui.button("Apply point position").clicked();
+                if ui.button("Reset").clicked() { state.1 = state.2.to_array(); }
+            });
+            delete_point = ui.add_enabled(points.len() > 2, egui::Button::new("Delete point")).clicked();
+        });
+        ui.ctx().data_mut(|data| data.insert_temp(state_id, state));
+        if move_point || delete_point {
+            let position = if delete_point {
+                None
+            } else {
+                Some(Vec3::from_array(state.1))
+            };
+            match crate::point_edit::edit_point(&self.doc, id, state.0, position) {
+                Ok(edit) => {
+                    edit.apply(&mut self.doc, true);
+                    self.undo.push(edit);
+                    self.redo.clear();
+                    self.renderer.invalidate_ids(&self.selected);
+                    self.dirty = true;
+                    self.record_recovery_edit();
+                    ui.ctx()
+                        .data_mut(|data| data.remove::<(usize, [f32; 3], Vec3)>(state_id));
+                    self.status = "Stroke point updated. Undo restores the original stroke.".into();
+                }
+                Err(error) => self.status = error,
+            }
+        }
+    }
+
     pub(super) fn selection_panel(&mut self, ui: &mut egui::Ui) {
         ui.label(format!("{} stroke(s) selected", self.selected.len()));
         self.liquify_controls(ui);
@@ -1327,6 +1404,7 @@ impl SketchApp {
             return;
         }
         if self.appearance_draft.is_none() {
+            self.point_edit_controls(ui);
             if ui
                 .add_enabled(
                     !self.selected.is_empty(),
