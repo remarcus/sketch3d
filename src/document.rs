@@ -1,4 +1,4 @@
-pub use crate::dynamics::{DabSettings, Dynamics, PressureMapping};
+pub use crate::dynamics::{DabSettings, Dynamics, PressureMapping, StrandSettings};
 use crate::texture::TextureSettings;
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
@@ -49,6 +49,8 @@ pub struct Brush {
     pub dynamics: Dynamics,
     #[serde(default)]
     pub dabs: DabSettings,
+    #[serde(default)]
+    pub strands: StrandSettings,
     /// Stable per-stroke random stream; drawing tools replace preset seeds.
     #[serde(default)]
     pub dab_seed: u64,
@@ -79,6 +81,7 @@ impl Default for Brush {
             tangent: Vec3::X,
             dynamics: Dynamics::default(),
             dabs: DabSettings::default(),
+            strands: StrandSettings::default(),
             dab_seed: 0,
             tip_asset_id: 0,
             tip_aspect: 1.0,
@@ -95,6 +98,7 @@ impl Brush {
     pub fn is_valid(&self) -> bool {
         self.dynamics.is_valid()
             && self.dabs.is_valid()
+            && self.strands.is_valid()
             && self.dab_distance_origin.is_finite()
             && self.dab_distance_origin >= 0.0
             && self.dab_total_length.is_finite()
@@ -105,6 +109,7 @@ impl Brush {
             && self.tip_aspect.is_finite()
             && (1.0 / 512.0..=512.0).contains(&self.tip_aspect)
             && (self.tip_asset_id == 0 || self.dabs.enabled)
+            && (!self.strands.enabled || (!self.dabs.enabled && self.tip_asset_id == 0))
             && self.opacity.is_finite()
             && (0.0..=1.0).contains(&self.opacity)
             && self.softness.is_finite()
@@ -209,7 +214,7 @@ impl Default for Document {
         Self {
             layers: layers_default(),
             active_layer: 1,
-            version: 17,
+            version: 18,
             strokes: Vec::new(),
             image_planes: Vec::new(),
             active_image_plane: None,
@@ -287,7 +292,7 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=17)) {
+        if !matches!(version, Some(1..=18)) {
             return Err("Unsupported document version".into());
         }
         if matches!(version, Some(1..=6)) {
@@ -371,7 +376,7 @@ impl Document {
                 }
             }
         }
-        doc.version = 17;
+        doc.version = 18;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
         }
@@ -464,6 +469,9 @@ impl Document {
             }
             if total > 2_000_000
                 || !stroke.brush.is_valid()
+                || (stroke.brush.strands.enabled
+                    && stroke.brush.strands.vertex_estimate(stroke.points.len())
+                        > crate::geometry::MAX_STRAND_VERTICES)
                 || (stroke.brush.tip_asset_id != 0
                     && tip_assets
                         .get(&stroke.brush.tip_asset_id)

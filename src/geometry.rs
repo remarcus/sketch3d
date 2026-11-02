@@ -395,7 +395,11 @@ pub fn stroke_extent(stroke: &Stroke) -> f32 {
             .points
             .windows(2)
             .all(|pair| pair[0].position.distance_squared(pair[1].position) <= 1e-12);
-    let mut shape_extent = if stroke.brush.tip_asset_id != 0 {
+    let mut shape_extent = if stroke.brush.strands.enabled {
+        let settings = stroke.brush.strands;
+        stroke.radius
+            * (settings.spread * (1.0 + settings.tilt_spread) + if dot { 0.65 } else { 0.0 })
+    } else if stroke.brush.tip_asset_id != 0 {
         stroke.radius * (1.0 + stroke.brush.tip_aspect.recip().powi(2)).sqrt()
     } else {
         match stroke.brush.kind {
@@ -477,6 +481,8 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
         tip_mesh(stroke)
     } else if stroke.brush.dabs.enabled {
         dab_mesh(stroke)
+    } else if stroke.brush.strands.enabled {
+        strand_mesh(stroke)
     } else {
         let prepared;
         let stroke =
@@ -647,6 +653,8 @@ struct BrushFrame {
     u: f32,
     opacity: f32,
     softness: f32,
+    tilt: Option<Vec3>,
+    thickness_scale: f32,
 }
 
 fn perpendicular(normal: Vec3) -> Vec3 {
@@ -817,6 +825,11 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
             opacity: stroke.brush.opacity
                 * crate::dynamics::opacity_scale(stroke.brush.dynamics.opacity, point.pressure),
             softness: stroke.brush.softness,
+            tilt: point.tilt,
+            thickness_scale: crate::dynamics::pressure_scale(
+                stroke.brush.dynamics.thickness,
+                point.pressure,
+            ),
         });
     }
     if closed && !frames.is_empty() {
@@ -825,6 +838,99 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
         frames.push(seam);
     }
     frames
+}
+
+pub(crate) const MAX_STRAND_VERTICES: usize = 400_000;
+const STRAND_SIDES: usize = 6;
+
+fn strand_mesh(stroke: &Stroke) -> Vec<Vertex> {
+    let settings = stroke.brush.strands;
+    let frames = brush_frames(stroke);
+    if frames.is_empty() || settings.vertex_estimate(stroke.points.len()) > MAX_STRAND_VERTICES {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(settings.vertex_estimate(stroke.points.len()));
+    let mut path = frames.clone();
+    if path.len() == 1 {
+        let frame = path[0];
+        let half = frame.radius.max(0.001) * 0.65;
+        let mut start = frame;
+        start.center -= frame.tangent * half;
+        start.u -= half / stroke.brush.texture.scale;
+        let mut end = frame;
+        end.center += frame.tangent * half;
+        end.u += half / stroke.brush.texture.scale;
+        path = vec![start, end];
+    }
+    let scale_at = |frame: BrushFrame| {
+        1.0 + settings.tilt_spread * frame.tilt.map_or(0.0, |tilt| tilt.length().clamp(0.0, 1.0))
+    };
+    for lane in 0..settings.count {
+        let lane_position = (lane as f32 + 0.5) / settings.count as f32 * 2.0 - 1.0;
+        let ring = |frame: BrushFrame| {
+            let spread = scale_at(frame);
+            let pitch_radius = frame.radius * settings.spread * spread / settings.count as f32;
+            let center = frame.center
+                + frame.width * (lane_position * frame.radius * settings.spread * spread);
+            let radius = pitch_radius * settings.thickness * frame.thickness_scale;
+            std::array::from_fn::<_, STRAND_SIDES, _>(|side| {
+                let angle = side as f32 * std::f32::consts::TAU / STRAND_SIDES as f32;
+                let normal = frame.width * angle.cos() + frame.normal * angle.sin();
+                (center + normal * radius, normal)
+            })
+        };
+        for pair in path.windows(2) {
+            let [a, b] = [pair[0], pair[1]];
+            let (ring_a, ring_b) = (ring(a), ring(b));
+            for side in 0..STRAND_SIDES {
+                let next = (side + 1) % STRAND_SIDES;
+                let outward = ring_a[side].1 + ring_a[next].1 + ring_b[side].1 + ring_b[next].1;
+                let v0 = side as f32 / STRAND_SIDES as f32;
+                let v1 = (side + 1) as f32 / STRAND_SIDES as f32;
+                flat_quad(
+                    &mut out,
+                    [
+                        ring_a[side].0,
+                        ring_b[side].0,
+                        ring_b[next].0,
+                        ring_a[next].0,
+                    ],
+                    [[a.u, v0], [b.u, v0], [b.u, v1], [a.u, v1]],
+                    outward,
+                    stroke.color,
+                    [a.opacity, b.opacity, b.opacity, a.opacity],
+                    (a.softness + b.softness) * 0.5,
+                );
+            }
+        }
+        for (frame, outward) in [
+            (path[0], -path[0].tangent),
+            (*path.last().unwrap(), path.last().unwrap().tangent),
+        ] {
+            let vertices = ring(frame);
+            for side in 0..STRAND_SIDES {
+                let next = (side + 1) % STRAND_SIDES;
+                flat_triangle(
+                    &mut out,
+                    [
+                        frame.center + (vertices[side].0 - frame.center),
+                        frame.center + (vertices[next].0 - frame.center),
+                        frame.center,
+                    ],
+                    [
+                        [frame.u, side as f32 / STRAND_SIDES as f32],
+                        [frame.u, (side + 1) as f32 / STRAND_SIDES as f32],
+                        [frame.u, 0.5],
+                    ],
+                    outward,
+                    stroke.color,
+                    [frame.opacity; 3],
+                    frame.softness,
+                );
+            }
+        }
+    }
+    out
 }
 
 fn flat_triangle(

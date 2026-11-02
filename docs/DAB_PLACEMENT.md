@@ -45,9 +45,10 @@ display, picking, selection bounds, GLB, and OBJ export.
 ## Versioning and budgets
 
 SKETCH-071 introduced native schema version 14. Current drawings use schema
-version 17, which adds the resolved image-tip aspect ratio used by stamp
-geometry. Version 16 added bounded embedded brush-tip PNG assets; version 15
-added captured tilt magnitude for tilt-driven shading. Missing
+version 18, which adds bounded bristle/rake strand settings. Version 17 added
+the resolved image-tip aspect ratio used by stamp geometry; version 16 added
+bounded embedded brush-tip PNG assets; version 15 added captured tilt magnitude
+for tilt-driven shading. Missing
 dab settings in earlier versions default to disabled; their continuous geometry
 and appearance remain unchanged.
 Each dab settings record uses algorithm version 1. Unknown algorithm versions
@@ -62,3 +63,19 @@ serialization or rendering.
 Performance acceptance remains open until a reproducible long-stroke sampler
 and active-preview benchmark is recorded. Synthetic input does not establish
 physical tablet behavior.
+
+## Bristle and rake geometry
+
+Parallel strands are part of one saved stroke and are regenerated from the
+captured world-space brush frames. Each lane is a capped six-sided ribbon-like
+tube with pressure-controlled width/opacity and optional tilt-driven fan
+expansion. Missing tilt leaves the saved spread unchanged. Partial erase splits
+the one stroke into ordinary editable fragments; each fragment retains the same
+strand settings and derives its frame from its remaining points. The maximum is
+16 strands and 400,000 generated vertices per stroke. The upstream review used
+Open Brush at commit `c762836af3bc08a6370a27c372b1343f91ada7be`: [GeometryBrush.cs](https://github.com/icosa-foundation/open-brush/blob/c762836af3bc08a6370a27c372b1343f91ada7be/Assets/Scripts/Brushes/GeometryBrush.cs), [QuadStripBrush.cs](https://github.com/icosa-foundation/open-brush/blob/c762836af3bc08a6370a27c372b1343f91ada7be/Assets/Scripts/Brushes/QuadStripBrush.cs), and [BrushDescriptor.cs](https://github.com/icosa-foundation/open-brush/blob/c762836af3bc08a6370a27c372b1343f91ada7be/Assets/Scripts/Brushes/BrushDescriptor.cs). No upstream code or assets were copied, so no third-party notice was needed; Open Brush's Unity-oriented geometry was not a direct fit for this stroke representation.
+
+The screen-space eraser treats the fan's full envelope as stroke coverage: a
+partial erase splits the logical stroke when it intersects that envelope, and
+removes all strands over the cut interval. Individual lanes and gaps are not
+edited independently.

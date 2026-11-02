@@ -62,6 +62,63 @@ pub struct DabSettings {
     #[serde(default = "default_dab_algorithm")]
     pub algorithm_version: u8,
 }
+
+/// Persisted layout and response of parallel bristle/rake ribbons.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StrandSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_strand_count")]
+    pub count: u8,
+    #[serde(default = "default_strand_spread")]
+    pub spread: f32,
+    #[serde(default = "default_strand_thickness")]
+    pub thickness: f32,
+    #[serde(default = "default_strand_tilt_spread")]
+    pub tilt_spread: f32,
+}
+
+impl Default for StrandSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            count: default_strand_count(),
+            spread: default_strand_spread(),
+            thickness: default_strand_thickness(),
+            tilt_spread: default_strand_tilt_spread(),
+        }
+    }
+}
+
+impl StrandSettings {
+    pub fn is_valid(self) -> bool {
+        (2..=16).contains(&self.count)
+            && self.spread.is_finite()
+            && (0.25..=2.5).contains(&self.spread)
+            && self.thickness.is_finite()
+            && (0.05..=1.0).contains(&self.thickness)
+            && self.tilt_spread.is_finite()
+            && (0.0..=1.0).contains(&self.tilt_spread)
+    }
+
+    pub fn vertex_estimate(self, points: usize) -> usize {
+        let segments = points.saturating_sub(1).max(1);
+        usize::from(self.count).saturating_mul(segments.saturating_mul(36).saturating_add(36))
+    }
+}
+
+fn default_strand_count() -> u8 {
+    8
+}
+fn default_strand_spread() -> f32 {
+    1.4
+}
+fn default_strand_thickness() -> f32 {
+    0.45
+}
+fn default_strand_tilt_spread() -> f32 {
+    0.55
+}
 impl Default for DabSettings {
     fn default() -> Self {
         Self {

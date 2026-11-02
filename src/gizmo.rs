@@ -174,7 +174,8 @@ fn pick_filtered(
         }
     }) {
         let textured = stroke.fill.is_none()
-            && (stroke.brush.tip_asset_id != 0
+            && (stroke.brush.strands.enabled
+                || stroke.brush.tip_asset_id != 0
                 || (stroke.brush.texture.kind != crate::texture::TextureKind::Solid
                     && stroke.brush.texture.strength > 0.0));
         if textured {

@@ -1992,12 +1992,11 @@ impl SketchApp {
                             || p.tilt != point.tilt
                     }) {
                         stroke.points.push(point);
-                        if crate::dab_placement::point_count(stroke).is_err() {
+                        if crate::dab_placement::point_count(stroke).is_err()
+                            || strand_vertex_budget_exceeded(stroke)
+                        {
                             stroke.points.pop();
-                            self.status = format!(
-                                "Dab stroke reached the {} placement limit; the remaining release tail was omitted.",
-                                crate::dab_placement::MAX_DABS_PER_STROKE
-                            );
+                            self.status = "Stroke reached its dab or strand geometry limit; the remaining release tail was omitted.".into();
                             break;
                         }
                     }
@@ -2249,7 +2248,7 @@ impl SketchApp {
             self.stabilization * 24.0 * world_per_pixel,
         );
         if let Some(stroke) = self.doc.strokes.last_mut().filter(|s| s.id == id) {
-            let mut over_dab_limit = false;
+            let mut over_geometry_limit = false;
             for point in points {
                 if stroke.points.last().is_none_or(|p| {
                     p.position.distance(point.position) > 0.001
@@ -2257,18 +2256,19 @@ impl SketchApp {
                         || p.tilt != point.tilt
                 }) {
                     stroke.points.push(point);
-                    if crate::dab_placement::point_count(stroke).is_err() {
+                    if crate::dab_placement::point_count(stroke).is_err()
+                        || strand_vertex_budget_exceeded(stroke)
+                    {
                         stroke.points.pop();
-                        over_dab_limit = true;
+                        over_geometry_limit = true;
                         break;
                     }
                 }
             }
-            if over_dab_limit {
-                self.status = format!(
-                    "Dab stroke reached the {} placement limit; further input was ignored.",
-                    crate::dab_placement::MAX_DABS_PER_STROKE
-                );
+            if over_geometry_limit {
+                self.status =
+                    "Stroke reached its dab or strand geometry limit; further input was ignored."
+                        .into();
             }
         }
     }
@@ -2421,12 +2421,11 @@ impl SketchApp {
                     || last.tilt != point.tilt
             }) {
                 stroke.points.push(point);
-                if crate::dab_placement::point_count(stroke).is_err() {
+                if crate::dab_placement::point_count(stroke).is_err()
+                    || strand_vertex_budget_exceeded(stroke)
+                {
                     stroke.points.pop();
-                    self.status = format!(
-                        "Dab stroke reached the {} placement limit; further input was ignored.",
-                        crate::dab_placement::MAX_DABS_PER_STROKE
-                    );
+                    self.status = "Stroke reached its dab or strand geometry limit; further input was ignored.".into();
                 }
             }
         }
@@ -4548,6 +4547,12 @@ impl SketchApp {
     }
 }
 
+fn strand_vertex_budget_exceeded(stroke: &Stroke) -> bool {
+    stroke.brush.strands.enabled
+        && stroke.brush.strands.vertex_estimate(stroke.points.len())
+            > crate::geometry::MAX_STRAND_VERTICES
+}
+
 impl eframe::App for SketchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let start = Instant::now();
@@ -6264,11 +6269,11 @@ impl SketchApp {
             } else if self.preset_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["preset application captures resolved settings","create duplicate rename update delete and defaults","restart persistence","live GPU previews","library edits preserve existing ink and export","corrupt library fallback and explicit repair backup"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.texture_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 17 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 18 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.dynamics_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 17 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 18 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 17 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 18 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {

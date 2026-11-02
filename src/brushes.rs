@@ -6,6 +6,7 @@ impl SketchApp {
     pub(super) fn brush_controls(&mut self, ui: &mut egui::Ui) {
         let before = self.brush;
         let image_tip = self.brush.tip_asset_id != 0;
+        let strand_mode = self.brush.strands.enabled;
         ui_style::section(ui, "Brush shape");
         if image_tip {
             let aspect = self
@@ -21,6 +22,17 @@ impl SketchApp {
                 aspect
             ));
             ui.small("Image stamps currently draw on planar targets; curved and model surfaces are rejected.");
+            ui_style::slider_row(
+                ui,
+                "Angle",
+                "brush-angle",
+                &mut self.brush.angle_degrees,
+                -180.0..=180.0,
+                1.0,
+                "°",
+            );
+        } else if strand_mode {
+            ui.small("Parallel round strands follow the captured guide and stroke frame.");
             ui_style::slider_row(
                 ui,
                 "Angle",
@@ -74,8 +86,54 @@ impl SketchApp {
             self.texture_controls(ui);
         }
         self.dynamics_controls(ui);
+        ui.collapsing("Bristle and rake", |ui| {
+            let enabled = ui
+                .add_enabled(
+                    !image_tip && (!self.brush.dabs.enabled || self.brush.strands.enabled),
+                    egui::Checkbox::new(&mut self.brush.strands.enabled, "Use parallel strands"),
+                )
+                .on_hover_text("Builds one editable stroke from separated, capped ribbons.");
+            if enabled.changed() && self.brush.strands.enabled {
+                self.brush.dabs.enabled = false;
+            }
+            if self.brush.strands.enabled {
+                ui.add(
+                    egui::Slider::new(&mut self.brush.strands.count, 2..=16)
+                        .text("Strands"),
+                );
+                ui_style::slider_row(
+                    ui,
+                    "Spread",
+                    "strand-spread",
+                    &mut self.brush.strands.spread,
+                    0.25..=2.5,
+                    100.0,
+                    "× radius",
+                );
+                ui_style::slider_row(
+                    ui,
+                    "Thickness",
+                    "strand-thickness",
+                    &mut self.brush.strands.thickness,
+                    0.05..=1.0,
+                    100.0,
+                    "% lane pitch",
+                );
+                ui_style::slider_row(
+                    ui,
+                    "Tilt spread",
+                    "strand-tilt-spread",
+                    &mut self.brush.strands.tilt_spread,
+                    0.0..=1.0,
+                    100.0,
+                    "%",
+                )
+                .on_hover_text("Missing tilt keeps the saved spread; tilt can widen the strand fan by up to this amount.");
+                ui.small("Strands use pressure for width and opacity. Geometry is limited to 400,000 vertices per stroke.");
+            }
+        });
         ui.collapsing("Dab placement", |ui| {
-            ui.add_enabled_ui(!image_tip, |ui| {
+            ui.add_enabled_ui(!image_tip && !self.brush.strands.enabled, |ui| {
                 ui.checkbox(&mut self.brush.dabs.enabled, "Use deterministic dabs")
                     .on_hover_text("Places marks at fixed world-space distances along the stroke.");
             });
