@@ -189,11 +189,12 @@ pub fn create_ellipse(
     }
     validate_common_values(color, stroke_radius, pressure, brush)?;
     let count = segments.clamp(MIN_SEGMENTS, MAX_SEGMENTS);
-    let frame_brush = Brush {
+    let mut frame_brush = Brush {
         normal,
         tangent: axis_u,
         ..brush
     };
+    frame_brush.dabs.enabled = false;
     if !frame_brush.is_valid() {
         return Err("Brush settings are invalid for the shape's drawing plane".into());
     }

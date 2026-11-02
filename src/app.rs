@@ -1985,7 +1985,21 @@ impl SketchApp {
                             || p.tilt != point.tilt
                     }) {
                         stroke.points.push(point);
+                        if crate::dab_placement::point_count(stroke).is_err() {
+                            stroke.points.pop();
+                            self.status = format!(
+                                "Dab stroke reached the {} placement limit; the remaining release tail was omitted.",
+                                crate::dab_placement::MAX_DABS_PER_STROKE
+                            );
+                            break;
+                        }
                     }
+                }
+                if stroke.brush.dabs.enabled && stroke.brush.dab_total_length == 0.0 {
+                    stroke.brush.dab_total_length = crate::dynamics::arc_lengths(&stroke.points)
+                        .last()
+                        .copied()
+                        .unwrap_or(0.0);
                 }
             }
         }
@@ -2009,6 +2023,15 @@ impl SketchApp {
                 }
             }
         }
+    }
+
+    fn dab_scatter_supported(&self) -> bool {
+        self.doc.active_model_reference.is_none()
+            && !self.use_cylinder
+            && !self.use_revolved
+            && self
+                .saved_guide_surface()
+                .is_none_or(|surface| matches!(surface, Surface::Plane))
     }
 
     fn commit_model_surface_stroke(&mut self, stroke: Stroke, duration_ms: u64) {
@@ -2069,6 +2092,13 @@ impl SketchApp {
         if !self.doc.active_editable() {
             self.status =
                 "The active layer is hidden or locked. Choose an editable layer to draw.".into();
+            return;
+        }
+        if self.brush.dabs.enabled && self.brush.dabs.scatter > 0.0 && !self.dab_scatter_supported()
+        {
+            self.finish();
+            self.resume_ink = begin;
+            self.status = "Dab scatter currently requires a planar drawing target. Turn scatter off for curved guides and model surfaces.".into();
             return;
         }
         if self.doc.active_model_reference.is_some() {
@@ -2183,6 +2213,9 @@ impl SketchApp {
                     } else {
                         self.guide.basis().0
                     },
+                    dab_seed: crate::dab_placement::seed_for_stroke(id),
+                    dab_distance_origin: 0.0,
+                    dab_total_length: 0.0,
                     ..self.brush
                 },
                 points: Vec::new(),
@@ -2202,6 +2235,7 @@ impl SketchApp {
             self.stabilization * 24.0 * world_per_pixel,
         );
         if let Some(stroke) = self.doc.strokes.last_mut().filter(|s| s.id == id) {
+            let mut over_dab_limit = false;
             for point in points {
                 if stroke.points.last().is_none_or(|p| {
                     p.position.distance(point.position) > 0.001
@@ -2209,7 +2243,18 @@ impl SketchApp {
                         || p.tilt != point.tilt
                 }) {
                     stroke.points.push(point);
+                    if crate::dab_placement::point_count(stroke).is_err() {
+                        stroke.points.pop();
+                        over_dab_limit = true;
+                        break;
+                    }
                 }
+            }
+            if over_dab_limit {
+                self.status = format!(
+                    "Dab stroke reached the {} placement limit; further input was ignored.",
+                    crate::dab_placement::MAX_DABS_PER_STROKE
+                );
             }
         }
     }
@@ -2334,6 +2379,9 @@ impl SketchApp {
                 brush: Brush {
                     normal,
                     tangent,
+                    dab_seed: crate::dab_placement::seed_for_stroke(id),
+                    dab_distance_origin: 0.0,
+                    dab_total_length: 0.0,
                     ..self.brush
                 },
                 points: Vec::new(),
@@ -2359,6 +2407,13 @@ impl SketchApp {
                     || last.tilt != point.tilt
             }) {
                 stroke.points.push(point);
+                if crate::dab_placement::point_count(stroke).is_err() {
+                    stroke.points.pop();
+                    self.status = format!(
+                        "Dab stroke reached the {} placement limit; further input was ignored.",
+                        crate::dab_placement::MAX_DABS_PER_STROKE
+                    );
+                }
             }
         }
         self.model_stroke_contact = Some((id, hit.triangle_index, position));
@@ -2482,6 +2537,10 @@ impl SketchApp {
             return false;
         }
         self.finish();
+        if let Err(error) = crate::dab_placement::document_count(&self.doc) {
+            self.status = format!("Save failed: {error}");
+            return false;
+        }
         let path = if save_as || self.file.is_none() {
             rfd::FileDialog::new()
                 .add_filter("Sketch3D", &["json"])
@@ -6191,11 +6250,11 @@ impl SketchApp {
             } else if self.preset_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["preset application captures resolved settings","create duplicate rename update delete and defaults","restart persistence","live GPU previews","library edits preserve existing ink and export","corrupt library fallback and explicit repair backup"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.texture_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 13 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 14 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.dynamics_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 13 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 14 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 13 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 14 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {

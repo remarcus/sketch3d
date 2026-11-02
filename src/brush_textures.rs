@@ -89,7 +89,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 13);
+                assert_eq!(loaded.version, 14);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.load_textures();
                 self.brush.texture = TextureSettings {

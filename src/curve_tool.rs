@@ -205,6 +205,10 @@ impl SketchApp {
                     brush: Brush {
                         normal,
                         tangent: u,
+                        dabs: crate::dynamics::DabSettings {
+                            enabled: false,
+                            ..self.brush.dabs
+                        },
                         ..self.brush
                     },
                     points: Vec::new(),

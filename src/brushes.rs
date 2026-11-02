@@ -46,6 +46,74 @@ impl SketchApp {
         }
         self.texture_controls(ui);
         self.dynamics_controls(ui);
+        ui.collapsing("Dab placement", |ui| {
+            ui.checkbox(&mut self.brush.dabs.enabled, "Use deterministic dabs")
+                .on_hover_text("Places marks at fixed world-space distances along the stroke.");
+            if self.brush.dabs.enabled {
+                ui_style::slider_row(
+                    ui,
+                    "Spacing",
+                    "dab-spacing",
+                    &mut self.brush.dabs.spacing,
+                    0.1..=4.0,
+                    100.0,
+                    "× radius",
+                );
+                ui_style::slider_row(
+                    ui,
+                    "Scatter",
+                    "dab-scatter",
+                    &mut self.brush.dabs.scatter,
+                    0.0..=4.0,
+                    100.0,
+                    "× radius",
+                )
+                .on_hover_text("Scatter is available on planar targets. Curved and model surfaces keep dab centers on the surface path.");
+                ui_style::slider_row(
+                    ui,
+                    "Size variation",
+                    "dab-size-variation",
+                    &mut self.brush.dabs.size_variation,
+                    0.0..=0.95,
+                    100.0,
+                    "%",
+                );
+                ui_style::slider_row(
+                    ui,
+                    "Angle variation",
+                    "dab-angle-variation",
+                    &mut self.brush.dabs.angle_variation_degrees,
+                    0.0..=180.0,
+                    1.0,
+                    "°",
+                );
+                ui.checkbox(
+                    &mut self.brush.dabs.pressure_size.enabled,
+                    "Pressure controls dab size",
+                );
+                if self.brush.dabs.pressure_size.enabled {
+                    ui_style::slider_row(
+                        ui,
+                        "Minimum size",
+                        "dab-pressure-minimum",
+                        &mut self.brush.dabs.pressure_size.minimum,
+                        0.0..=1.0,
+                        100.0,
+                        "%",
+                    );
+                    ui_style::slider_row(
+                        ui,
+                        "Pressure response",
+                        "dab-pressure-curve",
+                        &mut self.brush.dabs.pressure_size.curve,
+                        0.3..=3.0,
+                        100.0,
+                        "",
+                    );
+                }
+                ui.small("Spacing is measured in world units from the stroke radius. Taps place one dab; pen-up does not add an extra endpoint dab.");
+            }
+        });
         ui_style::component_showcase(ui);
         if self.brush != before {
             self.finish();
@@ -195,7 +263,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 13);
+                assert_eq!(loaded.version, 14);
                 assert_eq!(loaded.strokes, original);
                 self.load_brushes();
                 self.brush = Brush {

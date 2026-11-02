@@ -97,6 +97,7 @@ pub fn brush_fixture() -> Document {
             tangent: Vec3::X,
             dynamics: Default::default(),
             texture: Default::default(),
+            ..Brush::default()
         };
         let color = [[0.17, 0.82, 0.74], [0.94, 0.35, 0.14], [0.35, 0.45, 0.9]][row];
         let y = 1.2 - row as f32 * 1.2;

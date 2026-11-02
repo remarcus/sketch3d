@@ -163,6 +163,10 @@ impl SketchApp {
                     brush: Brush {
                         normal: plane.basis().2,
                         tangent: plane.basis().0,
+                        dabs: crate::dynamics::DabSettings {
+                            enabled: false,
+                            ..self.brush.dabs
+                        },
                         ..self.brush
                     },
                     points: vec![point, point],

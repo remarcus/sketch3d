@@ -300,14 +300,18 @@ fn intersection_parameters(a: Pos2, b: Pos2, c: Pos2, d: Pos2) -> Option<(f32, f
 }
 
 fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> {
-    let mut fragments: Vec<Vec<Point>> = Vec::new();
+    let distances = crate::dynamics::arc_lengths(&stroke.points);
+    let mut fragments: Vec<(Vec<Point>, f32)> = Vec::new();
     let mut current: Vec<Point> = Vec::new();
+    let mut current_origin = None;
     for (index, intervals) in cuts.iter().enumerate() {
         let mut cursor = 0.0;
         for &(cut_start, cut_end) in intervals {
             if cut_start > cursor + 0.000001 {
                 append_interval(
                     &mut current,
+                    &mut current_origin,
+                    stroke.brush.dab_distance_origin + distances[index],
                     &stroke.points[index],
                     &stroke.points[index + 1],
                     cursor,
@@ -315,15 +319,23 @@ fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> 
                 );
             }
             if current.len() >= 2 {
-                fragments.push(std::mem::take(&mut current));
+                fragments.push((
+                    std::mem::take(&mut current),
+                    current_origin
+                        .take()
+                        .unwrap_or(stroke.brush.dab_distance_origin),
+                ));
             } else {
                 current.clear();
+                current_origin = None;
             }
             cursor = cursor.max(cut_end);
         }
         if cursor < 1.0 - 0.000001 {
             append_interval(
                 &mut current,
+                &mut current_origin,
+                stroke.brush.dab_distance_origin + distances[index],
                 &stroke.points[index],
                 &stroke.points[index + 1],
                 cursor,
@@ -331,31 +343,52 @@ fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> 
             );
         }
         if intervals.is_empty() && current.last() != Some(&stroke.points[index + 1]) {
+            if current.is_empty() {
+                current_origin = Some(stroke.brush.dab_distance_origin + distances[index + 1]);
+            }
             current.push(stroke.points[index + 1]);
         }
     }
     if current.len() >= 2 {
-        fragments.push(current);
+        fragments.push((
+            current,
+            current_origin.unwrap_or(stroke.brush.dab_distance_origin),
+        ));
     }
     fragments
         .into_iter()
-        .filter_map(|mut points| {
+        .filter_map(|(mut points, origin)| {
             deduplicate(&mut points);
             (points.len() >= 2).then(|| {
                 let mut fragment = stroke.clone();
                 fragment.points = points;
+                if fragment.brush.dabs.enabled {
+                    fragment.brush.dab_distance_origin = origin;
+                }
                 fragment
             })
         })
         .collect()
 }
 
-fn append_interval(points: &mut Vec<Point>, a: &Point, b: &Point, start: f32, end: f32) {
+fn append_interval(
+    points: &mut Vec<Point>,
+    source_origin: &mut Option<f32>,
+    segment_origin: f32,
+    a: &Point,
+    b: &Point,
+    start: f32,
+    end: f32,
+) {
     if end <= start + 0.000001 {
         return;
     }
     let first = interpolate_point(a, b, start);
     let last = interpolate_point(a, b, end);
+    if points.is_empty() {
+        let segment_length = a.position.distance(b.position);
+        *source_origin = Some(segment_origin + segment_length * start);
+    }
     if points.last() != Some(&first) {
         points.push(first);
     }

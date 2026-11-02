@@ -385,12 +385,18 @@ pub fn stroke_extent(stroke: &Stroke) -> f32 {
             .points
             .windows(2)
             .all(|pair| pair[0].position.distance_squared(pair[1].position) <= 1e-12);
-    match stroke.brush.kind {
+    let shape_extent = match stroke.brush.kind {
         BrushKind::Chisel => {
             stroke.radius * (if dot { 2.0 } else { 1.0 } + stroke.brush.thickness.powi(2)).sqrt()
         }
         BrushKind::Ribbon if dot => stroke.radius * std::f32::consts::SQRT_2,
         BrushKind::Round | BrushKind::Ribbon => stroke.radius,
+    };
+    if stroke.brush.dabs.enabled {
+        shape_extent * (1.0 + stroke.brush.dabs.size_variation)
+            + stroke.radius * stroke.brush.dabs.scatter
+    } else {
+        shape_extent
     }
 }
 
@@ -441,6 +447,8 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
     };
     let mut vertices = if stroke.fill.is_some() {
         crate::polygon::mesh(stroke)
+    } else if stroke.brush.dabs.enabled {
+        dab_mesh(stroke)
     } else {
         let prepared;
         let stroke =
@@ -486,6 +494,70 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
     };
     for vertex in &mut vertices {
         vertex.material = material;
+    }
+    vertices
+}
+
+fn dab_mesh(stroke: &Stroke) -> Vec<Vertex> {
+    let Ok(dabs) = crate::dab_placement::sample(stroke) else {
+        return Vec::new();
+    };
+    let mut vertices = Vec::with_capacity(dabs.len().saturating_mul(24));
+    for dab in dabs {
+        let tangent = dab.tangent.try_normalize().unwrap_or(Vec3::Y);
+        let frame_side = dab.normal.cross(tangent).try_normalize().unwrap_or(Vec3::X);
+        let angle = (stroke.brush.angle_degrees + dab.angle_degrees).to_radians();
+        let width_axis = frame_side * angle.cos() + dab.normal * angle.sin();
+        let normal_axis = dab.normal * angle.cos() - frame_side * angle.sin();
+        let radius = stroke.radius * dab.size_scale;
+        let normal_radius = if stroke.brush.kind == BrushKind::Round {
+            radius
+        } else {
+            radius * stroke.brush.thickness
+        };
+        let axes = [
+            width_axis * radius,
+            normal_axis * normal_radius,
+            tangent * radius,
+        ];
+        for sx in [-1.0_f32, 1.0] {
+            for sy in [-1.0_f32, 1.0] {
+                for sz in [-1.0_f32, 1.0] {
+                    let offsets = [axes[0] * sx, axes[1] * sy, axes[2] * sz];
+                    let outward = (offsets[0] + offsets[1] + offsets[2])
+                        .try_normalize()
+                        .unwrap_or(normal_axis);
+                    let mut positions = offsets.map(|offset| dab.position + offset);
+                    let mut face_normal = (positions[1] - positions[0])
+                        .cross(positions[2] - positions[0])
+                        .try_normalize()
+                        .unwrap_or(outward);
+                    if face_normal.dot(outward) < 0.0 {
+                        positions.swap(1, 2);
+                        face_normal = -face_normal;
+                    }
+                    for position in positions {
+                        let offset = position - dab.position;
+                        vertices.push(Vertex {
+                            material: 0.0,
+                            position: position.to_array(),
+                            normal: face_normal.to_array(),
+                            color: stroke.color,
+                            uv: [
+                                0.5 + offset.dot(width_axis) / stroke.brush.texture.scale,
+                                0.5 + offset.dot(normal_axis) / stroke.brush.texture.scale,
+                            ],
+                            opacity: vertex_opacity(
+                                stroke,
+                                dab.pressure,
+                                face_normal,
+                                stroke.brush.normal,
+                            ),
+                        });
+                    }
+                }
+            }
+        }
     }
     vertices
 }

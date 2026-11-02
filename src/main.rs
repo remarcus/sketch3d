@@ -7,6 +7,7 @@ mod camera_bookmark_restart_check;
 mod camera_bookmarks;
 mod construction_history;
 mod curve_geometry;
+mod dab_placement;
 mod document;
 mod drawing_library;
 mod drawing_library_restart_check;

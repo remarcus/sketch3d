@@ -36,6 +36,67 @@ pub struct Dynamics {
     pub taper_start: f32,
     pub taper_end: f32,
 }
+
+/// Distance-based dab controls. Distances and scatter are expressed as
+/// multiples of the stroke's base radius, independent of pointer frequency.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DabSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_dab_spacing")]
+    pub spacing: f32,
+    #[serde(default)]
+    pub scatter: f32,
+    #[serde(default)]
+    pub size_variation: f32,
+    #[serde(default)]
+    pub angle_variation_degrees: f32,
+    #[serde(default = "default_dab_pressure_size")]
+    pub pressure_size: PressureMapping,
+    #[serde(default = "default_dab_algorithm")]
+    pub algorithm_version: u8,
+}
+impl Default for DabSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            spacing: default_dab_spacing(),
+            scatter: 0.0,
+            size_variation: 0.0,
+            angle_variation_degrees: 0.0,
+            pressure_size: default_dab_pressure_size(),
+            algorithm_version: default_dab_algorithm(),
+        }
+    }
+}
+impl DabSettings {
+    pub fn is_valid(self) -> bool {
+        self.spacing.is_finite()
+            && (0.1..=4.0).contains(&self.spacing)
+            && self.scatter.is_finite()
+            && (0.0..=4.0).contains(&self.scatter)
+            && self.size_variation.is_finite()
+            && (0.0..=0.95).contains(&self.size_variation)
+            && self.angle_variation_degrees.is_finite()
+            && (0.0..=180.0).contains(&self.angle_variation_degrees)
+            && self.pressure_size.is_valid()
+            && self.algorithm_version == 1
+    }
+}
+
+fn default_dab_spacing() -> f32 {
+    0.35
+}
+fn default_dab_pressure_size() -> PressureMapping {
+    PressureMapping {
+        enabled: false,
+        minimum: 0.1,
+        curve: 1.0,
+    }
+}
+fn default_dab_algorithm() -> u8 {
+    1
+}
 impl Default for Dynamics {
     fn default() -> Self {
         Self {

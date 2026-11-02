@@ -405,6 +405,8 @@ pub fn transformed_with_scale(
         stroke.brush.texture.scale *= average_scale;
         stroke.brush.dynamics.taper_start *= average_scale;
         stroke.brush.dynamics.taper_end *= average_scale;
+        stroke.brush.dab_distance_origin *= average_scale;
+        stroke.brush.dab_total_length *= average_scale;
         stroke.brush.normal = next_normal;
         stroke.brush.tangent = next_tangent;
         if !stroke.brush.is_valid() {
@@ -780,6 +782,7 @@ mod tests {
                 tangent: Vec3::Y,
                 dynamics: Default::default(),
                 texture: Default::default(),
+                ..Brush::default()
             };
             let mut doc = Document {
                 version: 7,
@@ -839,6 +842,7 @@ mod tests {
                     tangent: rotation * Vec3::X,
                     dynamics: Default::default(),
                     texture: Default::default(),
+                    ..Brush::default()
                 };
                 let sample = Document {
                     version: 7,

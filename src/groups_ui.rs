@@ -141,7 +141,7 @@ impl SketchApp {
                 assert_eq!(self.doc.group_members(copy_group), copies);
                 let loaded =
                     Document::from_json(&serde_json::to_string(&self.doc).unwrap()).unwrap();
-                assert_eq!(loaded.version, 13);
+                assert_eq!(loaded.version, 14);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.apply_layer_action(editing::LayerAction::Lock(1, true));
                 assert!(self
