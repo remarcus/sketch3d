@@ -308,7 +308,10 @@ impl SketchApp {
                                     ui.label("Blend mode");
                                     let mut blend_mode = layer.blend_mode;
                                     let mut changed = false;
-                                    egui::ComboBox::from_id_salt(("layer-blend-mode", layer_id))
+                                    let blend_combo = egui::ComboBox::from_id_salt((
+                                        "layer-blend-mode",
+                                        layer_id,
+                                    ))
                                         .selected_text(blend_mode.label())
                                         .show_ui(ui, |ui| {
                                             for mode in [
@@ -326,6 +329,9 @@ impl SketchApp {
                                                     .changed();
                                             }
                                         });
+                                    blend_combo.response.on_hover_text(
+                                        "Applies this blend rule to each stroke in the layer during rendering. Source colors are preserved; cutout marks keep their threshold-based erase behavior.",
+                                    );
                                     if changed {
                                         blend_changes.push((layer_id, blend_mode));
                                     }
