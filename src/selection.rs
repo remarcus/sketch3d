@@ -41,16 +41,21 @@ pub(super) struct AppearanceDraft {
     before: Snapshot,
     after: Snapshot,
     color: [f32; 3],
+    gradient_start: [f32; 3],
+    gradient_end: [f32; 3],
     radius: f32,
     opacity: f32,
     brush_kind: crate::document::BrushKind,
     material: crate::document::StrokeMaterial,
     set_color: bool,
+    set_gradient: bool,
+    gradient_enabled: bool,
     set_radius: bool,
     set_opacity: bool,
     set_brush_kind: bool,
     set_material: bool,
     mixed_color: bool,
+    mixed_gradient: bool,
     mixed_radius: bool,
     mixed_opacity: bool,
     mixed_brush_kind: bool,
@@ -63,6 +68,9 @@ impl AppearanceDraft {
         let first = before.first()?.1.clone();
         Some(Self {
             mixed_color: before.iter().any(|(_, stroke)| stroke.color != first.color),
+            mixed_gradient: before
+                .iter()
+                .any(|(_, stroke)| stroke.gradient != first.gradient),
             mixed_radius: before
                 .iter()
                 .any(|(_, stroke)| stroke.radius != first.radius),
@@ -77,12 +85,18 @@ impl AppearanceDraft {
                 .any(|(_, stroke)| stroke.material != first.material),
             after: before.clone(),
             color: first.color,
+            gradient_start: first
+                .gradient
+                .map_or(first.color, |gradient| gradient.start),
+            gradient_end: first.gradient.map_or(first.color, |gradient| gradient.end),
             radius: first.radius,
             opacity: first.brush.opacity,
             brush_kind: first.brush.kind,
             material: first.material,
             before,
             set_color: false,
+            set_gradient: false,
+            gradient_enabled: first.gradient.is_some(),
             set_radius: false,
             set_opacity: false,
             set_brush_kind: false,
@@ -93,6 +107,12 @@ impl AppearanceDraft {
     fn patch(&self) -> editing::AppearancePatch {
         editing::AppearancePatch {
             color: self.set_color.then_some(self.color),
+            gradient: self.set_gradient.then_some(self.gradient_enabled.then_some(
+                crate::document::StrokeGradient {
+                    start: self.gradient_start,
+                    end: self.gradient_end,
+                },
+            )),
             radius: self.set_radius.then_some(self.radius),
             opacity: self.set_opacity.then_some(self.opacity),
             brush_kind: self.set_brush_kind.then_some(self.brush_kind),
@@ -1265,6 +1285,48 @@ impl SketchApp {
                         }
                     }
                     ui.horizontal(|ui| {
+                        changed |= ui
+                            .add_enabled(
+                                !contains_fill,
+                                egui::Checkbox::new(&mut draft.set_gradient, "Color gradient"),
+                            )
+                            .changed();
+                        ui.small(if draft.mixed_gradient {
+                            "Mixed; unchanged"
+                        } else {
+                            "Same"
+                        });
+                    });
+                    if draft.set_gradient && !contains_fill {
+                        changed |= ui
+                            .checkbox(&mut draft.gradient_enabled, "Use two-stop gradient")
+                            .changed();
+                        if draft.gradient_enabled {
+                            ui.label("Start stop");
+                            let mut start = draft
+                                .gradient_start
+                                .map(crate::presentation::linear_to_srgb);
+                            if ui.color_edit_button_rgb(&mut start).changed() {
+                                draft.gradient_start =
+                                    start.map(crate::presentation::srgb_to_linear);
+                                changed = true;
+                            }
+                            ui.label("End stop");
+                            let mut end = draft
+                                .gradient_end
+                                .map(crate::presentation::linear_to_srgb);
+                            if ui.color_edit_button_rgb(&mut end).changed() {
+                                draft.gradient_end =
+                                    end.map(crate::presentation::srgb_to_linear);
+                                changed = true;
+                            }
+                            ui.small("Stops interpolate in linear RGB along stroke length.");
+                        }
+                    }
+                    if draft.set_color || draft.set_gradient {
+                        ui.small("Applying one color clears a gradient. Gradient stops take precedence when both are enabled.");
+                    }
+                    ui.horizontal(|ui| {
                         changed |= ui.add_enabled(!contains_fill, egui::Checkbox::new(&mut draft.set_radius, "Radius")).changed();
                         ui.small(if draft.mixed_radius { "Mixed; unchanged" } else { "Same" });
                     });
@@ -1694,6 +1756,7 @@ impl SketchApp {
                 layer_id: 1,
                 id: 1,
                 color: [0.3, 0.65, 0.8],
+                gradient: None,
                 radius: 0.02,
                 brush: Default::default(),
                 points: (0..=32)
@@ -1843,6 +1906,7 @@ impl SketchApp {
                 layer_id: 1,
                 id,
                 color: [0.4, 0.7, 0.9],
+                gradient: None,
                 radius: 0.08,
                 brush: Default::default(),
                 points: [-0.8, 0.8]

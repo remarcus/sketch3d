@@ -129,6 +129,7 @@ impl SketchApp {
                 layer_id: self.doc.active_layer,
                 id: 0,
                 color: self.color,
+                gradient: None,
                 radius: 0.025,
                 brush: Brush {
                     normal: plane.basis().2,

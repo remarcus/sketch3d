@@ -101,6 +101,7 @@ fn make_stroke(id: u64, point_count: usize, x_offset: f32) -> Stroke {
         group_id: None,
         layer_id: 1,
         color: [0.2, 0.65, 0.85],
+        gradient: None,
         radius: 0.02,
         brush: Brush::default(),
         points,

@@ -45,6 +45,8 @@ pub struct MergeEdit {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AppearancePatch {
     pub color: Option<[f32; 3]>,
+    /// `None` leaves gradients alone; `Some(None)` clears a ramp.
+    pub gradient: Option<Option<crate::document::StrokeGradient>>,
     pub radius: Option<f32>,
     pub opacity: Option<f32>,
     pub brush_kind: Option<BrushKind>,
@@ -54,6 +56,7 @@ pub struct AppearancePatch {
 impl AppearancePatch {
     fn is_empty(self) -> bool {
         self.color.is_none()
+            && self.gradient.is_none()
             && self.radius.is_none()
             && self.opacity.is_none()
             && self.brush_kind.is_none()
@@ -83,6 +86,13 @@ pub fn appearance_preview(before: &Snapshot, patch: AppearancePatch) -> Result<S
         return Err("Color components must be finite values from 0 to 1".into());
     }
     if patch
+        .gradient
+        .flatten()
+        .is_some_and(|gradient| !gradient.is_valid())
+    {
+        return Err("Gradient stops must use finite linear RGB values from 0 to 1".into());
+    }
+    if patch
         .radius
         .is_some_and(|radius| !radius.is_finite() || !(0.001..=1.0).contains(&radius))
     {
@@ -95,15 +105,19 @@ pub fn appearance_preview(before: &Snapshot, patch: AppearancePatch) -> Result<S
         return Err("Opacity must be a finite value from 0 to 1".into());
     }
     if before.iter().any(|(_, stroke)| stroke.fill.is_some())
-        && (patch.radius.is_some() || patch.brush_kind.is_some())
+        && (patch.radius.is_some() || patch.brush_kind.is_some() || patch.gradient.is_some())
     {
-        return Err("Filled strokes keep their contour; radius and brush changes apply only to non-filled strokes".into());
+        return Err("Filled strokes keep their contour; radius, brush, and gradient changes apply only to non-filled strokes".into());
     }
 
     let mut after = before.clone();
     for (_, stroke) in &mut after {
         if let Some(color) = patch.color {
             stroke.color = color;
+            stroke.gradient = None;
+        }
+        if let Some(gradient) = patch.gradient {
+            stroke.gradient = gradient;
         }
         if let Some(radius) = patch.radius {
             stroke.radius = radius;

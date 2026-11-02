@@ -222,6 +222,7 @@ pub fn create_ellipse(
         layer_id,
         id,
         color,
+        gradient: None,
         radius: stroke_radius,
         brush: frame_brush,
         points,

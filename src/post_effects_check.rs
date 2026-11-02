@@ -55,6 +55,7 @@ fn stroke(id: u64, material: StrokeMaterial, color: [f32; 3], points: Vec<Vec3>)
         layer_id: 1,
         id,
         color,
+        gradient: None,
         radius: 0.075,
         brush: Default::default(),
         points: points

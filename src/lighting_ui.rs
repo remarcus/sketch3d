@@ -147,6 +147,7 @@ impl SketchApp {
             fill: None,
             group_id: None,
             color: [0.85, 0.7, 0.35],
+            gradient: None,
             radius: 0.6,
             brush: Brush {
                 kind: BrushKind::Ribbon,
@@ -284,6 +285,7 @@ impl SketchApp {
                 fill: None,
                 group_id: None,
                 color,
+                gradient: None,
                 radius,
                 brush: Brush {
                     kind: BrushKind::Ribbon,

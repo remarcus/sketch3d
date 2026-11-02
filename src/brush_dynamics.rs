@@ -193,7 +193,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 22);
+                assert_eq!(loaded.version, 23);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.load_dynamics();
                 self.brush.dynamics = Default::default();
@@ -242,6 +242,7 @@ fn opacity_test_stroke(
         layer_id: 1,
         id,
         color,
+        gradient: None,
         radius: 0.32,
         brush,
         points: positions

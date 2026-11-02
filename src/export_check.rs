@@ -20,6 +20,7 @@ pub fn pressure_fixture() -> Document {
                 group_id: None,
                 layer_id: 1,
                 color: [0.17, 0.82, 0.74],
+                gradient: None,
                 radius: 0.12,
                 brush: Default::default(),
                 points: vec![
@@ -51,6 +52,7 @@ pub fn pressure_fixture() -> Document {
                 group_id: None,
                 layer_id: 1,
                 color: [0.94, 0.35, 0.14],
+                gradient: None,
                 radius: 0.08,
                 brush: Default::default(),
                 points: vec![Point {
@@ -68,6 +70,7 @@ pub fn pressure_fixture() -> Document {
                 group_id: None,
                 layer_id: 1,
                 color: [0.35, 0.45, 0.9],
+                gradient: None,
                 radius: 0.045,
                 brush: Default::default(),
                 points: vec![
@@ -118,6 +121,7 @@ pub fn brush_fixture() -> Document {
             group_id: None,
             layer_id: 1,
             color,
+            gradient: None,
             radius: 0.16,
             brush,
             points: (0..=40)
@@ -146,6 +150,7 @@ pub fn brush_fixture() -> Document {
             group_id: None,
             layer_id: 1,
             color,
+            gradient: None,
             radius: 0.16,
             brush: Brush {
                 normal: dot_rotation * Vec3::Z,
@@ -212,6 +217,7 @@ pub fn dynamics_fixture() -> Document {
             group_id: None,
             layer_id: 1,
             color,
+            gradient: None,
             radius: 0.18,
             brush,
             points: (0..=60)
@@ -239,6 +245,7 @@ pub fn dynamics_fixture() -> Document {
             group_id: None,
             layer_id: 1,
             color,
+            gradient: None,
             radius: 0.18,
             brush,
             points: vec![Point {
@@ -323,6 +330,7 @@ pub fn textured_fixture() -> Document {
             group_id: None,
             layer_id: 1,
             color,
+            gradient: None,
             radius,
             brush,
             points: (0..=60)
@@ -350,6 +358,7 @@ pub fn textured_fixture() -> Document {
             group_id: None,
             layer_id: 1,
             color,
+            gradient: None,
             radius,
             brush,
             points: vec![Point {
@@ -368,6 +377,7 @@ pub fn textured_fixture() -> Document {
             group_id: None,
             layer_id: 1,
             color,
+            gradient: None,
             radius: (radius * 0.7).max(0.055),
             brush: Brush {
                 kind: BrushKind::Round,
@@ -440,6 +450,7 @@ pub fn vase_fixture() -> Document {
             group_id: None,
             layer_id: 1,
             color,
+            gradient: None,
             radius,
             brush,
             points,

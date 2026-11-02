@@ -261,6 +261,7 @@ impl SketchApp {
                     layer_id: self.doc.active_layer,
                     id: 0,
                     color: self.color,
+                    gradient: None,
                     radius: self.radius,
                     brush: Brush {
                         normal,

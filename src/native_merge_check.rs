@@ -22,6 +22,7 @@ fn stroke(id: u64, color: [f32; 3], start_x: f32, end_x: f32) -> Stroke {
         layer_id: 1,
         id,
         color,
+        gradient: None,
         radius: 0.08,
         brush: Default::default(),
         points: vec![

@@ -57,6 +57,7 @@ fn material_stroke(id: u64, material: StrokeMaterial) -> Stroke {
         layer_id: 1,
         id,
         color: [0.25, 0.5, 0.75],
+        gradient: None,
         radius: 0.04,
         brush: Default::default(),
         points: vec![
@@ -79,6 +80,7 @@ fn material_stroke(id: u64, material: StrokeMaterial) -> Stroke {
 struct Material {
     name: String,
     diffuse: [f32; 3],
+    gradient_fallback: bool,
     opacity: f32,
     texture: TextureSettings,
     mask_file: Option<String>,
@@ -147,7 +149,10 @@ pub fn write_obj_bundle(
             entry.insert(index);
             materials.push(Material {
                 name: format!("material_{index:05}"),
-                diffuse: stroke.color,
+                diffuse: stroke
+                    .gradient
+                    .map_or(stroke.color, |gradient| gradient.sample(0.5)),
+                gradient_fallback: stroke.gradient.is_some(),
                 opacity: if stroke.material == StrokeMaterial::Cutout {
                     0.0
                 } else {
@@ -187,8 +192,16 @@ pub fn write_obj_bundle(
     }) {
         mtl.push_str("# Layer Multiply, Screen, and Add modes fall back to Normal in OBJ/MTL.\n");
     }
+    if strokes.iter().any(|stroke| stroke.gradient.is_some()) {
+        mtl.push_str(
+            "# OBJ/MTL cannot store per-vertex color; gradient strokes use their midpoint color.\n",
+        );
+    }
     for material in &materials {
         writeln!(mtl, "newmtl {}", material.name).unwrap();
+        if material.gradient_fallback {
+            mtl.push_str("# Two-stop gradient approximated by its linear RGB midpoint.\n");
+        }
         writeln!(
             mtl,
             "Kd {:.6} {:.6} {:.6}",
@@ -404,10 +417,13 @@ pub fn write_obj_bundle(
 
 fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
     let texture = texture::key(stroke.brush.texture);
+    let diffuse = stroke
+        .gradient
+        .map_or(stroke.color, |gradient| gradient.sample(0.5));
     (
-        stroke.color[0].to_bits(),
-        stroke.color[1].to_bits(),
-        stroke.color[2].to_bits(),
+        diffuse[0].to_bits(),
+        diffuse[1].to_bits(),
+        diffuse[2].to_bits(),
         stroke.brush.opacity.to_bits(),
         texture.0,
         texture.1,

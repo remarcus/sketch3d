@@ -53,6 +53,7 @@ fn stroke() -> Stroke {
         layer_id: 1,
         id: 1,
         color: INK,
+        gradient: None,
         radius: 0.16,
         brush: Default::default(),
         points: [-1.2, 1.2]

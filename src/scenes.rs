@@ -40,6 +40,7 @@ impl Artist {
             group_id: None,
             layer_id: 1,
             color,
+            gradient: None,
             radius,
             points: positions
                 .into_iter()

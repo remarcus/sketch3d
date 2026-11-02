@@ -1374,6 +1374,7 @@ impl SceneRenderer {
                 }
                 target.push(Vertex {
                     material: 0.0,
+                    gradient_t: 0.0,
                     position: position.to_array(),
                     normal: (rotation * source.normal).normalize_or_zero().to_array(),
                     uv: source.texcoord.map_or([0.0; 2], |uv| uv.to_array()),
@@ -1918,6 +1919,7 @@ impl SceneRenderer {
                 uv: [0.0; 2],
                 opacity: 1.0,
                 material: 0.0,
+                gradient_t: 0.0,
             })
             .collect();
             self.ground = Some((

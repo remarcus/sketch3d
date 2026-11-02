@@ -12,6 +12,8 @@ pub struct Vertex {
     pub opacity: f32,
     /// Encoded material mode: shaded=0, unlit=1, emissive=2.
     pub material: f32,
+    /// Normalized centerline arc-length parameter used to resolve stroke gradients.
+    pub gradient_t: f32,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Plane {
@@ -284,6 +286,11 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
             let normal = a * angle.cos() + b * angle.sin();
             Vertex {
                 material: 0.0,
+                gradient_t: if total > 1.0e-8 {
+                    (distances[i] / total).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                },
                 position: (p.position + normal * radius).to_array(),
                 normal: normal.to_array(),
                 color: stroke.color,
@@ -295,6 +302,11 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
             ring = rings[0];
             for vertex in &mut ring {
                 vertex.uv[0] = distances[i] / stroke.brush.texture.scale;
+                vertex.gradient_t = if total > 1.0e-8 {
+                    (distances[i] / total).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
             }
         }
         rings.push(ring);
@@ -325,6 +337,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
                     let normal = frame * local;
                     out.push(Vertex {
                         material: 0.0,
+                        gradient_t: 0.0,
                         position: (p.position + normal * r).to_array(),
                         normal: normal.to_array(),
                         color: stroke.color,
@@ -357,6 +370,11 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
         for (index, ring) in [(0, &rings[0]), (rings.len() - 1, rings.last().unwrap())] {
             let center = Vertex {
                 material: 0.0,
+                gradient_t: if total > 1.0e-8 {
+                    (distances[index] / total).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                },
                 position: stroke.points[index].position.to_array(),
                 normal: [0.0, 0.0, 1.0],
                 color: stroke.color,
@@ -489,7 +507,7 @@ fn profile_tube_mesh(stroke: &Stroke) -> Vec<Vertex> {
                 .unwrap_or_else(|| start.width);
             let uv_start_next = [start.u, (side + 1) as f32 / sides as f32];
             let uv_end_next = [end.u, (side + 1) as f32 / sides as f32];
-            flat_quad(
+            flat_quad_gradient(
                 &mut out,
                 [
                     ring_pair[0][side].0,
@@ -507,6 +525,12 @@ fn profile_tube_mesh(stroke: &Stroke) -> Vec<Vertex> {
                 stroke.color,
                 [start.opacity, end.opacity, end.opacity, start.opacity],
                 (start.softness + end.softness) * 0.5,
+                [
+                    start.gradient_t,
+                    end.gradient_t,
+                    end.gradient_t,
+                    start.gradient_t,
+                ],
             );
         }
     }
@@ -528,7 +552,7 @@ fn profile_tube_mesh(stroke: &Stroke) -> Vec<Vertex> {
                         0.5 + offset.dot(frame.normal) / stroke.brush.texture.scale,
                     ]
                 };
-                flat_triangle(
+                flat_triangle_gradient(
                     &mut out,
                     [frame.center, ring[side].0, ring[next].0],
                     [[0.5, 0.5], radial_uv(ring[side].0), radial_uv(ring[next].0)],
@@ -536,6 +560,7 @@ fn profile_tube_mesh(stroke: &Stroke) -> Vec<Vertex> {
                     stroke.color,
                     [frame.opacity; 3],
                     frame.softness,
+                    [frame.gradient_t; 3],
                 );
             }
         }
@@ -724,6 +749,9 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
     };
     for vertex in &mut vertices {
         vertex.material = material;
+        if let Some(gradient) = stroke.gradient {
+            vertex.color = gradient.sample(vertex.gradient_t);
+        }
     }
     vertices
 }
@@ -752,7 +780,7 @@ fn tip_mesh(stroke: &Stroke) -> Vec<Vertex> {
             dab.position - along * half_width - across * half_height,
         ];
         let opacity = vertex_opacity(stroke, dab.pressure, dab.normal, dab.normal);
-        flat_quad(
+        flat_quad_gradient(
             &mut vertices,
             positions,
             [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
@@ -760,6 +788,7 @@ fn tip_mesh(stroke: &Stroke) -> Vec<Vertex> {
             stroke.color,
             [opacity; 4],
             0.0,
+            [dab.gradient_t; 4],
         );
     }
     vertices
@@ -807,6 +836,7 @@ fn dab_mesh(stroke: &Stroke) -> Vec<Vertex> {
                         let offset = position - dab.position;
                         vertices.push(Vertex {
                             material: 0.0,
+                            gradient_t: dab.gradient_t,
                             position: position.to_array(),
                             normal: face_normal.to_array(),
                             color: stroke.color,
@@ -847,6 +877,7 @@ struct BrushFrame {
     radius: f32,
     half_thickness: f32,
     u: f32,
+    gradient_t: f32,
     opacity: f32,
     softness: f32,
     tilt: Option<Vec3>,
@@ -1003,6 +1034,11 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
         frames.push(BrushFrame {
             center: point.position,
             u: distances[i] / stroke.brush.texture.scale,
+            gradient_t: if total > 1.0e-8 {
+                (distances[i] / total).clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
             width,
             normal: tangent.cross(width).normalize(),
             tangent,
@@ -1089,7 +1125,7 @@ fn strand_mesh(stroke: &Stroke) -> Vec<Vertex> {
                 let outward = ring_a[side].1 + ring_a[next].1 + ring_b[side].1 + ring_b[next].1;
                 let v0 = side as f32 / STRAND_SIDES as f32;
                 let v1 = (side + 1) as f32 / STRAND_SIDES as f32;
-                flat_quad(
+                flat_quad_gradient(
                     &mut out,
                     [
                         ring_a[side].0,
@@ -1102,6 +1138,7 @@ fn strand_mesh(stroke: &Stroke) -> Vec<Vertex> {
                     stroke.color,
                     [a.opacity, b.opacity, b.opacity, a.opacity],
                     (a.softness + b.softness) * 0.5,
+                    [a.gradient_t, b.gradient_t, b.gradient_t, a.gradient_t],
                 );
             }
         }
@@ -1112,7 +1149,7 @@ fn strand_mesh(stroke: &Stroke) -> Vec<Vertex> {
             let vertices = ring(frame);
             for side in 0..STRAND_SIDES {
                 let next = (side + 1) % STRAND_SIDES;
-                flat_triangle(
+                flat_triangle_gradient(
                     &mut out,
                     [
                         frame.center + (vertices[side].0 - frame.center),
@@ -1128,6 +1165,7 @@ fn strand_mesh(stroke: &Stroke) -> Vec<Vertex> {
                     stroke.color,
                     [frame.opacity; 3],
                     frame.softness,
+                    [frame.gradient_t; 3],
                 );
             }
         }
@@ -1428,6 +1466,11 @@ fn airbrush_mesh(stroke: &Stroke) -> Vec<Vertex> {
                 opacity,
                 stroke.brush.softness,
                 stroke,
+                if total_length > 1.0e-8 {
+                    (traveled / total_length).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                },
             );
         },
     );
@@ -1443,6 +1486,7 @@ fn emit_airbrush_disc(
     opacity: f32,
     softness: f32,
     stroke: &Stroke,
+    gradient_t: f32,
 ) {
     if radius <= 1e-8 || opacity <= 1e-8 {
         return;
@@ -1466,7 +1510,7 @@ fn emit_airbrush_disc(
                 0.5 + offset.dot(normal) / stroke.brush.texture.scale,
             ]
         };
-        flat_triangle(
+        flat_triangle_gradient(
             out,
             [center, inner[index].0, inner[next].0],
             [
@@ -1478,8 +1522,9 @@ fn emit_airbrush_disc(
             stroke.color,
             [opacity; 3],
             0.0,
+            [gradient_t; 3],
         );
-        flat_quad(
+        flat_quad_gradient(
             out,
             [inner[index].0, outer[index].0, outer[next].0, inner[next].0],
             [
@@ -1492,6 +1537,7 @@ fn emit_airbrush_disc(
             stroke.color,
             [opacity, 0.0, 0.0, opacity],
             0.0,
+            [gradient_t; 4],
         );
     }
 }
@@ -1522,6 +1568,7 @@ fn flat_triangle(
             .zip(opacity)
             .map(|((position, uv), opacity)| Vertex {
                 material: 0.0,
+                gradient_t: 0.0,
                 position: position.to_array(),
                 normal: normal.to_array(),
                 color,
@@ -1560,6 +1607,52 @@ fn flat_quad(
     );
 }
 
+fn apply_gradient_parameters(vertices: &mut [Vertex], positions: &[Vec3], parameters: &[f32]) {
+    for vertex in vertices {
+        let position = Vec3::from(vertex.position);
+        let nearest = positions
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                position
+                    .distance_squared(**a)
+                    .total_cmp(&position.distance_squared(**b))
+            })
+            .map_or(0, |(index, _)| index);
+        vertex.gradient_t = parameters[nearest];
+    }
+}
+
+fn flat_triangle_gradient(
+    out: &mut Vec<Vertex>,
+    positions: [Vec3; 3],
+    uv: [[f32; 2]; 3],
+    outward: Vec3,
+    color: [f32; 3],
+    opacity: [f32; 3],
+    softness: f32,
+    gradient_t: [f32; 3],
+) {
+    let start = out.len();
+    flat_triangle(out, positions, uv, outward, color, opacity, softness);
+    apply_gradient_parameters(&mut out[start..], &positions, &gradient_t);
+}
+
+fn flat_quad_gradient(
+    out: &mut Vec<Vertex>,
+    positions: [Vec3; 4],
+    uv: [[f32; 2]; 4],
+    outward: Vec3,
+    color: [f32; 3],
+    opacity: [f32; 4],
+    softness: f32,
+    gradient_t: [f32; 4],
+) {
+    let start = out.len();
+    flat_quad(out, positions, uv, outward, color, opacity, softness);
+    apply_gradient_parameters(&mut out[start..], &positions, &gradient_t);
+}
+
 fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
     let frames = brush_frames(stroke);
     let mut out = Vec::new();
@@ -1590,7 +1683,7 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
             [0.5 - r, 0.0],
             [0.5 - r, 1.0],
         ];
-        flat_quad(
+        flat_quad_gradient(
             &mut out,
             corners.map(|p| p + h),
             uv,
@@ -1598,9 +1691,10 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
             stroke.color,
             [f.opacity; 4],
             f.softness,
+            [f.gradient_t; 4],
         );
         if stroke.brush.kind == BrushKind::Chisel {
-            flat_quad(
+            flat_quad_gradient(
                 &mut out,
                 corners.map(|p| p - h),
                 uv,
@@ -1608,11 +1702,12 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                 stroke.color,
                 [f.opacity; 4],
                 f.softness,
+                [f.gradient_t; 4],
             );
             for j in 0..4 {
                 let k = (j + 1) % 4;
                 let outward = (corners[j] + corners[k]) * 0.5 - f.center;
-                flat_quad(
+                flat_quad_gradient(
                     &mut out,
                     [
                         corners[j] + h,
@@ -1625,6 +1720,7 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                     stroke.color,
                     [f.opacity; 4],
                     f.softness,
+                    [f.gradient_t; 4],
                 );
             }
         }
@@ -1648,7 +1744,7 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                     ribbon_edge_coverage(t1, softness),
                     ribbon_edge_coverage(t0, softness),
                 ];
-                flat_quad(
+                flat_quad_gradient(
                     &mut out,
                     [
                         left_a.lerp(right_a, t0),
@@ -1666,6 +1762,7 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                         b.opacity * coverage[3],
                     ],
                     softness,
+                    [a.gradient_t, a.gradient_t, b.gradient_t, b.gradient_t],
                 );
             }
         }
@@ -1690,7 +1787,7 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                 // seam at V=1. Adjacent faces agree at every shared edge.
                 let v = j as f32 / 4.0;
                 let next = (j + 1) as f32 / 4.0;
-                flat_quad(
+                flat_quad_gradient(
                     &mut out,
                     [ar[j], br[j], br[k], ar[k]],
                     [[a.u, v], [b.u, v], [b.u, next], [a.u, next]],
@@ -1698,6 +1795,7 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                     stroke.color,
                     [a.opacity, b.opacity, b.opacity, a.opacity],
                     (a.softness + b.softness) * 0.5,
+                    [a.gradient_t, b.gradient_t, b.gradient_t, a.gradient_t],
                 );
             }
         }
@@ -1712,7 +1810,7 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
             ]
         };
         if !is_closed_stroke(stroke) {
-            flat_quad(
+            flat_quad_gradient(
                 &mut out,
                 ring(*first),
                 cap_uv(first),
@@ -1720,9 +1818,10 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                 stroke.color,
                 [first.opacity; 4],
                 first.softness,
+                [first.gradient_t; 4],
             );
             let last = frames.last().unwrap();
-            flat_quad(
+            flat_quad_gradient(
                 &mut out,
                 ring(*last),
                 cap_uv(last),
@@ -1730,6 +1829,7 @@ fn flat_brush(stroke: &Stroke) -> Vec<Vertex> {
                 stroke.color,
                 [last.opacity; 4],
                 last.softness,
+                [last.gradient_t; 4],
             );
         }
     }
@@ -1750,6 +1850,7 @@ pub fn grid(plane: DrawingPlane) -> Vec<Vertex> {
             for sign in [-1.0, 1.0] {
                 vertices.push(Vertex {
                     material: 0.0,
+                    gradient_t: 0.0,
                     position: (origin + a * i as f32 * 0.5 + b * 6.0 * sign).to_array(),
                     normal: [0.0; 3],
                     uv: [0.0; 2],

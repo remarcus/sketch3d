@@ -26,6 +26,8 @@ pub struct ResolvedDab {
     /// Includes pressure response, taper, and deterministic size variation.
     pub size_scale: f32,
     pub angle_degrees: f32,
+    /// Normalized centerline distance for stroke color ramps.
+    pub gradient_t: f32,
 }
 
 /// A stable seed derived from a unique stroke ID. Split fragments retain it.
@@ -113,6 +115,7 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
             point.tilt,
             0.0,
             total,
+            0.0,
             0,
         ));
         return Ok(out);
@@ -131,6 +134,11 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
             tilt,
             global_distance,
             total,
+            if local_length > DISTANCE_EPSILON {
+                (local_distance / local_length).clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
             index,
         ));
     }
@@ -189,6 +197,7 @@ fn resolve_dab(
     tilt: Option<Vec3>,
     global_distance: f32,
     total: f32,
+    gradient_t: f32,
     index: u64,
 ) -> ResolvedDab {
     let normal = (stroke.brush.normal - tangent * stroke.brush.normal.dot(tangent))
@@ -247,6 +256,7 @@ fn resolve_dab(
         tilt,
         size_scale: random_size * pressure_size * pressure_width * tilt_width * taper,
         angle_degrees: angle,
+        gradient_t,
     }
 }
 

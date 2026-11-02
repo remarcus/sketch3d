@@ -65,6 +65,7 @@ fn stroke_segment(
         layer_id: 1,
         id,
         color: INK,
+        gradient: None,
         radius,
         brush: Default::default(),
         points: vec![

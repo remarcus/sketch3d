@@ -68,7 +68,7 @@ impl SketchApp {
             self.file = Some(path.clone());
             assert!(self.save(false));
             let loaded = Document::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
-            assert_eq!(loaded.version, 22);
+            assert_eq!(loaded.version, 23);
             assert_eq!(loaded.strokes, self.doc.strokes);
             let mesh = crate::geometry::stroke_mesh(&self.doc.strokes[0]);
             let center = mesh
@@ -154,6 +154,7 @@ impl SketchApp {
                 layer_id: 1,
                 id,
                 color,
+                gradient: None,
                 radius: 0.025,
                 brush: Brush::default(),
                 points: [
@@ -180,6 +181,7 @@ impl SketchApp {
             layer_id: 1,
             id: 2,
             color: [0.01; 3],
+            gradient: None,
             radius: 0.012,
             brush: Brush::default(),
             points: [Vec3::new(-0.9, 0.0, 0.0), Vec3::new(0.9, 0.0, 0.0)]

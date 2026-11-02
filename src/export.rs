@@ -71,6 +71,8 @@ pub(crate) fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
             .color
             .iter()
             .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        || stroke.gradient.is_some_and(|gradient| !gradient.is_valid())
+        || (stroke.fill.is_some() && stroke.gradient.is_some())
         || stroke.points.iter().any(|p| {
             !p.position.is_finite()
                 || p.position.abs().max_element() > 10000.0
@@ -158,9 +160,21 @@ pub(crate) fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
                 n.z,
                 vertex.uv[0],
                 vertex.uv[1],
-                1.0,
-                1.0,
-                1.0,
+                if stroke.gradient.is_some() {
+                    vertex.color[0]
+                } else {
+                    1.0
+                },
+                if stroke.gradient.is_some() {
+                    vertex.color[1]
+                } else {
+                    1.0
+                },
+                if stroke.gradient.is_some() {
+                    vertex.color[2]
+                } else {
+                    1.0
+                },
                 vertex.opacity,
             ];
             let key = data.map(f32::to_bits);
@@ -204,7 +218,7 @@ pub fn encode_with_images(
     selected: Option<&HashSet<u64>>,
     image_root: Option<&Path>,
 ) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=22) {
+    if !matches!(doc.version, 1..=23) {
         return Err("Unsupported source document version".into());
     }
     crate::brush_tip::validate_catalog(&doc.brush_tip_assets)?;
@@ -343,6 +357,7 @@ pub fn encode_with_images(
                 && stroke.brush.dynamics.opacity.minimum < 1.0);
         let key = (
             stroke.color.map(f32::to_bits),
+            stroke.gradient.is_some(),
             double_sided,
             texture_key,
             tip_key,
@@ -358,7 +373,12 @@ pub fn encode_with_images(
             } else {
                 1.0
             };
-            let mut material = json!({"name":format!("Ink {}",index+1),"pbrMetallicRoughness":{"baseColorFactor":[stroke.color[0],stroke.color[1],stroke.color[2],material_alpha],"metallicFactor":0.0,"roughnessFactor":0.8},"alphaMode":if alpha_blended {"BLEND"} else if texture_key.is_some() {"MASK"} else {"OPAQUE"},"doubleSided":double_sided});
+            let base_color = if stroke.gradient.is_some() {
+                [1.0; 3]
+            } else {
+                stroke.color
+            };
+            let mut material = json!({"name":format!("Ink {}",index+1),"pbrMetallicRoughness":{"baseColorFactor":[base_color[0],base_color[1],base_color[2],material_alpha],"metallicFactor":0.0,"roughnessFactor":0.8},"alphaMode":if alpha_blended {"BLEND"} else if texture_key.is_some() {"MASK"} else {"OPAQUE"},"doubleSided":double_sided});
             match stroke.material {
                 crate::document::StrokeMaterial::Shaded => {}
                 crate::document::StrokeMaterial::Unlit => {
@@ -460,6 +480,16 @@ pub fn encode_with_images(
         if let Some(fill) = stroke.fill {
             node["extras"]["spatialSketchGeometry"] = json!("planar_fill");
             node["extras"]["spatialSketchFillOffset"] = json!(fill.offset);
+        }
+        if let Some(gradient) = stroke.gradient {
+            node["extras"]["spatialSketchGradientStopsLinearRgb"] =
+                json!([gradient.start, gradient.end]);
+            node["extras"]["spatialSketchGradientInterpolation"] =
+                json!("linear_rgb_by_world_arc_length");
+            if stroke.material == crate::document::StrokeMaterial::Emissive {
+                node["extras"]["spatialSketchEmissiveGradientFallback"] =
+                    json!("COLOR_0_preserves_gradient_albedo; emissiveFactor_remains_uniform");
+            }
         }
         if let Some(group) = stroke.group_id {
             node["extras"]["spatialSketchGroupId"] = json!(group.to_string());
@@ -1263,7 +1293,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 22);
+        assert_eq!(loaded.version, 23);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -1568,7 +1598,7 @@ mod group_export_tests {
     fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
         let doc = crate::export_check::grouped_fixture();
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-        assert_eq!(loaded.version, 22);
+        assert_eq!(loaded.version, 23);
         assert_eq!(loaded.strokes, doc.strokes);
         let encoded = encode(&doc, None).unwrap();
         let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();

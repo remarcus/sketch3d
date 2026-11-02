@@ -415,7 +415,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 22);
+                assert_eq!(loaded.version, 23);
                 assert_eq!(loaded.strokes, original);
                 self.load_brushes();
                 self.brush = Brush {

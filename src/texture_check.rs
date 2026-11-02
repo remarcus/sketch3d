@@ -25,6 +25,7 @@ pub fn run() -> Result<(), String> {
                 group_id: None,
                 layer_id: 1,
                 color: [0.2, 0.8, 0.6],
+                gradient: None,
                 radius: 0.05,
                 brush: Brush {
                     kind: shape,

@@ -183,6 +183,7 @@ pub fn mesh(stroke: &Stroke) -> Vec<crate::geometry::Vertex> {
         .flatten()
         .map(|i| crate::geometry::Vertex {
             material: 0.0,
+            gradient_t: 0.0,
             position: (stroke.points[i].position - offset).to_array(),
             normal: stroke.brush.normal.to_array(),
             color: stroke.color,
@@ -217,6 +218,7 @@ pub fn study() -> crate::document::Document {
             layer_id: 1,
             id: doc.strokes.len() as u64 + 1,
             color,
+            gradient: None,
             radius: 0.025,
             brush: Brush {
                 normal,
@@ -235,6 +237,7 @@ pub fn study() -> crate::document::Document {
             layer_id: 1,
             id: doc.strokes.len() as u64 + 1,
             color: [0.12, 0.17, 0.20],
+            gradient: None,
             radius: 0.012,
             brush: Brush {
                 normal,

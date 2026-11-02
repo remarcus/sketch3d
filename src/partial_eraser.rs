@@ -355,14 +355,28 @@ fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> 
             current_origin.unwrap_or(stroke.brush.dab_distance_origin),
         ));
     }
+    let original_length = crate::dynamics::arc_lengths(&stroke.points)
+        .last()
+        .copied()
+        .unwrap_or(0.0);
     fragments
         .into_iter()
         .filter_map(|(mut points, origin)| {
             deduplicate(&mut points);
             (points.len() >= 2).then(|| {
+                let fragment_length = points
+                    .windows(2)
+                    .map(|pair| pair[0].position.distance(pair[1].position))
+                    .sum::<f32>();
                 let mut fragment = stroke.clone();
                 fragment.points = points;
                 fragment.curve = None;
+                if let Some(gradient) = stroke.gradient.filter(|_| original_length > 1.0e-8) {
+                    let start = ((origin - stroke.brush.dab_distance_origin) / original_length)
+                        .clamp(0.0, 1.0);
+                    let end = (start + fragment_length / original_length).clamp(start, 1.0);
+                    fragment.gradient = Some(gradient.subrange(start, end));
+                }
                 if fragment.brush.dabs.enabled {
                     fragment.brush.dab_distance_origin = origin;
                 }

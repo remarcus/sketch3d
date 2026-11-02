@@ -785,6 +785,7 @@ pub fn preview_document(preset: &Preset) -> Document {
             group_id: None,
             layer_id: 1,
             color: preset.color,
+            gradient: None,
             radius: preset.radius,
             brush: preset.brush,
             points: (0..48)
