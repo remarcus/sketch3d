@@ -362,7 +362,7 @@ impl PresetUi {
                         if ui
                             .button("Restore built-in defaults")
                             .on_hover_text(
-                                "Restore six built-in brushes while keeping personal presets",
+                                "Restore eight built-in brushes while keeping personal presets",
                             )
                             .clicked()
                         {

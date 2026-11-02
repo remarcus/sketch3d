@@ -22,6 +22,7 @@ pub struct ResolvedDab {
     pub tangent: Vec3,
     pub normal: Vec3,
     pub pressure: f32,
+    pub tilt: Option<Vec3>,
     /// Includes pressure response, taper, and deterministic size variation.
     pub size_scale: f32,
     pub angle_degrees: f32,
@@ -109,6 +110,7 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
             point.position,
             stroke.brush.tangent,
             point.pressure,
+            point.tilt,
             0.0,
             total,
             0,
@@ -120,12 +122,13 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
     for index in first..=last {
         let global_distance = index as f32 * step;
         let local_distance = (global_distance - origin).clamp(0.0, local_length);
-        let (position, pressure, tangent) = sample_path(stroke, &distances, local_distance);
+        let (position, pressure, tangent, tilt) = sample_path(stroke, &distances, local_distance);
         out.push(resolve_dab(
             stroke,
             position,
             tangent,
             pressure,
+            tilt,
             global_distance,
             total,
             index,
@@ -134,10 +137,19 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
     Ok(out)
 }
 
-fn sample_path(stroke: &Stroke, distances: &[f32], distance: f32) -> (Vec3, f32, Vec3) {
+fn sample_path(
+    stroke: &Stroke,
+    distances: &[f32],
+    distance: f32,
+) -> (Vec3, f32, Vec3, Option<Vec3>) {
     let points = &stroke.points;
     if points.len() == 1 {
-        return (points[0].position, points[0].pressure, stroke.brush.tangent);
+        return (
+            points[0].position,
+            points[0].pressure,
+            stroke.brush.tangent,
+            points[0].tilt,
+        );
     }
     let upper = distances.partition_point(|value| *value < distance);
     let segment = upper.saturating_sub(1).min(points.len() - 2);
@@ -165,6 +177,7 @@ fn sample_path(stroke: &Stroke, distances: &[f32], distance: f32) -> (Vec3, f32,
         a.position.lerp(b.position, t),
         a.pressure + (b.pressure - a.pressure) * t,
         tangent,
+        dynamics::interpolate_tilt(a.tilt, b.tilt, t),
     )
 }
 
@@ -173,6 +186,7 @@ fn resolve_dab(
     center: Vec3,
     tangent: Vec3,
     pressure: f32,
+    tilt: Option<Vec3>,
     global_distance: f32,
     total: f32,
     index: u64,
@@ -216,6 +230,8 @@ fn resolve_dab(
     let random_size = (1.0 - variation) + size_random * variation * 2.0;
     let pressure_size = dynamics::pressure_scale(stroke.brush.dabs.pressure_size, pressure);
     let pressure_width = dynamics::pressure_scale(stroke.brush.dynamics.width, pressure);
+    let tilt_width =
+        dynamics::shading_width_scale(stroke.brush.dynamics, stroke.brush.texture.kind, tilt);
     let taper = dynamics::taper_factor(
         global_distance,
         total,
@@ -228,7 +244,8 @@ fn resolve_dab(
         tangent,
         normal,
         pressure,
-        size_scale: random_size * pressure_size * pressure_width * taper,
+        tilt,
+        size_scale: random_size * pressure_size * pressure_width * tilt_width * taper,
         angle_degrees: angle,
     }
 }

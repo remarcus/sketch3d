@@ -242,12 +242,14 @@ pub fn textured_fixture() -> Document {
         TextureKind::Grain,
         TextureKind::DryBrush,
         TextureKind::Pattern,
+        TextureKind::Graphite,
+        TextureKind::Charcoal,
     ]
     .into_iter()
     .enumerate()
     {
-        let brush = Brush {
-            kind: if row == 2 {
+        let mut brush = Brush {
+            kind: if row == 2 || texture_kind == TextureKind::Charcoal {
                 BrushKind::Chisel
             } else {
                 BrushKind::Ribbon
@@ -261,13 +263,41 @@ pub fn textured_fixture() -> Document {
             },
             ..Brush::default()
         };
+        if texture_kind == TextureKind::Graphite {
+            brush.dynamics.opacity = crate::document::PressureMapping {
+                enabled: true,
+                minimum: 0.04,
+                curve: 1.5,
+            };
+            brush.dynamics.tilt_orientation = true;
+            brush.dynamics.tilt_shading = true;
+            brush.dynamics.tilt_shading_scale = 3.5;
+            brush.dynamics.manual_shading_scale = 1.45;
+        } else if texture_kind == TextureKind::Charcoal {
+            brush.dynamics.opacity = crate::document::PressureMapping {
+                enabled: true,
+                minimum: 0.03,
+                curve: 1.2,
+            };
+            brush.dynamics.tilt_orientation = true;
+            brush.dynamics.tilt_shading = true;
+            brush.dynamics.tilt_shading_scale = 5.0;
+            brush.dynamics.manual_shading_scale = 2.1;
+        }
         let color = [
             [0.17, 0.82, 0.74],
             [0.96, 0.55, 0.3],
             [0.47, 0.58, 0.95],
             [0.94, 0.80, 0.39],
+            [0.23, 0.22, 0.2],
+            [0.14, 0.13, 0.12],
         ][row];
-        let y = 1.8 - row as f32 * 1.2;
+        let y = 2.5 - row as f32;
+        let radius = match texture_kind {
+            TextureKind::Graphite => 0.08,
+            TextureKind::Charcoal => 0.13,
+            _ => 0.18,
+        };
         doc.strokes.push(Stroke {
             material: Default::default(),
             id: 4001 + row as u64 * 3,
@@ -275,7 +305,7 @@ pub fn textured_fixture() -> Document {
             group_id: None,
             layer_id: 1,
             color,
-            radius: 0.18,
+            radius,
             brush,
             points: (0..=60)
                 .map(|i| {
@@ -286,8 +316,9 @@ pub fn textured_fixture() -> Document {
                             y + (t * std::f32::consts::TAU).sin() * 0.2,
                             0.0,
                         ),
-                        pressure: 0.8 + 0.2 * t,
-                        tilt: None,
+                        pressure: 0.15 + 0.85 * t,
+                        tilt: (texture_kind == TextureKind::Charcoal)
+                            .then_some(Vec3::Y * (0.15 + 0.65 * t)),
                     }
                 })
                 .collect(),
@@ -299,12 +330,12 @@ pub fn textured_fixture() -> Document {
             group_id: None,
             layer_id: 1,
             color,
-            radius: 0.18,
+            radius,
             brush,
             points: vec![Point {
                 position: Vec3::new(2.6, y, 0.0),
-                pressure: 1.0,
-                tilt: None,
+                pressure: 0.35,
+                tilt: (texture_kind == TextureKind::Charcoal).then_some(Vec3::Y * 0.55),
             }],
         });
         // A short depth-oriented round companion exercises circumference UV seams.
@@ -315,7 +346,7 @@ pub fn textured_fixture() -> Document {
             group_id: None,
             layer_id: 1,
             color,
-            radius: 0.11,
+            radius: (radius * 0.7).max(0.055),
             brush: Brush {
                 kind: BrushKind::Round,
                 ..brush

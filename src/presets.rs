@@ -11,7 +11,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const MAX_PRESETS: usize = 256;
+const BUILTIN_PRESET_COUNT: usize = 8;
+const MAX_PERSONAL_PRESETS: usize = 250;
+const MAX_PRESETS: usize = MAX_PERSONAL_PRESETS + BUILTIN_PRESET_COUNT;
 const FIRST_PERSONAL_ID: u64 = 100;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_PACKAGE_BYTES: u64 = 64 * 1024;
@@ -157,7 +159,7 @@ impl BrushPackage {
 }
 impl Preset {
     pub fn is_builtin(&self) -> bool {
-        (1..=6).contains(&self.id)
+        (1..=BUILTIN_PRESET_COUNT as u64).contains(&self.id)
     }
     fn is_valid(&self) -> bool {
         valid_name(&self.name).is_ok()
@@ -207,23 +209,57 @@ fn defaults() -> Vec<Preset> {
             TextureKind::Pattern,
             0.09,
         ),
+        ("Graphite", BrushKind::Ribbon, TextureKind::Graphite, 0.055),
+        ("Charcoal", BrushKind::Chisel, TextureKind::Charcoal, 0.09),
     ]
     .into_iter()
     .enumerate()
-    .map(|(i, (name, kind, texture, radius))| Preset {
-        id: i as u64 + 1,
-        name: name.into(),
-        brush: Brush {
+    .map(|(i, (name, kind, texture, radius))| {
+        let mut brush = Brush {
             kind,
             texture: TextureSettings {
                 kind: texture,
                 ..Default::default()
             },
             ..Default::default()
-        },
-        radius,
-        color: [0.17, 0.82, 0.74],
-        stabilization: 0.35,
+        };
+        let color = match texture {
+            TextureKind::Graphite => {
+                brush.dynamics.opacity = crate::document::PressureMapping {
+                    enabled: true,
+                    minimum: 0.04,
+                    curve: 1.5,
+                };
+                brush.dynamics.tilt_orientation = true;
+                brush.dynamics.tilt_shading = true;
+                brush.dynamics.tilt_shading_scale = 3.5;
+                brush.dynamics.manual_shading_scale = 1.45;
+                brush.opacity = 0.88;
+                [0.23, 0.22, 0.2]
+            }
+            TextureKind::Charcoal => {
+                brush.dynamics.opacity = crate::document::PressureMapping {
+                    enabled: true,
+                    minimum: 0.03,
+                    curve: 1.2,
+                };
+                brush.dynamics.tilt_orientation = true;
+                brush.dynamics.tilt_shading = true;
+                brush.dynamics.tilt_shading_scale = 5.0;
+                brush.dynamics.manual_shading_scale = 2.1;
+                brush.opacity = 0.92;
+                [0.14, 0.13, 0.12]
+            }
+            _ => [0.17, 0.82, 0.74],
+        };
+        Preset {
+            id: i as u64 + 1,
+            name: name.into(),
+            brush,
+            radius,
+            color,
+            stabilization: 0.35,
+        }
     })
     .collect()
 }
@@ -237,13 +273,12 @@ impl Library {
             return Err("Unsupported brush library version".into());
         }
         if self.presets.len() > MAX_PRESETS {
-            return Err("Brush library exceeds 256 presets".into());
+            return Err(format!("Brush library exceeds {MAX_PRESETS} presets"));
         }
-        if self.presets.iter().filter(|p| !p.is_builtin()).count() > MAX_PRESETS - 6 {
-            return Err(
-                "Brush library exceeds 250 personal presets; six slots are reserved for defaults"
-                    .into(),
-            );
+        if self.presets.iter().filter(|p| !p.is_builtin()).count() > MAX_PERSONAL_PRESETS {
+            return Err(format!(
+                "Brush library exceeds {MAX_PERSONAL_PRESETS} personal presets; {BUILTIN_PRESET_COUNT} slots are reserved for defaults"
+            ));
         }
         if self.next_id < FIRST_PERSONAL_ID || self.next_id == u64::MAX {
             return Err("Invalid next preset ID".into());
@@ -516,7 +551,7 @@ mod tests {
         library.delete(6).unwrap();
         assert!(library.duplicate(1, "Still overflow").is_err());
         library.restore_defaults().unwrap();
-        assert_eq!(library.presets.len(), 256);
+        assert_eq!(library.presets.len(), 258);
     }
 
     #[test]

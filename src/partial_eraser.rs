@@ -404,10 +404,7 @@ fn interpolate_point(a: &Point, b: &Point, t: f32) -> Point {
     if t >= 0.999999 {
         return *b;
     }
-    let tilt = match (a.tilt, b.tilt) {
-        (Some(left), Some(right)) => (left.lerp(right, t)).try_normalize(),
-        _ => None,
-    };
+    let tilt = crate::dynamics::interpolate_tilt(a.tilt, b.tilt, t);
     Point {
         position: a.position.lerp(b.position, t),
         pressure: a.pressure + (b.pressure - a.pressure) * t,
@@ -585,7 +582,7 @@ mod tests {
             let tilt = boundary
                 .tilt
                 .expect("tilt should interpolate at split boundaries");
-            assert!((tilt.length() - 1.0).abs() < 0.0001);
+            assert!(tilt.length() > 0.0 && tilt.length() <= 1.0);
         }
 
         let file = tempfile::NamedTempFile::new().unwrap();

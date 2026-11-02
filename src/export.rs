@@ -77,7 +77,9 @@ pub(crate) fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
                 || !p.pressure.is_finite()
                 || !(0.0..=1.0).contains(&p.pressure)
                 || p.tilt.is_some_and(|tilt| {
-                    !tilt.is_finite() || (tilt.length_squared() - 1.0).abs() > 0.001
+                    !tilt.is_finite()
+                        || tilt.length_squared() <= 1.0e-8
+                        || tilt.length_squared() > 1.002
                 })
         })
     {
@@ -311,6 +313,7 @@ pub fn encode_with_images(
         let alpha_blended = stroke.brush.opacity < 1.0
             || (stroke.fill.is_none() && stroke.brush.softness > 0.0)
             || stroke.material == crate::document::StrokeMaterial::Cutout
+            || settings.kind.uses_continuous_alpha()
             || (stroke.brush.dynamics.opacity.enabled
                 && stroke.brush.dynamics.opacity.minimum < 1.0);
         let key = (
@@ -1198,7 +1201,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 14);
+        assert_eq!(loaded.version, 15);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -1272,9 +1275,13 @@ mod tests {
         let original = doc.strokes.clone();
         let exported = encode(&doc, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
-        assert_eq!(gltf.images().count(), 3);
-        assert_eq!(gltf.textures().count(), 3);
-        for image in gltf.images() {
+        assert_eq!(gltf.images().count(), 5);
+        assert_eq!(gltf.textures().count(), 5);
+        for (image, stroke) in gltf.images().zip(
+            doc.strokes
+                .iter()
+                .filter(|stroke| stroke.brush.texture.kind != TextureKind::Solid),
+        ) {
             let gltf::image::Source::View { view, mime_type } = image.source() else {
                 panic!("texture must be embedded")
             };
@@ -1283,12 +1290,20 @@ mod tests {
             let pixels = image::load_from_memory(bytes).unwrap().to_rgba8();
             assert_eq!(pixels.dimensions(), (texture::SIZE, texture::SIZE));
             let mut coverage = [0usize; 2];
+            let mut soft_alpha = false;
             for pixel in pixels.pixels() {
                 assert_eq!(&pixel.0[..3], &[255; 3]);
-                assert!(matches!(pixel.0[3], 0 | 255));
-                coverage[usize::from(pixel.0[3] == 255)] += 1;
+                if stroke.brush.texture.kind.uses_continuous_alpha() {
+                    soft_alpha |= (1..255).contains(&pixel.0[3]);
+                } else {
+                    assert!(matches!(pixel.0[3], 0 | 255));
+                }
+                coverage[usize::from(pixel.0[3] >= 128)] += 1;
             }
             assert!(coverage.iter().all(|n| *n > 0));
+            if stroke.brush.texture.kind.uses_continuous_alpha() {
+                assert!(soft_alpha);
+            }
         }
         for (mesh, stroke) in gltf.meshes().zip(&doc.strokes) {
             let primitive = mesh.primitives().next().unwrap();
@@ -1307,8 +1322,21 @@ mod tests {
                     .base_color_texture()
                     .is_none());
             } else {
-                assert_eq!(material.alpha_mode(), gltf::material::AlphaMode::Mask);
-                assert_eq!(material.alpha_cutoff(), Some(0.5));
+                let expects_blend = stroke.brush.texture.kind.uses_continuous_alpha()
+                    || stroke.brush.opacity < 1.0
+                    || (stroke.brush.dynamics.opacity.enabled
+                        && stroke.brush.dynamics.opacity.minimum < 1.0);
+                assert_eq!(
+                    material.alpha_mode(),
+                    if expects_blend {
+                        gltf::material::AlphaMode::Blend
+                    } else {
+                        gltf::material::AlphaMode::Mask
+                    }
+                );
+                if !expects_blend {
+                    assert_eq!(material.alpha_cutoff(), Some(0.5));
+                }
                 let tex = material
                     .pbr_metallic_roughness()
                     .base_color_texture()
@@ -1478,7 +1506,7 @@ mod group_export_tests {
     fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
         let doc = crate::export_check::grouped_fixture();
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-        assert_eq!(loaded.version, 14);
+        assert_eq!(loaded.version, 15);
         assert_eq!(loaded.strokes, doc.strokes);
         let encoded = encode(&doc, None).unwrap();
         let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();

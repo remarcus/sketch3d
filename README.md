@@ -5,6 +5,7 @@ Sketch3D is an open-source, tablet-first 3D sketching app written in Rust. Draw 
 ## Features
 
 - Pressure-sensitive 3D brush strokes with stabilization, editable brushes, and undo/redo.
+- Procedural graphite and charcoal brushes with pressure opacity, tilt broadening, and a manual fallback.
 - Freely placed drawing planes and curved guides, including cylinders, revolved surfaces, and saved custom guides.
 - Selection, transforms, groups, layers, fills, shapes, curves, mirroring, and partial erasing.
 - Image planes and OBJ references for drawing over references or onto model surfaces.

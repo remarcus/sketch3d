@@ -41,6 +41,30 @@ impl SketchApp {
             if self.brush.kind != BrushKind::Round {
                 ui.checkbox(&mut self.brush.dynamics.tilt_orientation, "Tilt orientation").on_hover_text("Uses reported pen lean to orient the cross-section. Missing or upright tilt falls back to the manual frame.");
             }
+            if self.brush.texture.kind.uses_continuous_alpha() {
+                ui.checkbox(&mut self.brush.dynamics.tilt_shading, "Tilt broad shading")
+                    .on_hover_text("Reported lean broadens graphite or charcoal. Its angle also sets the shading direction when tilt orientation is enabled.");
+                if self.brush.dynamics.tilt_shading {
+                    ui_style::slider_row(
+                        ui,
+                        "Tilt width",
+                        "tilt-shading-width",
+                        &mut self.brush.dynamics.tilt_shading_scale,
+                        1.0..=6.0,
+                        100.0,
+                        "×",
+                    );
+                    ui_style::slider_row(
+                        ui,
+                        "No-tilt fallback",
+                        "manual-shading-width",
+                        &mut self.brush.dynamics.manual_shading_scale,
+                        1.0..=6.0,
+                        100.0,
+                        "×",
+                    );
+                }
+            }
             ui_style::slider_row(ui, "Start taper", "taper-start", &mut self.brush.dynamics.taper_start, 0.0..=10.0, 1.0, "wu");
             ui_style::slider_row(ui, "End taper", "taper-end", &mut self.brush.dynamics.taper_end, 0.0..=10.0, 1.0, "wu");
             ui.small("Taper length is in world units. Mouse pressure is constant; missing tilt uses the manual angle.");
@@ -163,7 +187,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 14);
+                assert_eq!(loaded.version, 15);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.load_dynamics();
                 self.brush.dynamics = Default::default();

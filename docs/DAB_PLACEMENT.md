@@ -38,8 +38,10 @@ display, picking, selection bounds, GLB, and OBJ export.
 
 ## Versioning and budgets
 
-New documents use schema version 14. Missing dab settings in earlier versions
-default to disabled; their continuous geometry and appearance remain unchanged.
+SKETCH-071 introduced native schema version 14. Current drawings use schema
+version 15, which adds captured tilt magnitude for tilt-driven shading. Missing
+dab settings in earlier versions default to disabled; their continuous geometry
+and appearance remain unchanged.
 Each dab settings record uses algorithm version 1. Unknown algorithm versions
 are rejected by document validation instead of being regenerated differently.
 

@@ -123,9 +123,9 @@ impl Point {
             && self.position.abs().max_element() <= 10000.0
             && self.pressure.is_finite()
             && (0.0..=1.0).contains(&self.pressure)
-            && self
-                .tilt
-                .is_none_or(|tilt| tilt.is_finite() && (tilt.length_squared() - 1.0).abs() <= 0.001)
+            && self.tilt.is_none_or(|tilt| {
+                tilt.is_finite() && tilt.length_squared() > 1.0e-8 && tilt.length_squared() <= 1.002
+            })
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -192,7 +192,7 @@ impl Default for Document {
         Self {
             layers: layers_default(),
             active_layer: 1,
-            version: 14,
+            version: 15,
             strokes: Vec::new(),
             image_planes: Vec::new(),
             active_image_plane: None,
@@ -247,7 +247,7 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=14)) {
+        if !matches!(version, Some(1..=15)) {
             return Err("Unsupported document version".into());
         }
         if matches!(version, Some(1..=6)) {
@@ -317,7 +317,7 @@ impl Document {
             }
         }
         let mut doc: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
-        doc.version = 14;
+        doc.version = 15;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
         }
@@ -479,7 +479,7 @@ mod tests {
                 active_model_reference: None,
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-            assert_eq!(loaded.version, 14);
+            assert_eq!(loaded.version, 15);
             assert_eq!(loaded.strokes, doc.strokes);
         }
     }
@@ -503,7 +503,7 @@ mod tests {
         // a new shape, or prevent an otherwise valid legacy file from opening.
         old["strokes"][0]["brush"] = serde_json::json!({"kind": "future_brush"});
         let loaded = Document::from_json(&old.to_string()).unwrap();
-        assert_eq!(loaded.version, 14);
+        assert_eq!(loaded.version, 15);
         assert_eq!(loaded.strokes, vec![original]);
         old["strokes"][0].as_object_mut().unwrap().remove("brush");
         let without_extension = Document::from_json(&old.to_string()).unwrap();
@@ -531,7 +531,7 @@ mod tests {
             .remove("opacity");
 
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 14);
+        assert_eq!(loaded.version, 15);
         assert_eq!(loaded.strokes[0].brush.opacity, 1.0);
         assert_eq!(loaded.strokes[0].brush.softness, 0.0);
         assert_eq!(
@@ -541,7 +541,7 @@ mod tests {
 
         let saved = serde_json::to_string(&loaded).unwrap();
         let reopened = Document::from_json(&saved).unwrap();
-        assert_eq!(reopened.version, 14);
+        assert_eq!(reopened.version, 15);
         assert_eq!(reopened.strokes, loaded.strokes);
     }
     #[test]
@@ -674,7 +674,7 @@ mod tests {
         value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
         value["strokes"][0]["points"][0]["tilt"] = serde_json::json!("unknown extension");
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 14);
+        assert_eq!(loaded.version, 15);
         assert_eq!(loaded.strokes, vec![original]);
     }
     #[test]
@@ -770,7 +770,7 @@ mod tests {
         legacy["strokes"][0]["brush"]["texture"] = serde_json::json!({"kind":"future_pattern"});
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
         mark.brush.texture = TextureSettings::default();
-        assert_eq!(loaded.version, 14);
+        assert_eq!(loaded.version, 15);
         assert_eq!(loaded.strokes, vec![mark]);
     }
     #[test]
@@ -835,7 +835,7 @@ mod layer_tests {
         value["active_layer"] = serde_json::json!(99);
         value["strokes"][0]["layer_id"] = serde_json::json!("unknown");
         let migrated = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(migrated.version, 14);
+        assert_eq!(migrated.version, 15);
         assert_eq!(migrated.strokes, vec![original]);
         assert_eq!(migrated.layers, layers_default());
         assert_eq!(migrated.active_layer, 1);
@@ -1183,7 +1183,7 @@ mod saved_guide_document_tests {
         legacy.as_object_mut().unwrap().remove("guide_resources");
         legacy.as_object_mut().unwrap().remove("active_guide");
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
-        assert_eq!(loaded.version, 14);
+        assert_eq!(loaded.version, 15);
         assert!(loaded.guide_resources.is_empty());
         assert_eq!(loaded.active_guide, None);
         assert_eq!(loaded.strokes, doc.strokes);
@@ -1235,7 +1235,7 @@ mod group_tests {
             s.group_id = None;
         }
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 14);
+        assert_eq!(loaded.version, 15);
         assert_eq!(loaded.strokes, doc.strokes);
         assert_eq!(loaded.layers, doc.layers);
     }

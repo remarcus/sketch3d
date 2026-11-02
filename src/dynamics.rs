@@ -33,6 +33,12 @@ pub struct Dynamics {
     #[serde(default = "default_opacity_mapping")]
     pub opacity: PressureMapping,
     pub tilt_orientation: bool,
+    #[serde(default)]
+    pub tilt_shading: bool,
+    #[serde(default = "default_tilt_shading_scale")]
+    pub tilt_shading_scale: f32,
+    #[serde(default = "default_manual_shading_scale")]
+    pub manual_shading_scale: f32,
     pub taper_start: f32,
     pub taper_end: f32,
 }
@@ -104,6 +110,9 @@ impl Default for Dynamics {
             thickness: PressureMapping::default(),
             opacity: default_opacity_mapping(),
             tilt_orientation: false,
+            tilt_shading: false,
+            tilt_shading_scale: default_tilt_shading_scale(),
+            manual_shading_scale: default_manual_shading_scale(),
             taper_start: 0.0,
             taper_end: 0.0,
         }
@@ -114,6 +123,10 @@ impl Dynamics {
         self.width.is_valid()
             && self.thickness.is_valid()
             && self.opacity.is_valid()
+            && self.tilt_shading_scale.is_finite()
+            && (1.0..=6.0).contains(&self.tilt_shading_scale)
+            && self.manual_shading_scale.is_finite()
+            && (1.0..=6.0).contains(&self.manual_shading_scale)
             && self.taper_start.is_finite()
             && (0.0..=10.0).contains(&self.taper_start)
             && self.taper_end.is_finite()
@@ -127,6 +140,34 @@ fn default_opacity_mapping() -> PressureMapping {
         minimum: 1.0,
         curve: 1.0,
     }
+}
+
+fn default_tilt_shading_scale() -> f32 {
+    4.0
+}
+
+fn default_manual_shading_scale() -> f32 {
+    1.5
+}
+
+/// Widen graphite/charcoal geometry by the reported lean amount. Missing tilt
+/// uses a saved manual width so mouse input retains a useful shading control.
+pub fn shading_width_scale(
+    dynamics: Dynamics,
+    texture: crate::texture::TextureKind,
+    tilt: Option<Vec3>,
+) -> f32 {
+    if !dynamics.tilt_shading
+        || !matches!(
+            texture,
+            crate::texture::TextureKind::Graphite | crate::texture::TextureKind::Charcoal
+        )
+    {
+        return 1.0;
+    }
+    tilt.map_or(dynamics.manual_shading_scale, |lean| {
+        1.0 + (dynamics.tilt_shading_scale - 1.0) * lean.length().clamp(0.0, 1.0)
+    })
 }
 
 pub fn pressure_scale(mapping: PressureMapping, pressure: f32) -> f32 {
@@ -194,10 +235,14 @@ pub fn screen_tilt(tilt: [Option<f32>; 2], right: Vec3, up: Vec3) -> Option<Vec3
     }
     let x = x.clamp(-89.0, 89.0).to_radians().tan();
     let y = y.clamp(-89.0, 89.0).to_radians().tan();
-    if x.hypot(y) < 1.0_f32.to_radians().tan() {
+    let lean = x.hypot(y);
+    if lean < 1.0_f32.to_radians().tan() {
         return None;
     }
-    (right * x - up * y).try_normalize()
+    let magnitude = lean.atan() / std::f32::consts::FRAC_PI_2;
+    (right * x - up * y)
+        .try_normalize()
+        .map(|direction| direction * magnitude)
 }
 
 /// Brush orientation is an axis: opposite lean vectors describe the same width.
@@ -209,7 +254,12 @@ pub fn interpolate_tilt(a: Option<Vec3>, b: Option<Vec3>, t: f32) -> Option<Vec3
     if a.dot(b) < 0.0 {
         b = -b;
     }
-    a.lerp(b, t.clamp(0.0, 1.0)).try_normalize()
+    let t = t.clamp(0.0, 1.0);
+    let amount = a.length() + (b.length() - a.length()) * t;
+    a.try_normalize()?
+        .lerp(b.try_normalize()?, t)
+        .try_normalize()
+        .map(|direction| direction * amount)
 }
 
 #[cfg(test)]
@@ -305,18 +355,15 @@ mod tests {
         ] {
             assert_eq!(screen_tilt(tilt, Vec3::X, Vec3::Y), None);
         }
-        assert_eq!(
-            screen_tilt([Some(30.0), Some(0.0)], Vec3::X, Vec3::Y),
-            Some(Vec3::X)
-        );
-        assert_eq!(
-            screen_tilt([Some(0.0), Some(30.0)], Vec3::X, Vec3::Y),
-            Some(-Vec3::Y)
-        );
-        assert_eq!(
-            screen_tilt([Some(30.0), Some(0.0)], Vec3::Y, -Vec3::X),
-            Some(Vec3::Y)
-        );
+        assert!(screen_tilt([Some(30.0), Some(0.0)], Vec3::X, Vec3::Y)
+            .unwrap()
+            .abs_diff_eq(Vec3::X / 3.0, 1e-6));
+        assert!(screen_tilt([Some(0.0), Some(30.0)], Vec3::X, Vec3::Y)
+            .unwrap()
+            .abs_diff_eq(-Vec3::Y / 3.0, 1e-6));
+        assert!(screen_tilt([Some(30.0), Some(0.0)], Vec3::Y, -Vec3::X)
+            .unwrap()
+            .abs_diff_eq(Vec3::Y / 3.0, 1e-6));
         assert!(screen_tilt([Some(90.0), Some(-90.0)], Vec3::X, Vec3::Y)
             .unwrap()
             .is_finite());

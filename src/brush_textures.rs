@@ -10,7 +10,7 @@ impl SketchApp {
         egui::CollapsingHeader::new("Surface texture").default_open(true).show(ui,|ui| {
             ui_style::field_row(ui, "Pattern", |ui| {
                 ui.horizontal_wrapped(|ui| {
-                for kind in [TextureKind::Solid,TextureKind::Grain,TextureKind::DryBrush,TextureKind::Pattern] {
+                for kind in [TextureKind::Solid,TextureKind::Grain,TextureKind::DryBrush,TextureKind::Pattern,TextureKind::Graphite,TextureKind::Charcoal] {
                     ui.radio_value(&mut self.brush.texture.kind,kind,kind.label());
                 }
                 });
@@ -19,7 +19,11 @@ impl SketchApp {
                 ui.add(egui::Slider::new(&mut self.brush.texture.scale,0.02..=10.0).logarithmic(true).text("Spacing"));
                 ui.add(egui::Slider::new(&mut self.brush.texture.strength,0.0..=1.0).text("Strength"));
                 if ui.button("Vary pattern").clicked() {self.brush.texture.seed=self.brush.texture.seed.wrapping_add(1);}
-                ui.small("Spacing is in world units. Gaps remain part of the selectable stroke footprint.");
+                if self.brush.texture.kind.uses_continuous_alpha() {
+                    ui.small("Soft alpha grain stays fixed in world space. Pressure opacity and tilt broadening shape graphite/charcoal coverage.");
+                } else {
+                    ui.small("Spacing is in world units. Gaps remain part of the selectable stroke footprint.");
+                }
             }
         });
     }
@@ -28,7 +32,7 @@ impl SketchApp {
         self.doc = export_check::textured_fixture();
         self.next_id = self.doc.strokes.iter().map(|s| s.id).max().unwrap_or(0) + 1;
         self.renderer.invalidate();
-        self.status="Texture study / Solid, Grain, Dry brush, Pattern. Each row includes flat ink, a dot, and a round mark.".into();
+        self.status="Texture study / Chalk, Graphite, Charcoal, Dry brush, and Pattern. Pressure runs vary across each row; charcoal also shows synthetic tilt broadening.".into();
     }
     pub(super) fn verify_textures(&mut self, ctx: &egui::Context, rect: Rect) {
         let Some(frame) = self.texture_verification_frame else {
@@ -89,7 +93,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 14);
+                assert_eq!(loaded.version, 15);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.load_textures();
                 self.brush.texture = TextureSettings {

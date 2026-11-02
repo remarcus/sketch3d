@@ -268,6 +268,11 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
         let b = tangent.cross(a).normalize();
         let radius = stroke.radius
             * crate::dynamics::pressure_scale(stroke.brush.dynamics.width, p.pressure)
+            * crate::dynamics::shading_width_scale(
+                stroke.brush.dynamics,
+                stroke.brush.texture.kind,
+                p.tilt,
+            )
             * crate::dynamics::taper_factor(
                 distances[i],
                 total,
@@ -297,7 +302,12 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
     if rings.len() == 1 {
         let p = stroke.points[0];
         let r = stroke.radius
-            * crate::dynamics::pressure_scale(stroke.brush.dynamics.width, p.pressure);
+            * crate::dynamics::pressure_scale(stroke.brush.dynamics.width, p.pressure)
+            * crate::dynamics::shading_width_scale(
+                stroke.brush.dynamics,
+                stroke.brush.texture.kind,
+                p.tilt,
+            );
         let textured = stroke.brush.texture.kind != crate::texture::TextureKind::Solid;
         let frame = if textured {
             Mat3::from_cols(
@@ -385,13 +395,20 @@ pub fn stroke_extent(stroke: &Stroke) -> f32 {
             .points
             .windows(2)
             .all(|pair| pair[0].position.distance_squared(pair[1].position) <= 1e-12);
-    let shape_extent = match stroke.brush.kind {
+    let mut shape_extent = match stroke.brush.kind {
         BrushKind::Chisel => {
             stroke.radius * (if dot { 2.0 } else { 1.0 } + stroke.brush.thickness.powi(2)).sqrt()
         }
         BrushKind::Ribbon if dot => stroke.radius * std::f32::consts::SQRT_2,
         BrushKind::Round | BrushKind::Ribbon => stroke.radius,
     };
+    if stroke.brush.dynamics.tilt_shading && stroke.brush.texture.kind.uses_continuous_alpha() {
+        shape_extent *= stroke
+            .brush
+            .dynamics
+            .tilt_shading_scale
+            .max(stroke.brush.dynamics.manual_shading_scale);
+    }
     if stroke.brush.dabs.enabled {
         shape_extent * (1.0 + stroke.brush.dabs.size_variation)
             + stroke.radius * stroke.brush.dabs.scatter
@@ -739,6 +756,11 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
             tangent,
             radius: stroke.radius
                 * crate::dynamics::pressure_scale(stroke.brush.dynamics.width, point.pressure)
+                * crate::dynamics::shading_width_scale(
+                    stroke.brush.dynamics,
+                    stroke.brush.texture.kind,
+                    point.tilt,
+                )
                 * taper,
             half_thickness: stroke.radius
                 * stroke.brush.thickness

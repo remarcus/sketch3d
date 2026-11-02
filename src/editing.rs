@@ -416,9 +416,12 @@ pub fn transformed_with_scale(
             return Err("Scale would exceed brush radius limits");
         }
         for point in &mut stroke.points {
-            point.tilt = point
-                .tilt
-                .map(|tilt| (linear * tilt).try_normalize().unwrap_or(tilt));
+            point.tilt = point.tilt.map(|tilt| {
+                let magnitude = tilt.length();
+                (linear * tilt)
+                    .try_normalize()
+                    .map_or(tilt, |direction| direction * magnitude)
+            });
             point.position = pivot + linear * (point.position - pivot) + translation;
             if !point.is_valid() {
                 return Err("Transform exceeds document bounds");

@@ -131,6 +131,7 @@ fn is_translucent(stroke: &Stroke) -> bool {
         || (stroke.brush.dynamics.opacity.enabled
             && stroke.brush.dynamics.opacity.minimum < 0.999_999)
         || (stroke.fill.is_none() && stroke.brush.softness > 0.0)
+        || stroke.brush.texture.kind.uses_continuous_alpha()
 }
 
 fn unpremultiply_rgba(pixels: &mut [u8]) {

@@ -14,6 +14,8 @@ pub fn run() -> Result<(), String> {
             TextureKind::Grain,
             TextureKind::DryBrush,
             TextureKind::Pattern,
+            TextureKind::Graphite,
+            TextureKind::Charcoal,
         ] {
             let mut stroke = Stroke {
                 material: Default::default(),

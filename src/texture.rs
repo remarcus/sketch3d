@@ -1,4 +1,4 @@
-//! Original procedural binary coverage masks; no external artwork or sidecars.
+//! Original procedural brush masks; no external artwork or sidecars.
 use image::{codecs::png::PngEncoder, ColorType, ImageEncoder};
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +12,8 @@ pub enum TextureKind {
     Grain,
     DryBrush,
     Pattern,
+    Graphite,
+    Charcoal,
 }
 impl TextureKind {
     pub fn label(self) -> &'static str {
@@ -20,7 +22,13 @@ impl TextureKind {
             Self::Grain => "Grain / chalk",
             Self::DryBrush => "Dry brush",
             Self::Pattern => "Diamond pattern",
+            Self::Graphite => "Graphite",
+            Self::Charcoal => "Charcoal",
         }
+    }
+
+    pub fn uses_continuous_alpha(self) -> bool {
+        matches!(self, Self::Graphite | Self::Charcoal)
     }
 }
 
@@ -70,14 +78,13 @@ fn noise(x: u32, y: u32, seed: u32) -> f32 {
     (value & 0x00ff_ffff) as f32 / 0x0100_0000 as f32
 }
 
-/// U runs along the stroke and V across its section. Every mask is tileable
-/// through repeat sampling; white RGB retains the original stroke color.
+/// U runs along the stroke and V across its section. Masks repeat in UV space;
+/// older textures remain binary while graphite and charcoal use soft alpha.
 pub fn rgba(settings: TextureSettings) -> Vec<u8> {
     let mut result = Vec::with_capacity((SIZE * SIZE * 4) as usize);
     for y in 0..SIZE {
         for x in 0..SIZE {
-            let covered = texel_covered(settings, x, y);
-            result.extend_from_slice(&[255, 255, 255, if covered { 255 } else { 0 }]);
+            result.extend_from_slice(&[255, 255, 255, texel_alpha(settings, x, y)]);
         }
     }
     result
@@ -94,25 +101,88 @@ pub fn covered_at_uv(settings: TextureSettings, uv: [f32; 2]) -> bool {
 }
 
 fn texel_covered(settings: TextureSettings, x: u32, y: u32) -> bool {
+    texel_alpha(settings, x, y) >= 128
+}
+
+fn texel_alpha(settings: TextureSettings, x: u32, y: u32) -> u8 {
     if settings.kind == TextureKind::Solid || settings.strength <= 0.0 {
-        return true;
+        return 255;
     }
-    match settings.kind {
-        TextureKind::Solid => true,
-        TextureKind::Grain => noise(x, y, settings.seed) >= settings.strength * 0.65,
+    let alpha = match settings.kind {
+        TextureKind::Solid => 1.0,
+        TextureKind::Grain => {
+            if noise(x, y, settings.seed) >= settings.strength * 0.65 {
+                1.0
+            } else {
+                0.0
+            }
+        }
         TextureKind::DryBrush => {
             let lane = noise(0, y / 3, settings.seed);
             let streak = noise(x / 16, y / 3, settings.seed ^ 0x7a21_eb37);
-            lane * 0.85 + streak * 0.15 >= settings.strength * 0.8
+            if lane * 0.85 + streak * 0.15 >= settings.strength * 0.8 {
+                1.0
+            } else {
+                0.0
+            }
         }
         TextureKind::Pattern => {
             let phase_x = settings.seed & 31;
             let phase_y = (settings.seed >> 5) & 31;
             let dx = ((x + phase_x) % 32).abs_diff(16) as f32;
             let dy = ((y + phase_y) % 32).abs_diff(16) as f32;
-            1.0 - (dx + dy) / 32.0 >= settings.strength * 0.95
+            if 1.0 - (dx + dy) / 32.0 >= settings.strength * 0.95 {
+                1.0
+            } else {
+                0.0
+            }
         }
-    }
+        TextureKind::Graphite => {
+            let coarse = periodic_value_noise(x, y, settings.seed, 5);
+            let fine = periodic_value_noise(x, y, settings.seed ^ 0x6d2b_79f5, 29);
+            let grit = periodic_value_noise(x, y, settings.seed ^ 0xa511_e9b3, 71);
+            let grain = coarse * 0.24 + fine * 0.48 + grit * 0.28;
+            1.0 - settings.strength * (1.0 - (0.24 + grain * 0.76))
+        }
+        TextureKind::Charcoal => {
+            let broad = periodic_value_noise(x, y, settings.seed, 6);
+            let mid = periodic_value_noise(x, y, settings.seed ^ 0x68bc_21eb, 19);
+            let grit = periodic_value_noise(x, y, settings.seed ^ 0x02e5_be93, 47);
+            let field = broad * 0.58 + mid * 0.3 + grit * 0.12;
+            let density = smoothstep(0.18, 0.76, field);
+            1.0 - settings.strength * (1.0 - (0.06 + density * 0.94))
+        }
+    };
+    (alpha.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+fn periodic_value_noise(x: u32, y: u32, seed: u32, period: u32) -> f32 {
+    let px = x as f32 / SIZE as f32 * period as f32;
+    let py = y as f32 / SIZE as f32 * period as f32;
+    let ix = px.floor() as u32;
+    let iy = py.floor() as u32;
+    let fx = fade(px - ix as f32);
+    let fy = fade(py - iy as f32);
+    let x0 = ix % period;
+    let x1 = (ix + 1) % period;
+    let y0 = iy % period;
+    let y1 = (iy + 1) % period;
+    let a = noise(x0, y0, seed);
+    let b = noise(x1, y0, seed);
+    let c = noise(x0, y1, seed);
+    let d = noise(x1, y1, seed);
+    let top = a + (b - a) * fx;
+    let bottom = c + (d - c) * fx;
+    top + (bottom - top) * fy
+}
+
+fn fade(t: f32) -> f32 {
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 pub fn png(settings: TextureSettings) -> Result<Vec<u8>, String> {
