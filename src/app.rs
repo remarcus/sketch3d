@@ -885,15 +885,15 @@ impl CapabilityReplay {
 
     fn paint_cursor_cue(&self, painter: &egui::Painter, canvas: Rect) {
         let disclosure = Rect::from_min_size(
-            egui::pos2(canvas.right() - 440.0, canvas.top() + 12.0),
-            egui::vec2(428.0, 28.0),
+            egui::pos2(canvas.center().x - 170.0, canvas.top() + 12.0),
+            egui::vec2(340.0, 28.0),
         );
         painter.rect_filled(disclosure, 4.0, Color32::from_black_alpha(210));
         painter.text(
             disclosure.center(),
             egui::Align2::CENTER_CENTER,
             "SYNTHETIC REPLAY  •  NO PRESSURE",
-            egui::FontId::proportional(14.0),
+            egui::FontId::proportional(12.0),
             Color32::WHITE,
         );
         let Some(position) = self
