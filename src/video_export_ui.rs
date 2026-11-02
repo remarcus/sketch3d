@@ -1466,6 +1466,23 @@ mod tests {
         }
     }
 
+    fn headless_render_state_for_test() -> Option<eframe::egui_wgpu::RenderState> {
+        let config = eframe::egui_wgpu::WgpuConfiguration::default();
+        let instance = block_on(config.wgpu_setup.new_instance());
+        match block_on(eframe::egui_wgpu::RenderState::create(
+            &config, &instance, None, None, 1, false,
+        )) {
+            Ok(state) => Some(state),
+            Err(eframe::egui_wgpu::WgpuError::NoSuitableAdapterFound(reason)) => {
+                eprintln!(
+                    "skipping GPU-backed video export test: no suitable WGPU adapter: {reason}"
+                );
+                None
+            }
+            Err(error) => panic!("headless WGPU render state initializes: {error}"),
+        }
+    }
+
     fn mp4_sample_count(bytes: &[u8]) -> Option<u32> {
         bytes
             .windows(4)
@@ -1868,12 +1885,9 @@ mod tests {
         const SIZE: [u32; 2] = [320, 240];
         const FRAME_COUNT: usize = 8;
         const FPS: u32 = 8;
-        let config = eframe::egui_wgpu::WgpuConfiguration::default();
-        let instance = block_on(config.wgpu_setup.new_instance());
-        let state = block_on(eframe::egui_wgpu::RenderState::create(
-            &config, &instance, None, None, 1, false,
-        ))
-        .expect("headless WGPU render state initializes");
+        let Some(state) = headless_render_state_for_test() else {
+            return;
+        };
         let adapter = state.adapter.get_info();
         let mut renderer = crate::renderer::SceneRenderer::new(state);
         let lighting = crate::lighting::Lighting {
@@ -2094,12 +2108,9 @@ mod tests {
         const SIZE: [u32; 2] = [320, 240];
         const FRAME_COUNT: usize = 4;
         const FPS: u32 = 4;
-        let config = eframe::egui_wgpu::WgpuConfiguration::default();
-        let instance = block_on(config.wgpu_setup.new_instance());
-        let state = block_on(eframe::egui_wgpu::RenderState::create(
-            &config, &instance, None, None, 1, false,
-        ))
-        .expect("headless WGPU render state initializes");
+        let Some(state) = headless_render_state_for_test() else {
+            return;
+        };
         let adapter = state.adapter.get_info();
         let mut renderer = crate::renderer::SceneRenderer::new(state);
         let lighting = crate::lighting::Lighting {
