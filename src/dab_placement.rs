@@ -44,6 +44,17 @@ pub struct ResolvedDab {
     pub gradient_t: f32,
 }
 
+struct DabParameters {
+    center: Vec3,
+    tangent: Vec3,
+    pressure: f32,
+    tilt: Option<Vec3>,
+    global_distance: f32,
+    total: f32,
+    gradient_t: f32,
+    index: u64,
+}
+
 /// A stable seed derived from a unique stroke ID. Split fragments retain it.
 pub fn seed_for_stroke(id: u64) -> u64 {
     splitmix64(id ^ 0x534b_4554_4348_3301)
@@ -123,14 +134,16 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
         let point = stroke.points[0];
         out.push(resolve_dab(
             stroke,
-            point.position,
-            stroke.brush.tangent,
-            point.pressure,
-            point.tilt,
-            0.0,
-            total,
-            0.0,
-            0,
+            DabParameters {
+                center: point.position,
+                tangent: stroke.brush.tangent,
+                pressure: point.pressure,
+                tilt: point.tilt,
+                global_distance: 0.0,
+                total,
+                gradient_t: 0.0,
+                index: 0,
+            },
         ));
         return Ok(out);
     }
@@ -142,18 +155,20 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
         let (position, pressure, tangent, tilt) = sample_path(stroke, &distances, local_distance);
         out.push(resolve_dab(
             stroke,
-            position,
-            tangent,
-            pressure,
-            tilt,
-            global_distance,
-            total,
-            if local_length > DISTANCE_EPSILON {
-                (local_distance / local_length).clamp(0.0, 1.0)
-            } else {
-                0.0
+            DabParameters {
+                center: position,
+                tangent,
+                pressure,
+                tilt,
+                global_distance,
+                total,
+                gradient_t: if local_length > DISTANCE_EPSILON {
+                    (local_distance / local_length).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                },
+                index,
             },
-            index,
         ));
     }
     Ok(out)
@@ -203,17 +218,17 @@ fn sample_path(
     )
 }
 
-fn resolve_dab(
-    stroke: &Stroke,
-    center: Vec3,
-    tangent: Vec3,
-    pressure: f32,
-    tilt: Option<Vec3>,
-    global_distance: f32,
-    total: f32,
-    gradient_t: f32,
-    index: u64,
-) -> ResolvedDab {
+fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> ResolvedDab {
+    let DabParameters {
+        center,
+        tangent,
+        pressure,
+        tilt,
+        global_distance,
+        total,
+        gradient_t,
+        index,
+    } = parameters;
     let normal = (stroke.brush.normal - tangent * stroke.brush.normal.dot(tangent))
         .try_normalize()
         .or_else(|| {

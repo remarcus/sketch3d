@@ -190,7 +190,7 @@ mod base64_png {
         }
         let estimated = encoded.len() / 4 * 3;
         let mut decoded = Vec::with_capacity(estimated);
-        for (index, chunk) in encoded.as_bytes().chunks_exact(4).enumerate() {
+        for (index, chunk) in encoded.as_bytes().as_chunks::<4>().0.iter().enumerate() {
             let last = index + 1 == encoded.len() / 4;
             let a = sextet(chunk[0])
                 .ok_or_else(|| serde::de::Error::custom("invalid brush tip base64"))?;

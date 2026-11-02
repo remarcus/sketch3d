@@ -571,15 +571,9 @@ impl SketchApp {
                         let Some((screen, _)) = gizmo::project(&self.camera, rect, moved) else {
                             continue;
                         };
-                        let Some((snapped, cue)) = index.query(
-                            &self.doc,
-                            &self.camera,
-                            rect,
-                            screen,
-                            options,
-                            None,
-                            false,
-                        ) else {
+                        let Some((snapped, cue)) =
+                            index.query(&self.doc, screen, options, None, false)
+                        else {
                             continue;
                         };
                         let distance = screen.distance(cue.screen);

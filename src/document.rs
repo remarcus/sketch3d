@@ -526,7 +526,7 @@ impl Document {
                 || definition.source_stroke_ids.len() > 100_000
                 || !definition.pivot.is_finite()
                 || definition.pivot.abs().max_element() > 10_000.0
-                || definition.source_stroke_ids.iter().any(|id| *id == 0)
+                || definition.source_stroke_ids.contains(&0)
                 || definition
                     .source_stroke_ids
                     .iter()

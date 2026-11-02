@@ -1377,11 +1377,16 @@ mod tests {
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.images().count(), 5);
         assert_eq!(gltf.textures().count(), 5);
-        for (image, stroke) in gltf.images().zip(
-            doc.strokes
-                .iter()
-                .filter(|stroke| stroke.brush.texture.kind != TextureKind::Solid),
-        ) {
+        let mut seen_texture_keys = HashSet::new();
+        let texture_settings: Vec<_> = doc
+            .strokes
+            .iter()
+            .filter(|stroke| stroke.brush.texture.kind != TextureKind::Solid)
+            .map(|stroke| stroke.brush.texture)
+            .filter(|settings| seen_texture_keys.insert(texture::key(*settings)))
+            .collect();
+        assert_eq!(texture_settings.len(), 5);
+        for (image, settings) in gltf.images().zip(texture_settings) {
             let gltf::image::Source::View { view, mime_type } = image.source() else {
                 panic!("texture must be embedded")
             };
@@ -1393,7 +1398,7 @@ mod tests {
             let mut soft_alpha = false;
             for pixel in pixels.pixels() {
                 assert_eq!(&pixel.0[..3], &[255; 3]);
-                if stroke.brush.texture.kind.uses_continuous_alpha() {
+                if settings.kind.uses_continuous_alpha() {
                     soft_alpha |= (1..255).contains(&pixel.0[3]);
                 } else {
                     assert!(matches!(pixel.0[3], 0 | 255));
@@ -1401,7 +1406,7 @@ mod tests {
                 coverage[usize::from(pixel.0[3] >= 128)] += 1;
             }
             assert!(coverage.iter().all(|n| *n > 0));
-            if stroke.brush.texture.kind.uses_continuous_alpha() {
+            if settings.kind.uses_continuous_alpha() {
                 assert!(soft_alpha);
             }
         }

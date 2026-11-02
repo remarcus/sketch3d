@@ -504,7 +504,7 @@ fn profile_tube_mesh(stroke: &Stroke) -> Vec<Vertex> {
             let outward = edge
                 .cross(end.tangent + start.tangent)
                 .try_normalize()
-                .unwrap_or_else(|| start.width);
+                .unwrap_or(start.width);
             let uv_start_next = [start.u, (side + 1) as f32 / sides as f32];
             let uv_end_next = [end.u, (side + 1) as f32 / sides as f32];
             flat_quad_gradient(
@@ -1244,12 +1244,11 @@ fn path_between_times(points: &[Point], start: u32, end: u32) -> Vec<Point> {
     let interior_end = points.partition_point(|point| point.time_ms < end);
     path.extend(points[interior_start..interior_end].iter().copied());
     let last = point_at_time(points, end);
-    if path
-        .last()
-        .is_none_or(|previous| previous.position.distance_squared(last.position) > 1e-12)
+    if path.len() == 1
+        || path
+            .last()
+            .is_none_or(|previous| previous.position.distance_squared(last.position) > 1e-12)
     {
-        path.push(last);
-    } else if path.len() == 1 {
         path.push(last);
     } else if let Some(previous) = path.last_mut() {
         *previous = last;
@@ -1383,7 +1382,7 @@ pub(crate) fn airbrush_vertex_estimate(stroke: &Stroke) -> usize {
         if end <= cursor {
             break;
         }
-        let length = path_length_between_times(&timeline, cursor, end);
+        let length = path_length_between_times(timeline, cursor, end);
         deposits = deposits.saturating_add((length / spacing).ceil().max(1.0) as usize);
         if deposits > MAX_AIRBRUSH_DEPOSITS {
             return MAX_AIRBRUSH_VERTICES.saturating_add(1);
@@ -1459,17 +1458,19 @@ fn airbrush_mesh(stroke: &Stroke) -> Vec<Vertex> {
                 * dose;
             emit_airbrush_disc(
                 &mut out,
-                point.position,
-                width,
-                normal,
-                radius,
-                opacity,
-                stroke.brush.softness,
                 stroke,
-                if total_length > 1.0e-8 {
-                    (traveled / total_length).clamp(0.0, 1.0)
-                } else {
-                    0.0
+                AirbrushDiscParameters {
+                    center: point.position,
+                    width,
+                    normal,
+                    radius,
+                    opacity,
+                    softness: stroke.brush.softness,
+                    gradient_t: if total_length > 1.0e-8 {
+                        (traveled / total_length).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    },
                 },
             );
         },
@@ -1477,17 +1478,26 @@ fn airbrush_mesh(stroke: &Stroke) -> Vec<Vertex> {
     out
 }
 
-fn emit_airbrush_disc(
-    out: &mut Vec<Vertex>,
+struct AirbrushDiscParameters {
     center: Vec3,
     width: Vec3,
     normal: Vec3,
     radius: f32,
     opacity: f32,
     softness: f32,
-    stroke: &Stroke,
     gradient_t: f32,
-) {
+}
+
+fn emit_airbrush_disc(out: &mut Vec<Vertex>, stroke: &Stroke, parameters: AirbrushDiscParameters) {
+    let AirbrushDiscParameters {
+        center,
+        width,
+        normal,
+        radius,
+        opacity,
+        softness,
+        gradient_t,
+    } = parameters;
     if radius <= 1e-8 || opacity <= 1e-8 {
         return;
     }
@@ -1623,6 +1633,9 @@ fn apply_gradient_parameters(vertices: &mut [Vertex], positions: &[Vec3], parame
     }
 }
 
+// These helpers mirror the fixed per-vertex arrays of `flat_triangle`; keeping
+// each vertex attribute explicit makes the mesh emission call sites auditable.
+#[allow(clippy::too_many_arguments)]
 fn flat_triangle_gradient(
     out: &mut Vec<Vertex>,
     positions: [Vec3; 3],
@@ -1638,6 +1651,9 @@ fn flat_triangle_gradient(
     apply_gradient_parameters(&mut out[start..], &positions, &gradient_t);
 }
 
+// See `flat_triangle_gradient`: the four-vertex attributes intentionally stay
+// parallel fixed-size arrays at this rendering boundary.
+#[allow(clippy::too_many_arguments)]
 fn flat_quad_gradient(
     out: &mut Vec<Vertex>,
     positions: [Vec3; 4],

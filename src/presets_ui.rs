@@ -630,7 +630,7 @@ impl PresetUi {
             ui.small("Image tip asset is unavailable.");
             return;
         };
-        if !self.tip_previews.contains_key(&id) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.tip_previews.entry(id) {
             let Ok(decoded) = asset.decoded() else {
                 ui.small("Image tip preview could not be decoded.");
                 return;
@@ -642,7 +642,7 @@ impl PresetUi {
                 image,
                 egui::TextureOptions::NEAREST,
             );
-            self.tip_previews.insert(id, texture);
+            entry.insert(texture);
         }
         if let Some(texture) = self.tip_previews.get(&id) {
             ui.label(format!(

@@ -1058,7 +1058,7 @@ mod tests {
         value["format"] = serde_json::json!("other-brush-format");
         assert!(BrushPackage::from_json(&value.to_string()).is_err());
         value = serde_json::to_value(&package).unwrap();
-        value["version"] = serde_json::json!(2);
+        value["version"] = serde_json::json!(99);
         assert!(BrushPackage::from_json(&value.to_string()).is_err());
         value = serde_json::to_value(&package).unwrap();
         value["preset"]["radius"] = serde_json::json!(f32::NAN);

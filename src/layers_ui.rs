@@ -443,14 +443,13 @@ impl SketchApp {
                     self.begin_layer_properties_preview(layer_id);
                     self.preview_layer_action(LayerAction::Opacity(layer_id, opacity));
                 }
-                if drag_stopped {
-                    if self
+                if drag_stopped
+                    && self
                         .layer_properties_draft
                         .as_ref()
                         .is_some_and(|draft| draft.layer_id == layer_id)
-                    {
-                        self.finish_layer_properties_edit(true);
-                    }
+                {
+                    self.finish_layer_properties_edit(true);
                 }
                 if lost_focus
                     && self

@@ -86,6 +86,23 @@ struct Candidate {
 }
 
 #[derive(Clone, Copy)]
+struct SnapQuery {
+    cursor: Pos2,
+    tolerance: f32,
+    angle: Option<(Vec3, Vec3)>,
+    target: PlanarTarget,
+}
+
+#[derive(Clone, Copy)]
+struct SnapCandidateInput {
+    world: Vec3,
+    screen: Pos2,
+    kind: SnapKind,
+    id: u64,
+    ids: [u64; 2],
+}
+
+#[derive(Clone, Copy)]
 pub(super) struct SnapOptions {
     pub enabled: bool,
     pub grid: bool,
@@ -219,9 +236,11 @@ impl SketchApp {
         if self.snapping.index.is_none() {
             self.prepare_planar_snap(_target, rect, &HashSet::new());
         }
-        let result = self.snapping.index.as_ref().and_then(|index| {
-            index.query(&self.doc, &self.camera, rect, cursor, options, angle, true)
-        });
+        let result = self
+            .snapping
+            .index
+            .as_ref()
+            .and_then(|index| index.query(&self.doc, cursor, options, angle, true));
         if let Some((world, cue)) = result {
             if snap_occluded_by_scene_resources(
                 &self.doc,
@@ -458,8 +477,6 @@ impl SnapIndex {
     pub(super) fn query(
         &self,
         doc: &Document,
-        camera: &Camera,
-        rect: Rect,
         cursor: Pos2,
         options: SnapOptions,
         angle: Option<(Vec3, Vec3)>,
@@ -470,6 +487,12 @@ impl SnapIndex {
         }
         let mut best: Option<Candidate> = None;
         let tolerance = options.tolerance.clamp(4.0, 32.0);
+        let query = SnapQuery {
+            cursor,
+            tolerance,
+            angle,
+            target: self.target,
+        };
         let cell_radius = (tolerance / CELL_PIXELS).ceil() as i32 + 1;
         let center = cell(cursor);
         let mut candidate_features = Vec::new();
@@ -497,15 +520,14 @@ impl SnapIndex {
             }
             consider(
                 &mut best,
-                feature.world,
-                feature.screen,
-                feature.kind,
-                feature.id,
-                [feature.id, 0],
-                cursor,
-                tolerance,
-                angle,
-                self.target,
+                SnapCandidateInput {
+                    world: feature.world,
+                    screen: feature.screen,
+                    kind: feature.kind,
+                    id: feature.id,
+                    ids: [feature.id, 0],
+                },
+                query,
             );
         }
         if options.intersections {
@@ -538,11 +560,7 @@ impl SnapIndex {
                                 second,
                                 &mut pair_count,
                                 &mut best,
-                                cursor,
-                                tolerance,
-                                angle,
-                                camera,
-                                rect,
+                                query,
                             ) {
                                 break 'cross_strokes;
                             }
@@ -571,11 +589,7 @@ impl SnapIndex {
                                 nearby[second_position],
                                 &mut pair_count,
                                 &mut best,
-                                cursor,
-                                tolerance,
-                                angle,
-                                camera,
-                                rect,
+                                query,
                             ) {
                                 break 'self_crossings;
                             }
@@ -587,7 +601,7 @@ impl SnapIndex {
         if options.grid {
             let (u, v, _) = self.target.plane.basis();
             let origin = self.target.plane.origin();
-            let (ray_origin, ray_direction) = crate::gizmo::ray(camera, rect, cursor);
+            let (ray_origin, ray_direction) = crate::gizmo::ray(&self.camera, self.rect, cursor);
             if let Some(point) = self.target.hit(ray_origin, ray_direction) {
                 let offset = point - origin;
                 let spacing = options.spacing.clamp(0.01, 10.0);
@@ -595,18 +609,18 @@ impl SnapIndex {
                 let y = (offset.dot(v) / spacing).round() * spacing;
                 let world = origin + u * x + v * y;
                 if self.target.contains(world) {
-                    if let Some((screen, _)) = crate::gizmo::project(camera, rect, world) {
+                    if let Some((screen, _)) = crate::gizmo::project(&self.camera, self.rect, world)
+                    {
                         consider(
                             &mut best,
-                            world,
-                            screen,
-                            SnapKind::Grid,
-                            u64::MAX,
-                            [0, 0],
-                            cursor,
-                            tolerance,
-                            angle,
-                            self.target,
+                            SnapCandidateInput {
+                                world,
+                                screen,
+                                kind: SnapKind::Grid,
+                                id: u64::MAX,
+                                ids: [0, 0],
+                            },
+                            query,
                         );
                     }
                 }
@@ -618,7 +632,7 @@ impl SnapIndex {
             kind: candidate.kind,
             target_ids: candidate.ids,
         };
-        if check_occlusion && !self.candidate_visible(doc, camera, rect, cue) {
+        if check_occlusion && !self.candidate_visible(doc, &self.camera, self.rect, cue) {
             return None;
         }
         Some((candidate.world, cue))
@@ -653,11 +667,7 @@ fn consider_intersection_pair(
     second: usize,
     pair_count: &mut usize,
     best: &mut Option<Candidate>,
-    cursor: Pos2,
-    tolerance: f32,
-    angle: Option<(Vec3, Vec3)>,
-    camera: &Camera,
-    rect: Rect,
+    query: SnapQuery,
 ) -> bool {
     if *pair_count >= MAX_INTERSECTION_PAIRS {
         return false;
@@ -672,7 +682,7 @@ fn consider_intersection_pair(
         return true;
     };
     let screen = a.a + (a.b - a.a) * ta;
-    let (origin, direction) = crate::gizmo::ray(camera, rect, screen);
+    let (origin, direction) = crate::gizmo::ray(&index.camera, index.rect, screen);
     let Some(world) = index.target.hit(origin, direction) else {
         return true;
     };
@@ -683,15 +693,14 @@ fn consider_intersection_pair(
     };
     consider(
         best,
-        world,
-        screen,
-        SnapKind::Intersection,
-        a.id.min(b.id),
-        ids,
-        cursor,
-        tolerance,
-        angle,
-        index.target,
+        SnapCandidateInput {
+            world,
+            screen,
+            kind: SnapKind::Intersection,
+            id: a.id.min(b.id),
+            ids,
+        },
+        query,
     );
     true
 }
@@ -741,25 +750,14 @@ pub(super) fn snap_occluded_by_scene_resources(
     .is_some_and(|depth| depth < target_t - depth_tolerance)
 }
 
-fn consider(
-    best: &mut Option<Candidate>,
-    world: Vec3,
-    screen: Pos2,
-    kind: SnapKind,
-    id: u64,
-    ids: [u64; 2],
-    cursor: Pos2,
-    tolerance: f32,
-    angle: Option<(Vec3, Vec3)>,
-    target: PlanarTarget,
-) {
-    let distance = cursor.distance(screen);
-    if distance > tolerance || !target.contains(world) {
+fn consider(best: &mut Option<Candidate>, input: SnapCandidateInput, query: SnapQuery) {
+    let distance = query.cursor.distance(input.screen);
+    if distance > query.tolerance || !query.target.contains(input.world) {
         return;
     }
-    if let Some((start, constrained)) = angle {
+    if let Some((start, constrained)) = query.angle {
         let expected = constrained - start;
-        let candidate = world - start;
+        let candidate = input.world - start;
         if expected.length_squared() <= 1e-8 {
             if candidate.length_squared() > 1e-8 {
                 return;
@@ -772,11 +770,11 @@ fn consider(
     }
     let candidate = Candidate {
         distance,
-        kind,
-        id,
-        world,
-        screen,
-        ids,
+        kind: input.kind,
+        id: input.id,
+        world: input.world,
+        screen: input.screen,
+        ids: input.ids,
     };
     let replace = best.is_none_or(|old| {
         if candidate.distance < old.distance - 0.001 {

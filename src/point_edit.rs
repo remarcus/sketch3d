@@ -336,8 +336,8 @@ fn snapshot_for_point_operation(
 }
 
 fn brush_settings_match(first: &crate::document::Brush, second: &crate::document::Brush) -> bool {
-    let mut first = first.clone();
-    let mut second = second.clone();
+    let mut first = *first;
+    let mut second = *second;
     first.dab_distance_origin = 0.0;
     second.dab_distance_origin = 0.0;
     first.dab_total_length = 0.0;
