@@ -691,6 +691,16 @@ fn taper_points(stroke: &Stroke) -> Vec<crate::document::Point> {
 }
 /// All ink is built in document space. Camera changes cannot rotate a brush mark.
 pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
+    let mut vertices = stroke_mesh_unmapped(stroke);
+    if stroke.fill.is_none() && stroke.brush.tip_asset_id == 0 {
+        for vertex in &mut vertices {
+            vertex.uv = stroke.brush.texture.mapping.map(vertex.uv);
+        }
+    }
+    vertices
+}
+
+fn stroke_mesh_unmapped(stroke: &Stroke) -> Vec<Vertex> {
     let evaluated = match crate::stroke_modifiers::evaluated_stroke(stroke) {
         Ok(stroke) => stroke,
         Err(_) => return Vec::new(),

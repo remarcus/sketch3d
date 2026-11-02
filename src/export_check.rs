@@ -299,6 +299,7 @@ pub fn textured_fixture() -> Document {
                 scale: 0.3,
                 strength: 0.8,
                 seed: 42 + row as u32,
+                mapping: Default::default(),
             },
             ..Brush::default()
         };

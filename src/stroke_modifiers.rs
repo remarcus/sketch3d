@@ -16,6 +16,7 @@ pub const MAX_SMOOTH_ITERATIONS: u8 = 8;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeometryCacheKey {
+    pub texture_mapping: crate::texture::TextureMapping,
     pub point_count: usize,
     pub point_thickness: Option<Vec<f32>>,
     pub modifiers: Option<StrokeModifierStack>,
@@ -24,6 +25,7 @@ pub struct GeometryCacheKey {
 impl GeometryCacheKey {
     pub fn for_stroke(stroke: &Stroke) -> Self {
         Self {
+            texture_mapping: stroke.brush.texture.mapping,
             point_count: stroke.points.len(),
             point_thickness: stroke.point_thickness.clone(),
             modifiers: stroke.modifiers.clone(),
@@ -32,6 +34,7 @@ impl GeometryCacheKey {
 
     pub fn identity(point_count: usize) -> Self {
         Self {
+            texture_mapping: Default::default(),
             point_count,
             point_thickness: None,
             modifiers: None,

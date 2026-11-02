@@ -14,6 +14,7 @@ pub enum TextureKind {
     Pattern,
     Graphite,
     Charcoal,
+    Crosshatch,
 }
 impl TextureKind {
     pub fn label(self) -> &'static str {
@@ -24,6 +25,7 @@ impl TextureKind {
             Self::Pattern => "Diamond pattern",
             Self::Graphite => "Graphite",
             Self::Charcoal => "Charcoal",
+            Self::Crosshatch => "Crosshatch",
         }
     }
 
@@ -35,6 +37,8 @@ impl TextureKind {
 /// Scale is a world-space tile period; strength controls removed coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TextureSettings {
+    #[serde(default)]
+    pub mapping: TextureMapping,
     pub kind: TextureKind,
     pub scale: f32,
     pub strength: f32,
@@ -43,6 +47,7 @@ pub struct TextureSettings {
 impl Default for TextureSettings {
     fn default() -> Self {
         Self {
+            mapping: TextureMapping::default(),
             kind: TextureKind::Solid,
             scale: 0.2,
             strength: 0.65,
@@ -52,10 +57,54 @@ impl Default for TextureSettings {
 }
 impl TextureSettings {
     pub fn is_valid(self) -> bool {
-        self.scale.is_finite()
+        self.mapping.is_valid()
+            && self.scale.is_finite()
             && (0.02..=10.0).contains(&self.scale)
             && self.strength.is_finite()
             && (0.0..=1.0).contains(&self.strength)
+    }
+}
+
+/// Affine UV mapping; stored with the stroke and independent of the camera.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextureMapping {
+    pub rotation_degrees: f32,
+    pub scale: [f32; 2],
+    pub offset: [f32; 2],
+}
+impl Default for TextureMapping {
+    fn default() -> Self {
+        Self {
+            rotation_degrees: 0.0,
+            scale: [1.0; 2],
+            offset: [0.0; 2],
+        }
+    }
+}
+impl TextureMapping {
+    pub fn is_valid(self) -> bool {
+        self.rotation_degrees.is_finite()
+            && self.rotation_degrees.abs() <= 180.0
+            && self
+                .scale
+                .iter()
+                .all(|v| v.is_finite() && (0.05..=20.0).contains(v))
+            && self
+                .offset
+                .iter()
+                .all(|v| v.is_finite() && v.abs() <= 1000.0)
+    }
+    pub fn map(self, uv: [f32; 2]) -> [f32; 2] {
+        if self == Self::default() {
+            return uv;
+        }
+        let (sin, cos) = self.rotation_degrees.to_radians().sin_cos();
+        let u = uv[0] / self.scale[0];
+        let v = uv[1] / self.scale[1];
+        [
+            cos * u - sin * v + self.offset[0],
+            sin * u + cos * v + self.offset[1],
+        ]
     }
 }
 
@@ -137,6 +186,18 @@ fn texel_alpha(settings: TextureSettings, x: u32, y: u32) -> u8 {
                 0.0
             }
         }
+        TextureKind::Crosshatch => {
+            // Integer-period diagonals join exactly across the repeating tile.
+            let phase = settings.seed & 31;
+            let forward = (x + y + phase) % 32;
+            let backward = (x + SIZE - y + phase) % 32;
+            let ink = forward < 4 || backward < 4;
+            if ink {
+                1.0
+            } else {
+                1.0 - settings.strength
+            }
+        }
         TextureKind::Graphite => {
             let coarse = periodic_value_noise(x, y, settings.seed, 5);
             let fine = periodic_value_noise(x, y, settings.seed ^ 0x6d2b_79f5, 29);
@@ -199,6 +260,112 @@ pub fn png(settings: TextureSettings) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mapping_changes_only_mesh_uvs_and_reuses_mask() {
+        let doc = crate::export_check::textured_fixture();
+        let mut stroke = doc
+            .strokes
+            .into_iter()
+            .find(|s| s.brush.texture.kind == TextureKind::Grain)
+            .unwrap();
+        let original = crate::geometry::stroke_mesh(&stroke);
+        let mapping = TextureMapping {
+            rotation_degrees: 31.0,
+            scale: [2.0, 0.5],
+            offset: [0.2, -0.3],
+        };
+        stroke.brush.texture.mapping = mapping;
+        let mapped = crate::geometry::stroke_mesh(&stroke);
+        assert!(!mapped.is_empty());
+        assert_eq!(mapped.len(), original.len());
+        assert!(mapped.iter().zip(&original).any(|(a, b)| a.uv != b.uv));
+        for (a, b) in mapped.iter().zip(&original) {
+            assert_eq!(a.position, b.position);
+            assert_eq!(a.normal, b.normal);
+            assert_eq!(a.color, b.color);
+            assert_eq!(a.opacity, b.opacity);
+            assert_eq!(a.uv, mapping.map(b.uv));
+        }
+        let reopened = crate::document::Document::from_json(
+            &serde_json::to_string(&crate::document::Document {
+                strokes: vec![stroke],
+                ..Default::default()
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reopened.strokes[0].brush.texture.mapping, mapping);
+    }
+    #[test]
+    fn mapping_is_affine_bounded_and_legacy_identity() {
+        let legacy = r#"{"kind":"grain","scale":0.2,"strength":0.5,"seed":1}"#;
+        let settings: TextureSettings = serde_json::from_str(legacy).unwrap();
+        assert_eq!(settings.mapping.map([2.0, -3.0]), [2.0, -3.0]);
+        let mapping = TextureMapping {
+            rotation_degrees: 90.0,
+            scale: [2.0, 4.0],
+            offset: [0.25, -0.5],
+        };
+        let uv = mapping.map([4.0, 4.0]);
+        assert!((uv[0] + 0.75).abs() < 1e-6);
+        assert!((uv[1] - 1.5).abs() < 1e-6);
+        assert!(mapping.is_valid());
+        assert!(!TextureMapping {
+            scale: [0.0, 1.0],
+            ..mapping
+        }
+        .is_valid());
+        assert!(!TextureMapping {
+            rotation_degrees: f32::NAN,
+            ..mapping
+        }
+        .is_valid());
+        assert!(!TextureMapping {
+            offset: [f32::INFINITY, 0.0],
+            ..mapping
+        }
+        .is_valid());
+        let mapped = TextureSettings {
+            mapping,
+            ..settings
+        };
+        assert_eq!(key(settings), key(mapped));
+        assert_eq!(png(settings).unwrap(), png(mapped).unwrap());
+        assert_eq!(
+            serde_json::from_str::<TextureSettings>(&serde_json::to_string(&mapped).unwrap())
+                .unwrap(),
+            mapped
+        );
+    }
+    #[test]
+    fn crosshatch_repeats_both_diagonals_and_preserves_strength() {
+        let mut texture = TextureSettings {
+            kind: TextureKind::Crosshatch,
+            strength: 1.0,
+            seed: 0,
+            ..TextureSettings::default()
+        };
+        assert_eq!(texel_alpha(texture, 8, 8), 255);
+        assert_eq!(texel_alpha(texture, 8, 24), 255);
+        assert_eq!(texel_alpha(texture, 8, 16), 0);
+        for y in 0..SIZE {
+            assert_eq!(texel_alpha(texture, 0, y), texel_alpha(texture, SIZE, y));
+            assert_eq!(texel_alpha(texture, y, 0), texel_alpha(texture, y, SIZE));
+        }
+        texture.strength = 0.0;
+        assert!(rgba(texture)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[3] == 255));
+        texture.strength = 0.5;
+        assert_eq!(texel_alpha(texture, 8, 16), 128);
+        let saved = serde_json::to_string(&texture).unwrap();
+        assert_eq!(
+            serde_json::from_str::<TextureSettings>(&saved).unwrap(),
+            texture
+        );
+    }
     fn settings(kind: TextureKind) -> TextureSettings {
         TextureSettings {
             kind,

@@ -10,7 +10,7 @@ impl SketchApp {
         egui::CollapsingHeader::new("Surface texture").default_open(true).show(ui,|ui| {
             ui_style::field_row(ui, "Pattern", |ui| {
                 ui.horizontal_wrapped(|ui| {
-                for kind in [TextureKind::Solid,TextureKind::Grain,TextureKind::DryBrush,TextureKind::Pattern,TextureKind::Graphite,TextureKind::Charcoal] {
+                for kind in [TextureKind::Solid,TextureKind::Grain,TextureKind::DryBrush,TextureKind::Pattern,TextureKind::Graphite,TextureKind::Charcoal,TextureKind::Crosshatch] {
                     ui.radio_value(&mut self.brush.texture.kind,kind,kind.label());
                 }
                 });
@@ -18,6 +18,12 @@ impl SketchApp {
             if self.brush.texture.kind!=TextureKind::Solid {
                 ui.add(egui::Slider::new(&mut self.brush.texture.scale,0.02..=10.0).logarithmic(true).text("Spacing"));
                 ui.add(egui::Slider::new(&mut self.brush.texture.strength,0.0..=1.0).text("Strength"));
+                ui.add(egui::Slider::new(&mut self.brush.texture.mapping.rotation_degrees,-180.0..=180.0).text("Texture rotation"));
+                for axis in 0..2 {
+                    ui.add(egui::Slider::new(&mut self.brush.texture.mapping.scale[axis],0.05..=20.0).logarithmic(true).text(if axis == 0 { "Texture U scale" } else { "Texture V scale" }));
+                    ui.add(egui::DragValue::new(&mut self.brush.texture.mapping.offset[axis]).speed(0.01).range(-1000.0..=1000.0).prefix(if axis == 0 { "U offset " } else { "V offset " }));
+                }
+                if ui.button("Reset texture mapping").clicked() { self.brush.texture.mapping = Default::default(); }
                 if ui.button("Vary pattern").clicked() {self.brush.texture.seed=self.brush.texture.seed.wrapping_add(1);}
                 if self.brush.texture.kind.uses_continuous_alpha() {
                     ui.small("Soft alpha grain stays fixed in world space. Pressure controls coverage; reported tilt broadens graphite/charcoal. Mouse or missing tilt uses the No-tilt fallback width.");

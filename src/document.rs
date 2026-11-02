@@ -1366,6 +1366,7 @@ mod tests {
         mark.brush.texture = TextureSettings {
             kind: crate::texture::TextureKind::DryBrush,
             scale: 0.37,
+            mapping: Default::default(),
             strength: 0.82,
             seed: 1234,
         };
