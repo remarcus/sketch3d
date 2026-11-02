@@ -2305,16 +2305,22 @@ mod tests {
                 position: glam::Vec3::ZERO,
                 pressure: 0.3,
                 tilt: None,
+
+                time_ms: 0,
             },
             crate::document::Point {
                 position: glam::Vec3::X,
                 pressure: 0.6,
                 tilt: None,
+
+                time_ms: 0,
             },
             crate::document::Point {
                 position: glam::Vec3::Y,
                 pressure: 1.0,
                 tilt: None,
+
+                time_ms: 0,
             },
         ];
         let stroke = crate::document::Stroke {
@@ -2528,6 +2534,8 @@ mod tests {
                 position: glam::Vec3::new(id as f32, 0.0, 0.0),
                 pressure: 0.7,
                 tilt: None,
+
+                time_ms: 0,
             }],
         }
     }

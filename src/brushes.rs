@@ -7,6 +7,7 @@ impl SketchApp {
         let before = self.brush;
         let image_tip = self.brush.tip_asset_id != 0;
         let strand_mode = self.brush.strands.enabled;
+        let flow_mode = self.brush.flow.enabled;
         ui_style::section(ui, "Brush shape");
         if image_tip {
             let aspect = self
@@ -30,6 +31,10 @@ impl SketchApp {
                 -180.0..=180.0,
                 1.0,
                 "°",
+            );
+        } else if flow_mode {
+            ui.small(
+                "Timed soft deposits accumulate along the stroke and while contact is held still.",
             );
         } else if strand_mode {
             ui.small("Parallel round strands follow the captured guide and stroke frame.");
@@ -86,10 +91,40 @@ impl SketchApp {
             self.texture_controls(ui);
         }
         self.dynamics_controls(ui);
+        ui.collapsing("Airbrush flow", |ui| {
+            let enabled = ui
+                .add_enabled(
+                    !image_tip
+                        && (!self.brush.dabs.enabled || self.brush.flow.enabled)
+                        && (!self.brush.strands.enabled || self.brush.flow.enabled),
+                    egui::Checkbox::new(&mut self.brush.flow.enabled, "Use timed airbrush flow"),
+                )
+                .on_hover_text("Deposits are sampled in 32 ms time cells, independent of repaint count.");
+            if enabled.changed() && self.brush.flow.enabled {
+                self.brush.dabs.enabled = false;
+                self.brush.strands.enabled = false;
+            }
+            if self.brush.flow.enabled {
+                ui_style::slider_row(
+                    ui,
+                    "Flow rate",
+                    "airbrush-flow-rate",
+                    &mut self.brush.flow.rate_per_second,
+                    0.1..=12.0,
+                    100.0,
+                    "/ s",
+                )
+                .on_hover_text("Higher flow reaches full coverage sooner during a stationary hold.");
+                ui.small("A held contact builds to alpha 1.0. Pen-up, navigation, cancellation, and focus loss stop the timed deposits.");
+                ui.small("Per-stroke cap: 8,192 deposits, 65,536 timed input points, and 589,824 vertices.");
+            }
+        });
         ui.collapsing("Bristle and rake", |ui| {
             let enabled = ui
                 .add_enabled(
-                    !image_tip && (!self.brush.dabs.enabled || self.brush.strands.enabled),
+                    !image_tip
+                        && (!self.brush.dabs.enabled || self.brush.strands.enabled)
+                        && (!self.brush.flow.enabled || self.brush.strands.enabled),
                     egui::Checkbox::new(&mut self.brush.strands.enabled, "Use parallel strands"),
                 )
                 .on_hover_text("Builds one editable stroke from separated, capped ribbons.");
@@ -133,10 +168,13 @@ impl SketchApp {
             }
         });
         ui.collapsing("Dab placement", |ui| {
-            ui.add_enabled_ui(!image_tip && !self.brush.strands.enabled, |ui| {
+            ui.add_enabled_ui(
+                !image_tip && !self.brush.strands.enabled && !self.brush.flow.enabled,
+                |ui| {
                 ui.checkbox(&mut self.brush.dabs.enabled, "Use deterministic dabs")
                     .on_hover_text("Places marks at fixed world-space distances along the stroke.");
-            });
+                },
+            );
             if self.brush.dabs.enabled {
                 ui_style::slider_row(
                     ui,
@@ -352,7 +390,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 17);
+                assert_eq!(loaded.version, 19);
                 assert_eq!(loaded.strokes, original);
                 self.load_brushes();
                 self.brush = Brush {

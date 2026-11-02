@@ -214,6 +214,7 @@ pub fn tessellate_stroke(
                 position,
                 pressure,
                 tilt: None,
+                time_ms: 0,
             };
             if !point.is_valid() {
                 return Err("Curve tessellation exceeds point or pressure limits".into());
@@ -436,6 +437,8 @@ mod tests {
             position: Vec3::new(10.0, 20.0, 30.0),
             pressure: 1.0,
             tilt: Some(Vec3::Z),
+
+            time_ms: 0,
         }];
         let stroke = tessellate_stroke(
             &[

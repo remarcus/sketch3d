@@ -1983,6 +1983,7 @@ impl SketchApp {
         self.model_stroke_contact = None;
         self.commit_transform();
         let tail = self.stabilizer.finish();
+        let flow_finish_time = self.current_flow_time_ms();
         if let Some(id) = self.active {
             if let Some(stroke) = self.doc.strokes.last_mut().filter(|s| s.id == id) {
                 for point in tail {
@@ -1999,6 +2000,20 @@ impl SketchApp {
                             self.status = "Stroke reached its dab or strand geometry limit; the remaining release tail was omitted.".into();
                             break;
                         }
+                    }
+                }
+                if stroke.brush.flow.enabled
+                    && stroke
+                        .points
+                        .last()
+                        .is_some_and(|last| last.time_ms < flow_finish_time)
+                {
+                    let mut point = *stroke.points.last().unwrap();
+                    point.time_ms = flow_finish_time;
+                    stroke.points.push(point);
+                    if airbrush_vertex_budget_exceeded(stroke) {
+                        stroke.points.pop();
+                        self.status = "Airbrush reached its 8,192-deposit limit; the remaining contact was omitted.".into();
                     }
                 }
                 if stroke.brush.dabs.enabled && stroke.brush.dab_total_length == 0.0 {
@@ -2060,6 +2075,68 @@ impl SketchApp {
         self.dirty = true;
         self.record_recovery_stroke_labeled("Draw on model", &recorded_stroke, duration_ms);
         self.renderer.invalidate();
+    }
+
+    fn current_flow_time_ms(&self) -> u32 {
+        if !self
+            .doc
+            .strokes
+            .last()
+            .is_some_and(|stroke| stroke.brush.flow.enabled)
+        {
+            return 0;
+        }
+        self.active_started_at.map_or(0, |started| {
+            started
+                .elapsed()
+                .as_millis()
+                .min(crate::document::MAX_FLOW_DURATION_MS as u128) as u32
+        })
+    }
+
+    fn tick_airbrush_contact(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.active else {
+            return;
+        };
+        let elapsed = self.current_flow_time_ms();
+        let mut limit_reached = false;
+        let Some(stroke) = self.doc.strokes.last_mut().filter(|stroke| stroke.id == id) else {
+            return;
+        };
+        if !stroke.brush.flow.enabled {
+            return;
+        }
+        let Some(last) = stroke.points.last().copied() else {
+            return;
+        };
+        let due_at = last
+            .time_ms
+            .saturating_add(crate::geometry::AIRBRUSH_TICK_MS);
+        if elapsed >= due_at && elapsed > last.time_ms {
+            let mut point = last;
+            point.time_ms = elapsed;
+            stroke.points.push(point);
+            if airbrush_vertex_budget_exceeded(stroke) {
+                stroke.points.pop();
+                limit_reached = true;
+            } else {
+                self.renderer.invalidate();
+            }
+        } else if elapsed >= crate::document::MAX_FLOW_DURATION_MS {
+            limit_reached = true;
+        } else {
+            ctx.request_repaint_after(Duration::from_millis(
+                due_at.saturating_sub(elapsed).max(1) as u64
+            ));
+        }
+        if limit_reached {
+            self.status = "Airbrush contact reached its time or geometry limit.".into();
+            self.finish();
+        } else {
+            ctx.request_repaint_after(Duration::from_millis(
+                crate::geometry::AIRBRUSH_TICK_MS as u64,
+            ));
+        }
     }
     fn cancel(&mut self) {
         self.cancel_brush_selection();
@@ -2239,11 +2316,13 @@ impl SketchApp {
         };
         let pressure = pressure.clamp(0.0, 1.0);
         let world_per_pixel = self.camera.world_per_pixel(world, rect.height());
+        let point_time_ms = self.current_flow_time_ms();
         let points = self.stabilizer.push(
             Point {
                 tilt,
                 position: world,
                 pressure,
+                time_ms: point_time_ms,
             },
             self.stabilization * 24.0 * world_per_pixel,
         );
@@ -2254,10 +2333,14 @@ impl SketchApp {
                     p.position.distance(point.position) > 0.001
                         || (p.pressure - point.pressure).abs() > 0.025
                         || p.tilt != point.tilt
+                        || (stroke.brush.flow.enabled
+                            && point.time_ms.saturating_sub(p.time_ms)
+                                >= crate::geometry::AIRBRUSH_TICK_MS)
                 }) {
                     stroke.points.push(point);
                     if crate::dab_placement::point_count(stroke).is_err()
                         || strand_vertex_budget_exceeded(stroke)
+                        || airbrush_vertex_budget_exceeded(stroke)
                     {
                         stroke.points.pop();
                         over_geometry_limit = true;
@@ -2266,9 +2349,7 @@ impl SketchApp {
                 }
             }
             if over_geometry_limit {
-                self.status =
-                    "Stroke reached its dab or strand geometry limit; further input was ignored."
-                        .into();
+                self.status = "Stroke reached its airbrush, dab, or strand geometry limit; further input was ignored.".into();
             }
         }
     }
@@ -2404,10 +2485,12 @@ impl SketchApp {
         let Some(stroke_id) = self.active else {
             return;
         };
+        let point_time_ms = self.current_flow_time_ms();
         let point = Point {
             tilt,
             position: world,
             pressure: pressure.clamp(0.0, 1.0),
+            time_ms: point_time_ms,
         };
         if let Some(stroke) = self
             .doc
@@ -2419,13 +2502,17 @@ impl SketchApp {
                 last.position.distance(point.position) > 0.001
                     || (last.pressure - point.pressure).abs() > 0.025
                     || last.tilt != point.tilt
+                    || (stroke.brush.flow.enabled
+                        && point.time_ms.saturating_sub(last.time_ms)
+                            >= crate::geometry::AIRBRUSH_TICK_MS)
             }) {
                 stroke.points.push(point);
                 if crate::dab_placement::point_count(stroke).is_err()
                     || strand_vertex_budget_exceeded(stroke)
+                    || airbrush_vertex_budget_exceeded(stroke)
                 {
                     stroke.points.pop();
-                    self.status = "Stroke reached its dab or strand geometry limit; further input was ignored.".into();
+                    self.status = "Stroke reached its airbrush, dab, or strand geometry limit; further input was ignored.".into();
                 }
             }
         }
@@ -2797,6 +2884,7 @@ impl SketchApp {
                     tilt: None,
                     position: pos,
                     pressure: 0.5 + 0.5 * (t * 2.0).sin().abs(),
+                    time_ms: 0,
                 });
             }
             self.doc.strokes.push(Stroke {
@@ -4368,6 +4456,15 @@ impl SketchApp {
                 }
                 continue;
             }
+            if !sample.contact
+                && sample.phase == Phase::Move
+                && self.doc.strokes.last().is_some_and(|stroke| {
+                    stroke.brush.flow.enabled && Some(stroke.id) == self.active
+                })
+            {
+                self.finish();
+                continue;
+            }
             if !inside
                 && self.drag.is_none()
                 && self.brush_select_drag.is_none()
@@ -4379,6 +4476,14 @@ impl SketchApp {
             }
             if space || sample.barrel {
                 if sample.contact {
+                    if self
+                        .doc
+                        .strokes
+                        .last()
+                        .is_some_and(|stroke| stroke.brush.flow.enabled)
+                    {
+                        self.finish();
+                    }
                     if self.liquify_brush_active() {
                         self.cancel_liquify_gesture();
                     }
@@ -4428,6 +4533,14 @@ impl SketchApp {
                 || (space && pointer.primary_down());
             if nav && pointer.interact_pos().is_some_and(inside_canvas) {
                 self.cancel_liquify_for_navigation();
+                if self
+                    .doc
+                    .strokes
+                    .last()
+                    .is_some_and(|stroke| stroke.brush.flow.enabled)
+                {
+                    self.finish();
+                }
                 self.mouse_down = false;
                 self.navigate(
                     pointer.delta(),
@@ -4543,6 +4656,7 @@ impl SketchApp {
             self.camera.distance =
                 (self.camera.distance * (-scroll * 0.002).exp()).clamp(0.3, 150.0);
         }
+        self.tick_airbrush_contact(ctx);
         self.sync_selection();
     }
 }
@@ -4551,6 +4665,13 @@ fn strand_vertex_budget_exceeded(stroke: &Stroke) -> bool {
     stroke.brush.strands.enabled
         && stroke.brush.strands.vertex_estimate(stroke.points.len())
             > crate::geometry::MAX_STRAND_VERTICES
+}
+
+fn airbrush_vertex_budget_exceeded(stroke: &Stroke) -> bool {
+    stroke.brush.flow.enabled
+        && (stroke.points.len() > crate::geometry::MAX_AIRBRUSH_POINTS
+            || crate::geometry::airbrush_vertex_estimate(stroke)
+                > crate::geometry::MAX_AIRBRUSH_VERTICES)
 }
 
 impl eframe::App for SketchApp {
@@ -6269,11 +6390,11 @@ impl SketchApp {
             } else if self.preset_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["preset application captures resolved settings","create duplicate rename update delete and defaults","restart persistence","live GPU previews","library edits preserve existing ink and export","corrupt library fallback and explicit repair backup"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.texture_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 18 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 19 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.dynamics_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 18 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 19 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 18 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 19 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {
@@ -6588,11 +6709,15 @@ mod native_merge_apply_tests {
                     position: Vec3::new(x, 0.0, 0.0),
                     pressure: 0.8,
                     tilt: None,
+
+                    time_ms: 0,
                 },
                 Point {
                     position: Vec3::new(x + 0.5, 0.0, 0.0),
                     pressure: 0.8,
                     tilt: None,
+
+                    time_ms: 0,
                 },
             ],
         }

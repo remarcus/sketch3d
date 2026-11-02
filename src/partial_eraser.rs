@@ -409,6 +409,7 @@ fn interpolate_point(a: &Point, b: &Point, t: f32) -> Point {
         position: a.position.lerp(b.position, t),
         pressure: a.pressure + (b.pressure - a.pressure) * t,
         tilt,
+        time_ms: (a.time_ms as f32 + (b.time_ms as f32 - a.time_ms as f32) * t).round() as u32,
     }
 }
 
@@ -417,6 +418,7 @@ fn deduplicate(points: &mut Vec<Point>) {
         right.position.distance_squared(left.position) <= 1.0e-12
             && (right.pressure - left.pressure).abs() <= 1.0e-6
             && right.tilt == left.tilt
+            && right.time_ms == left.time_ms
     });
 }
 
@@ -519,6 +521,8 @@ mod tests {
                     position,
                     pressure: if index == 0 { 0.25 } else { 0.75 },
                     tilt: Some(if index == 0 { Vec3::X } else { Vec3::Y }),
+
+                    time_ms: 0,
                 })
                 .collect(),
         )
@@ -663,6 +667,8 @@ mod tests {
             position: Vec3::ZERO,
             pressure: 0.6,
             tilt: Some(Vec3::Z),
+
+            time_ms: 0,
         }]);
         let mut dot_doc = crate::document::Document {
             strokes: vec![dot.clone()],

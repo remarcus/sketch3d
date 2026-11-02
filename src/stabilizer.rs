@@ -41,6 +41,9 @@ impl Stabilizer {
                             position: start.position.lerp(target.position, i as f32 / 8.0),
                             pressure: start.pressure
                                 + (target.pressure - start.pressure) * i as f32 / 8.0,
+                            time_ms: (start.time_ms as f32
+                                + (target.time_ms as f32 - start.time_ms as f32) * i as f32 / 8.0)
+                                .round() as u32,
                         }
                     }
                 })
@@ -65,6 +68,8 @@ mod tests {
                 tilt: None,
                 position: Vec3::new(i as f32 * 0.1, (i as f32).sin(), 0.0),
                 pressure: i as f32 / 20.0,
+
+                time_ms: 0,
             };
             assert_eq!(filter.push(p, 0.0), p);
         }
@@ -81,6 +86,8 @@ mod tests {
             tilt: None,
             position: Vec3::ZERO,
             pressure: 0.0,
+
+            time_ms: 0,
         };
         for i in 0..100 {
             let p = Point {
@@ -91,6 +98,8 @@ mod tests {
                     0.0,
                 ),
                 pressure: i as f32 / 100.0,
+
+                time_ms: 0,
             };
             let smoothed = filter.push(p, 0.04);
             if i > 0 {
@@ -109,6 +118,8 @@ mod tests {
             tilt: None,
             position: Vec3::splat(5.0),
             pressure: 0.0,
+
+            time_ms: 0,
         };
         assert_eq!(
             filter.push(next, 0.04),
@@ -124,6 +135,8 @@ mod tests {
                 tilt: None,
                 position: Vec3::ZERO,
                 pressure: 1.0,
+
+                time_ms: 0,
             },
             0.1,
         );
@@ -132,6 +145,8 @@ mod tests {
                 tilt: None,
                 position: Vec3::X,
                 pressure: 0.2,
+
+                time_ms: 0,
             },
             0.1,
         );
@@ -152,6 +167,8 @@ mod tilt_tests {
                 position: Vec3::ZERO,
                 pressure: 0.3,
                 tilt: Some(Vec3::X),
+
+                time_ms: 0,
             },
             0.2,
         );
@@ -159,6 +176,8 @@ mod tilt_tests {
             position: Vec3::Y,
             pressure: 0.8,
             tilt: Some(Vec3::Z),
+
+            time_ms: 0,
         };
         let filtered = filter.push(target, 0.2);
         assert_eq!(filtered.tilt, target.tilt);
@@ -171,6 +190,8 @@ mod tilt_tests {
             position: Vec3::ONE,
             pressure: 1.0,
             tilt: None,
+
+            time_ms: 0,
         };
         assert_eq!(filter.push(mouse, 0.2), mouse);
     }

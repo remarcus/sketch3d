@@ -797,6 +797,7 @@ pub fn preview_document(preset: &Preset) -> Document {
                         tilt: preset.brush.dynamics.tilt_orientation.then_some(
                             Vec3::new(0.0, 1.0, (t * std::f32::consts::PI).sin()).normalize(),
                         ),
+                        time_ms: 0,
                     }
                 })
                 .collect(),

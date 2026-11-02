@@ -397,6 +397,8 @@ mod tests {
                     position: loft.point(0.4, v),
                     pressure: 0.3 + index as f32 * 0.05,
                     tilt: None,
+
+                    time_ms: 0,
                 },
                 0.08,
             ));

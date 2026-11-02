@@ -452,6 +452,8 @@ mod tests {
                 position: Vec3::new(x, 0.0, 0.0),
                 pressure: 0.3,
                 tilt: None,
+
+                time_ms: 0,
             }],
         }
     }
@@ -685,16 +687,22 @@ mod tests {
                 position: Vec3::ZERO,
                 pressure: 0.2,
                 tilt: Some(Vec3::X),
+
+                time_ms: 0,
             },
             Point {
                 position: Vec3::X,
                 pressure: 0.6,
                 tilt: Some(Vec3::Y),
+
+                time_ms: 0,
             },
             Point {
                 position: Vec3::Y,
                 pressure: 1.0,
                 tilt: None,
+
+                time_ms: 0,
             },
         ];
         let mut sibling = stroke(2, 2.0);
@@ -1075,6 +1083,8 @@ mod layer_tests {
                     position: Vec3::ZERO,
                     pressure: 0.7,
                     tilt: None,
+
+                    time_ms: 0,
                 }],
             }],
             ..Document::default()
@@ -1283,6 +1293,8 @@ mod group_tests {
                         position: Vec3::X * id as f32,
                         pressure: 0.7,
                         tilt: None,
+
+                        time_ms: 0,
                     }],
                 })
                 .collect(),
@@ -1386,6 +1398,8 @@ mod large_group_tests {
                         position: Vec3::X,
                         pressure: 0.8,
                         tilt: None,
+
+                        time_ms: 0,
                     }],
                 })
                 .collect(),
@@ -1438,11 +1452,15 @@ mod appearance_tests {
                     position: Vec3::X,
                     pressure: 0.4,
                     tilt: None,
+
+                    time_ms: 0,
                 },
                 Point {
                     position: Vec3::new(1.0, 0.6, 0.25),
                     pressure: 0.8,
                     tilt: None,
+
+                    time_ms: 0,
                 },
             ],
         };

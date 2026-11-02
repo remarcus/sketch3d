@@ -206,6 +206,7 @@ pub fn study() -> crate::document::Document {
                 position,
                 pressure: 1.0,
                 tilt: None,
+                time_ms: 0,
             })
             .collect();
         doc.strokes.push(Stroke {
@@ -333,6 +334,8 @@ mod tests {
                     position: Vec3::new(p[0], p[1], 0.0),
                     pressure: 1.0,
                     tilt: None,
+
+                    time_ms: 0,
                 })
                 .collect(),
         }

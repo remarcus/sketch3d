@@ -68,7 +68,7 @@ impl SketchApp {
             self.file = Some(path.clone());
             assert!(self.save(false));
             let loaded = Document::from_json(&std::fs::read_to_string(path).unwrap()).unwrap();
-            assert_eq!(loaded.version, 17);
+            assert_eq!(loaded.version, 19);
             assert_eq!(loaded.strokes, self.doc.strokes);
             let mesh = crate::geometry::stroke_mesh(&self.doc.strokes[0]);
             let center = mesh
@@ -166,6 +166,7 @@ impl SketchApp {
                     position: Vec3::new(p[0], p[1], z),
                     pressure: 1.0,
                     tilt: None,
+                    time_ms: 0,
                 })
                 .collect(),
             });
@@ -185,6 +186,7 @@ impl SketchApp {
                     position,
                     pressure: 1.0,
                     tilt: None,
+                    time_ms: 0,
                 })
                 .collect(),
         });

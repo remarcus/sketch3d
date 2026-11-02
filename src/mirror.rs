@@ -221,6 +221,7 @@ pub fn mirror_point(point: Point, plane: MirrorPlane) -> Result<Point, String> {
             .tilt
             .map(|tilt| plane.reflect_vector(tilt))
             .transpose()?,
+        time_ms: point.time_ms,
     };
     if !mirrored.is_valid() {
         return Err("Reflected point is outside the document limits".into());
@@ -259,6 +260,7 @@ mod tests {
             position: Vec3::new(x, 0.25, 0.0),
             pressure: 0.3 + (x.abs() * 0.1),
             tilt: Some(Vec3::Y),
+            time_ms: 0,
         }
     }
 

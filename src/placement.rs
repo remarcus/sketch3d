@@ -84,7 +84,36 @@ pub fn pick(doc: &Document, origin: Vec3, direction: Vec3) -> Option<SurfaceHit>
                 continue;
             }
             let weights = [1.0 - u - v, u, v];
-            if let Some(tip) = tip_image {
+            if stroke.brush.flow.enabled {
+                let opacity: f32 = face
+                    .iter()
+                    .zip(weights)
+                    .map(|(vertex, weight)| vertex.opacity * weight)
+                    .sum();
+                if opacity <= 0.001 {
+                    continue;
+                }
+                if tip_image.is_none()
+                    && stroke.brush.tip_asset_id == 0
+                    && texture::key(stroke.brush.texture).0 != texture::TextureKind::Solid
+                {
+                    let uv = face
+                        .iter()
+                        .zip(weights)
+                        .map(|(vertex, weight)| Vec2::from(vertex.uv) * weight)
+                        .sum::<Vec2>();
+                    let x = ((uv.x.rem_euclid(1.0) * texture::SIZE as f32) as u32)
+                        .min(texture::SIZE - 1);
+                    let y = ((uv.y.rem_euclid(1.0) * texture::SIZE as f32) as u32)
+                        .min(texture::SIZE - 1);
+                    let mask = masks
+                        .entry(texture::key(stroke.brush.texture))
+                        .or_insert_with(|| texture::rgba(stroke.brush.texture));
+                    if mask[((y * texture::SIZE + x) * 4 + 3) as usize] < 128 {
+                        continue;
+                    }
+                }
+            } else if let Some(tip) = tip_image {
                 let uv = face
                     .iter()
                     .zip(weights)
@@ -179,6 +208,8 @@ mod tests {
                     position: Vec3::new(p[0], p[1], z),
                     pressure: 1.0,
                     tilt: None,
+
+                    time_ms: 0,
                 })
                 .collect(),
         }
@@ -234,11 +265,15 @@ mod tests {
                     position: Vec3::new(-1.0, 0.0, 0.0),
                     pressure: 1.0,
                     tilt: None,
+
+                    time_ms: 0,
                 },
                 Point {
                     position: Vec3::new(1.0, 0.0, 0.0),
                     pressure: 1.0,
                     tilt: None,
+
+                    time_ms: 0,
                 },
             ];
             doc.strokes = vec![mark];
@@ -263,11 +298,15 @@ mod tests {
                 position: Vec3::new(-1.0, 0.0, 0.0),
                 pressure: 1.0,
                 tilt: None,
+
+                time_ms: 0,
             },
             Point {
                 position: Vec3::new(1.0, 0.0, 0.0),
                 pressure: 1.0,
                 tilt: None,
+
+                time_ms: 0,
             },
         ];
         front.brush.texture.kind = texture::TextureKind::Pattern;

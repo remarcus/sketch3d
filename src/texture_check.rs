@@ -36,6 +36,7 @@ pub fn run() -> Result<(), String> {
                             position: Vec3::new(t, t.sin(), (t * 0.3).cos()),
                             pressure: 0.7 + 0.3 * t.sin().abs(),
                             tilt: None,
+                            time_ms: 0,
                         }
                     })
                     .collect(),

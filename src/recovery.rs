@@ -530,6 +530,8 @@ mod tests {
                     position: Vec3::X,
                     pressure: 0.42,
                     tilt: Some(Vec3::Y),
+
+                    time_ms: 0,
                 }],
             }],
             ..Document::default()

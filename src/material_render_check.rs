@@ -71,11 +71,13 @@ fn stroke_segment(
                 position: Vec3::new(start_x, 0.0, z),
                 pressure: 0.8,
                 tilt: None,
+                time_ms: 0,
             },
             Point {
                 position: Vec3::new(end_x, 0.0, z),
                 pressure: 0.8,
                 tilt: None,
+                time_ms: 0,
             },
         ],
     }

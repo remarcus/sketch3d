@@ -1,4 +1,4 @@
-use crate::document::{BrushKind, Stroke, StrokeMaterial};
+use crate::document::{BrushKind, Point, Stroke, StrokeMaterial};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
 #[repr(C)]
@@ -395,7 +395,18 @@ pub fn stroke_extent(stroke: &Stroke) -> f32 {
             .points
             .windows(2)
             .all(|pair| pair[0].position.distance_squared(pair[1].position) <= 1e-12);
-    let mut shape_extent = if stroke.brush.strands.enabled {
+    let mut shape_extent = if stroke.brush.flow.enabled {
+        stroke.radius
+            * if stroke.brush.dynamics.tilt_shading {
+                stroke
+                    .brush
+                    .dynamics
+                    .tilt_shading_scale
+                    .max(stroke.brush.dynamics.manual_shading_scale)
+            } else {
+                1.0
+            }
+    } else if stroke.brush.strands.enabled {
         let settings = stroke.brush.strands;
         stroke.radius
             * (settings.spread * (1.0 + settings.tilt_spread) + if dot { 0.65 } else { 0.0 })
@@ -456,6 +467,9 @@ fn taper_points(stroke: &Stroke) -> Vec<crate::document::Point> {
                     position: pair[0].position.lerp(pair[1].position, t),
                     pressure: pair[0].pressure + (pair[1].pressure - pair[0].pressure) * t,
                     tilt: crate::dynamics::interpolate_tilt(pair[0].tilt, pair[1].tilt, t),
+                    time_ms: (pair[0].time_ms as f32
+                        + (pair[1].time_ms as f32 - pair[0].time_ms as f32) * t)
+                        .round() as u32,
                 });
             }
         }
@@ -477,6 +491,8 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
     };
     let mut vertices = if stroke.fill.is_some() {
         crate::polygon::mesh(stroke)
+    } else if stroke.brush.flow.enabled {
+        airbrush_mesh(stroke)
     } else if stroke.brush.tip_asset_id != 0 {
         tip_mesh(stroke)
     } else if stroke.brush.dabs.enabled {
@@ -842,6 +858,12 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
 
 pub(crate) const MAX_STRAND_VERTICES: usize = 400_000;
 const STRAND_SIDES: usize = 6;
+pub(crate) const MAX_AIRBRUSH_POINTS: usize = 65_536;
+pub(crate) const MAX_AIRBRUSH_DEPOSITS: usize = 8_192;
+pub(crate) const MAX_AIRBRUSH_VERTICES: usize = MAX_AIRBRUSH_DEPOSITS * 72;
+const AIRBRUSH_CELL_MS: u32 = 32;
+pub(crate) const AIRBRUSH_TICK_MS: u32 = AIRBRUSH_CELL_MS;
+const AIRBRUSH_DISC_SIDES: usize = 8;
 
 fn strand_mesh(stroke: &Stroke) -> Vec<Vertex> {
     let settings = stroke.brush.strands;
@@ -931,6 +953,367 @@ fn strand_mesh(stroke: &Stroke) -> Vec<Vertex> {
         }
     }
     out
+}
+
+fn airbrush_timeline(stroke: &Stroke) -> Vec<Point> {
+    if stroke.points.is_empty() || stroke.points.len() > MAX_AIRBRUSH_POINTS {
+        return Vec::new();
+    }
+    let first_time = stroke.points[0].time_ms;
+    let last_time = stroke.points.last().unwrap().time_ms;
+    if stroke
+        .points
+        .windows(2)
+        .any(|pair| pair[0].time_ms > pair[1].time_ms)
+    {
+        return Vec::new();
+    }
+    if last_time > first_time {
+        return stroke.points.clone();
+    }
+
+    // Shape tools and very short untimed input still produce one deterministic
+    // pass. Duration is derived from path length rather than point count.
+    let lengths = crate::dynamics::arc_lengths(&stroke.points);
+    let total = lengths.last().copied().unwrap_or(0.0);
+    if total <= 1e-8 {
+        let mut start = stroke.points[0];
+        start.time_ms = 0;
+        let mut end = *stroke.points.last().unwrap();
+        end.time_ms = AIRBRUSH_CELL_MS;
+        return vec![start, end];
+    }
+    let spacing = (stroke.radius * 0.5).max(0.001);
+    let cells = (total / spacing).ceil().max(1.0) as u32;
+    let duration = cells
+        .saturating_mul(AIRBRUSH_CELL_MS)
+        .min(crate::document::MAX_FLOW_DURATION_MS);
+    stroke
+        .points
+        .iter()
+        .zip(lengths)
+        .map(|(point, distance)| {
+            let mut point = *point;
+            point.time_ms = ((distance / total) * duration as f32).round() as u32;
+            point
+        })
+        .collect()
+}
+
+fn point_at_time(points: &[Point], time_ms: u32) -> Point {
+    let index = points
+        .partition_point(|point| point.time_ms <= time_ms)
+        .saturating_sub(1);
+    let a = points[index];
+    let Some(b) = points.get(index + 1).copied() else {
+        return a;
+    };
+    if time_ms <= a.time_ms || b.time_ms <= a.time_ms {
+        return a;
+    }
+    let t = (time_ms - a.time_ms) as f32 / (b.time_ms - a.time_ms) as f32;
+    Point {
+        position: a.position.lerp(b.position, t),
+        pressure: a.pressure + (b.pressure - a.pressure) * t,
+        tilt: crate::dynamics::interpolate_tilt(a.tilt, b.tilt, t),
+        time_ms,
+    }
+}
+
+fn path_between_times(points: &[Point], start: u32, end: u32) -> Vec<Point> {
+    let mut path = vec![point_at_time(points, start)];
+    let interior_start = points.partition_point(|point| point.time_ms <= start);
+    let interior_end = points.partition_point(|point| point.time_ms < end);
+    path.extend(points[interior_start..interior_end].iter().copied());
+    let last = point_at_time(points, end);
+    if path
+        .last()
+        .is_none_or(|previous| previous.position.distance_squared(last.position) > 1e-12)
+    {
+        path.push(last);
+    } else if path.len() == 1 {
+        path.push(last);
+    } else if let Some(previous) = path.last_mut() {
+        *previous = last;
+    }
+    path
+}
+
+fn path_length(points: &[Point]) -> f32 {
+    points
+        .windows(2)
+        .map(|pair| pair[0].position.distance(pair[1].position))
+        .sum()
+}
+
+fn path_length_between_times(points: &[Point], start: u32, end: u32) -> f32 {
+    let first = point_at_time(points, start);
+    let last = point_at_time(points, end);
+    let interior_start = points.partition_point(|point| point.time_ms <= start);
+    let interior_end = points.partition_point(|point| point.time_ms < end);
+    let mut previous = first.position;
+    let mut length = 0.0;
+    for point in &points[interior_start..interior_end] {
+        length += previous.distance(point.position);
+        previous = point.position;
+    }
+    length + previous.distance(last.position)
+}
+
+fn sample_path_distance(points: &[Point], distance: f32) -> (Point, Vec3) {
+    let mut walked = 0.0;
+    for pair in points.windows(2) {
+        let delta = pair[1].position - pair[0].position;
+        let length = delta.length();
+        if length > 1e-8 && distance <= walked + length {
+            let t = ((distance - walked) / length).clamp(0.0, 1.0);
+            return (
+                Point {
+                    position: pair[0].position.lerp(pair[1].position, t),
+                    pressure: pair[0].pressure + (pair[1].pressure - pair[0].pressure) * t,
+                    tilt: crate::dynamics::interpolate_tilt(pair[0].tilt, pair[1].tilt, t),
+                    time_ms: (pair[0].time_ms as f32
+                        + (pair[1].time_ms as f32 - pair[0].time_ms as f32) * t)
+                        .round() as u32,
+                },
+                delta / length,
+            );
+        }
+        walked += length;
+    }
+    (
+        points.last().copied().unwrap_or(Point {
+            position: Vec3::ZERO,
+            pressure: 1.0,
+            tilt: None,
+            time_ms: 0,
+        }),
+        points
+            .windows(2)
+            .rev()
+            .find_map(|pair| (pair[1].position - pair[0].position).try_normalize())
+            .unwrap_or(Vec3::Y),
+    )
+}
+
+fn airbrush_deposits(
+    stroke: &Stroke,
+    timeline: &[Point],
+    visit: &mut impl FnMut(Point, Vec3, f32, f32),
+) -> usize {
+    let (Some(first), Some(last)) = (timeline.first(), timeline.last()) else {
+        return 0;
+    };
+    let mut cursor = first.time_ms;
+    let mut count = 0usize;
+    let mut walked = 0.0;
+    let spacing = (stroke.radius * 0.5).max(0.001);
+    while cursor < last.time_ms {
+        let next_boundary = (cursor / AIRBRUSH_CELL_MS + 1).saturating_mul(AIRBRUSH_CELL_MS);
+        let end = next_boundary.min(last.time_ms);
+        if end <= cursor {
+            break;
+        }
+        let path = path_between_times(timeline, cursor, end);
+        let length = path_length(&path);
+        let samples = (length / spacing).ceil().max(1.0) as usize;
+        let seconds_per_sample = (end - cursor) as f32 / 1000.0 / samples as f32;
+        for index in 0..samples {
+            let distance = length * (index as f32 + 0.5) / samples as f32;
+            let (point, tangent) = sample_path_distance(&path, distance);
+            visit(point, tangent, seconds_per_sample, walked + distance);
+            count = count.saturating_add(1);
+            if count > MAX_AIRBRUSH_DEPOSITS {
+                return count;
+            }
+        }
+        walked += length;
+        cursor = end;
+    }
+    count
+}
+
+pub(crate) fn airbrush_vertex_estimate(stroke: &Stroke) -> usize {
+    if stroke.points.is_empty() || stroke.points.len() > MAX_AIRBRUSH_POINTS {
+        return MAX_AIRBRUSH_VERTICES.saturating_add(1);
+    }
+    let synthetic;
+    let timestamps_valid = stroke
+        .points
+        .windows(2)
+        .all(|pair| pair[0].time_ms <= pair[1].time_ms);
+    let timeline = if timestamps_valid
+        && stroke.points.first().unwrap().time_ms < stroke.points.last().unwrap().time_ms
+    {
+        stroke.points.as_slice()
+    } else {
+        synthetic = airbrush_timeline(stroke);
+        synthetic.as_slice()
+    };
+    if timeline.is_empty() {
+        return MAX_AIRBRUSH_VERTICES.saturating_add(1);
+    }
+    let (Some(first), Some(last)) = (timeline.first(), timeline.last()) else {
+        return 0;
+    };
+    let mut cursor = first.time_ms;
+    let mut deposits = 0usize;
+    let spacing = (stroke.radius * 0.5).max(0.001);
+    while cursor < last.time_ms {
+        let next_boundary = (cursor / AIRBRUSH_CELL_MS + 1).saturating_mul(AIRBRUSH_CELL_MS);
+        let end = next_boundary.min(last.time_ms);
+        if end <= cursor {
+            break;
+        }
+        let length = path_length_between_times(&timeline, cursor, end);
+        deposits = deposits.saturating_add((length / spacing).ceil().max(1.0) as usize);
+        if deposits > MAX_AIRBRUSH_DEPOSITS {
+            return MAX_AIRBRUSH_VERTICES.saturating_add(1);
+        }
+        cursor = end;
+    }
+    if deposits == 0 {
+        deposits = 1;
+    }
+    deposits.saturating_mul(72)
+}
+
+fn airbrush_mesh(stroke: &Stroke) -> Vec<Vertex> {
+    let timeline = airbrush_timeline(stroke);
+    let capacity = airbrush_vertex_estimate(stroke);
+    if timeline.is_empty() || capacity > MAX_AIRBRUSH_VERTICES {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(capacity);
+    let total_length = path_length(&timeline);
+    let mut previous_width = None;
+    let _ = airbrush_deposits(
+        stroke,
+        &timeline,
+        &mut |point, tangent, seconds, traveled| {
+            let tangent = tangent
+                .try_normalize()
+                .unwrap_or_else(|| stroke.brush.tangent.try_normalize().unwrap_or(Vec3::Y));
+            let reference = stroke.brush.normal.try_normalize().unwrap_or(Vec3::Z);
+            let manual_width = frame_direction(reference - tangent * reference.dot(tangent))
+                .or_else(|| {
+                    frame_direction(
+                        stroke.brush.tangent - tangent * stroke.brush.tangent.dot(tangent),
+                    )
+                })
+                .unwrap_or_else(|| perpendicular(tangent));
+            let mut width = if stroke.brush.dynamics.tilt_orientation {
+                point
+                    .tilt
+                    .and_then(|lean| frame_direction(lean - tangent * lean.dot(tangent)))
+                    .map(|axis| {
+                        Quat::from_axis_angle(tangent, stroke.brush.angle_degrees.to_radians())
+                            * axis
+                    })
+                    .unwrap_or(manual_width)
+            } else {
+                Quat::from_axis_angle(tangent, stroke.brush.angle_degrees.to_radians())
+                    * manual_width
+            };
+            if previous_width.is_some_and(|previous: Vec3| width.dot(previous) < 0.0) {
+                width = -width;
+            }
+            previous_width = Some(width);
+            let normal = tangent.cross(width).try_normalize().unwrap_or(reference);
+            let taper = crate::dynamics::taper_factor(
+                traveled,
+                total_length,
+                stroke.brush.dynamics.taper_start,
+                stroke.brush.dynamics.taper_end,
+            );
+            let radius = stroke.radius
+                * crate::dynamics::pressure_scale(stroke.brush.dynamics.width, point.pressure)
+                * crate::dynamics::shading_width_scale(
+                    stroke.brush.dynamics,
+                    stroke.brush.texture.kind,
+                    point.tilt,
+                )
+                * taper;
+            let pressure = point.pressure.clamp(0.0, 1.0);
+            let dose = 1.0 - (-stroke.brush.flow.rate_per_second * pressure * seconds).exp();
+            let opacity = stroke.brush.opacity
+                * crate::dynamics::opacity_scale(stroke.brush.dynamics.opacity, point.pressure)
+                * dose;
+            emit_airbrush_disc(
+                &mut out,
+                point.position,
+                width,
+                normal,
+                radius,
+                opacity,
+                stroke.brush.softness,
+                stroke,
+            );
+        },
+    );
+    out
+}
+
+fn emit_airbrush_disc(
+    out: &mut Vec<Vertex>,
+    center: Vec3,
+    width: Vec3,
+    normal: Vec3,
+    radius: f32,
+    opacity: f32,
+    softness: f32,
+    stroke: &Stroke,
+) {
+    if radius <= 1e-8 || opacity <= 1e-8 {
+        return;
+    }
+    let inner_radius = radius * (0.45 - softness.clamp(0.0, 1.0) * 0.38);
+    let inner = std::array::from_fn::<_, AIRBRUSH_DISC_SIDES, _>(|index| {
+        let angle = index as f32 * std::f32::consts::TAU / AIRBRUSH_DISC_SIDES as f32;
+        let axis = width * angle.cos() + normal * angle.sin();
+        (center + axis * inner_radius, axis)
+    });
+    let outer = std::array::from_fn::<_, AIRBRUSH_DISC_SIDES, _>(|index| {
+        let angle = index as f32 * std::f32::consts::TAU / AIRBRUSH_DISC_SIDES as f32;
+        let axis = width * angle.cos() + normal * angle.sin();
+        (center + axis * radius, axis)
+    });
+    for index in 0..AIRBRUSH_DISC_SIDES {
+        let next = (index + 1) % AIRBRUSH_DISC_SIDES;
+        let uv = |offset: Vec3| {
+            [
+                0.5 + offset.dot(width) / stroke.brush.texture.scale,
+                0.5 + offset.dot(normal) / stroke.brush.texture.scale,
+            ]
+        };
+        flat_triangle(
+            out,
+            [center, inner[index].0, inner[next].0],
+            [
+                [0.5, 0.5],
+                uv(inner[index].0 - center),
+                uv(inner[next].0 - center),
+            ],
+            normal,
+            stroke.color,
+            [opacity; 3],
+            0.0,
+        );
+        flat_quad(
+            out,
+            [inner[index].0, outer[index].0, outer[next].0, inner[next].0],
+            [
+                uv(inner[index].0 - center),
+                uv(outer[index].0 - center),
+                uv(outer[next].0 - center),
+                uv(inner[next].0 - center),
+            ],
+            normal,
+            stroke.color,
+            [opacity, 0.0, 0.0, opacity],
+            0.0,
+        );
+    }
 }
 
 fn flat_triangle(
@@ -1232,11 +1615,15 @@ mod tests {
                     tilt: None,
                     position: Vec3::ZERO,
                     pressure,
+
+                    time_ms: 0,
                 },
                 Point {
                     tilt: None,
                     position: Vec3::Y,
                     pressure,
+
+                    time_ms: 0,
                 },
             ],
         };
@@ -1261,6 +1648,8 @@ mod curve_regression {
                     tilt: None,
                     position: Vec3::new(t.cos(), t.sin(), 0.0),
                     pressure: 1.0,
+
+                    time_ms: 0,
                 }
             })
             .collect();
@@ -1372,6 +1761,8 @@ mod brush_tests {
                     tilt: None,
                     position,
                     pressure: 1.0,
+
+                    time_ms: 0,
                 })
                 .collect(),
         }
@@ -1524,6 +1915,8 @@ mod dynamics_tests {
                     position: Vec3::X * x,
                     pressure: 0.0,
                     tilt: None,
+
+                    time_ms: 0,
                 })
                 .collect(),
         }
@@ -1561,6 +1954,8 @@ mod dynamics_tests {
                     position: Vec3::X * i as f32 * 0.05,
                     pressure: 0.0,
                     tilt: None,
+
+                    time_ms: 0,
                 })
                 .collect();
             let sparse_frames = brush_frames(&prepared);
@@ -1656,6 +2051,8 @@ mod dynamics_boundary_tests {
                         } else {
                             Vec3::new(0.0, -0.001, 1.0).normalize()
                         }),
+
+                        time_ms: 0,
                     })
                     .collect(),
             };
@@ -1707,6 +2104,8 @@ mod seam_dynamics_tests {
                         position,
                         pressure: 0.75,
                         tilt: Some(Vec3::Y),
+
+                        time_ms: 0,
                     },
                     0.05,
                 ));
@@ -1788,6 +2187,8 @@ mod texture_uv_tests {
                     position,
                     pressure: 1.0,
                     tilt: None,
+
+                    time_ms: 0,
                 })
                 .collect(),
         }
@@ -1916,6 +2317,8 @@ mod texture_uv_tests {
                     position: cylinder.point(angle, 0.2),
                     pressure: 1.0,
                     tilt: None,
+
+                    time_ms: 0,
                 },
                 0.0,
             ));

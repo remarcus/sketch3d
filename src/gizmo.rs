@@ -142,11 +142,22 @@ fn textured_surface_covered(
             triangle[0].uv[0] * w + triangle[1].uv[0] * u + triangle[2].uv[0] * v,
             triangle[0].uv[1] * w + triangle[1].uv[1] * u + triangle[2].uv[1] * v,
         ];
+        let opacity = triangle[0].opacity * w + triangle[1].opacity * u + triangle[2].opacity * v;
+        if stroke.brush.flow.enabled
+            && (opacity <= 0.001
+                || (stroke.brush.texture.kind != crate::texture::TextureKind::Solid
+                    && !crate::texture::covered_at_uv(stroke.brush.texture, uv)))
+        {
+            continue;
+        }
         nearest = Some((distance, uv));
     }
     let Some((_, uv)) = nearest else {
         return Some(false);
     };
+    if stroke.brush.flow.enabled {
+        return Some(true);
+    }
     if stroke.brush.tip_asset_id != 0 {
         return Some(
             tip_asset
@@ -174,7 +185,8 @@ fn pick_filtered(
         }
     }) {
         let textured = stroke.fill.is_none()
-            && (stroke.brush.strands.enabled
+            && (stroke.brush.flow.enabled
+                || stroke.brush.strands.enabled
                 || stroke.brush.tip_asset_id != 0
                 || (stroke.brush.texture.kind != crate::texture::TextureKind::Solid
                     && stroke.brush.texture.strength > 0.0));
@@ -480,11 +492,15 @@ mod tests {
                     tilt: None,
                     position: Vec3::new(-1.0, 0.0, z),
                     pressure: 1.0,
+
+                    time_ms: 0,
                 },
                 Point {
                     tilt: None,
                     position: Vec3::new(1.0, 0.0, z),
                     pressure: 1.0,
+
+                    time_ms: 0,
                 },
             ],
         };
@@ -515,11 +531,15 @@ mod tests {
                     tilt: None,
                     position: Vec3::new(-1.0, 0.0, 0.0),
                     pressure: 1.0,
+
+                    time_ms: 0,
                 },
                 Point {
                     tilt: None,
                     position: Vec3::new(1.0, 0.0, 0.0),
                     pressure: 1.0,
+
+                    time_ms: 0,
                 },
             ],
         };
@@ -551,7 +571,7 @@ mod tests {
                 / 3.0;
             let screen = project(&camera, rect, position).unwrap().0;
             let (origin, direction) = ray(&camera, rect, screen);
-            match textured_surface_covered(&mark, origin, direction) {
+            match textured_surface_covered(&mark, None, origin, direction) {
                 Some(false) => {
                     transparent_pick |= pick(&doc, &camera, rect, screen) == Some(behind.id);
                 }
@@ -607,11 +627,15 @@ mod layer_picking_tests {
                     position: Vec3::new(-1.0, 0.0, z),
                     pressure: 1.0,
                     tilt: None,
+
+                    time_ms: 0,
                 },
                 Point {
                     position: Vec3::new(1.0, 0.0, z),
                     pressure: 1.0,
                     tilt: None,
+
+                    time_ms: 0,
                 },
             ],
         };

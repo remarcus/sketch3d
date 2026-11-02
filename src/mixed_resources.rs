@@ -359,6 +359,8 @@ mod tests {
                 position: Vec3::new(1.0, 2.0, 3.0),
                 pressure: 0.7,
                 tilt: Some(Vec3::Y),
+
+                time_ms: 0,
             }],
         });
         document.image_planes.push(ImagePlane {

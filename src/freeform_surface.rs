@@ -322,6 +322,8 @@ mod tests {
                     position,
                     pressure: 0.2 + index as f32 * 0.05,
                     tilt: None,
+
+                    time_ms: 0,
                 },
                 0.08,
             ));

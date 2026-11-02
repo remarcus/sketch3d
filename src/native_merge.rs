@@ -483,6 +483,8 @@ mod tests {
                 position: Vec3::new(1.0, 2.0, 3.0),
                 pressure: 0.4,
                 tilt: None,
+
+                time_ms: 0,
             }],
         });
         fs::write(&source_path, serde_json::to_vec(&source).unwrap()).unwrap();

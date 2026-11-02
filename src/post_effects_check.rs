@@ -62,6 +62,7 @@ fn stroke(id: u64, material: StrokeMaterial, color: [f32; 3], points: Vec<Vec3>)
                 position,
                 pressure: 1.0,
                 tilt: None,
+                time_ms: 0,
             })
             .collect(),
     }

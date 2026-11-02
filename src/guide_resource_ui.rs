@@ -1270,11 +1270,15 @@ mod loft_ui_tests {
                     position: start,
                     pressure: 1.0,
                     tilt: None,
+
+                    time_ms: 0,
                 },
                 Point {
                     position: end,
                     pressure: 1.0,
                     tilt: None,
+
+                    time_ms: 0,
                 },
             ],
         }
@@ -1673,6 +1677,8 @@ mod planar_target_tests {
                     position: *position,
                     pressure: 1.0,
                     tilt: None,
+
+                    time_ms: 0,
                 })
                 .collect(),
         };

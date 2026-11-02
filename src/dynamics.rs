@@ -78,6 +78,36 @@ pub struct StrandSettings {
     pub tilt_spread: f32,
 }
 
+/// Time-based airbrush flow. The resolved deposit geometry lives in the
+/// timestamped stroke samples, not in the render/update cadence.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AirbrushSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_airbrush_rate")]
+    pub rate_per_second: f32,
+    #[serde(default = "default_airbrush_algorithm")]
+    pub algorithm_version: u8,
+}
+
+impl Default for AirbrushSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rate_per_second: default_airbrush_rate(),
+            algorithm_version: default_airbrush_algorithm(),
+        }
+    }
+}
+
+impl AirbrushSettings {
+    pub fn is_valid(self) -> bool {
+        self.rate_per_second.is_finite()
+            && (0.05..=30.0).contains(&self.rate_per_second)
+            && self.algorithm_version == 1
+    }
+}
+
 impl Default for StrandSettings {
     fn default() -> Self {
         Self {
@@ -118,6 +148,12 @@ fn default_strand_thickness() -> f32 {
 }
 fn default_strand_tilt_spread() -> f32 {
     0.55
+}
+fn default_airbrush_rate() -> f32 {
+    3.0
+}
+fn default_airbrush_algorithm() -> u8 {
+    1
 }
 impl Default for DabSettings {
     fn default() -> Self {
@@ -327,6 +363,7 @@ mod tests {
             position: Vec3::X * x,
             pressure: 1.0,
             tilt: None,
+            time_ms: 0,
         }
     }
     #[test]

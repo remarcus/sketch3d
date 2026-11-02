@@ -1584,6 +1584,7 @@ impl SketchApp {
                             position: Vec3::new(-2.0 + 4.0 * t, 0.0, 0.0),
                             pressure: 0.2 + 0.8 * t,
                             tilt: Some(Vec3::new(0.0, 0.25, 1.0).normalize()),
+                            time_ms: 0,
                         }
                     })
                     .collect(),
@@ -1730,6 +1731,7 @@ impl SketchApp {
                         position: Vec3::new(x, y, 0.0),
                         pressure: 1.0,
                         tilt: None,
+                        time_ms: 0,
                     })
                     .collect(),
             };

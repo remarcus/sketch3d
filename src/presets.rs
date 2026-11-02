@@ -11,14 +11,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const BUILTIN_PRESET_COUNT: usize = 15;
+const BUILTIN_PRESET_COUNT: usize = 16;
 const MAX_PERSONAL_PRESETS: usize = 250;
 const MAX_PRESETS: usize = MAX_PERSONAL_PRESETS + BUILTIN_PRESET_COUNT;
 const FIRST_PERSONAL_ID: u64 = 100;
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_PACKAGE_BYTES: u64 = 1024 * 1024;
 const PACKAGE_FORMAT: &str = "spatial-sketch-brush";
-const LIBRARY_VERSION: u32 = 3;
+const LIBRARY_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Preset {
@@ -461,6 +461,24 @@ fn defaults(tip_assets: &[crate::brush_tip::BrushTipAsset]) -> Vec<Preset> {
             stabilization: 0.35,
         });
     }
+    let mut airbrush = Brush {
+        kind: BrushKind::Round,
+        ..Brush::default()
+    };
+    airbrush.flow.enabled = true;
+    airbrush.flow.rate_per_second = 3.5;
+    airbrush.opacity = 0.82;
+    airbrush.softness = 0.9;
+    airbrush.dynamics.width.minimum = 0.2;
+    airbrush.dynamics.opacity.minimum = 0.12;
+    presets.push(Preset {
+        id: 16,
+        name: "Airbrush".into(),
+        brush: airbrush,
+        radius: 0.12,
+        color: [0.82, 0.28, 0.19],
+        stabilization: 0.35,
+    });
     presets
 }
 
@@ -620,6 +638,7 @@ impl Library {
         preset.brush.tip_asset_id = asset.id;
         preset.brush.tip_aspect = asset.size[0] as f32 / asset.size[1] as f32;
         preset.brush.strands.enabled = false;
+        preset.brush.flow.enabled = false;
         preset.brush.dabs.enabled = true;
         preset.brush.dabs.spacing = 0.55;
         preset.brush.texture = TextureSettings::default();
@@ -635,10 +654,14 @@ impl Library {
         }
         let mut library: Self =
             serde_json::from_str(text).map_err(|e| format!("Cannot read brush library: {e}"))?;
-        if matches!(library.version, 1 | 2) {
+        if matches!(library.version, 1 | 2 | 3) {
             let previous_version = library.version;
             let defaults = Library::default();
-            let first_new_id = if previous_version == 1 { 11 } else { 14 };
+            let first_new_id = match previous_version {
+                1 => 11,
+                2 => 14,
+                _ => 16,
+            };
             for preset in defaults
                 .presets
                 .into_iter()

@@ -28,11 +28,13 @@ fn stroke(id: u64, color: [f32; 3], start_x: f32, end_x: f32) -> Stroke {
                 position: Vec3::new(start_x, 0.0, 0.0),
                 pressure: 0.8,
                 tilt: None,
+                time_ms: 0,
             },
             Point {
                 position: Vec3::new(end_x, 0.0, 0.0),
                 pressure: 0.8,
                 tilt: None,
+                time_ms: 0,
             },
         ],
     }

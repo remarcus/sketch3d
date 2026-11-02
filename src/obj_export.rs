@@ -62,11 +62,13 @@ fn material_stroke(id: u64, material: StrokeMaterial) -> Stroke {
                 position: Vec3::new(0.0, id as f32 * 0.2, 0.0),
                 pressure: 0.8,
                 tilt: None,
+                time_ms: 0,
             },
             Point {
                 position: Vec3::new(1.0, id as f32 * 0.2, 0.0),
                 pressure: 0.8,
                 tilt: None,
+                time_ms: 0,
             },
         ],
     }
@@ -161,6 +163,9 @@ pub fn write_obj_bundle(
     let mut companion_files = Vec::<(PathBuf, Vec<u8>)>::new();
     let mut mtl = String::new();
     mtl.push_str("# Sketch3D cutout strokes export as fully transparent geometry; destination erasure is not represented by OBJ/MTL.\n");
+    if strokes.iter().any(|stroke| stroke.brush.flow.enabled) {
+        mtl.push_str("# Airbrush timing and per-vertex soft opacity are baked into mesh placement only approximately; OBJ/MTL cannot preserve per-vertex alpha.\n");
+    }
     for material in &materials {
         writeln!(mtl, "newmtl {}", material.name).unwrap();
         writeln!(

@@ -207,6 +207,7 @@ pub fn create_ellipse(
                     + axis_v * (radius_v * angle.sin()),
                 pressure,
                 tilt: None,
+                time_ms: 0,
             }
         })
         .collect();

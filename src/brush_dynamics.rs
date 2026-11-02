@@ -187,7 +187,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 17);
+                assert_eq!(loaded.version, 19);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.load_dynamics();
                 self.brush.dynamics = Default::default();
@@ -245,6 +245,7 @@ fn opacity_test_stroke(
                     position,
                     pressure: 0.8,
                     tilt: None,
+                    time_ms: 0,
                 }
             })
             .collect(),

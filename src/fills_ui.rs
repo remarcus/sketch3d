@@ -149,6 +149,7 @@ impl SketchApp {
             position: world,
             pressure: 1.0,
             tilt: None,
+            time_ms: 0,
         });
         self.status =
             "Fill draft: add corners, then Enter or click the first corner. Escape cancels.".into();

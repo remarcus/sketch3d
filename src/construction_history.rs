@@ -1294,11 +1294,15 @@ mod tests {
                     position: glam::Vec3::ZERO,
                     pressure: 0.4,
                     tilt: None,
+
+                    time_ms: 0,
                 },
                 Point {
                     position: glam::Vec3::X,
                     pressure: 0.9,
                     tilt: Some(glam::Vec3::Y),
+
+                    time_ms: 0,
                 },
             ],
         };
@@ -1381,6 +1385,8 @@ mod tests {
                 position: glam::Vec3::new(index as f32, 0.0, 0.0),
                 pressure: 0.5,
                 tilt: None,
+
+                time_ms: 0,
             })
             .collect();
         let bounded = bounded_stroke_points(&points);

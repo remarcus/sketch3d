@@ -733,11 +733,15 @@ mod tests {
                             position: Vec3::ZERO,
                             pressure: 0.23,
                             tilt: Some(Vec3::Y),
+
+                            time_ms: 0,
                         },
                         Point {
                             position: Vec3::X,
                             pressure: 0.91,
                             tilt: Some(Vec3::Z),
+
+                            time_ms: 0,
                         },
                     ],
                 }],
@@ -853,6 +857,8 @@ mod tests {
                     position: resource.center + resource.rotation * (position * resource.scale),
                     pressure: 0.8,
                     tilt: None,
+
+                    time_ms: 0,
                 })
                 .collect(),
         };

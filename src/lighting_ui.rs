@@ -158,11 +158,13 @@ impl SketchApp {
                     position: Vec3::new(-0.7, 1.4, 0.0),
                     pressure: 1.0,
                     tilt: None,
+                    time_ms: 0,
                 },
                 Point {
                     position: Vec3::new(0.7, 1.4, 0.0),
                     pressure: 1.0,
                     tilt: None,
+                    time_ms: 0,
                 },
             ],
         });
@@ -292,6 +294,7 @@ impl SketchApp {
                         position,
                         pressure: 1.0,
                         tilt: None,
+                        time_ms: 0,
                     })
                     .collect(),
             });

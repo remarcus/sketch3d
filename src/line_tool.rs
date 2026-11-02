@@ -144,6 +144,7 @@ impl SketchApp {
                 position: world,
                 pressure: pressure.clamp(0.0, 1.0),
                 tilt,
+                time_ms: 0,
             };
             if !point.is_valid() {
                 return;

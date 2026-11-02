@@ -327,6 +327,7 @@ pub fn encode_with_images(
         let texture_key = (tip_key.is_none() && settings.kind != TextureKind::Solid)
             .then(|| texture::key(settings));
         let alpha_blended = stroke.brush.opacity < 1.0
+            || stroke.brush.flow.enabled
             || tip_key.is_some()
             || (stroke.fill.is_none() && stroke.brush.softness > 0.0)
             || stroke.material == crate::document::StrokeMaterial::Cutout
@@ -839,11 +840,15 @@ mod tests {
                     tilt: None,
                     position: Vec3::ZERO,
                     pressure: 0.2,
+
+                    time_ms: 0,
                 },
                 Point {
                     tilt: None,
                     position: Vec3::Y,
                     pressure: 1.0,
+
+                    time_ms: 0,
                 },
             ],
         }
@@ -1245,7 +1250,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 17);
+        assert_eq!(loaded.version, 19);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -1550,7 +1555,7 @@ mod group_export_tests {
     fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
         let doc = crate::export_check::grouped_fixture();
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-        assert_eq!(loaded.version, 17);
+        assert_eq!(loaded.version, 19);
         assert_eq!(loaded.strokes, doc.strokes);
         let encoded = encode(&doc, None).unwrap();
         let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
@@ -1796,11 +1801,15 @@ mod obj_reference_export_tests {
                     tilt: None,
                     position: Vec3::ZERO,
                     pressure: 1.0,
+
+                    time_ms: 0,
                 },
                 Point {
                     tilt: None,
                     position: Vec3::Y,
                     pressure: 1.0,
+
+                    time_ms: 0,
                 },
             ],
         }

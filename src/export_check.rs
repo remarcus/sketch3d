@@ -26,16 +26,19 @@ pub fn pressure_fixture() -> Document {
                         tilt: None,
                         position: Vec3::ZERO,
                         pressure: 0.0,
+                        time_ms: 0,
                     },
                     Point {
                         tilt: None,
                         position: Vec3::new(0.0, 0.5, 0.0),
                         pressure: 0.3,
+                        time_ms: 0,
                     },
                     Point {
                         tilt: None,
                         position: Vec3::new(0.0, 1.2, 0.0),
                         pressure: 1.0,
+                        time_ms: 0,
                     },
                 ],
             },
@@ -52,6 +55,7 @@ pub fn pressure_fixture() -> Document {
                     tilt: None,
                     position: Vec3::new(1.5, 0.25, 0.75),
                     pressure: 0.7,
+                    time_ms: 0,
                 }],
             },
             Stroke {
@@ -68,11 +72,13 @@ pub fn pressure_fixture() -> Document {
                         tilt: None,
                         position: Vec3::new(0.0, 2.0, -1.0),
                         pressure: 1.0,
+                        time_ms: 0,
                     },
                     Point {
                         tilt: None,
                         position: Vec3::new(1.2, 2.0, -1.0),
                         pressure: 1.0,
+                        time_ms: 0,
                     },
                 ],
             },
@@ -121,6 +127,7 @@ pub fn brush_fixture() -> Document {
                             0.0,
                         ),
                         pressure: 0.1 + 0.9 * t,
+                        time_ms: 0,
                     }
                 })
                 .collect(),
@@ -144,6 +151,7 @@ pub fn brush_fixture() -> Document {
                 tilt: None,
                 position: Vec3::new(2.6, y, 0.0),
                 pressure: 1.0,
+                time_ms: 0,
             }],
         });
     }
@@ -212,6 +220,7 @@ pub fn dynamics_fixture() -> Document {
                         ),
                         pressure: 0.05 + 0.95 * t,
                         tilt: (row == 2).then_some(Vec3::new(0.0, angle.cos(), angle.sin())),
+                        time_ms: 0,
                     }
                 })
                 .collect(),
@@ -229,6 +238,7 @@ pub fn dynamics_fixture() -> Document {
                 position: Vec3::new(2.6, y, 0.0),
                 pressure: 1.0,
                 tilt: (row == 2).then_some(Vec3::new(0.0, 0.7, 0.7).normalize()),
+                time_ms: 0,
             }],
         });
     }
@@ -319,6 +329,7 @@ pub fn textured_fixture() -> Document {
                         pressure: 0.15 + 0.85 * t,
                         tilt: (texture_kind == TextureKind::Charcoal)
                             .then_some(Vec3::Y * (0.15 + 0.65 * t)),
+                        time_ms: 0,
                     }
                 })
                 .collect(),
@@ -336,6 +347,7 @@ pub fn textured_fixture() -> Document {
                 position: Vec3::new(2.6, y, 0.0),
                 pressure: 0.35,
                 tilt: (texture_kind == TextureKind::Charcoal).then_some(Vec3::Y * 0.55),
+                time_ms: 0,
             }],
         });
         // A short depth-oriented round companion exercises circumference UV seams.
@@ -356,6 +368,7 @@ pub fn textured_fixture() -> Document {
                     position: Vec3::new(-2.0 + i as f32 / 12.0 * 4.0, y - 0.37, -0.15),
                     pressure: 1.0,
                     tilt: None,
+                    time_ms: 0,
                 })
                 .collect(),
         });
@@ -402,6 +415,7 @@ pub fn vase_fixture() -> Document {
                 position: guide.point(theta, height),
                 pressure: 0.9 + 0.08 * (i as f32 * 0.3).sin().abs(),
                 tilt: None,
+                time_ms: 0,
             })
             .collect();
         doc.strokes.push(Stroke {
@@ -497,11 +511,13 @@ pub fn run() -> Result<(), String> {
             position: Vec3::new(-2.0, 0.0, 0.0),
             pressure: 0.2,
             tilt: None,
+            time_ms: 0,
         },
         Point {
             position: Vec3::new(2.0, 0.0, 0.0),
             pressure: 0.9,
             tilt: None,
+            time_ms: 0,
         },
     ];
     lines.strokes[0].brush.kind = BrushKind::Ribbon;
@@ -512,11 +528,13 @@ pub fn run() -> Result<(), String> {
             position: Vec3::new(-1.0, 1.0, 0.0),
             pressure: 1.0,
             tilt: None,
+            time_ms: 0,
         },
         Point {
             position: Vec3::new(0.5, 2.5, 0.0),
             pressure: 1.0,
             tilt: None,
+            time_ms: 0,
         },
     ];
     lines.strokes[1].brush.kind = BrushKind::Chisel;

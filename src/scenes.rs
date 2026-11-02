@@ -47,6 +47,7 @@ impl Artist {
                     tilt: None,
                     position,
                     pressure: 0.88 + 0.08 * (i as f32 / count as f32 * PI).sin(),
+                    time_ms: 0,
                 })
                 .collect(),
         });

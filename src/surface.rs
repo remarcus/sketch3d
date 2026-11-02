@@ -512,6 +512,7 @@ impl Surface {
                 Self::Loft(surface) => surface.point(point.position.x, point.position.y),
             },
             pressure: point.pressure,
+            time_ms: point.time_ms,
         }
     }
     fn steps(self, start: Vec3, end: Vec3) -> usize {
@@ -617,6 +618,9 @@ impl SurfaceStabilizer {
                         tilt: crate::dynamics::interpolate_tilt(previous.tilt, filtered.tilt, t),
                         position: previous.position.lerp(filtered.position, t),
                         pressure: previous.pressure + (filtered.pressure - previous.pressure) * t,
+                        time_ms: (previous.time_ms as f32
+                            + (filtered.time_ms as f32 - previous.time_ms as f32) * t)
+                            .round() as u32,
                     }
                 };
                 points.push(self.surface.decode(p));
@@ -635,6 +639,7 @@ impl SurfaceStabilizer {
                 tilt: world.tilt,
                 position: parameter,
                 pressure: world.pressure,
+                time_ms: world.time_ms,
             },
             radius,
         );
@@ -700,6 +705,8 @@ mod tests {
                     tilt: None,
                     position: world,
                     pressure: i as f32 / 80.0,
+
+                    time_ms: 0,
                 },
                 0.08,
             ));
@@ -725,6 +732,8 @@ mod tests {
                 tilt: None,
                 position: c.point(0.0, 0.0),
                 pressure: 0.0,
+
+                time_ms: 0,
             },
             0.0,
         );
@@ -734,6 +743,8 @@ mod tests {
                 tilt: None,
                 position: c.point(1.0, 0.5),
                 pressure: 1.0,
+
+                time_ms: 0,
             },
             0.0,
         );
@@ -753,6 +764,8 @@ mod tests {
                 tilt: None,
                 position: c.point(0.0, 0.0),
                 pressure: 0.5,
+
+                time_ms: 0,
             },
             0.2,
         );
@@ -762,6 +775,8 @@ mod tests {
                 tilt: None,
                 position: target,
                 pressure: 0.7,
+
+                time_ms: 0,
             },
             0.2,
         );
@@ -794,6 +809,8 @@ mod ring_tests {
                 position: start,
                 pressure: 0.2,
                 tilt: Some(Vec3::Y),
+
+                time_ms: 0,
             },
             0.0,
         );
@@ -804,6 +821,8 @@ mod ring_tests {
                 position: target,
                 pressure: 0.8,
                 tilt: Some(Vec3::X),
+
+                time_ms: 0,
             },
             0.0,
         );
@@ -859,6 +878,8 @@ mod tilt_tests {
                 position: cylinder.point(0.0, 0.0),
                 pressure: 0.2,
                 tilt: Some(Vec3::X),
+
+                time_ms: 0,
             },
             0.0,
         );
@@ -867,6 +888,8 @@ mod tilt_tests {
                 position: cylinder.point(0.4, 0.2),
                 pressure: 0.8,
                 tilt: Some(Vec3::Y),
+
+                time_ms: 0,
             },
             0.0,
         );
@@ -880,6 +903,8 @@ mod tilt_tests {
                 position: cylinder.point(0.8, 0.3),
                 pressure: 0.8,
                 tilt: None,
+
+                time_ms: 0,
             },
             0.0,
         );
@@ -915,6 +940,8 @@ mod sphere_cone_guide_tests {
                     position,
                     pressure: 0.4 + index as f32 * 0.2,
                     tilt: None,
+
+                    time_ms: 0,
                 },
                 0.05,
             ));
@@ -935,6 +962,8 @@ mod sphere_cone_guide_tests {
                     position: near_pole,
                     pressure: 0.7,
                     tilt: None,
+
+                    time_ms: 0,
                 },
                 0.05,
             );
@@ -971,6 +1000,8 @@ mod sphere_cone_guide_tests {
                     position,
                     pressure: 0.3 + index as f32 * 0.2,
                     tilt: None,
+
+                    time_ms: 0,
                 },
                 0.04,
             ));
@@ -999,6 +1030,8 @@ mod revolved_tests {
                 position: r.point(PI - 0.1, -1.4),
                 pressure: 0.3,
                 tilt: Some(Vec3::Y),
+
+                time_ms: 0,
             },
             0.1,
         );
@@ -1009,6 +1042,8 @@ mod revolved_tests {
                 position: target,
                 pressure: 0.8,
                 tilt: Some(Vec3::Y),
+
+                time_ms: 0,
             },
             0.1,
         ));

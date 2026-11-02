@@ -192,16 +192,22 @@ mod tests {
                         position: Vec3::new(-0.2, 0.0, 0.0),
                         pressure: 0.3,
                         tilt: None,
+
+                        time_ms: 0,
                     },
                     Point {
                         position: Vec3::new(0.0, 0.0, 0.0),
                         pressure: 0.7,
                         tilt: None,
+
+                        time_ms: 0,
                     },
                     Point {
                         position: Vec3::new(0.2, 0.0, 0.0),
                         pressure: 1.0,
                         tilt: None,
+
+                        time_ms: 0,
                     },
                 ],
             }],

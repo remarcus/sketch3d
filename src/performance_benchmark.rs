@@ -89,6 +89,7 @@ fn make_stroke(id: u64, point_count: usize, x_offset: f32) -> Stroke {
                 ),
                 pressure: 0.25 + 0.75 * (t * std::f32::consts::PI).sin().abs(),
                 tilt: None,
+                time_ms: 0,
             }
         })
         .collect();

@@ -45,7 +45,8 @@ display, picking, selection bounds, GLB, and OBJ export.
 ## Versioning and budgets
 
 SKETCH-071 introduced native schema version 14. Current drawings use schema
-version 18, which adds bounded bristle/rake strand settings. Version 17 added
+version 19, which adds timestamped airbrush flow settings. Version 18 added
+bounded bristle/rake strand settings. Version 17 added
 the resolved image-tip aspect ratio used by stamp geometry; version 16 added
 bounded embedded brush-tip PNG assets; version 15 added captured tilt magnitude
 for tilt-driven shading. Missing
@@ -79,3 +80,22 @@ The screen-space eraser treats the fan's full envelope as stroke coverage: a
 partial erase splits the logical stroke when it intersects that envelope, and
 removes all strands over the cut interval. Individual lanes and gaps are not
 edited independently.
+
+## Airbrush flow
+
+SKETCH-077 adds flow to planar, curved-guide, and model-surface strokes. The
+stroke stores point timestamps in milliseconds and a resolved flow rate and
+algorithm version, enough to regenerate the same mesh on reload.
+The sampler interpolates the captured path into 32 ms time cells and subdivides
+each cell spatially at half the stroke radius. Each deposit contributes
+`1 - exp(-rate × pressure × sample duration)` alpha; overlapping deposits
+therefore accumulate independently of renderer repaint count. A stationary
+contact is recorded on a timer until contact ends. Mouse input uses the existing
+fixed pressure fallback.
+
+The per-stroke limits are 65,536 timestamped points, 8,192 deposits, 589,824
+vertices, and five minutes of contact. Picking and GLB use interpolated vertex
+alpha as coverage. OBJ/MTL has no per-vertex alpha support, so it keeps deposit
+geometry and base material opacity while losing soft accumulation detail.
+Partial erasing keeps interpolated timestamps on retained points; it does not
+rerun a preset or replace captured pressures.

@@ -60,6 +60,7 @@ fn stroke() -> Stroke {
                 position: Vec3::new(x, 0.0, 0.0),
                 pressure: 1.0,
                 tilt: None,
+                time_ms: 0,
             })
             .collect(),
     }

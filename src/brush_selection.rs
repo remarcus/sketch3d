@@ -278,6 +278,8 @@ mod tests {
                 position,
                 pressure: 1.0,
                 tilt: None,
+
+                time_ms: 0,
             }],
         }
     }

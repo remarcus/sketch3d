@@ -358,6 +358,8 @@ mod tests {
                 position: Vec3::new(id as f32, 0.0, 0.0),
                 pressure: 1.0,
                 tilt: None,
+
+                time_ms: 0,
             }],
         }
     }
