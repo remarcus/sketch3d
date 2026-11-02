@@ -54,7 +54,7 @@ impl SketchApp {
                     .unwrap();
                     std::fs::write(directory.join("report.json"), serde_json::to_vec_pretty(&serde_json::json!({
                         "passed": true, "physical_tablet_tested": false,
-                        "checks": ["mouse picking and detached view-plane dragging in perspective and orthographic views", "cancel preserves document and history", "apply is one edit and undo/redo are exact", "native save/reload and GLB survive point edits", "stale source preview is discarded", "preview handles and centerline screenshot"]
+                        "checks": ["mouse picking and detached view-plane dragging in perspective and orthographic views", "cancel preserves document and history", "apply is one edit and undo/redo are exact", "native save/reload and GLB survive point edits", "split and ordered join each create one exact reversible edit", "stale source preview is discarded", "preview handles and centerline screenshot"]
                     })).unwrap()).unwrap();
                     self.allow_close = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -114,6 +114,7 @@ impl SketchApp {
             point.time_ms = 0;
         }
         self.doc.strokes = vec![source];
+        self.next_id = 2;
         self.selected = HashSet::from([1]);
         self.undo.clear();
         self.redo.clear();
@@ -179,6 +180,42 @@ impl SketchApp {
             assert_eq!(self.doc.strokes, original);
             self.redo.clear();
         }
+        let mut split_source = original[0].clone();
+        let template = original[0].points[0];
+        split_source.points = (0..4)
+            .map(|index| {
+                let mut point = template;
+                point.position = Vec3::new((index as f32 - 1.5) * 0.5, 0.0, 0.0);
+                point.time_ms = index as u32 * 10;
+                point
+            })
+            .collect();
+        self.doc.strokes = vec![split_source];
+        self.selected = HashSet::from([1]);
+        self.undo.clear();
+        self.redo.clear();
+        let before_split = self.doc.strokes.clone();
+        self.split_ordinary_stroke_after(1, 1);
+        let split = self.doc.strokes.clone();
+        assert_eq!(split.len(), 2, "split creates two editable strokes");
+        assert_eq!(self.undo.len(), 1, "split is one history edit");
+        self.undo();
+        assert_eq!(self.doc.strokes, before_split, "split undo is exact");
+        self.redo();
+        assert_eq!(self.doc.strokes, split, "split redo is exact");
+        self.join_ordinary_strokes(1, 2, 0.0);
+        assert_eq!(
+            self.doc.strokes, before_split,
+            "joining the split restores source samples"
+        );
+        self.undo();
+        assert_eq!(self.doc.strokes, split, "join undo restores both strokes");
+        self.redo();
+        assert_eq!(self.doc.strokes, before_split, "join redo is exact");
+        self.doc.strokes = original.clone();
+        self.selected = HashSet::from([1]);
+        self.undo.clear();
+        self.redo.clear();
         self.begin_canvas_point_edit();
         self.doc.strokes[0].color = [0.4, 0.5, 0.6];
         self.sync_canvas_point_edit();
@@ -444,5 +481,46 @@ mod tests {
             source.points[2].position = origin;
             assert_eq!(nearest_point(&source, &camera, rect, screen), Some(1));
         }
+    }
+
+    #[test]
+    fn split_and_join_update_canvas_point_picking() {
+        let mut doc = crate::scenes::japanese_house();
+        let mut source = doc.strokes.remove(0);
+        source.points.truncate(4);
+        source.points.resize(4, source.points[0]);
+        for (index, point) in source.points.iter_mut().enumerate() {
+            point.position = Vec3::new(index as f32, 0.0, 0.0);
+        }
+        source.id = 1;
+        source.layer_id = 1;
+        source.group_id = None;
+        source.fill = None;
+        source.curve = None;
+        source.brush = Default::default();
+        doc.strokes = vec![source.clone()];
+        let camera = Camera {
+            projection: crate::geometry::Projection::Orthographic,
+            target: Vec3::new(1.5, 0.0, 0.0),
+            ..Camera::default()
+        };
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 600.0));
+        let split = crate::point_edit::split_stroke(&doc, 1, 1, 2).unwrap();
+        split.edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes.len(), 2);
+        let (second_screen, _) =
+            crate::gizmo::project(&camera, rect, Vec3::new(3.0, 0.0, 0.0)).unwrap();
+        assert_eq!(
+            nearest_point(&doc.strokes[1], &camera, rect, second_screen),
+            Some(2)
+        );
+        let join = crate::point_edit::join_strokes(&doc, 1, 2, 0.0).unwrap();
+        join.apply(&mut doc, true);
+        let (screen, _) = crate::gizmo::project(&camera, rect, Vec3::new(2.0, 0.0, 0.0)).unwrap();
+        assert_eq!(
+            nearest_point(&doc.strokes[0], &camera, rect, screen),
+            Some(2)
+        );
+        assert_eq!(doc.strokes[0].points, source.points);
     }
 }

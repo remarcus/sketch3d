@@ -121,6 +121,13 @@ impl AppearanceDraft {
     }
 }
 
+#[derive(Clone, Copy)]
+struct StrokeJoinUiState {
+    ids: [u64; 2],
+    reverse_order: bool,
+    tolerance: f32,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RepeatSpace {
     World,
@@ -1324,6 +1331,101 @@ impl SketchApp {
             }
         }
     }
+    pub(super) fn split_ordinary_stroke_after(&mut self, stroke_id: u64, point_index: usize) {
+        match crate::point_edit::split_stroke(&self.doc, stroke_id, point_index, self.next_id) {
+            Ok(plan) => {
+                plan.edit.apply(&mut self.doc, true);
+                self.undo.push(plan.edit);
+                self.redo.clear();
+                self.next_id = plan.next_id;
+                self.selected = HashSet::from([plan.first_id, plan.second_id]);
+                self.renderer.invalidate();
+                self.dirty = true;
+                self.record_recovery_edit();
+                self.status =
+                    "Stroke split after the selected point. Undo restores the original.".into();
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    pub(super) fn join_ordinary_strokes(&mut self, first_id: u64, second_id: u64, tolerance: f32) {
+        match crate::point_edit::join_strokes(&self.doc, first_id, second_id, tolerance) {
+            Ok(edit) => {
+                edit.apply(&mut self.doc, true);
+                self.undo.push(edit);
+                self.redo.clear();
+                self.selected = HashSet::from([first_id]);
+                self.renderer.invalidate();
+                self.dirty = true;
+                self.record_recovery_edit();
+                self.status =
+                    "Strokes joined in the chosen order. Undo restores both strokes.".into();
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn stroke_join_controls(&mut self, ui: &mut egui::Ui) {
+        if self.selected.len() != 2
+            || self.drag.is_some()
+            || self.repeat.is_some()
+            || self.curve_draft_active()
+            || self.liquify_active()
+        {
+            return;
+        }
+        let ids: Vec<_> = self
+            .doc
+            .strokes
+            .iter()
+            .filter(|stroke| self.selected.contains(&stroke.id))
+            .map(|stroke| stroke.id)
+            .collect();
+        if ids.len() != 2 {
+            return;
+        }
+        let state_id = ui.make_persistent_id("stroke-join-controls");
+        let mut state = ui
+            .ctx()
+            .data_mut(|data| data.get_temp::<StrokeJoinUiState>(state_id))
+            .filter(|state| state.ids == [ids[0], ids[1]])
+            .unwrap_or(StrokeJoinUiState {
+                ids: [ids[0], ids[1]],
+                reverse_order: false,
+                tolerance: 0.02,
+            });
+        ui.collapsing("Join strokes", |ui| {
+            let (first_id, second_id) = if state.reverse_order {
+                (state.ids[1], state.ids[0])
+            } else {
+                (state.ids[0], state.ids[1])
+            };
+            ui.label(format!("Order: #{first_id} → #{second_id}"));
+            if ui.button("Swap stroke order").clicked() {
+                state.reverse_order = !state.reverse_order;
+            }
+            ui.small("Connect the first stroke’s end to the second stroke’s start. A small gap remains visible as a connecting segment.");
+            super::ui_style::numeric_row(
+                ui,
+                "Endpoint tolerance",
+                "stroke-join-tolerance",
+                &mut state.tolerance,
+                Some(0.0..=crate::point_edit::MAX_JOIN_TOLERANCE),
+                "wu",
+            );
+            if ui.button("Join selected strokes").clicked() {
+                let (first_id, second_id) = if state.reverse_order {
+                    (state.ids[1], state.ids[0])
+                } else {
+                    (state.ids[0], state.ids[1])
+                };
+                self.join_ordinary_strokes(first_id, second_id, state.tolerance);
+            }
+        });
+        ui.ctx().data_mut(|data| data.insert_temp(state_id, state));
+    }
+
     fn point_edit_controls(&mut self, ui: &mut egui::Ui) {
         if self.selected.len() != 1
             || self.drag.is_some()
@@ -1358,6 +1460,7 @@ impl SketchApp {
         }
         let mut move_point = false;
         let mut delete_point = false;
+        let mut split_after_point = false;
         let mut canvas_edit = false;
         ui.collapsing("Stroke points", |ui| {
             canvas_edit = ui.button("Edit points in canvas…").clicked();
@@ -1378,6 +1481,9 @@ impl SketchApp {
                 if ui.button("Reset").clicked() { state.1 = state.2.to_array(); }
             });
             delete_point = ui.add_enabled(points.len() > 2, egui::Button::new("Delete point")).clicked();
+            split_after_point = ui
+                .add_enabled(points.len() >= 4, egui::Button::new("Split after selected point"))
+                .clicked();
         });
         ui.ctx().data_mut(|data| data.insert_temp(state_id, state));
         if canvas_edit {
@@ -1405,6 +1511,11 @@ impl SketchApp {
                 Err(error) => self.status = error,
             }
         }
+        if split_after_point {
+            ui.ctx()
+                .data_mut(|data| data.remove::<(usize, [f32; 3], Vec3)>(state_id));
+            self.split_ordinary_stroke_after(id, state.0);
+        }
     }
 
     pub(super) fn selection_panel(&mut self, ui: &mut egui::Ui) {
@@ -1420,6 +1531,7 @@ impl SketchApp {
         }
         if self.appearance_draft.is_none() {
             self.point_edit_controls(ui);
+            self.stroke_join_controls(ui);
             if ui
                 .add_enabled(
                     !self.selected.is_empty(),
