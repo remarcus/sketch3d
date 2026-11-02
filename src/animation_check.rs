@@ -27,9 +27,11 @@ pub fn run(report_path: &Path) -> Result<(), String> {
         modifiers: None,
         curve: None,
     };
-    let mut animation = ArtworkAnimation::default();
-    animation.range_end = 10;
-    animation.interpolate = true;
+    let mut animation = ArtworkAnimation {
+        range_end: 10,
+        interpolate: true,
+        ..ArtworkAnimation::default()
+    };
     animation = animation
         .set_keyframe(0, &[stroke(0.0)])
         .map_err(|e| e.to_string())?;

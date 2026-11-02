@@ -1589,9 +1589,11 @@ mod tests {
                 point.position.x += 0.8;
             }
         }
-        let mut animation = crate::animation::ArtworkAnimation::default();
-        animation.range_end = 1;
-        animation.fps = FPS as u8;
+        let mut animation = crate::animation::ArtworkAnimation {
+            range_end: 1,
+            fps: FPS as u8,
+            ..crate::animation::ArtworkAnimation::default()
+        };
         animation = animation.set_keyframe(0, &initial_strokes).unwrap();
         animation = animation.set_keyframe(1, &moved_strokes).unwrap();
         animation.current_frame = 0;
@@ -1705,9 +1707,11 @@ mod tests {
                 point.position.x += 0.8;
             }
         }
-        let mut animation = crate::animation::ArtworkAnimation::default();
-        animation.range_end = 1;
-        animation.fps = FPS as u8;
+        let mut animation = crate::animation::ArtworkAnimation {
+            range_end: 1,
+            fps: FPS as u8,
+            ..crate::animation::ArtworkAnimation::default()
+        };
         animation = animation.set_keyframe(0, &initial_strokes).unwrap();
         animation = animation.set_keyframe(1, &moved_strokes).unwrap();
         animation.current_frame = 0;

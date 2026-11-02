@@ -74,10 +74,9 @@ impl SketchApp {
                         let world_segments = local_segments
                             .into_iter()
                             .map(|line| {
-                                let world = line.map(|point| {
+                                line.map(|point| {
                                     resource.center + resource.rotation * (point * resource.scale)
-                                });
-                                world
+                                })
                             })
                             .collect::<Vec<_>>();
                         let mut indices = std::mem::take(&mut self.obj_surface_indices);
@@ -120,7 +119,7 @@ impl SketchApp {
                 if self
                     .next_id
                     .checked_add(draft.segments.len() as u64)
-                    .is_none_or(|end| end >= u64::MAX)
+                    .is_none_or(|end| end == u64::MAX)
                 {
                     self.status = "No more stroke IDs are available".into();
                     self.line_art_draft = Some(draft);
@@ -766,11 +765,13 @@ mod tests {
 
     #[test]
     fn scene_depth_hides_back_model_and_ignores_hidden_occluder() {
-        let mut camera = crate::geometry::Camera::default();
-        camera.yaw = 0.0;
-        camera.pitch = 0.0;
-        camera.target = glam::Vec3::ZERO;
-        camera.distance = 5.0;
+        let camera = crate::geometry::Camera {
+            yaw: 0.0,
+            pitch: 0.0,
+            target: glam::Vec3::ZERO,
+            distance: 5.0,
+            ..Default::default()
+        };
         let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 200.0));
         let plane = |z: f32| {
             let obj = format!("v -1 -1 {z}\nv 1 -1 {z}\nv 1 1 {z}\nv -1 1 {z}\nf 1 2 3\nf 1 3 4\n");

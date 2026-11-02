@@ -284,22 +284,20 @@ fn simplify_indices(
             let segment_length_sq = segment.length_squared();
             let mut farthest = None;
             let mut farthest_distance_sq = max_error * max_error;
-            for index in start + 1..end {
+            for (index, point) in points.iter().enumerate().take(end).skip(start + 1) {
                 operations = operations.saturating_add(1);
                 if operations > MAX_CLEANUP_WORK {
                     return Err(format!(
                         "Simplification reached its bounded {MAX_CLEANUP_WORK}-operation limit."
                     ));
                 }
-                let offset = points[index].position - origin;
+                let offset = point.position - origin;
                 let t = if segment_length_sq > 1.0e-12 {
                     (offset.dot(segment) / segment_length_sq).clamp(0.0, 1.0)
                 } else {
                     0.0
                 };
-                let distance_sq = points[index]
-                    .position
-                    .distance_squared(origin + segment * t);
+                let distance_sq = point.position.distance_squared(origin + segment * t);
                 if distance_sq > farthest_distance_sq {
                     farthest_distance_sq = distance_sq;
                     farthest = Some(index);
@@ -1123,7 +1121,7 @@ mod tests {
     #[test]
     fn cleanup_preserves_endpoints_corners_pressure_and_tilt_within_error() {
         let mut stroke = sample().strokes.remove(0);
-        stroke.points = (0..401)
+        stroke.points = (0_i32..401)
             .map(|index| {
                 let t = index as f32 / 400.0;
                 let (x, y) = if t < 0.5 {
@@ -1133,7 +1131,7 @@ mod tests {
                 };
                 crate::document::Point {
                     position: Vec3::new(x, y, 0.0),
-                    pressure: if (index as i32 - 210).abs() < 2 {
+                    pressure: if (index - 210).abs() < 2 {
                         0.95
                     } else {
                         0.4 + 0.1 * t

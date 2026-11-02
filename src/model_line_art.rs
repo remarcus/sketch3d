@@ -104,8 +104,7 @@ pub fn extract(
         let neighbors = index
             .triangle_neighbors(triangle_index as u32)
             .ok_or("Missing triangle adjacency")?;
-        for edge in 0..3 {
-            let neighbor = neighbors[edge];
+        for (edge, neighbor) in neighbors.iter().copied().enumerate() {
             if neighbor.is_some_and(|other| other < triangle_index as u32) {
                 continue;
             }

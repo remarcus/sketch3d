@@ -71,7 +71,7 @@ impl SketchApp {
                 let mut remove = false;
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut modifier.enabled, format!("{}", modifier_name(modifier.kind)));
+                        ui.checkbox(&mut modifier.enabled, modifier_name(modifier.kind).to_string());
                         move_up = ui.button("↑").on_hover_text("Move modifier earlier").clicked();
                         move_down = ui.button("↓").on_hover_text("Move modifier later").clicked();
                         remove = ui.button("Remove").clicked();

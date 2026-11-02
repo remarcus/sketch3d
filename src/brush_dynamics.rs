@@ -328,7 +328,7 @@ impl SketchApp {
     }
 
     fn verify_airbrush_flow(&mut self, ctx: &egui::Context, rect: Rect) {
-        let saved_doc = std::mem::replace(&mut self.doc, Document::default());
+        let saved_doc = std::mem::take(&mut self.doc);
         let saved_brush = self.brush;
         let saved_radius = self.radius;
         let saved_color = self.color;
@@ -375,12 +375,13 @@ impl SketchApp {
         ));
         assert_eq!(coarse_mesh.len(), medium_mesh.len());
         assert_eq!(coarse_mesh.len(), fine_mesh.len());
+        let coarse_discs = coarse_mesh.as_chunks::<72>().0;
+        let medium_discs = medium_mesh.as_chunks::<72>().0;
+        let fine_discs = fine_mesh.as_chunks::<72>().0;
         let mut max_sampling_position_error = 0.0_f32;
         let mut max_sampling_alpha_error = 0.0_f32;
-        for ((coarse_disc, medium_disc), fine_disc) in coarse_mesh
-            .chunks_exact(72)
-            .zip(medium_mesh.chunks_exact(72))
-            .zip(fine_mesh.chunks_exact(72))
+        for ((coarse_disc, medium_disc), fine_disc) in
+            coarse_discs.iter().zip(medium_discs).zip(fine_discs)
         {
             // Compare the center vertex for each triangle-fan wedge. The
             // captured source-point subdivision can change the disc frame's
@@ -697,8 +698,10 @@ impl SketchApp {
         let blank_pixels = render(&mut self.renderer, &Document::default(), &flow_camera);
         let changed_pixels = |pixels: &[u8]| {
             pixels
-                .chunks_exact(4)
-                .zip(blank_pixels.chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(blank_pixels.as_chunks::<4>().0)
                 .filter(|(pixel, blank)| {
                     pixel[..3]
                         .iter()

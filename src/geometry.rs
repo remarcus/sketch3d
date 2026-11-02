@@ -2476,8 +2476,10 @@ mod brush_tests {
             );
         }
 
-        let mut camera = Camera::default();
-        camera.distance = 3.0;
+        let camera = Camera {
+            distance: 3.0,
+            ..Camera::default()
+        };
         let canvas = eframe::egui::Rect::from_min_size(
             eframe::egui::Pos2::ZERO,
             eframe::egui::vec2(640.0, 480.0),

@@ -1328,7 +1328,7 @@ impl SketchApp {
         assert_eq!(obj_vertices, encoded.summary.vertices);
         assert!(obj_faces > 0);
         assert!(obj_bytes > 0);
-        assert!(obj_bytes < crate::export::MAX_BINARY_BYTES as usize);
+        assert!(obj_bytes < crate::export::MAX_BINARY_BYTES);
         std::fs::copy(&obj_path, output.join("rake-bristle-study.obj")).unwrap();
         let mtl_name = obj
             .lines()
@@ -1565,7 +1565,7 @@ impl SketchApp {
         assert_eq!(obj_vertices, glb_vertices);
         assert_eq!(obj_normals, glb_vertices);
         assert!(obj_faces > 0);
-        assert!(obj_bytes < crate::export::MAX_BINARY_BYTES as usize);
+        assert!(obj_bytes < crate::export::MAX_BINARY_BYTES);
         std::fs::copy(&obj_path, output.join("tube-profile-study.obj")).unwrap();
         let mtl_name = obj
             .lines()

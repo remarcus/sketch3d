@@ -342,9 +342,11 @@ mod tests {
 
     #[test]
     fn held_and_compatible_interpolated_seeking_is_deterministic() {
-        let mut animation = ArtworkAnimation::default();
-        animation.range_end = 20;
-        animation.keyframes = vec![keyframe(0, 0.0), keyframe(10, 1.0)];
+        let mut animation = ArtworkAnimation {
+            range_end: 20,
+            keyframes: vec![keyframe(0, 0.0), keyframe(10, 1.0)],
+            ..ArtworkAnimation::default()
+        };
         assert_eq!(animation.resolve(6).unwrap()[0].points[1].position.x, 0.1);
         animation.interpolate = true;
         let first = animation.resolve(6).unwrap();
@@ -354,16 +356,18 @@ mod tests {
 
     #[test]
     fn incompatible_topology_holds_previous_keyframe() {
-        let mut animation = ArtworkAnimation::default();
-        animation.range_end = 20;
-        animation.interpolate = true;
-        animation.keyframes = vec![
-            keyframe(0, 0.0),
-            ArtworkKeyframe {
-                frame: 10,
-                strokes: vec![stroke(7, 1.0, 4)],
-            },
-        ];
+        let animation = ArtworkAnimation {
+            range_end: 20,
+            interpolate: true,
+            keyframes: vec![
+                keyframe(0, 0.0),
+                ArtworkKeyframe {
+                    frame: 10,
+                    strokes: vec![stroke(7, 1.0, 4)],
+                },
+            ],
+            ..ArtworkAnimation::default()
+        };
         assert_eq!(
             animation.resolve(5).unwrap(),
             animation.keyframes[0].strokes
@@ -372,8 +376,10 @@ mod tests {
 
     #[test]
     fn keyframe_operations_are_sorted_bounded_and_roundtrip_legacy_defaults() {
-        let mut animation = ArtworkAnimation::default();
-        animation.range_end = 20;
+        let mut animation = ArtworkAnimation {
+            range_end: 20,
+            ..ArtworkAnimation::default()
+        };
         animation = animation.set_keyframe(10, &[stroke(7, 1.0, 3)]).unwrap();
         animation = animation.set_keyframe(0, &[stroke(7, 0.0, 3)]).unwrap();
         assert_eq!(
@@ -388,8 +394,10 @@ mod tests {
         assert_eq!(animation.current_frame, 15);
         animation = animation.delete_keyframe(15).unwrap();
         assert_eq!(animation.keyframes.len(), 2);
-        let mut document = Document::default();
-        document.animation = animation.clone();
+        let document = Document {
+            animation: animation.clone(),
+            ..Document::default()
+        };
         let bytes = serde_json::to_vec(&document).unwrap();
         let reopened = Document::from_json(std::str::from_utf8(&bytes).unwrap()).unwrap();
         assert_eq!(reopened.animation, animation);

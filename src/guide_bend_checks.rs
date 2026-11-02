@@ -66,7 +66,7 @@ impl SketchApp {
             repeat: false,
             modifiers: egui::Modifiers::default(),
         };
-        self.guide_bend_canvas_input(&event_ctx, rect, &[escape.clone()], &[]);
+        self.guide_bend_canvas_input(&event_ctx, rect, std::slice::from_ref(&escape), &[]);
         assert_eq!(
             self.doc.guide_resources, source,
             "Escape cancels a partial mouse bend"
@@ -92,7 +92,7 @@ impl SketchApp {
                 .as_ref()
                 .map(|draft| (&draft.controls, &draft.error))
         );
-        self.guide_bend_canvas_input(&event_ctx, rect, &[escape.clone()], &[]);
+        self.guide_bend_canvas_input(&event_ctx, rect, std::slice::from_ref(&escape), &[]);
         assert_eq!(
             self.doc.guide_resources, source,
             "Escape cancels a complete bend preview"
