@@ -60,6 +60,8 @@ Draw in the central canvas. The Input lab reports pen samples, pressure, and til
 
 The **Help** menu and in-app tutorial describe the drawing tools and workflows. Essential controls do not require touch. An edge-on drawing plane cannot accept strokes; press F to align the view or orbit away from the edge.
 
+To refine an ordinary stroke, select it with **V** and choose **Edit points…** in the top toolbar. Click and drag its point handles in the view plane, or enter coordinates in the inspector. **Apply point edits** commits the session as one undo step; **Cancel point edits** or **Escape** discards it. The preview shows the edited centerline over the committed stroke. Handles include points behind artwork; orbit to inspect depth. Canvas editing supports up to 4,096 samples and excludes fills, semantic curves, and linked groups.
+
 ## Capability gallery
 
 Click a preview to open its MP4. These six-second app captures use synthetic input without pressure data. They show earlier builds; newer features are not covered, and full playback/current-build review remains pending. GIF previews play once; open the MP4 to replay.

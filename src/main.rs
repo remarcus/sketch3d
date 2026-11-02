@@ -310,6 +310,7 @@ fn main() -> eframe::Result {
         matches!(
             argument.as_str(),
             "--verify-model-surfaces"
+                | "--verify-point-edit"
                 | "--verify-liquify-brush"
                 | "--verify-obj-references"
                 | "--verify-camera-bookmarks"

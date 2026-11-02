@@ -345,6 +345,10 @@ impl SketchApp {
         }
     }
     pub(super) fn select_pointer(&mut self, pos: Pos2, rect: Rect, begin: bool, shift: bool) {
+        if self.point_draft.is_some() {
+            self.canvas_point_pointer(pos, rect, begin);
+            return;
+        }
         if self.appearance_draft.is_some() {
             return;
         }
@@ -1354,7 +1358,9 @@ impl SketchApp {
         }
         let mut move_point = false;
         let mut delete_point = false;
+        let mut canvas_edit = false;
         ui.collapsing("Stroke points", |ui| {
+            canvas_edit = ui.button("Edit points in canvas…").clicked();
             ui.small("Choose a sampled point (0-based). Coordinates are world units. Apply is one undo step.");
             ui.horizontal(|ui| {
                 ui.label("Point");
@@ -1374,6 +1380,10 @@ impl SketchApp {
             delete_point = ui.add_enabled(points.len() > 2, egui::Button::new("Delete point")).clicked();
         });
         ui.ctx().data_mut(|data| data.insert_temp(state_id, state));
+        if canvas_edit {
+            self.begin_canvas_point_edit();
+            return;
+        }
         if move_point || delete_point {
             let position = if delete_point {
                 None
@@ -1398,6 +1408,11 @@ impl SketchApp {
     }
 
     pub(super) fn selection_panel(&mut self, ui: &mut egui::Ui) {
+        self.sync_canvas_point_edit();
+        if self.point_draft.is_some() {
+            self.canvas_point_controls(ui);
+            return;
+        }
         ui.label(format!("{} stroke(s) selected", self.selected.len()));
         self.liquify_controls(ui);
         if self.liquify_active() {
@@ -1620,6 +1635,10 @@ if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete
         ui.label(RichText::new("One drag = one undo step. Escape cancels a drag.").small());
     }
     pub(super) fn selection_overlay(&self, ui: &egui::Ui, rect: Rect) {
+        if self.point_draft.is_some() {
+            self.canvas_point_overlay(ui, rect);
+            return;
+        }
         if !self.select_mode {
             return;
         }

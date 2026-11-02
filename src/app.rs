@@ -86,6 +86,8 @@ mod placement_ui;
 mod planes;
 #[path = "png_export_ui.rs"]
 pub(crate) mod png_export_ui;
+#[path = "point_edit_ui.rs"]
+mod point_edit_ui;
 #[path = "presentation_checks.rs"]
 mod presentation_checks;
 #[path = "presentation_ui.rs"]
@@ -275,6 +277,9 @@ pub struct SketchApp {
     brush_select_deselect: bool,
     brush_select_drag: Option<selection::BrushSelectionDrag>,
     appearance_draft: Option<selection::AppearanceDraft>,
+    point_draft: Option<crate::point_edit::Draft>,
+    point_drag: Option<point_edit_ui::PointDrag>,
+    point_verification_frame: Option<u32>,
     active: Option<u64>,
     active_started_at: Option<Instant>,
     mouse_down: bool,
@@ -1378,6 +1383,11 @@ impl SketchApp {
             brush_select_deselect: false,
             brush_select_drag: None,
             appearance_draft: None,
+            point_draft: None,
+            point_drag: None,
+            point_verification_frame: std::env::args()
+                .any(|arg| arg == "--verify-point-edit")
+                .then_some(0),
             active: None,
             active_started_at: None,
             mouse_down: false,
@@ -1981,6 +1991,7 @@ impl SketchApp {
     }
 
     fn finish(&mut self) {
+        self.point_drag = None;
         self.finish_layer_properties_edit(true);
         let model_surface_stroke = self.model_stroke_contact.is_some();
         self.finish_appearance_edit(false);
@@ -2147,6 +2158,7 @@ impl SketchApp {
         }
     }
     fn cancel(&mut self) {
+        self.finish_canvas_point_edit(false);
         self.cancel_brush_selection();
         self.cancel_partial_erase();
         self.cancel_shape_draft();
@@ -2642,6 +2654,10 @@ impl SketchApp {
         }
     }
     fn save(&mut self, save_as: bool) -> bool {
+        if self.point_draft.is_some() {
+            self.status = "Apply or cancel point editing before saving.".into();
+            return false;
+        }
         if self.mixed_resource_preview_active() {
             self.status = "Apply or cancel the mixed-resource preview before saving.".into();
             return false;
@@ -3084,6 +3100,23 @@ impl SketchApp {
                 }
                 ui.separator();
                 ui.label(format!("{} selected", self.selected.len()));
+                let editable_points = self.selected.len() == 1
+                    && self.doc.strokes.iter().any(|stroke| {
+                        self.selected.contains(&stroke.id)
+                            && self.doc.editable(stroke)
+                            && stroke.fill.is_none()
+                            && stroke.curve.is_none()
+                            && !self.doc.has_linked_source(stroke.id)
+                            && self.doc.linked_instance_for_stroke(stroke.id).is_none()
+                            && (2..=crate::point_edit::MAX_CANVAS_POINTS)
+                                .contains(&stroke.points.len())
+                    });
+                if ui
+                    .add_enabled(editable_points, egui::Button::new("Edit points…"))
+                    .clicked()
+                {
+                    self.begin_canvas_point_edit();
+                }
             } else if self.fills.enabled {
                 ui.label(RichText::new("Planar fill").strong());
                 ui.label("Click enclosed regions on the active plane");
@@ -4117,7 +4150,11 @@ impl SketchApp {
                     {
                         self.presentation.schedule_layout_save();
                     }
-                    if ui.button("Hide").on_hover_text("Hide inspector").clicked() {
+                    if ui
+                        .add_enabled(self.point_draft.is_none(), egui::Button::new("Hide"))
+                        .on_hover_text("Hide inspector")
+                        .clicked()
+                    {
                         self.set_inspector_open(false);
                     }
                 });
@@ -4128,7 +4165,9 @@ impl SketchApp {
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
-                        if self.mixed_resource_preview_active()
+                        if self.point_draft.is_some() {
+                            self.canvas_point_controls(ui);
+                        } else if self.mixed_resource_preview_active()
                             && self.presentation.preferences.layout.inspector_tab
                                 != crate::presentation::InspectorTab::Properties
                         {
@@ -4349,6 +4388,7 @@ impl SketchApp {
         }
     }
     fn canvas_input(&mut self, ctx: &egui::Context, rect: Rect, mut pen: Vec<PenSample>) {
+        self.sync_canvas_point_edit();
         if self.video_export.is_running() {
             return;
         }
@@ -4390,6 +4430,7 @@ impl SketchApp {
             && self.liquify_brush_verification_frame.is_none()
             && self.mirror_verification_frame.is_none()
             && self.capability_replay.is_none()
+            && self.point_verification_frame.is_none()
         {
             self.cancel();
             return;
@@ -4452,6 +4493,11 @@ impl SketchApp {
                 continue;
             }
             if sample.phase == Phase::Up {
+                if self.point_draft.is_some() {
+                    self.canvas_point_pointer(sample.position, rect, false);
+                    self.point_drag = None;
+                    continue;
+                }
                 self.sampling_contact = false;
                 let curve_contact = self.curve_tool.enabled;
                 if curve_contact {
@@ -4496,6 +4542,7 @@ impl SketchApp {
             }
             if !inside
                 && self.drag.is_none()
+                && self.point_drag.is_none()
                 && self.brush_select_drag.is_none()
                 && !self.partial_erase_active()
                 && !self.shape_draft_active()
@@ -4599,6 +4646,7 @@ impl SketchApp {
                                 self.liquify_brush_input(pos, 1.0, rect, Phase::Move);
                             } else if inside_canvas(pos)
                                 || ((self.drag.is_some()
+                                    || self.point_drag.is_some()
                                     || self.brush_select_drag.is_some()
                                     || self.partial_erase_active()
                                     || self.shape_draft_active())
@@ -4624,6 +4672,12 @@ impl SketchApp {
                             // canvas; otherwise this can cancel staged edits
                             // such as the selected-stroke appearance editor.
                             if !self.mouse_down {
+                                continue;
+                            }
+                            if self.point_draft.is_some() {
+                                self.canvas_point_pointer(pos, rect, false);
+                                self.point_drag = None;
+                                self.mouse_down = false;
                                 continue;
                             }
                             if self.liquify_brush_active() {
@@ -4717,6 +4771,7 @@ fn profile_tube_vertex_budget_exceeded(stroke: &Stroke) -> bool {
 impl eframe::App for SketchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let start = Instant::now();
+        self.canvas_point_shortcuts(ctx);
         if let Some(verification) = &self.appearance_layout_verification {
             ctx.set_zoom_factor(verification.zoom_factor);
         }
@@ -4838,6 +4893,7 @@ impl eframe::App for SketchApp {
             && !self.tutorial.offer
             && !self.close_after_recovery
             && !self.liquify_active()
+            && self.point_draft.is_none()
             && !self.mixed_resource_preview_active()
             && self.camera_playback.is_none()
             && self.repeat.is_none()
@@ -4856,6 +4912,7 @@ impl eframe::App for SketchApp {
             && !self.tutorial.offer
             && !self.close_after_recovery
             && !self.liquify_active()
+            && self.point_draft.is_none()
             && !self.mixed_resource_preview_active()
             && self.camera_playback.is_none()
             && self.repeat.is_none()
@@ -4878,6 +4935,7 @@ impl eframe::App for SketchApp {
             && !self.recovery_prompt
             && !self.close_after_recovery
             && !self.liquify_active()
+            && self.point_draft.is_none()
             && !self.mixed_resource_preview_active()
             && self.camera_playback.is_none()
             && self.repeat.is_none()
@@ -4967,11 +5025,15 @@ impl eframe::App for SketchApp {
                 && !self.mixed_resource_preview_active();
             egui::TopBottomPanel::top("menu-bar").show(ctx, |ui| {
                 ui.add_enabled_ui(enabled, |ui| {
-                    egui::menu::bar(ui, |ui| self.menu_bar(ui, ctx));
+                    ui.add_enabled_ui(self.point_draft.is_none(), |ui| {
+                        egui::menu::bar(ui, |ui| self.menu_bar(ui, ctx));
+                    });
                 });
             });
             egui::TopBottomPanel::top("context-options").show(ctx, |ui| {
-                ui.add_enabled_ui(enabled, |ui| self.contextual_options(ui));
+                ui.add_enabled_ui(enabled && self.point_draft.is_none(), |ui| {
+                    self.contextual_options(ui)
+                });
             });
             egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -4999,7 +5061,9 @@ impl eframe::App for SketchApp {
             egui::SidePanel::left("tool-rail")
                 .exact_width(116.0)
                 .show(ctx, |ui| {
-                    ui.add_enabled_ui(enabled, |ui| self.tool_rail(ui));
+                    ui.add_enabled_ui(enabled && self.point_draft.is_none(), |ui| {
+                        self.tool_rail(ui)
+                    });
                 });
             self.inspector(ctx, enabled || self.mixed_resource_preview_active());
         } else {
@@ -5245,6 +5309,7 @@ impl eframe::App for SketchApp {
                     .as_mut()
                     .and_then(|replay| replay.next_sample(rect));
                 self.canvas_input(ctx, rect, replay_pen.map_or(pen, |sample| vec![sample]));
+                self.verify_canvas_point_workflow(ctx, rect);
                 let scale = ctx.pixels_per_point();
                 if self.select_mode && !self.presentation.artwork {
                     self.renderer.set_selection(&self.selected);
