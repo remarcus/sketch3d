@@ -1189,6 +1189,96 @@ mod tests {
         assert_eq!(BrushPackage::load(&path).unwrap(), package);
     }
 
+    fn transparent_edge_tip() -> crate::brush_tip::BrushTipAsset {
+        let image = image::RgbaImage::from_fn(5, 3, |x, _y| {
+            let alpha = [0, 64, 128, 255, 0][x as usize];
+            image::Rgba([218, 73, 41, alpha])
+        });
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        crate::brush_tip::BrushTipAsset::from_png(
+            encoded.into_inner(),
+            Some("portable transparent-edge test fixture".into()),
+        )
+        .unwrap()
+    }
+
+    fn preset_for_tip(asset: &crate::brush_tip::BrushTipAsset) -> Preset {
+        let mut preset = Library::default().presets[0].clone();
+        preset.name = "Transparent Edge Tip".into();
+        preset.brush.tip_asset_id = asset.id;
+        preset.brush.tip_aspect = asset.size[0] as f32 / asset.size[1] as f32;
+        preset.brush.dabs.enabled = true;
+        preset
+    }
+
+    #[test]
+    fn transparent_tip_v2_package_file_roundtrips_imports_and_deduplicates() {
+        let asset = transparent_edge_tip();
+        let package = BrushPackage::from_preset(&preset_for_tip(&asset), Some(asset.clone()));
+        assert_eq!(package.version, 2);
+
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let exported = root.path().join("source/Transparent Tip.brush.json");
+        package.save(&exported).unwrap();
+        let relocated = root.path().join("relocated/Transparent Tip.brush.json");
+        fs::create_dir_all(relocated.parent().unwrap()).unwrap();
+        fs::rename(&exported, &relocated).unwrap();
+        let loaded = BrushPackage::load(&relocated).unwrap();
+        assert_eq!(loaded, package);
+
+        let mut destination = Library::default();
+        let original_asset_count = destination.tip_assets.len();
+        let imported_id = loaded.import_into(&mut destination).unwrap();
+        let imported = destination.get(imported_id).unwrap();
+        assert_eq!(imported.brush.tip_asset_id, asset.id);
+        assert_eq!(destination.tip_assets.len(), original_asset_count + 1);
+        let imported_asset = destination.tip_asset(asset.id).unwrap();
+        assert_eq!(imported_asset, &asset);
+        assert_eq!(imported_asset.alpha_at_uv([0.1, 0.5]).unwrap(), 0.0);
+        assert!((imported_asset.alpha_at_uv([0.3, 0.5]).unwrap() - 64.0 / 255.0).abs() < 1e-6);
+        assert!((imported_asset.alpha_at_uv([0.5, 0.5]).unwrap() - 128.0 / 255.0).abs() < 1e-6);
+        assert_eq!(imported_asset.alpha_at_uv([0.7, 0.5]).unwrap(), 1.0);
+        assert_eq!(imported_asset.alpha_at_uv([0.9, 0.5]).unwrap(), 0.0);
+
+        let library_path = root.path().join("destination/brushes.json");
+        destination.save(&library_path).unwrap();
+        let mut reopened = Library::load(&library_path).unwrap();
+        assert_eq!(reopened, destination);
+        let reopened_asset = reopened.tip_asset(asset.id).unwrap();
+        assert_eq!(reopened_asset, &asset);
+        assert!((reopened_asset.alpha_at_uv([0.3, 0.5]).unwrap() - 64.0 / 255.0).abs() < 1e-6);
+
+        let duplicate_id = loaded.import_into(&mut reopened).unwrap();
+        assert_ne!(duplicate_id, imported_id);
+        assert_eq!(reopened.tip_assets.len(), original_asset_count + 1);
+        assert_eq!(reopened.tip_asset(asset.id), Some(&asset));
+        assert_eq!(
+            reopened.get(duplicate_id).unwrap().brush.tip_asset_id,
+            asset.id
+        );
+    }
+
+    #[test]
+    fn missing_or_corrupt_tip_packages_do_not_mutate_destination_library() {
+        let asset = transparent_edge_tip();
+        let package = BrushPackage::from_preset(&preset_for_tip(&asset), Some(asset));
+        let mut destination = Library::default();
+        let original = destination.clone();
+
+        let mut missing = package.clone();
+        missing.tip_asset = None;
+        assert!(missing.import_into(&mut destination).is_err());
+        assert_eq!(destination, original);
+
+        let mut corrupt = package;
+        corrupt.tip_asset.as_mut().unwrap().png[0] ^= 0xff;
+        assert!(corrupt.import_into(&mut destination).is_err());
+        assert_eq!(destination, original);
+    }
+
     #[test]
     fn brush_package_rejects_wrong_format_version_invalid_settings_and_oversize() {
         let package = BrushPackage::from_preset(&Library::default().presets[0], None);

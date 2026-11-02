@@ -1561,6 +1561,69 @@ mod tests {
     }
 
     #[test]
+    fn portable_backup_retains_embedded_transparent_image_tip_after_relocation() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source_dir = root.path().join("original-location");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("image-tip.sketch.json");
+        let backup = root.path().join("image-tip.sketch-backup");
+        let relocated_dir = root.path().join("relocated");
+        fs::create_dir_all(&relocated_dir).unwrap();
+        let restored = relocated_dir.join("image-tip.sketch.json");
+        let tip_image = image::RgbaImage::from_fn(3, 1, |x, _| {
+            image::Rgba([220, 80, 35, [0, 128, 255][x as usize]])
+        });
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(tip_image)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let tip = crate::brush_tip::BrushTipAsset::from_png(
+            encoded.into_inner(),
+            Some("portable backup transparent edge fixture".into()),
+        )
+        .unwrap();
+        let mut brush = crate::document::Brush::default();
+        brush.tip_asset_id = tip.id;
+        brush.tip_aspect = 3.0;
+        brush.dabs.enabled = true;
+        let document = crate::document::Document {
+            brush_tip_assets: vec![tip.clone()],
+            strokes: vec![crate::document::Stroke {
+                gradient: None,
+                curve: None,
+                id: 1,
+                layer_id: 1,
+                group_id: None,
+                material: Default::default(),
+                fill: None,
+                color: [0.3, 0.6, 0.9],
+                radius: 0.05,
+                brush,
+                points: vec![crate::document::Point {
+                    position: glam::Vec3::ZERO,
+                    pressure: 0.75,
+                    tilt: None,
+                    time_ms: 0,
+                }],
+            }],
+            ..Default::default()
+        };
+        fs::write(&source, serde_json::to_vec(&document).unwrap()).unwrap();
+
+        backup_native_drawing(&source, &backup).unwrap();
+        fs::remove_file(&source).unwrap();
+        fs::remove_dir(&source_dir).unwrap();
+        restore_native_backup(&backup, &restored).unwrap();
+
+        let reopened =
+            crate::document::Document::from_json(&fs::read_to_string(&restored).unwrap()).unwrap();
+        assert_eq!(reopened.brush_tip_assets, [tip.clone()]);
+        assert_eq!(reopened.strokes[0].brush.tip_asset_id, tip.id);
+        let pixels = reopened.brush_tip_assets[0].decoded().unwrap().pixels;
+        assert_eq!([pixels[3], pixels[7], pixels[11]], [0, 128, 255]);
+    }
+
+    #[test]
     fn drawing_trash_lists_corrupt_entries_and_restores_assets_without_clobbering() {
         use image::ImageEncoder;
 

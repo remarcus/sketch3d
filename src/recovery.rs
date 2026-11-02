@@ -633,6 +633,84 @@ mod tests {
     }
 
     #[test]
+    fn brush_tip_survives_native_relocation_and_forced_recovery_scan() {
+        let pixels = image::RgbaImage::from_fn(5, 3, |x, _y| {
+            image::Rgba([218, 73, 41, [0, 64, 128, 255, 0][x as usize]])
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(pixels)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let asset = crate::brush_tip::BrushTipAsset::from_png(
+            png.into_inner(),
+            Some("native relocation recovery fixture".into()),
+        )
+        .unwrap();
+
+        let mut document = document();
+        document.strokes[0].brush.tip_asset_id = asset.id;
+        document.strokes[0].brush.tip_aspect = asset.size[0] as f32 / asset.size[1] as f32;
+        document.strokes[0].brush.dabs.enabled = true;
+        document.add_brush_tip_asset(asset.clone()).unwrap();
+
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source_dir = root.path().join("source-drawing");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source_path = source_dir.join("drawing.sketch.json");
+        std::fs::write(&source_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let relocated_dir = root.path().join("relocated-drawing");
+        std::fs::rename(&source_dir, &relocated_dir).unwrap();
+        let relocated_path = relocated_dir.join("drawing.sketch.json");
+        let reopened =
+            Document::from_json(&std::fs::read_to_string(&relocated_path).unwrap()).unwrap();
+        assert_eq!(reopened.strokes[0].brush.tip_asset_id, asset.id);
+        assert_eq!(reopened.brush_tip_assets, vec![asset.clone()]);
+        let relocated_asset = reopened
+            .brush_tip_assets
+            .iter()
+            .find(|candidate| candidate.id == asset.id)
+            .unwrap();
+        assert_eq!(relocated_asset.png, asset.png);
+        assert_eq!(relocated_asset.alpha_at_uv([0.1, 0.5]).unwrap(), 0.0);
+        assert!((relocated_asset.alpha_at_uv([0.3, 0.5]).unwrap() - 64.0 / 255.0).abs() < 1e-6);
+        assert!((relocated_asset.alpha_at_uv([0.5, 0.5]).unwrap() - 128.0 / 255.0).abs() < 1e-6);
+        assert_eq!(relocated_asset.alpha_at_uv([0.7, 0.5]).unwrap(), 1.0);
+        assert_eq!(relocated_asset.alpha_at_uv([0.9, 0.5]).unwrap(), 0.0);
+
+        let recovery_dir = root.path().join("recovery");
+        let mut recovery = Recovery::new(Ok(recovery_dir.clone()), egui::Context::default());
+        recovery.mark_edit();
+        assert!(recovery.force_snapshot(&reopened, Some(relocated_path.clone())));
+        wait(&mut recovery);
+        assert!(recovery.last_error.is_none());
+        drop(recovery);
+
+        let mut fresh_reader = Recovery::new(Ok(recovery_dir), egui::Context::default());
+        fresh_reader.request_scan();
+        wait(&mut fresh_reader);
+        assert!(fresh_reader.last_error.is_none());
+        let scan = fresh_reader.scan.as_ref().unwrap();
+        assert!(scan.issues.is_empty());
+        assert_eq!(scan.candidates.len(), 1);
+        let snapshot = &scan.candidates[0].snapshot;
+        assert_eq!(snapshot.original_path, Some(relocated_path));
+        let recovered = &snapshot.document;
+        assert_eq!(recovered.strokes[0].brush.tip_asset_id, asset.id);
+        let recovered_asset = recovered
+            .brush_tip_assets
+            .iter()
+            .find(|candidate| candidate.id == asset.id)
+            .unwrap();
+        assert_eq!(recovered_asset.png, asset.png);
+        assert_eq!(recovered_asset.id, asset.id);
+        assert_eq!(recovered_asset.alpha_at_uv([0.1, 0.5]).unwrap(), 0.0);
+        assert!((recovered_asset.alpha_at_uv([0.3, 0.5]).unwrap() - 64.0 / 255.0).abs() < 1e-6);
+        assert!((recovered_asset.alpha_at_uv([0.5, 0.5]).unwrap() - 128.0 / 255.0).abs() < 1e-6);
+        assert_eq!(recovered_asset.alpha_at_uv([0.7, 0.5]).unwrap(), 1.0);
+        assert_eq!(recovered_asset.alpha_at_uv([0.9, 0.5]).unwrap(), 0.0);
+    }
+
+    #[test]
     fn saved_guides_and_active_target_survive_recovery_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let mut recovery = Recovery::new(Ok(dir.path().into()), egui::Context::default());

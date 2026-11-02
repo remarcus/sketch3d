@@ -512,6 +512,44 @@ mod tests {
     use image::{ImageFormat, Rgba, RgbaImage};
     use std::io::Cursor;
 
+    fn transparent_tip() -> crate::brush_tip::BrushTipAsset {
+        let image = RgbaImage::from_fn(3, 1, |x, _| Rgba([180, 90, 40, [0, 128, 255][x as usize]]));
+        let mut png = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut png, ImageFormat::Png)
+            .unwrap();
+        crate::brush_tip::BrushTipAsset::from_png(
+            png.into_inner(),
+            Some("native merge transparent edge fixture".into()),
+        )
+        .unwrap()
+    }
+
+    fn image_tip_stroke(id: u64, asset: &crate::brush_tip::BrushTipAsset) -> Stroke {
+        let mut brush = Brush::default();
+        brush.tip_asset_id = asset.id;
+        brush.tip_aspect = asset.size[0] as f32 / asset.size[1] as f32;
+        brush.dabs.enabled = true;
+        Stroke {
+            gradient: None,
+            curve: None,
+            id,
+            layer_id: 1,
+            group_id: None,
+            material: Default::default(),
+            fill: None,
+            color: [0.4, 0.5, 0.6],
+            radius: 0.02,
+            brush,
+            points: vec![Point {
+                position: Vec3::ZERO,
+                pressure: 0.7,
+                tilt: None,
+                time_ms: 0,
+            }],
+        }
+    }
+
     #[test]
     fn prepared_insert_remaps_ids_offsets_and_undoes_as_one_merge() {
         let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
@@ -604,6 +642,102 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(serde_json::to_value(&destination).unwrap(), original_json);
         assert_eq!(fs::read_dir(&asset_root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn native_insert_preserves_and_deduplicates_portable_tip_assets() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source_path = root.path().join("source.sketch.json");
+        let destination_assets = root.path().join("destination-assets");
+        fs::create_dir_all(&destination_assets).unwrap();
+        let asset = transparent_tip();
+        let source = Document {
+            brush_tip_assets: vec![asset.clone()],
+            strokes: vec![image_tip_stroke(1, &asset)],
+            ..Document::default()
+        };
+        fs::write(&source_path, serde_json::to_vec(&source).unwrap()).unwrap();
+
+        let destination = Document {
+            brush_tip_assets: vec![asset.clone()],
+            ..Document::default()
+        };
+        let inserted = prepare_insert(
+            &destination,
+            &source_path,
+            &destination_assets,
+            100,
+            10,
+            200,
+            Vec3::ZERO,
+            false,
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(inserted.brush_tip_assets, [asset.clone()]);
+
+        let edit = crate::editing::Edit::Merge(inserted.edit.clone());
+        let mut merged = destination;
+        edit.apply(&mut merged, true);
+        for tip in inserted.brush_tip_assets {
+            merged.add_brush_tip_asset(tip).unwrap();
+        }
+        assert_eq!(merged.brush_tip_assets, [asset.clone()]);
+        assert_eq!(merged.strokes[0].brush.tip_asset_id, asset.id);
+        let reloaded = Document::from_json(&serde_json::to_string(&merged).unwrap()).unwrap();
+        assert_eq!(reloaded.brush_tip_assets, [asset.clone()]);
+        assert_eq!(reloaded.brush_tip_assets[0].decoded().unwrap().pixels[3], 0);
+        assert_eq!(
+            reloaded.brush_tip_assets[0].decoded().unwrap().pixels[7],
+            128
+        );
+        assert_eq!(
+            reloaded.brush_tip_assets[0].decoded().unwrap().pixels[11],
+            255
+        );
+
+        edit.apply(&mut merged, false);
+        assert!(merged.strokes.is_empty());
+        assert_eq!(merged.brush_tip_assets, [asset]);
+    }
+
+    #[test]
+    fn native_insert_rejects_missing_or_corrupt_tip_assets_without_mutation() {
+        for corrupt in [false, true] {
+            let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+            let source_path = root.path().join("source.sketch.json");
+            let destination_assets = root.path().join("destination-assets");
+            fs::create_dir_all(&destination_assets).unwrap();
+            let asset = transparent_tip();
+            let mut source = Document {
+                strokes: vec![image_tip_stroke(1, &asset)],
+                ..Document::default()
+            };
+            if corrupt {
+                let mut invalid = asset;
+                invalid.png[0] ^= 0xff;
+                source.strokes[0].brush.tip_asset_id = invalid.id;
+                source.brush_tip_assets.push(invalid);
+            }
+            fs::write(&source_path, serde_json::to_vec(&source).unwrap()).unwrap();
+
+            let destination = Document::default();
+            let original_json = serde_json::to_value(&destination).unwrap();
+            let result = prepare_insert(
+                &destination,
+                &source_path,
+                &destination_assets,
+                100,
+                10,
+                200,
+                Vec3::ZERO,
+                false,
+                &HashMap::new(),
+            );
+            assert!(result.is_err(), "corrupt={corrupt}");
+            assert_eq!(serde_json::to_value(&destination).unwrap(), original_json);
+            assert_eq!(fs::read_dir(&destination_assets).unwrap().count(), 0);
+        }
     }
 
     #[test]
