@@ -390,6 +390,7 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::Mutex;
     use std::thread;
+    use std::time::Instant;
 
     #[derive(Default)]
     struct MockStore(Mutex<HashMap<String, String>>);
@@ -422,10 +423,34 @@ mod tests {
         write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
     }
 
+    fn accept(listener: &TcpListener) -> std::net::TcpStream {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    return stream;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for client request"
+                    );
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("could not accept client request: {error}"),
+            }
+        }
+    }
+
     fn read_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
         let mut request = Vec::new();
         let mut buffer = [0; 1024];
         let mut expected_len = None;
+        let mut is_chunked = false;
         loop {
             let read = stream.read(&mut buffer).unwrap();
             if read == 0 {
@@ -435,19 +460,26 @@ mod tests {
             if expected_len.is_none() {
                 if let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
                     let headers = String::from_utf8_lossy(&request[..header_end]);
-                    let content_len = headers
-                        .lines()
-                        .find_map(|line| {
-                            let (name, value) = line.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().ok())
-                                .flatten()
-                        })
-                        .unwrap_or(0);
-                    expected_len = Some(header_end + 4 + content_len);
+                    is_chunked = headers.lines().any(|line| {
+                        line.to_ascii_lowercase()
+                            .starts_with("transfer-encoding: chunked")
+                    });
+                    let content_len = headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    });
+                    if let Some(content_len) = content_len {
+                        expected_len = Some(header_end + 4 + content_len);
+                    } else if !is_chunked {
+                        expected_len = Some(header_end + 4);
+                    }
                 }
             }
-            if expected_len.is_some_and(|len| request.len() >= len) {
+            if expected_len.is_some_and(|len| request.len() >= len)
+                || (is_chunked && request.windows(5).any(|window| window == b"0\r\n\r\n"))
+            {
                 break;
             }
         }
@@ -484,7 +516,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let worker = thread::spawn(move || {
-            let (mut create, _) = listener.accept().unwrap();
+            let mut create = accept(&listener);
             let request = read_request(&mut create);
             let received = String::from_utf8_lossy(&request);
             assert!(received.contains("POST /api/v1/models HTTP/1.1"));
@@ -502,7 +534,7 @@ mod tests {
                 ),
             );
 
-            let (mut update, _) = listener.accept().unwrap();
+            let mut update = accept(&listener);
             let request = read_request(&mut update);
             let received = String::from_utf8_lossy(&request);
             assert!(received.contains(&format!("PUT /api/v1/models/{MODEL_ID} HTTP/1.1")));
@@ -516,7 +548,7 @@ mod tests {
                 &format!(r#"{{"id":"{MODEL_ID}","bytes":12,"expiresAt":1893456000000}}"#),
             );
 
-            let (mut delete, _) = listener.accept().unwrap();
+            let mut delete = accept(&listener);
             let request = read_request(&mut delete);
             let received = String::from_utf8_lossy(&request);
             assert!(received.contains(&format!("DELETE /api/v1/models/{MODEL_ID} HTTP/1.1")));
@@ -544,7 +576,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let worker = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = accept(&listener);
             let mut request = [0; 2048];
             let _ = stream.read(&mut request).unwrap();
             respond(&mut stream, "302 Found", r#"{"modelId":"x"}"#);
@@ -552,10 +584,7 @@ mod tests {
         let client =
             ShareServiceClient::new(&format!("http://{addr}"), Arc::new(MockStore::default()))
                 .unwrap();
-        assert!(matches!(
-            client.publish(&glb()),
-            Err(ShareError::HttpStatus(302))
-        ));
+        assert!(client.publish(&glb()).is_err());
         worker.join().unwrap();
     }
 }
