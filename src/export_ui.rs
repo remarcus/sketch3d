@@ -84,7 +84,7 @@ pub(super) fn glb_export_scope_items(
     }
 }
 
-fn build_export_document_snapshot(
+pub(super) fn build_export_document_snapshot(
     document: &Document,
     selection: Option<&HashSet<u64>>,
     include_scene_resources: bool,
@@ -127,7 +127,7 @@ impl SketchApp {
     pub(super) fn can_export_scene(&self) -> bool {
         self.can_export_scope(false, true)
     }
-    fn can_export_scope(&self, selected: bool, include_images: bool) -> bool {
+    pub(super) fn can_export_scope(&self, selected: bool, include_images: bool) -> bool {
         !self.liquify_active()
             && self.export_job.is_none()
             && self.active.is_none()

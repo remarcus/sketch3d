@@ -78,6 +78,7 @@ mod obj_export_ui;
 mod obj_reference_checks;
 #[path = "obj_reference_ui.rs"]
 mod obj_reference_ui;
+mod share_ui;
 #[derive(Clone, Copy)]
 enum LineArtCommand {
     Create,
@@ -338,6 +339,7 @@ pub struct SketchApp {
     export_job: Option<export_ui::ExportJob>,
     last_export_result: Option<Result<crate::export::ExportSummary, String>>,
     export_snapshot: Option<export_ui::ExportSnapshot>,
+    share_ui: share_ui::ShareUi,
     png_export: png_export_ui::PngExportUi,
     video_export: video_export_ui::VideoExportUi,
     construction_history: crate::construction_history::ConstructionHistory,
@@ -1795,6 +1797,7 @@ impl SketchApp {
             export_job: None,
             last_export_result: None,
             export_snapshot: None,
+            share_ui: share_ui::ShareUi::default(),
             png_export: Default::default(),
             video_export: Default::default(),
             construction_history: crate::construction_history::ConstructionHistory::load(),
@@ -4380,6 +4383,28 @@ impl SketchApp {
                     self.obj_export.begin(true);
                 }
             });
+            ui.menu_button("Share", |ui| {
+                if ui.button("Publish whole drawing · ink only…").clicked() {
+                    ui.close_menu();
+                    self.start_share_preview(false, false, ctx);
+                }
+                if ui
+                    .button("Publish whole scene · ink + images + OBJ…")
+                    .clicked()
+                {
+                    ui.close_menu();
+                    self.start_share_preview(false, true, ctx);
+                }
+                if ui.button("Publish selected strokes…").clicked() {
+                    ui.close_menu();
+                    self.start_share_preview(true, false, ctx);
+                }
+                ui.separator();
+                if ui.button("Manage shared links…").clicked() {
+                    ui.close_menu();
+                    self.share_ui.open_manager();
+                }
+            });
             ui.menu_button("Examples", |ui| {
                 for (label, pending) in [
                     ("Japanese garden house", Pending::House),
@@ -5242,6 +5267,7 @@ impl eframe::App for SketchApp {
             return;
         }
         self.poll_export(ctx);
+        self.share_ui.poll(ctx, &mut self.status);
         if self
             .capability_replay
             .as_ref()
@@ -5545,6 +5571,18 @@ impl eframe::App for SketchApp {
         self.show_obj_reference_window(ctx);
         self.repeat_modal(ctx);
         self.png_export.show(ctx);
+        let share_scope_enabled = [
+            self.can_export_scope(false, false),
+            self.can_export_scope(false, true),
+            self.can_export_scope(true, false),
+        ];
+        self.share_ui.show(
+            ctx,
+            &self.doc,
+            &self.selected,
+            &self.image_asset_root,
+            share_scope_enabled,
+        );
         let history_source_key = self.file.as_ref().map_or_else(
             || "untitled".to_owned(),
             |path| {

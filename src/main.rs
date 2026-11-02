@@ -52,6 +52,7 @@ mod renderer;
 mod revolved;
 mod scenes;
 mod shape_geometry;
+mod share_service;
 mod stabilizer;
 mod still_export_check;
 mod stroke_modifiers;

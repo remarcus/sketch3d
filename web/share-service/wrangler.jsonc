@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sketch3d-share-service",
+  "main": "./worker.mjs",
+  "compatibility_date": "2026-11-02",
+  "assets": {
+    "directory": "../",
+    "binding": "ASSETS",
+    "exclude": ["/share-service/**"],
+    "run_worker_first": ["/api/*", "/models/*"]
+  },
+  "r2_buckets": [
+    {
+      "binding": "SHARES",
+      "bucket_name": "sketch3d-shares"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SHARE_MANAGER",
+        "class_name": "ShareManager"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ShareManager"]
+    }
+  ],
+  "vars": {
+    "MAX_ACTIVE_SHARES": "900",
+    "MAX_TOTAL_BYTES": "9663676416"
+  }
+}
