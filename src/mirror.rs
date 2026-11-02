@@ -378,6 +378,7 @@ mod tests {
             ..Brush::default()
         };
         Stroke {
+            gradient: None,
             curve: None,
             id: 7,
             color: [0.2, 0.4, 0.8],

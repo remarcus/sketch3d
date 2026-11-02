@@ -2324,6 +2324,7 @@ mod tests {
             },
         ];
         let stroke = crate::document::Stroke {
+            gradient: None,
             curve: None,
             fill: None,
             material: Default::default(),
@@ -2523,6 +2524,7 @@ mod tests {
 
     fn reveal_stroke(id: u64, layer_id: u64) -> crate::document::Stroke {
         crate::document::Stroke {
+            gradient: None,
             curve: None,
             fill: None,
             material: Default::default(),

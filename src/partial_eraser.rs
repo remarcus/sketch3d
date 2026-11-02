@@ -525,6 +525,7 @@ mod tests {
         brush.texture.kind = crate::texture::TextureKind::Pattern;
         brush.texture.seed = 29;
         Stroke {
+            gradient: None,
             curve: None,
             id: 5,
             color: [0.2, 0.4, 0.7],

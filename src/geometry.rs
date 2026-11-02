@@ -1883,6 +1883,7 @@ mod tests {
     #[test]
     fn pressure_geometry() {
         let make = |pressure| Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             id: 1,
@@ -1936,6 +1937,7 @@ mod curve_regression {
             })
             .collect();
         let stroke = Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             id: 1,
@@ -2027,6 +2029,7 @@ mod brush_tests {
 
     fn mark(kind: BrushKind, positions: &[Vec3]) -> Stroke {
         Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             id: 7,
@@ -2182,6 +2185,7 @@ mod dynamics_tests {
 
     fn line(kind: BrushKind, xs: &[f32]) -> Stroke {
         Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             id: 100,
@@ -2317,6 +2321,7 @@ mod dynamics_boundary_tests {
     fn zero_pressure_dimensions_and_tilt_azimuth_wrap_stay_finite() {
         for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
             let mut stroke = Stroke {
+                gradient: None,
                 curve: None,
                 material: Default::default(),
                 id: 101,
@@ -2410,6 +2415,7 @@ mod seam_dynamics_tests {
                     && p.tilt == Some(Vec3::Y)
             }));
             let mut stroke = Stroke {
+                gradient: None,
                 curve: None,
                 material: Default::default(),
                 id: 1,
@@ -2462,6 +2468,7 @@ mod texture_uv_tests {
         brush.texture.kind = TextureKind::Grain;
         brush.texture.scale = 0.2;
         Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             id: 1,

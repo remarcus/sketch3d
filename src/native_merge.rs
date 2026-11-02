@@ -520,6 +520,7 @@ mod tests {
         fs::create_dir_all(&asset_root).unwrap();
         let mut source = Document::default();
         source.strokes.push(Stroke {
+            gradient: None,
             curve: None,
             id: 1,
             layer_id: 1,

@@ -980,6 +980,7 @@ mod tests {
     use super::*;
     fn stroke() -> Stroke {
         Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             fill: None,
@@ -1383,6 +1384,7 @@ mod layer_tests {
     #[test]
     fn version_four_migration_preserves_all_resolved_ink() {
         let mut stroke = Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             fill: None,
@@ -1434,6 +1436,7 @@ mod layer_tests {
         });
         doc.active_layer = 2;
         let stroke = Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             fill: None,
@@ -1487,6 +1490,7 @@ mod layer_tests {
                 "blank_name" => doc.layers[0].name = " ".into(),
                 "active_missing" => doc.active_layer = 2,
                 "orphan" => doc.strokes.push(Stroke {
+                    gradient: None,
                     curve: None,
                     material: Default::default(),
                     fill: None,
@@ -1526,6 +1530,7 @@ mod saved_guide_document_tests {
 
     fn sample_stroke() -> Stroke {
         Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             fill: None,
@@ -1788,6 +1793,7 @@ mod group_tests {
     use super::*;
     fn mark(id: u64) -> Stroke {
         Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             id,

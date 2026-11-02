@@ -325,6 +325,7 @@ mod tests {
     use crate::document::{Brush, Document, PlanarFill, Point};
     fn mark(points: &[[f32; 2]]) -> Stroke {
         Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             fill: Some(PlanarFill { offset: 0.003 }),

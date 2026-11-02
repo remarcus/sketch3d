@@ -185,6 +185,7 @@ mod tests {
         Document {
             linked_stroke_groups: Default::default(),
             strokes: vec![Stroke {
+                gradient: None,
                 curve: None,
                 fill: None,
                 material: Default::default(),

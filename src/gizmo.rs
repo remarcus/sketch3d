@@ -479,6 +479,7 @@ mod tests {
         camera.align(Plane::Front);
         let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
         let stroke = |id, z| Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             fill: None,
@@ -520,6 +521,7 @@ mod tests {
         camera.align(Plane::Front);
         let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
         let mut mark = Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             fill: None,
@@ -618,6 +620,7 @@ mod layer_picking_tests {
         camera.align(Plane::Front);
         let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
         let mark = |id, layer_id, z| Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             fill: None,

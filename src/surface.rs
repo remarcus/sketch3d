@@ -851,6 +851,7 @@ mod ring_tests {
         let document = crate::document::Document {
             linked_stroke_groups: Default::default(),
             strokes: vec![crate::document::Stroke {
+                gradient: None,
                 curve: None,
                 material: Default::default(),
                 fill: None,

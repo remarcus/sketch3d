@@ -6737,6 +6737,7 @@ mod native_merge_apply_tests {
 
     fn stroke(id: u64, layer_id: u64, x: f32) -> Stroke {
         Stroke {
+            gradient: None,
             curve: None,
             fill: None,
             material: Default::default(),

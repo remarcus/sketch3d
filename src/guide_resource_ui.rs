@@ -1293,6 +1293,7 @@ mod loft_ui_tests {
 
     fn line(id: u64, start: Vec3, end: Vec3) -> Stroke {
         Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             fill: None,
@@ -1696,6 +1697,7 @@ mod planar_target_tests {
             origin - u * 0.5 + v * 0.25,
         ];
         let fill = Stroke {
+            gradient: None,
             curve: None,
             material: StrokeMaterial::default(),
             fill: Some(crate::document::PlanarFill { offset: 0.01 }),
@@ -1762,6 +1764,7 @@ mod planar_target_tests {
             .any(|point| !target.contains(point.position)));
 
         let prototype = Stroke {
+            gradient: None,
             curve: None,
             material: StrokeMaterial::default(),
             fill: None,

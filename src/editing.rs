@@ -591,6 +591,7 @@ mod tests {
     use crate::document::{Brush, BrushKind, Point};
     fn stroke(id: u64, x: f32) -> Stroke {
         Stroke {
+            gradient: None,
             curve: None,
             material: Default::default(),
             fill: None,
@@ -1266,6 +1267,7 @@ mod layer_tests {
         Document {
             linked_stroke_groups: Default::default(),
             strokes: vec![Stroke {
+                gradient: None,
                 curve: None,
                 material: Default::default(),
                 id: 1,
@@ -1707,6 +1709,7 @@ mod group_tests {
             linked_stroke_groups: Default::default(),
             strokes: (1..=3)
                 .map(|id| Stroke {
+                    gradient: None,
                     curve: None,
                     material: Default::default(),
                     id,
@@ -1814,6 +1817,7 @@ mod large_group_tests {
             linked_stroke_groups: Default::default(),
             strokes: (1..=10000)
                 .map(|id| Stroke {
+                    gradient: None,
                     curve: None,
                     material: Default::default(),
                     id,
@@ -1865,6 +1869,7 @@ mod appearance_tests {
 
     fn sample_document() -> Document {
         let first = Stroke {
+            gradient: None,
             curve: None,
             material: StrokeMaterial::Shaded,
             id: 1,

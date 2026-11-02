@@ -347,6 +347,7 @@ mod tests {
 
     fn stroke(id: u64) -> Stroke {
         Stroke {
+            gradient: None,
             curve: None,
             fill: None,
             material: StrokeMaterial::default(),
