@@ -293,7 +293,7 @@ impl SketchApp {
                                                 }),
                                         )
                                         .on_hover_text(
-                                            "Multiplies the opacity of each mark in this layer",
+                                            "Multiplies each mark's opacity in this layer. Cutout marks with reduced opacity may not erase; use 100% for full cutout coverage.",
                                         );
                                     opacity_responses.push((
                                         layer_id,
