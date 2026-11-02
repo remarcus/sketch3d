@@ -63,6 +63,20 @@ impl BrushTipAsset {
         })
     }
 
+    pub fn alpha_at_uv(&self, uv: [f32; 2]) -> Result<f32, String> {
+        if uv.iter().any(|value| !value.is_finite()) {
+            return Err("Brush tip UV coordinates are invalid".into());
+        }
+        let decoded = self.decoded()?;
+        let x = (uv[0].clamp(0.0, 1.0) * decoded.size[0] as f32)
+            .floor()
+            .min(decoded.size[0].saturating_sub(1) as f32) as usize;
+        let y = (uv[1].clamp(0.0, 1.0) * decoded.size[1] as f32)
+            .floor()
+            .min(decoded.size[1].saturating_sub(1) as f32) as usize;
+        Ok(f32::from(decoded.pixels[(y * decoded.size[0] as usize + x) * 4 + 3]) / 255.0)
+    }
+
     pub fn file_name(&self) -> String {
         format!("brush-tip-{:016x}.png", self.id)
     }

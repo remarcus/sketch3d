@@ -128,6 +128,7 @@ fn is_translucent(stroke: &Stroke) -> bool {
         return false;
     }
     stroke.brush.opacity < 0.999_999
+        || stroke.brush.tip_asset_id != 0
         || (stroke.brush.dynamics.opacity.enabled
             && stroke.brush.dynamics.opacity.minimum < 0.999_999)
         || (stroke.fill.is_none() && stroke.brush.softness > 0.0)
@@ -269,6 +270,7 @@ pub struct SceneRenderer {
     meshes: HashMap<u64, Mesh>,
     image_plane_meshes: HashMap<u64, ImagePlaneMesh>,
     image_plane_textures: HashMap<u64, ImagePlaneTexture>,
+    tip_textures: HashMap<u64, ImagePlaneTexture>,
     screen_background: Option<ScreenBackgroundTexture>,
     obj_reference_meshes: HashMap<u64, ObjReferenceMeshes>,
     repeat_preview: Vec<(crate::document::Stroke, Mesh)>,
@@ -766,6 +768,7 @@ impl SceneRenderer {
             meshes: HashMap::new(),
             image_plane_meshes: HashMap::new(),
             image_plane_textures: HashMap::new(),
+            tip_textures: HashMap::new(),
             screen_background: None,
             obj_reference_meshes: HashMap::new(),
             repeat_preview: Vec::new(),
@@ -842,6 +845,112 @@ impl SceneRenderer {
                 },
             ],
         })
+    }
+
+    fn create_tip_texture(
+        &self,
+        asset: &crate::brush_tip::BrushTipAsset,
+    ) -> Result<ImagePlaneTexture, String> {
+        let decoded = asset.decoded()?;
+        let (width, height) = (decoded.size[0], decoded.size[1]);
+        let texture = self.state.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Portable brush image tip"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.state.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &decoded.pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&Default::default());
+        let sampler = self.state.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Clamp brush image tip sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let bind = self
+            .state
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Brush image tip bind group"),
+                layout: &self.texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            });
+        Ok(ImagePlaneTexture {
+            _texture: texture,
+            bind,
+        })
+    }
+
+    fn prepare_tip_textures(&mut self, doc: &Document) {
+        let mut needed: HashSet<u64> = doc
+            .strokes
+            .iter()
+            .filter(|stroke| doc.visible(stroke))
+            .map(|stroke| stroke.brush.tip_asset_id)
+            .filter(|id| *id != 0)
+            .collect();
+        needed.extend(
+            self.repeat_preview
+                .iter()
+                .map(|(stroke, _)| stroke.brush.tip_asset_id)
+                .filter(|id| *id != 0),
+        );
+        self.tip_textures.retain(|id, _| needed.contains(id));
+        for id in needed {
+            if self.tip_textures.contains_key(&id) {
+                continue;
+            }
+            let Some(asset) = doc.brush_tip_assets.iter().find(|asset| asset.id == id) else {
+                continue;
+            };
+            if let Ok(texture) = self.create_tip_texture(asset) {
+                self.tip_textures.insert(id, texture);
+            }
+        }
+    }
+
+    fn brush_texture(&self, stroke: &Stroke) -> &wgpu::BindGroup {
+        self.tip_textures
+            .get(&stroke.brush.tip_asset_id)
+            .map(|texture| &texture.bind)
+            .unwrap_or(&self.textures[&texture::key(stroke.brush.texture)])
     }
     pub fn invalidate(&mut self) {
         self.meshes.clear();
@@ -1345,6 +1454,7 @@ impl SceneRenderer {
         plane: GuidePreview,
         size: [u32; 2],
     ) -> egui::TextureId {
+        self.prepare_tip_textures(doc);
         let limit = self.state.device.limits().max_texture_dimension_2d;
         let size = [size[0].clamp(1, limit), size[1].clamp(1, limit)];
         let effects = self.post_effects;
@@ -1715,11 +1825,7 @@ impl SceneRenderer {
                 .filter(|s| doc.visible(s) && !is_translucent(s))
             {
                 if let Some(mesh) = self.meshes.get(&stroke.id) {
-                    pass.set_bind_group(
-                        1,
-                        &self.textures[&texture::key(stroke.brush.texture)],
-                        &[],
-                    );
+                    pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                     pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                     pass.draw(0..mesh.count, 0..1);
                 }
@@ -1832,11 +1938,7 @@ impl SceneRenderer {
                     } else {
                         triangles
                     });
-                    pass.set_bind_group(
-                        1,
-                        &self.textures[&texture::key(stroke.brush.texture)],
-                        &[],
-                    );
+                    pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                     pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                     pass.draw(0..mesh.count, 0..1);
                 }
@@ -1852,7 +1954,7 @@ impl SceneRenderer {
                     .collect(),
                 camera,
             ) {
-                pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
+                pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
@@ -1862,7 +1964,7 @@ impl SceneRenderer {
                 } else {
                     &self.transparent_triangles
                 });
-                pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
+                pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
@@ -1952,6 +2054,7 @@ impl SceneRenderer {
         settings: Lighting,
         measure_gpu_time: bool,
     ) -> Result<(Vec<u8>, Option<std::time::Duration>), String> {
+        self.prepare_tip_textures(doc);
         let limit = self.state.device.limits().max_texture_dimension_2d;
         let pixel_count = (size[0] as u64)
             .checked_mul(size[1] as u64)
@@ -2232,7 +2335,7 @@ impl SceneRenderer {
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.bind, &[]);
             for (stroke, mesh) in meshes.iter().filter(|(stroke, _)| !is_translucent(stroke)) {
-                pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
+                pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
@@ -2319,7 +2422,7 @@ impl SceneRenderer {
                 } else {
                     triangles
                 });
-                pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
+                pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
@@ -2334,7 +2437,7 @@ impl SceneRenderer {
                 camera,
             ) {
                 pass.set_pipeline(transparent_triangles);
-                pass.set_bind_group(1, &self.textures[&texture::key(stroke.brush.texture)], &[]);
+                pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }

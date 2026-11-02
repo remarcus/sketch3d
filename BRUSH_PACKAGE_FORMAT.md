@@ -22,9 +22,11 @@ versioned settings.
 Tip IDs use 64-bit FNV-1a over the exact PNG bytes. The ID is a stable content
 fingerprint for deduplication, not a security signature. When IDs match, the
 library compares PNG bytes and rejects a collision rather than merging
-different images. Export and import preserve the source PNG bytes. A preview
-shows the original color and alpha without tinting; image-stamp tint behavior
-is defined by the brush renderer.
+different images. Export and import preserve the source PNG bytes. The browser
+preview shows the original color and alpha without tinting. On a stroke, the
+stored brush color multiplies PNG RGB, while PNG alpha is preserved and then
+multiplied by brush opacity and pressure; tint cannot make transparent pixels
+opaque.
 
 Only PNG is accepted. The decoder supports PNG color types, bit depths, and
 alpha forms accepted by the bundled `image` PNG decoder; assets are decoded to
@@ -50,6 +52,10 @@ can be imported into another library without carrying local identity. Native
 drawing insertion merges embedded tips by content ID. Undo removes inserted
 strokes while keeping the embedded catalog available for redo and later use.
 Backup and recovery snapshots carry the same self-contained document data.
+GLB export embeds tip PNG bytes and UV coordinates. OBJ export writes a
+`map_Kd` color map and a grayscale `map_d` alpha companion in the MTL bundle;
+OBJ has no standard double-sided-material flag, so importer back-face behavior
+can vary.
 
 No compatibility with third-party 2D brush formats is claimed. They may lack
 the geometry, pressure, tilt, or procedural texture data required by Spatial

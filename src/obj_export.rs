@@ -13,7 +13,17 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-type MaterialKey = (u32, u32, u32, u32, TextureKind, u32, u32, StrokeMaterial);
+type MaterialKey = (
+    u32,
+    u32,
+    u32,
+    u32,
+    TextureKind,
+    u32,
+    u32,
+    StrokeMaterial,
+    u64,
+);
 
 /// Write a compact OBJ/MTL fixture with one stroke for each material mode.
 pub fn write_material_verification_bundle(directory: &Path) -> Result<(), String> {
@@ -68,6 +78,8 @@ struct Material {
     opacity: f32,
     texture: TextureSettings,
     mask_file: Option<String>,
+    tip_file: Option<String>,
+    tip_alpha_file: Option<String>,
     mode: StrokeMaterial,
 }
 
@@ -89,6 +101,17 @@ pub fn write_obj_bundle(
                 && selected.is_none_or(|ids| ids.contains(&stroke.id))
         })
         .collect();
+    crate::brush_tip::validate_catalog(&doc.brush_tip_assets)?;
+    let tip_assets: HashMap<_, _> = doc
+        .brush_tip_assets
+        .iter()
+        .map(|asset| (asset.id, asset))
+        .collect();
+    if strokes.iter().any(|stroke| {
+        stroke.brush.tip_asset_id != 0 && !tip_assets.contains_key(&stroke.brush.tip_asset_id)
+    }) {
+        return Err("An exported stroke refers to a missing brush tip".into());
+    }
     if strokes.is_empty() {
         return Err("No visible strokes to export".into());
     }
@@ -98,13 +121,17 @@ pub fn write_obj_bundle(
     for stroke in &strokes {
         export::stroke_mesh(stroke)?;
         let key = material_key(stroke);
-        let textured = key.4 != TextureKind::Solid;
+        let has_tip = stroke.brush.tip_asset_id != 0;
+        let textured = !has_tip && key.4 != TextureKind::Solid;
         if let std::collections::hash_map::Entry::Vacant(entry) = material_ids.entry(key) {
             if materials.len() >= 65_536 {
                 return Err("OBJ export exceeds the 65,536 material limit".into());
             }
             let index = materials.len();
             let mask_file = textured.then(|| format!("mask-{index:05}.png"));
+            let tip_file = has_tip.then(|| format!("tip-{:016x}.png", stroke.brush.tip_asset_id));
+            let tip_alpha_file =
+                has_tip.then(|| format!("tip-alpha-{:016x}.png", stroke.brush.tip_asset_id));
             entry.insert(index);
             materials.push(Material {
                 name: format!("material_{index:05}"),
@@ -116,6 +143,8 @@ pub fn write_obj_bundle(
                 },
                 texture: stroke.brush.texture,
                 mask_file,
+                tip_file,
+                tip_alpha_file,
                 mode: stroke.material,
             });
         }
@@ -162,7 +191,15 @@ pub fn write_obj_bundle(
             }
         )
         .unwrap();
-        if let Some(mask_file) = &material.mask_file {
+        if let Some(tip_file) = &material.tip_file {
+            writeln!(mtl, "map_Kd sketch3d-{nonce}-{tip_file}").unwrap();
+            writeln!(
+                mtl,
+                "map_d sketch3d-{nonce}-{}",
+                material.tip_alpha_file.as_deref().unwrap_or_default()
+            )
+            .unwrap();
+        } else if let Some(mask_file) = &material.mask_file {
             writeln!(mtl, "map_d sketch3d-{nonce}-{mask_file}").unwrap();
         }
         mtl.push('\n');
@@ -171,7 +208,40 @@ pub fn write_obj_bundle(
         return Err("OBJ material file exceeds the 128 MiB export limit".into());
     }
     let mut companion_size = mtl.len();
+    let mut emitted_tips = std::collections::HashSet::new();
     for (index, material) in materials.iter().enumerate() {
+        if let Some(tip_file) = &material.tip_file {
+            let id = u64::from_str_radix(
+                tip_file.trim_start_matches("tip-").trim_end_matches(".png"),
+                16,
+            )
+            .map_err(|_| "Invalid internal brush tip filename")?;
+            if emitted_tips.insert(id) {
+                let asset = tip_assets.get(&id).ok_or("Missing validated brush tip")?;
+                let alpha_png = tip_alpha_png(asset)?;
+                companion_size = companion_size
+                    .checked_add(asset.png.len())
+                    .and_then(|total| total.checked_add(alpha_png.len()))
+                    .ok_or("OBJ companion size overflow")?;
+                if companion_size >= export::MAX_BINARY_BYTES {
+                    return Err("OBJ companions exceed the 128 MiB export limit".into());
+                }
+                companion_files.push((
+                    parent.join(format!("sketch3d-{nonce}-{tip_file}")),
+                    asset.png.clone(),
+                ));
+                companion_files.push((
+                    parent.join(format!(
+                        "sketch3d-{nonce}-{}",
+                        material
+                            .tip_alpha_file
+                            .as_deref()
+                            .ok_or("Missing brush tip alpha map")?
+                    )),
+                    alpha_png,
+                ));
+            }
+        }
         if material.mask_file.is_some() {
             let bytes = texture::png(material.texture)?;
             companion_size = companion_size
@@ -310,7 +380,21 @@ fn material_key(stroke: &Stroke) -> MaterialKey {
         texture.1,
         texture.2,
         stroke.material,
+        stroke.brush.tip_asset_id,
     )
+}
+
+fn tip_alpha_png(asset: &crate::brush_tip::BrushTipAsset) -> Result<Vec<u8>, String> {
+    let decoded = asset.decoded()?;
+    let mut image = image::RgbaImage::new(decoded.size[0], decoded.size[1]);
+    for (pixel, source) in image.pixels_mut().zip(decoded.pixels.as_chunks::<4>().0) {
+        pixel.0 = [source[3], source[3], source[3], 255];
+    }
+    let mut output = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut output, image::ImageFormat::Png)
+        .map_err(|error| format!("Could not encode brush tip alpha map: {error}"))?;
+    Ok(output.into_inner())
 }
 
 fn unique_nonce() -> String {

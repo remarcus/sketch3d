@@ -45,8 +45,9 @@ display, picking, selection bounds, GLB, and OBJ export.
 ## Versioning and budgets
 
 SKETCH-071 introduced native schema version 14. Current drawings use schema
-version 16, which adds bounded embedded brush-tip PNG assets. Version 15 adds
-captured tilt magnitude for tilt-driven shading. Missing
+version 17, which adds the resolved image-tip aspect ratio used by stamp
+geometry. Version 16 added bounded embedded brush-tip PNG assets; version 15
+added captured tilt magnitude for tilt-driven shading. Missing
 dab settings in earlier versions default to disabled; their continuous geometry
 and appearance remain unchanged.
 Each dab settings record uses algorithm version 1. Unknown algorithm versions

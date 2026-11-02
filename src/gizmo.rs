@@ -106,6 +106,7 @@ pub fn pick_visible(doc: &Document, camera: &Camera, rect: Rect, pos: Pos2) -> O
 
 fn textured_surface_covered(
     stroke: &crate::document::Stroke,
+    tip_asset: Option<&crate::brush_tip::BrushTipAsset>,
     origin: Vec3,
     direction: Vec3,
 ) -> Option<bool> {
@@ -143,7 +144,17 @@ fn textured_surface_covered(
         ];
         nearest = Some((distance, uv));
     }
-    nearest.map(|(_, uv)| crate::texture::covered_at_uv(stroke.brush.texture, uv))
+    let Some((_, uv)) = nearest else {
+        return Some(false);
+    };
+    if stroke.brush.tip_asset_id != 0 {
+        return Some(
+            tip_asset
+                .and_then(|asset| asset.alpha_at_uv(uv).ok())
+                .is_some_and(|alpha| alpha > 0.001),
+        );
+    }
+    Some(crate::texture::covered_at_uv(stroke.brush.texture, uv))
 }
 
 fn pick_filtered(
@@ -163,8 +174,9 @@ fn pick_filtered(
         }
     }) {
         let textured = stroke.fill.is_none()
-            && stroke.brush.texture.kind != crate::texture::TextureKind::Solid
-            && stroke.brush.texture.strength > 0.0;
+            && (stroke.brush.tip_asset_id != 0
+                || (stroke.brush.texture.kind != crate::texture::TextureKind::Solid
+                    && stroke.brush.texture.strength > 0.0));
         if textured {
             let extent = crate::geometry::stroke_extent(stroke);
             let close = stroke.points.iter().any(|point| {
@@ -185,7 +197,13 @@ fn pick_filtered(
                         .min(camera.world_per_pixel(pair[1].position, rect.height()));
                 distance(pos, a, b).0 <= 8.0 + width
             });
-            if !close || textured_surface_covered(stroke, origin, direction) == Some(false) {
+            let tip_asset = doc
+                .brush_tip_assets
+                .iter()
+                .find(|asset| asset.id == stroke.brush.tip_asset_id);
+            if !close
+                || textured_surface_covered(stroke, tip_asset, origin, direction) == Some(false)
+            {
                 continue;
             }
         }

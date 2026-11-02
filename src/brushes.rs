@@ -5,22 +5,48 @@ use crate::{editing, export_check, geometry, gizmo};
 impl SketchApp {
     pub(super) fn brush_controls(&mut self, ui: &mut egui::Ui) {
         let before = self.brush;
+        let image_tip = self.brush.tip_asset_id != 0;
         ui_style::section(ui, "Brush shape");
-        ui_style::field_row(ui, "Shape", |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for (kind, label) in [
-                    (BrushKind::Round, "Round"),
-                    (BrushKind::Ribbon, "Ribbon"),
-                    (BrushKind::Chisel, "Flat / chisel"),
-                ] {
-                    ui.radio_value(&mut self.brush.kind, kind, label);
-                }
+        if image_tip {
+            let aspect = self
+                .doc
+                .brush_tip_assets
+                .iter()
+                .find(|asset| asset.id == self.brush.tip_asset_id)
+                .map_or(self.brush.tip_aspect, |asset| {
+                    asset.size[0] as f32 / asset.size[1] as f32
+                });
+            ui.small(format!(
+                "PNG image stamp · aspect {:.2} · source alpha kept · brush color tints RGB",
+                aspect
+            ));
+            ui.small("Image stamps currently draw on planar targets; curved and model surfaces are rejected.");
+            ui_style::slider_row(
+                ui,
+                "Angle",
+                "brush-angle",
+                &mut self.brush.angle_degrees,
+                -180.0..=180.0,
+                1.0,
+                "°",
+            );
+        } else {
+            ui_style::field_row(ui, "Shape", |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for (kind, label) in [
+                        (BrushKind::Round, "Round"),
+                        (BrushKind::Ribbon, "Ribbon"),
+                        (BrushKind::Chisel, "Flat / chisel"),
+                    ] {
+                        ui.radio_value(&mut self.brush.kind, kind, label);
+                    }
+                });
             });
-        });
-        if self.brush.kind == BrushKind::Chisel && before.kind != BrushKind::Chisel {
+        }
+        if !image_tip && self.brush.kind == BrushKind::Chisel && before.kind != BrushKind::Chisel {
             self.brush.softness = 0.0;
         }
-        if self.brush.kind != BrushKind::Round {
+        if !image_tip && self.brush.kind != BrushKind::Round {
             ui_style::slider_row(
                 ui,
                 "Angle",
@@ -44,11 +70,15 @@ impl SketchApp {
             }
             ui.small("Orientation starts from the guide, then follows the stroke. Orbit to view it from either side.");
         }
-        self.texture_controls(ui);
+        if !image_tip {
+            self.texture_controls(ui);
+        }
         self.dynamics_controls(ui);
         ui.collapsing("Dab placement", |ui| {
-            ui.checkbox(&mut self.brush.dabs.enabled, "Use deterministic dabs")
-                .on_hover_text("Places marks at fixed world-space distances along the stroke.");
+            ui.add_enabled_ui(!image_tip, |ui| {
+                ui.checkbox(&mut self.brush.dabs.enabled, "Use deterministic dabs")
+                    .on_hover_text("Places marks at fixed world-space distances along the stroke.");
+            });
             if self.brush.dabs.enabled {
                 ui_style::slider_row(
                     ui,
@@ -264,7 +294,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 16);
+                assert_eq!(loaded.version, 17);
                 assert_eq!(loaded.strokes, original);
                 self.load_brushes();
                 self.brush = Brush {

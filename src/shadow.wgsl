@@ -11,6 +11,7 @@ struct Output { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f3
     out.position=scene.light_projection*vec4<f32>(position,1.0); out.uv=uv; out.material=material; return out;
 }
 @fragment fn fs_shadow(in: Output) {
-    if in.material>0.5 { discard; }
+    let material=in.material-floor(in.material/4.0)*4.0;
+    if material>0.5 { discard; }
     if textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a<0.5 { discard; }
 }

@@ -395,12 +395,17 @@ pub fn stroke_extent(stroke: &Stroke) -> f32 {
             .points
             .windows(2)
             .all(|pair| pair[0].position.distance_squared(pair[1].position) <= 1e-12);
-    let mut shape_extent = match stroke.brush.kind {
-        BrushKind::Chisel => {
-            stroke.radius * (if dot { 2.0 } else { 1.0 } + stroke.brush.thickness.powi(2)).sqrt()
+    let mut shape_extent = if stroke.brush.tip_asset_id != 0 {
+        stroke.radius * (1.0 + stroke.brush.tip_aspect.recip().powi(2)).sqrt()
+    } else {
+        match stroke.brush.kind {
+            BrushKind::Chisel => {
+                stroke.radius
+                    * (if dot { 2.0 } else { 1.0 } + stroke.brush.thickness.powi(2)).sqrt()
+            }
+            BrushKind::Ribbon if dot => stroke.radius * std::f32::consts::SQRT_2,
+            BrushKind::Round | BrushKind::Ribbon => stroke.radius,
         }
-        BrushKind::Ribbon if dot => stroke.radius * std::f32::consts::SQRT_2,
-        BrushKind::Round | BrushKind::Ribbon => stroke.radius,
     };
     if stroke.brush.dynamics.tilt_shading && stroke.brush.texture.kind.uses_continuous_alpha() {
         shape_extent *= stroke
@@ -461,9 +466,15 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
         StrokeMaterial::Unlit => 1.0,
         StrokeMaterial::Emissive => 2.0,
         StrokeMaterial::Cutout => 3.0,
+    } + if stroke.fill.is_none() && stroke.brush.tip_asset_id != 0 {
+        4.0
+    } else {
+        0.0
     };
     let mut vertices = if stroke.fill.is_some() {
         crate::polygon::mesh(stroke)
+    } else if stroke.brush.tip_asset_id != 0 {
+        tip_mesh(stroke)
     } else if stroke.brush.dabs.enabled {
         dab_mesh(stroke)
     } else {
@@ -511,6 +522,43 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
     };
     for vertex in &mut vertices {
         vertex.material = material;
+    }
+    vertices
+}
+
+fn tip_mesh(stroke: &Stroke) -> Vec<Vertex> {
+    let Ok(dabs) = crate::dab_placement::sample(stroke) else {
+        return Vec::new();
+    };
+    let mut vertices = Vec::with_capacity(dabs.len().saturating_mul(6));
+    for dab in dabs {
+        let tangent = dab.tangent.try_normalize().unwrap_or(Vec3::Y);
+        let side = dab.normal.cross(tangent).try_normalize().unwrap_or(Vec3::X);
+        let angle = (stroke.brush.angle_degrees + dab.angle_degrees).to_radians();
+        let along = (tangent * angle.cos() + side * angle.sin())
+            .try_normalize()
+            .unwrap_or(tangent);
+        let across = (side * angle.cos() - tangent * angle.sin())
+            .try_normalize()
+            .unwrap_or(side);
+        let half_width = stroke.radius * dab.size_scale;
+        let half_height = half_width / stroke.brush.tip_aspect;
+        let positions = [
+            dab.position - along * half_width + across * half_height,
+            dab.position + along * half_width + across * half_height,
+            dab.position + along * half_width - across * half_height,
+            dab.position - along * half_width - across * half_height,
+        ];
+        let opacity = vertex_opacity(stroke, dab.pressure, dab.normal, dab.normal);
+        flat_quad(
+            &mut vertices,
+            positions,
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            dab.normal,
+            stroke.color,
+            [opacity; 4],
+            0.0,
+        );
     }
     vertices
 }

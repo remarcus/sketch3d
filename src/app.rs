@@ -2101,11 +2101,18 @@ impl SketchApp {
                 "The active layer is hidden or locked. Choose an editable layer to draw.".into();
             return;
         }
-        if self.brush.dabs.enabled && self.brush.dabs.scatter > 0.0 && !self.dab_scatter_supported()
+        if (self.brush.tip_asset_id != 0 && !self.dab_scatter_supported())
+            || (self.brush.dabs.enabled
+                && self.brush.dabs.scatter > 0.0
+                && !self.dab_scatter_supported())
         {
             self.finish();
             self.resume_ink = begin;
-            self.status = "Dab scatter currently requires a planar drawing target. Turn scatter off for curved guides and model surfaces.".into();
+            self.status = if self.brush.tip_asset_id != 0 {
+                "Image stamps currently require a planar drawing target; curved guides and model surfaces are unsupported.".into()
+            } else {
+                "Dab scatter currently requires a planar drawing target. Turn scatter off for curved guides and model surfaces.".into()
+            };
             return;
         }
         if self.doc.active_model_reference.is_some() {
@@ -6257,11 +6264,11 @@ impl SketchApp {
             } else if self.preset_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["preset application captures resolved settings","create duplicate rename update delete and defaults","restart persistence","live GPU previews","library edits preserve existing ink and export","corrupt library fallback and explicit repair backup"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.texture_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 16 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 17 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.dynamics_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 16 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 17 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 16 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 17 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {

@@ -582,6 +582,9 @@ impl PresetUi {
     fn preview(&mut self, ui: &mut egui::Ui, preset: &Preset) {
         if self.preview_preset.as_ref() != Some(preset) {
             self.preview_doc = preview_document(preset);
+            if let Some(asset) = self.library.tip_asset(preset.brush.tip_asset_id) {
+                self.preview_doc.brush_tip_assets.push(asset.clone());
+            }
             self.preview_preset = Some(preset.clone());
             self.renderer.invalidate();
         }

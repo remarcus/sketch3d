@@ -11,13 +11,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const BUILTIN_PRESET_COUNT: usize = 10;
+const BUILTIN_PRESET_COUNT: usize = 13;
 const MAX_PERSONAL_PRESETS: usize = 250;
 const MAX_PRESETS: usize = MAX_PERSONAL_PRESETS + BUILTIN_PRESET_COUNT;
 const FIRST_PERSONAL_ID: u64 = 100;
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_PACKAGE_BYTES: u64 = 1024 * 1024;
 const PACKAGE_FORMAT: &str = "spatial-sketch-brush";
+const LIBRARY_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Preset {
@@ -82,8 +83,47 @@ impl BrushPackage {
         if text.len() as u64 > MAX_PACKAGE_BYTES {
             return Err("Brush package is too large".into());
         }
-        let package: Self =
+        let mut value: serde_json::Value =
             serde_json::from_str(text).map_err(|e| format!("Cannot read brush package: {e}"))?;
+        // Early v2 packages embedded tips before their resolved aspect ratio
+        // field existed. Recover that value from the self-contained PNG.
+        if value.get("version").and_then(serde_json::Value::as_u64) == Some(2) {
+            let size = value
+                .get("tip_asset")
+                .and_then(|asset| asset.get("size"))
+                .and_then(serde_json::Value::as_array)
+                .filter(|size| size.len() == 2)
+                .and_then(|size| Some([size[0].as_u64()?, size[1].as_u64()?]));
+            if let Some([width, height]) = size {
+                if let Some(brush) = value
+                    .get_mut("preset")
+                    .and_then(|preset| preset.get_mut("brush"))
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    if !brush.contains_key("tip_aspect") {
+                        brush.insert(
+                            "tip_aspect".into(),
+                            serde_json::json!(width as f32 / height as f32),
+                        );
+                        brush.insert(
+                            "texture".into(),
+                            serde_json::to_value(TextureSettings::default())
+                                .map_err(|error| error.to_string())?,
+                        );
+                        let dabs = brush.entry("dabs").or_insert_with(|| serde_json::json!({}));
+                        dabs["enabled"] = serde_json::json!(true);
+                        dabs["spacing"] = serde_json::json!(0.55);
+                        let dynamics = brush
+                            .entry("dynamics")
+                            .or_insert_with(|| serde_json::json!({}));
+                        dynamics["tilt_orientation"] = serde_json::json!(false);
+                        dynamics["tilt_shading"] = serde_json::json!(false);
+                    }
+                }
+            }
+        }
+        let package: Self =
+            serde_json::from_value(value).map_err(|e| format!("Cannot read brush package: {e}"))?;
         package.as_preset()?;
         Ok(package)
     }
@@ -101,7 +141,22 @@ impl BrushPackage {
             self.preset.brush.tip_asset_id,
         ) {
             (None, 1, 0) | (None, 2, 0) => {}
-            (Some(asset), 2, id) if id == asset.id => asset.validate()?,
+            (Some(asset), 2, id) if id == asset.id => {
+                asset.validate()?;
+                if !self.preset.brush.dabs.enabled
+                    || self.preset.brush.texture.kind != TextureKind::Solid
+                    || self.preset.brush.dynamics.tilt_orientation
+                    || self.preset.brush.dynamics.tilt_shading
+                    || (self.preset.brush.tip_aspect - asset.size[0] as f32 / asset.size[1] as f32)
+                        .abs()
+                        > 1e-4
+                {
+                    return Err(
+                        "Brush package image-tip settings are invalid or do not match its asset"
+                            .into(),
+                    );
+                }
+            }
             _ => return Err("Brush package tip asset reference is missing or inconsistent".into()),
         }
         let preset = Preset {
@@ -206,11 +261,12 @@ pub struct Library {
 }
 impl Default for Library {
     fn default() -> Self {
+        let tip_assets = default_tip_assets();
         Self {
-            version: 1,
-            presets: defaults(),
+            version: LIBRARY_VERSION,
+            presets: defaults(&tip_assets),
             next_id: FIRST_PERSONAL_ID,
-            tip_assets: Vec::new(),
+            tip_assets,
         }
     }
 }
@@ -221,8 +277,8 @@ fn valid_name(name: &str) -> Result<String, String> {
     }
     Ok(trimmed.to_owned())
 }
-fn defaults() -> Vec<Preset> {
-    [
+fn defaults(tip_assets: &[crate::brush_tip::BrushTipAsset]) -> Vec<Preset> {
+    let mut presets: Vec<Preset> = [
         ("Round Ink", BrushKind::Round, TextureKind::Solid, 0.025),
         ("Ribbon", BrushKind::Ribbon, TextureKind::Solid, 0.055),
         ("Flat Marker", BrushKind::Chisel, TextureKind::Solid, 0.08),
@@ -327,7 +383,112 @@ fn defaults() -> Vec<Preset> {
             stabilization: 0.35,
         }
     })
-    .collect()
+    .collect();
+    for (index, asset) in tip_assets.iter().enumerate() {
+        let (name, radius, color, angle, variation) = match index {
+            0 => ("Leaf Scatter", 0.07, [0.58, 0.95, 0.52], 24.0, 34.0),
+            1 => ("Grass Scatter", 0.055, [0.42, 0.88, 0.35], 22.0, 28.0),
+            _ => ("Star Stamp", 0.06, [1.0, 0.77, 0.24], 0.0, 24.0),
+        };
+        let mut brush = Brush {
+            tip_asset_id: asset.id,
+            tip_aspect: asset.size[0] as f32 / asset.size[1] as f32,
+            ..Brush::default()
+        };
+        brush.dabs.enabled = true;
+        brush.dabs.spacing = 0.9;
+        brush.dabs.scatter = if index == 2 { 0.0 } else { 1.4 };
+        brush.dabs.size_variation = 0.2;
+        brush.angle_degrees = angle;
+        brush.dabs.pressure_size = crate::document::PressureMapping {
+            enabled: true,
+            minimum: 0.48,
+            curve: 1.1,
+        };
+        brush.dynamics.width.enabled = false;
+        brush.dynamics.opacity = crate::document::PressureMapping {
+            enabled: true,
+            minimum: 0.42,
+            curve: 1.0,
+        };
+        brush.dabs.angle_variation_degrees = variation;
+        presets.push(Preset {
+            id: 11 + index as u64,
+            name: name.into(),
+            brush,
+            radius,
+            color,
+            stabilization: 0.35,
+        });
+    }
+    presets
+}
+
+fn default_tip_assets() -> Vec<crate::brush_tip::BrushTipAsset> {
+    [TipShape::Leaf, TipShape::Grass, TipShape::Star]
+        .into_iter()
+        .map(|shape| {
+            let (size, provenance) = match shape {
+                TipShape::Leaf => ([64, 96], "Original Sketch3D leaf tip"),
+                TipShape::Grass => ([64, 96], "Original Sketch3D grass tip"),
+                TipShape::Star => ([96, 96], "Original Sketch3D star tip"),
+            };
+            let mut image = image::RgbaImage::new(size[0], size[1]);
+            for y in 0..size[1] {
+                for x in 0..size[0] {
+                    let fx = (x as f32 + 0.5) / size[0] as f32;
+                    let fy = (y as f32 + 0.5) / size[1] as f32;
+                    let pixel = match shape {
+                        TipShape::Leaf => {
+                            let center = 0.5 + 0.055 * (fy * std::f32::consts::PI).sin();
+                            let half = 0.43 * (std::f32::consts::PI * fy).sin().powf(0.72);
+                            let edge = half - (fx - center).abs();
+                            let alpha = coverage(edge, 1.2 / size[0] as f32);
+                            let vein = (fx - center).abs() < 0.014 + fy * 0.012;
+                            if vein {
+                                image::Rgba([194, 230, 134, alpha])
+                            } else {
+                                image::Rgba([120, 184, 74, alpha])
+                            }
+                        }
+                        TipShape::Grass => {
+                            let center = 0.5 - 0.27 * fy + 0.05 * (fy * 4.0).sin();
+                            let half = (0.04 + 0.3 * fy) * (1.0 - 0.55 * fy);
+                            let alpha = coverage(half - (fx - center).abs(), 1.2 / size[0] as f32);
+                            image::Rgba([83, 167, 58, alpha])
+                        }
+                        TipShape::Star => {
+                            let dx = fx - 0.5;
+                            let dy = fy - 0.5;
+                            let radius = dx.hypot(dy);
+                            let angle = dy.atan2(dx);
+                            let edge = 0.43 * (0.56 + 0.44 * (5.0 * angle).cos()) - radius;
+                            let alpha = coverage(edge, 1.2 / size[0] as f32);
+                            image::Rgba([255, 205, 58, alpha])
+                        }
+                    };
+                    image.put_pixel(x, y, pixel);
+                }
+            }
+            let mut png = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(image)
+                .write_to(&mut png, image::ImageFormat::Png)
+                .expect("built-in brush tip PNG encoding is infallible");
+            crate::brush_tip::BrushTipAsset::from_png(png.into_inner(), Some(provenance.into()))
+                .expect("built-in brush tip satisfies its fixed resource bounds")
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum TipShape {
+    Leaf,
+    Grass,
+    Star,
+}
+
+fn coverage(distance_inside: f32, antialias: f32) -> u8 {
+    ((distance_inside / antialias + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 impl Library {
@@ -335,7 +496,7 @@ impl Library {
         self.presets.iter().find(|p| p.id == id)
     }
     fn validate(&self) -> Result<(), String> {
-        if self.version != 1 {
+        if self.version != LIBRARY_VERSION {
             return Err("Unsupported brush library version".into());
         }
         if self.presets.len() > MAX_PRESETS {
@@ -350,15 +511,31 @@ impl Library {
             return Err("Invalid next preset ID".into());
         }
         crate::brush_tip::validate_catalog(&self.tip_assets)?;
-        let tip_ids: HashSet<_> = self.tip_assets.iter().map(|asset| asset.id).collect();
+        let tip_assets: std::collections::HashMap<_, _> = self
+            .tip_assets
+            .iter()
+            .map(|asset| (asset.id, asset))
+            .collect();
         let mut names = HashSet::new();
         let mut ids = HashSet::new();
         for preset in &self.presets {
             if !preset.is_valid() || preset.name != preset.name.trim() {
                 return Err("Invalid preset settings or name".into());
             }
-            if preset.brush.tip_asset_id != 0 && !tip_ids.contains(&preset.brush.tip_asset_id) {
-                return Err("Preset refers to a missing brush tip asset".into());
+            if preset.brush.tip_asset_id != 0 {
+                let asset = tip_assets
+                    .get(&preset.brush.tip_asset_id)
+                    .ok_or("Preset refers to a missing brush tip asset")?;
+                if preset.brush.texture.kind != TextureKind::Solid
+                    || preset.brush.dynamics.tilt_orientation
+                    || preset.brush.dynamics.tilt_shading
+                    || (preset.brush.tip_aspect - asset.size[0] as f32 / asset.size[1] as f32).abs()
+                        > 1e-4
+                {
+                    return Err(
+                        "Preset image-tip settings are invalid or do not match its asset".into(),
+                    );
+                }
             }
             if !preset.is_builtin() && !(FIRST_PERSONAL_ID..self.next_id).contains(&preset.id) {
                 return Err("Invalid preset ID".into());
@@ -401,6 +578,12 @@ impl Library {
             .find(|preset| preset.id == preset_id)
             .ok_or("Selected brush preset no longer exists")?;
         preset.brush.tip_asset_id = asset.id;
+        preset.brush.tip_aspect = asset.size[0] as f32 / asset.size[1] as f32;
+        preset.brush.dabs.enabled = true;
+        preset.brush.dabs.spacing = 0.55;
+        preset.brush.texture = TextureSettings::default();
+        preset.brush.dynamics.tilt_orientation = false;
+        preset.brush.dynamics.tilt_shading = false;
         changed.validate()?;
         *self = changed;
         Ok(())
@@ -409,8 +592,45 @@ impl Library {
         if text.len() as u64 > MAX_FILE_BYTES {
             return Err("Brush library file is too large".into());
         }
-        let library: Self =
+        let mut library: Self =
             serde_json::from_str(text).map_err(|e| format!("Cannot read brush library: {e}"))?;
+        if library.version == 1 {
+            let defaults = Library::default();
+            for preset in defaults.presets.into_iter().filter(|preset| preset.id > 10) {
+                if !library
+                    .presets
+                    .iter()
+                    .any(|existing| existing.id == preset.id)
+                {
+                    library.presets.push(preset);
+                }
+            }
+            for asset in defaults.tip_assets {
+                if !library
+                    .tip_assets
+                    .iter()
+                    .any(|existing| existing.id == asset.id)
+                {
+                    library.tip_assets.push(asset);
+                }
+            }
+            for preset in &mut library.presets {
+                if preset.brush.tip_asset_id != 0 {
+                    if let Some(asset) = library
+                        .tip_assets
+                        .iter()
+                        .find(|asset| asset.id == preset.brush.tip_asset_id)
+                    {
+                        preset.brush.tip_aspect = asset.size[0] as f32 / asset.size[1] as f32;
+                        preset.brush.dabs.enabled = true;
+                        preset.brush.texture = TextureSettings::default();
+                        preset.brush.dynamics.tilt_orientation = false;
+                        preset.brush.dynamics.tilt_shading = false;
+                    }
+                }
+            }
+            library.version = LIBRARY_VERSION;
+        }
         library.validate()?;
         Ok(library)
     }
@@ -526,7 +746,17 @@ impl Library {
     pub fn restore_defaults(&mut self) -> Result<(), String> {
         let mut changed = self.clone();
         changed.presets.retain(|p| !p.is_builtin());
-        changed.presets.splice(0..0, defaults());
+        let default_tips = default_tip_assets();
+        changed.presets.splice(0..0, defaults(&default_tips));
+        for asset in default_tips {
+            if !changed
+                .tip_assets
+                .iter()
+                .any(|existing| existing.id == asset.id)
+            {
+                changed.tip_assets.push(asset);
+            }
+        }
         changed.validate()?;
         *self = changed;
         Ok(())

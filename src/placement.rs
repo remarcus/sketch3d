@@ -60,8 +60,22 @@ pub fn pick(doc: &Document, origin: Vec3, direction: Vec3) -> Option<SurfaceHit>
     }
     let mut best: Option<(f64, SurfaceHit)> = None;
     let mut masks = HashMap::new();
+    let mut tip_images = HashMap::new();
     for stroke in doc.strokes.iter().filter(|s| doc.visible(s)) {
         let vertices = geometry::stroke_mesh(stroke);
+        let tip_image = if stroke.brush.tip_asset_id != 0 {
+            let image = tip_images
+                .entry(stroke.brush.tip_asset_id)
+                .or_insert_with(|| {
+                    doc.brush_tip_assets
+                        .iter()
+                        .find(|asset| asset.id == stroke.brush.tip_asset_id)
+                        .and_then(|asset| asset.decoded().ok())
+                });
+            image.as_ref()
+        } else {
+            None
+        };
         for face in vertices.as_chunks::<3>().0 {
             let Some((t, u, v)) = triangle(origin, direction, face) else {
                 continue;
@@ -70,7 +84,24 @@ pub fn pick(doc: &Document, origin: Vec3, direction: Vec3) -> Option<SurfaceHit>
                 continue;
             }
             let weights = [1.0 - u - v, u, v];
-            if texture::key(stroke.brush.texture).0 != texture::TextureKind::Solid {
+            if let Some(tip) = tip_image {
+                let uv = face
+                    .iter()
+                    .zip(weights)
+                    .map(|(vertex, weight)| Vec2::from(vertex.uv) * weight)
+                    .sum::<Vec2>();
+                let x = (uv.x.clamp(0.0, 1.0) * tip.size[0] as f32)
+                    .floor()
+                    .min(tip.size[0].saturating_sub(1) as f32) as usize;
+                let y = (uv.y.clamp(0.0, 1.0) * tip.size[1] as f32)
+                    .floor()
+                    .min(tip.size[1].saturating_sub(1) as f32) as usize;
+                if tip.pixels[(y * tip.size[0] as usize + x) * 4 + 3] == 0 {
+                    continue;
+                }
+            } else if stroke.brush.tip_asset_id != 0 {
+                continue;
+            } else if texture::key(stroke.brush.texture).0 != texture::TextureKind::Solid {
                 let uv = face
                     .iter()
                     .zip(weights)

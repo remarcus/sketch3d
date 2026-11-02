@@ -30,15 +30,15 @@ impl SketchApp {
     pub(super) fn dynamics_controls(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Pressure, tilt & taper").default_open(false).show(ui, |ui| {
             mapping_controls(ui, "Pressure: width", &mut self.brush.dynamics.width);
-            if self.brush.kind == BrushKind::Chisel {
+            if self.brush.kind == BrushKind::Chisel && self.brush.tip_asset_id == 0 {
                 mapping_controls(ui, "Pressure: thickness", &mut self.brush.dynamics.thickness);
             }
             ui_style::slider_row(ui, "Opacity", "brush-opacity", &mut self.brush.opacity, 0.0..=1.0, 100.0, "%");
-            if self.brush.kind != BrushKind::Chisel {
+            if self.brush.kind != BrushKind::Chisel && self.brush.tip_asset_id == 0 {
                 ui_style::slider_row(ui, "Soft edges", "brush-softness", &mut self.brush.softness, 0.0..=1.0, 100.0, "%");
             }
             mapping_controls(ui, "Pressure: opacity", &mut self.brush.dynamics.opacity);
-            if self.brush.kind != BrushKind::Round {
+            if self.brush.kind != BrushKind::Round && self.brush.tip_asset_id == 0 {
                 ui.checkbox(&mut self.brush.dynamics.tilt_orientation, "Tilt orientation").on_hover_text("Uses reported pen lean to orient the cross-section. Missing or upright tilt falls back to the manual frame.");
             }
             if self.brush.texture.kind.uses_continuous_alpha() {
@@ -187,7 +187,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 16);
+                assert_eq!(loaded.version, 17);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.load_dynamics();
                 self.brush.dynamics = Default::default();

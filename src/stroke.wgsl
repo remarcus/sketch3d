@@ -40,30 +40,32 @@ fn visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     return mix(1.0,sum/9.0,scene.settings.z);
 }
 struct FragmentOutput { @location(0) color: vec4<f32>, @location(1) emission: vec4<f32>, }
-fn material_output(in: Output, alpha: f32) -> FragmentOutput {
+fn material_output(in: Output, alpha: f32, sampled_color: vec3<f32>) -> FragmentOutput {
+    let material = in.material - floor(in.material / 4.0) * 4.0;
     var shade=1.0;
-    if in.material<0.5 && length(in.normal)>=0.1 {
+    if material<0.5 && length(in.normal)>=0.1 {
         let normal=normalize(in.normal);
         shade=scene.light.w+scene.settings.x*abs(dot(normal,scene.light.xyz))*visibility(in.world,normal);
         if scene.shadow.w > 0.5 { shade=floor(shade*4.0+0.5)/4.0; }
     }
-    var color=in.color*shade;
+    var color=in.color*sampled_color*shade;
     var emission=vec3<f32>(0.0);
-    if in.material>1.5 && in.material<2.5 {
-        emission=in.color*2.0;
+    if material>1.5 && material<2.5 {
+        emission=in.color*sampled_color*2.0;
         color+=emission;
     }
     return FragmentOutput(vec4<f32>(apply_grain(color,in.position.xy),alpha),vec4<f32>(emission*alpha,alpha));
 }
 @fragment fn fs_main(in: Output) -> FragmentOutput {
-    if length(in.normal)<0.1 { return material_output(in, 1.0); }
-    let mask_alpha=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a;
+    if length(in.normal)<0.1 { return material_output(in, 1.0, vec3<f32>(1.0)); }
+    let sampled_texture=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0);
+    let mask_alpha=sampled_texture.a;
     var coverage=mask_alpha;
     if scene.shadow.z<0.5 {
         if mask_alpha<0.5 { discard; }
         coverage=1.0;
     }
-    return material_output(in, coverage);
+    return material_output(in, coverage, sampled_texture.rgb);
 }
 @fragment fn fs_cutout(in: Output) -> FragmentOutput {
     let mask_alpha=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a;
@@ -71,7 +73,8 @@ fn material_output(in: Output, alpha: f32) -> FragmentOutput {
     return FragmentOutput(scene.background,vec4<f32>(0.0));
 }
 @fragment fn fs_transparent(in: Output) -> FragmentOutput {
-    let mask_alpha=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a;
+    let sampled_texture=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0);
+    let mask_alpha=sampled_texture.a;
     if mask_alpha<0.001 { discard; }
-    return material_output(in, in.opacity*mask_alpha);
+    return material_output(in, in.opacity*mask_alpha, sampled_texture.rgb);
 }

@@ -204,9 +204,15 @@ pub fn encode_with_images(
     selected: Option<&HashSet<u64>>,
     image_root: Option<&Path>,
 ) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=13) {
+    if !matches!(doc.version, 1..=17) {
         return Err("Unsupported source document version".into());
     }
+    crate::brush_tip::validate_catalog(&doc.brush_tip_assets)?;
+    let tip_assets: HashMap<_, _> = doc
+        .brush_tip_assets
+        .iter()
+        .map(|asset| (asset.id, asset))
+        .collect();
     let mut layer_ids = HashSet::new();
     let mut layer_names = HashSet::new();
     if doc.layers.is_empty()
@@ -247,6 +253,7 @@ pub fn encode_with_images(
     let mut materials = Vec::new();
     let mut colors = HashMap::new();
     let mut image_keys = HashMap::new();
+    let mut tip_image_keys = HashMap::new();
     let mut images = Vec::new();
     let mut textures = Vec::new();
     let mut image_samplers = false;
@@ -307,10 +314,20 @@ pub fn encode_with_images(
         views.push(json!({"buffer":0,"byteOffset":index_offset,"byteLength":mesh.indices.len()*4,"target":34963}));
         let indices = accessors.len();
         accessors.push(json!({"bufferView":index_view,"componentType":5125,"count":mesh.indices.len(),"type":"SCALAR"}));
-        let double_sided = stroke.fill.is_some() || stroke.brush.kind == BrushKind::Ribbon;
+        let tip_key = (stroke.brush.tip_asset_id != 0).then_some(stroke.brush.tip_asset_id);
+        if tip_key.is_some_and(|id| !tip_assets.contains_key(&id)) {
+            return Err(format!(
+                "Stroke {} refers to a missing brush tip",
+                stroke.id
+            ));
+        }
+        let double_sided =
+            stroke.fill.is_some() || stroke.brush.kind == BrushKind::Ribbon || tip_key.is_some();
         let settings = stroke.brush.texture;
-        let texture_key = (settings.kind != TextureKind::Solid).then(|| texture::key(settings));
+        let texture_key = (tip_key.is_none() && settings.kind != TextureKind::Solid)
+            .then(|| texture::key(settings));
         let alpha_blended = stroke.brush.opacity < 1.0
+            || tip_key.is_some()
             || (stroke.fill.is_none() && stroke.brush.softness > 0.0)
             || stroke.material == crate::document::StrokeMaterial::Cutout
             || settings.kind.uses_continuous_alpha()
@@ -320,6 +337,7 @@ pub fn encode_with_images(
             stroke.color.map(f32::to_bits),
             double_sided,
             texture_key,
+            tip_key,
             alpha_blended,
             stroke.material,
         );
@@ -346,7 +364,33 @@ pub fn encode_with_images(
                 }
                 crate::document::StrokeMaterial::Cutout => {}
             }
-            if let Some(texture_key) = texture_key {
+            if let Some(tip_id) = tip_key {
+                let image_index = if let Some(index) = tip_image_keys.get(&tip_id) {
+                    *index
+                } else {
+                    let asset = tip_assets[&tip_id];
+                    ensure_binary_budget(binary.len(), asset.png.len() + 3, "brush tip textures")?;
+                    while !binary.len().is_multiple_of(4) {
+                        binary.push(0);
+                    }
+                    let offset = binary.len();
+                    binary.extend_from_slice(&asset.png);
+                    let view = views.len();
+                    views
+                        .push(json!({"buffer":0,"byteOffset":offset,"byteLength":asset.png.len()}));
+                    while !binary.len().is_multiple_of(4) {
+                        binary.push(0);
+                    }
+                    let index = images.len();
+                    images.push(json!({"name":format!("Brush tip {:016x}",tip_id),"bufferView":view,"mimeType":"image/png"}));
+                    textures.push(json!({"sampler":1,"source":index}));
+                    tip_image_keys.insert(tip_id, index);
+                    image_samplers = true;
+                    index
+                };
+                material["pbrMetallicRoughness"]["baseColorTexture"] =
+                    json!({"index":image_index,"texCoord":0});
+            } else if let Some(texture_key) = texture_key {
                 let image_index = if let Some(index) = image_keys.get(&texture_key) {
                     *index
                 } else {
@@ -1201,7 +1245,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 16);
+        assert_eq!(loaded.version, 17);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -1506,7 +1550,7 @@ mod group_export_tests {
     fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
         let doc = crate::export_check::grouped_fixture();
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-        assert_eq!(loaded.version, 16);
+        assert_eq!(loaded.version, 17);
         assert_eq!(loaded.strokes, doc.strokes);
         let encoded = encode(&doc, None).unwrap();
         let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
