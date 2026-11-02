@@ -813,8 +813,8 @@ impl CapabilityReplay {
         } else {
             let (start, end) = if self.clip.is_house_tutorial() || self.clip.is_overview() {
                 (
-                    rect.center() + egui::vec2(-270.0, -140.0),
-                    rect.center() + egui::vec2(-175.0, -105.0),
+                    rect.center() + egui::vec2(170.0, -190.0),
+                    rect.center() + egui::vec2(260.0, -170.0),
                 )
             } else {
                 (
@@ -1200,7 +1200,7 @@ impl CapabilityReplay {
                     "Undo and redo the transform, orbit the camera, then save and reopen through production native document paths.",
                     "The native save is stored next to the recording as a sample document.",
                 ],
-                "The Japanese garden-house scene after a selected detail stroke was saved and reopened.",
+                "A cyan detail stroke selected in clear canvas above the garden-house, with the move gizmo visible.",
             )
         } else if self.clip.is_curved_tutorial() {
             (
@@ -1222,7 +1222,7 @@ impl CapabilityReplay {
                     "Draw a detail, select and move it, then undo and redo the transform.",
                     "Orbit to inspect the result and show production GLB export options.",
                 ],
-                "Japanese garden house with a selected detail stroke and visible move gizmo after undo and redo.",
+                "The selected cyan detail stroke and move gizmo sit in open canvas above the garden-house, away from the title and scene.",
             )
         } else if self.clip.is_reference_export() {
             (
