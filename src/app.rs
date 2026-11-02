@@ -1656,10 +1656,10 @@ impl SketchApp {
                         assert!(app.mixed_resource_preview_active());
                         assert!(!app.mixed_resource_has_preview());
                         assert!(app.undo.is_empty());
-                        assert!(!Self::mixed_transform_supported(
+                        assert!(Self::mixed_transform_supported(
                             crate::mixed_resources::TransformMode::Rotate
                         ));
-                        assert!(!Self::mixed_transform_supported(
+                        assert!(Self::mixed_transform_supported(
                             crate::mixed_resources::TransformMode::Scale
                         ));
                     }
@@ -6032,10 +6032,10 @@ impl SketchApp {
             assert!(Self::mixed_transform_supported(
                 crate::mixed_resources::TransformMode::Translate
             ));
-            assert!(!Self::mixed_transform_supported(
+            assert!(Self::mixed_transform_supported(
                 crate::mixed_resources::TransformMode::Rotate
             ));
-            assert!(!Self::mixed_transform_supported(
+            assert!(Self::mixed_transform_supported(
                 crate::mixed_resources::TransformMode::Scale
             ));
             let mut selection = self.mixed_resources_ui.selection.clone();
@@ -6286,14 +6286,14 @@ impl SketchApp {
                     assert!(self.mixed_resource_preview_active());
                     assert!(!self.mixed_resource_has_preview());
                     assert!(self.undo.is_empty());
-                    assert!(!Self::mixed_transform_supported(
+                    assert!(Self::mixed_transform_supported(
                         crate::mixed_resources::TransformMode::Rotate
                     ));
-                    assert!(!Self::mixed_transform_supported(
+                    assert!(Self::mixed_transform_supported(
                         crate::mixed_resources::TransformMode::Scale
                     ));
                     checks.push(
-                        "mixed-resource controls show disabled Rotate and Scale plus disabled Apply before movement".into(),
+                        "mixed-resource controls enable Rotate and Scale and keep Apply disabled before a transform preview".into(),
                     );
                 }
                 if matches!(
@@ -6415,7 +6415,7 @@ impl SketchApp {
             } else if self.liquify_brush_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["synthetic canvas drag creates a non-destructive preview","front, side, and ground camera views preserve the working-plane depth","unselected and occluding strokes remain unchanged","cancel restores exact source strokes","navigation interruption cancels brush preview without history","apply commits preview as one history edit","undo restores source geometry","redo restores committed deformation","updated stroke remains pickable at the deformed position and is no longer picked at its original position","native serialization and recovery scan preserve the deformed geometry","whole-scene and selected-stroke GLB encode the committed result","brush cursor indicates radius and working-plane depth"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.mixed_resources_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["mixed stroke, image plane, OBJ reference, and guide translation preview","preview does not enter history","cancel restores all exact source records","apply commits one mixed-resource history edit","undo restores every selected record","redo reapplies every selected record","active image-plane drawable binding is preserved","mixed-resource UI enables translation and disables rotation and scale","rotation and scaling are rejected before mutation"],"resource_counts":{"strokes":self.doc.strokes.len(),"image_planes":self.doc.image_planes.len(),"obj_references":self.doc.model_references.len(),"guides":self.doc.guide_resources.len()},"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["mixed stroke, image plane, OBJ reference, and guide translation preview","preview does not enter history","cancel restores all exact source records","apply commits one mixed-resource history edit","undo restores every selected record","redo reapplies every selected record","active image-plane drawable binding is preserved","mixed-resource UI enables translation, rotation, and uniform scale"],"resource_counts":{"strokes":self.doc.strokes.len(),"image_planes":self.doc.image_planes.len(),"obj_references":self.doc.model_references.len(),"guides":self.doc.guide_resources.len()},"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.vase_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["revolved profile drawing","captured guide and surface release tail","pressure tilt brush frames","guide editing preserves ink","selection duplicate undo","native persistence","GPU painted vase"],"gpu":self.renderer.adapter})
             } else if self.layer_verification_frame.is_some() {
