@@ -2,8 +2,11 @@
 
 SKETCH-071 version 1 uses a stable world-space sampler alongside the existing
 continuous stroke representation. Existing brushes keep the continuous path;
-dab strokes render from the sampler and use the same resulting mesh for canvas
-display, picking, selection bounds, GLB, and OBJ export.
+dab strokes render from the sampler and use its resolved mesh for canvas
+display and GLB/OBJ export. Picking uses conservative stroke extents as a broad
+phase, then ray-tests the visible dab mesh so gaps between marks can reveal ink
+behind them. Selection bounds use a conservative extent and may include empty
+space between dabs.
 
 ## Placement rules
 
@@ -19,9 +22,18 @@ display, picking, selection bounds, GLB, and OBJ export.
   bisector. At an exact reversal, it keeps the incoming tangent.
 - The dab frame projects the stroke's captured guide normal against the local
   path tangent, then transports the brush angle in that guide-relative frame.
-- Collinear re-sampling of the same path produces identical centers and random
-  values. For paths that differ geometrically, center error is bounded by the
-  maximum centerline deviation plus `1e-5` world units.
+- Re-sampling the same piecewise-linear path preserves centers, pressure
+  response, and indexed random values within `1e-5` world units for centers and
+  `1e-5` for scalar values. At corners the sampler uses the incoming/outgoing
+  bisector; at an exact reversal it keeps the incoming tangent. Consecutive
+  duplicate samples do not add placements. A tap gets one dab, short strokes do
+  not force an endpoint dab, and stabilized release points add only ordinary
+  spacing landmarks that they cross.
+- Zero-scatter curved-guide and model-surface strokes interpolate the captured
+  world-space centerline. This is chordal interpolation between saved samples,
+  not geodesic travel or projection back onto the surface; denser stabilized
+  samples reduce chord error. Surface misses and large discontinuities create
+  separate strokes, so dabs do not bridge an absent surface region.
 - Scatter is uniform in area in the captured guide plane, bounded by
   `stroke radius × scatter`. Input rejects scatter on curved guides and model
   surfaces, where an offset would move the center off the hit surface. With
@@ -62,8 +74,13 @@ the existing two-million-vertex export limit. Scatter, spacing, size variation,
 angle variation, and pressure-size controls are bounded and validated before
 serialization or rendering.
 
-Performance acceptance remains open until a reproducible long-stroke sampler
-and active-preview benchmark is recorded. Synthetic input does not establish
+The reproducible release benchmark uses 4,096 evenly spaced path points over
+57.3 world units, radius `0.02`, and spacing `0.35` radii. On the recorded
+Windows x86_64 machine with a local benchmark CPU, the median sampler time was 0.476
+ms for 8,186 dabs; rebuilding the active stroke mesh (196,464 vertices) took
+3.361 ms. The 7 measured iterations follow one warmup. This is CPU geometry
+time only: it excludes GPU upload, drawing, repaint scheduling, native pen
+events, and end-to-end input latency. Synthetic input does not establish
 physical tablet behavior.
 
 ## Bristle and rake geometry

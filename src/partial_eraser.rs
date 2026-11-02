@@ -568,7 +568,12 @@ mod tests {
     fn split_fragments_keep_interpolated_contacts_and_stroke_metadata_through_history() {
         let camera = front_camera();
         let canvas = canvas();
-        let source = line([Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)]);
+        let mut source = line([Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)]);
+        source.brush.dabs.enabled = true;
+        source.brush.dabs.size_variation = 0.4;
+        source.brush.dabs.angle_variation_degrees = 45.0;
+        source.brush.dab_seed = crate::dab_placement::seed_for_stroke(source.id);
+        let original_dabs = crate::dab_placement::sample(&source).unwrap();
         let mut doc = crate::document::Document {
             linked_stroke_groups: Default::default(),
             strokes: vec![source.clone()],
@@ -591,15 +596,33 @@ mod tests {
         assert_eq!(doc.strokes.len(), 2);
         assert_eq!(doc.strokes[0].id, source.id);
         assert_eq!(doc.strokes[1].id, 100);
+        let mut retained_dab_count = 0;
         for fragment in &doc.strokes {
             assert_eq!(fragment.color, source.color);
             assert_eq!(fragment.radius, source.radius);
-            assert_eq!(fragment.brush, source.brush);
+            let mut fragment_brush = fragment.brush;
+            fragment_brush.dab_distance_origin = source.brush.dab_distance_origin;
+            fragment_brush.dab_total_length = source.brush.dab_total_length;
+            assert_eq!(fragment_brush, source.brush);
             assert_eq!(fragment.material, source.material);
             assert_eq!(fragment.group_id, source.group_id);
             assert_eq!(fragment.layer_id, source.layer_id);
             assert_eq!(fragment.fill, source.fill);
+            assert_eq!(fragment.brush.dab_seed, source.brush.dab_seed);
+            let fragment_dabs = crate::dab_placement::sample(fragment).unwrap();
+            retained_dab_count += fragment_dabs.len();
+            assert!(
+                fragment_dabs
+                    .iter()
+                    .all(|dab| original_dabs.iter().any(|original| {
+                        dab.position.distance(original.position) <= 1.0e-4
+                            && (dab.size_scale - original.size_scale).abs() <= 1.0e-4
+                            && (dab.angle_degrees - original.angle_degrees).abs() <= 1.0e-4
+                    })),
+                "partial erasure retains source dab positions and indexed variation"
+            );
         }
+        assert!(retained_dab_count < original_dabs.len());
         let left = &doc.strokes[0];
         let right = &doc.strokes[1];
         assert!(left.points.first().unwrap().position.x < -1.9);

@@ -301,3 +301,175 @@ fn splitmix64(mut value: u64) -> u64 {
     mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     mixed ^ (mixed >> 31)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        document::{Brush, Point, Stroke},
+        dynamics::DabSettings,
+    };
+
+    fn stroke(samples: &[(Vec3, f32)], radius: f32, spacing: f32) -> Stroke {
+        let brush = Brush {
+            tangent: Vec3::X,
+            normal: Vec3::Z,
+            dabs: DabSettings {
+                enabled: true,
+                spacing,
+                scatter: 0.0,
+                size_variation: 0.0,
+                angle_variation_degrees: 0.0,
+                ..Default::default()
+            },
+            dab_seed: seed_for_stroke(17),
+            ..Default::default()
+        };
+        Stroke {
+            id: 17,
+            curve: None,
+            material: Default::default(),
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            color: [0.2, 0.6, 0.9],
+            gradient: None,
+            radius,
+            brush,
+            points: samples
+                .iter()
+                .map(|(position, pressure)| Point {
+                    position: *position,
+                    pressure: *pressure,
+                    tilt: None,
+                    time_ms: 0,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn taps_and_sub_spacing_strokes_place_only_the_start_dab() {
+        let tap = stroke(&[(Vec3::new(2.0, 3.0, 4.0), 0.7)], 0.1, 0.5);
+        let tap_dabs = sample(&tap).unwrap();
+        assert_eq!(tap_dabs.len(), 1);
+        assert_eq!(tap_dabs[0].position, Vec3::new(2.0, 3.0, 4.0));
+
+        let short = stroke(
+            &[(Vec3::ZERO, 1.0), (Vec3::new(0.04, 0.0, 0.0), 1.0)],
+            0.1,
+            0.5,
+        );
+        let short_dabs = sample(&short).unwrap();
+        assert_eq!(short_dabs.len(), 1, "no extra endpoint dab is forced");
+        assert_eq!(short_dabs[0].position, Vec3::ZERO);
+    }
+
+    #[test]
+    fn stabilized_release_tail_adds_only_crossed_spacing_landmarks() {
+        let stroke_with_tail = stroke(
+            &[
+                (Vec3::ZERO, 1.0),
+                (Vec3::new(0.04, 0.0, 0.0), 1.0),
+                (Vec3::new(0.11, 0.0, 0.0), 1.0),
+            ],
+            0.1,
+            0.5,
+        );
+        let dabs = sample(&stroke_with_tail).unwrap();
+        assert_eq!(dabs.len(), 3);
+        assert!(dabs[0].position.distance(Vec3::ZERO) <= 1.0e-6);
+        assert!(dabs[1].position.distance(Vec3::new(0.05, 0.0, 0.0)) <= 1.0e-6);
+        assert!(dabs[2].position.distance(Vec3::new(0.1, 0.0, 0.0)) <= 1.0e-6);
+        assert!(dabs.iter().all(|dab| dab.position.x < 0.11));
+    }
+
+    #[test]
+    fn equivalent_resampling_preserves_dab_centers_and_random_values() {
+        let corners = [
+            (Vec3::ZERO, 0.2),
+            (Vec3::new(0.5, 0.0, 0.0), 0.9),
+            (Vec3::new(0.5, 0.5, 0.0), 0.4),
+        ];
+        let mut sparse = stroke(&corners, 0.25, 0.5);
+        sparse.brush.dabs.scatter = 0.3;
+        sparse.brush.dabs.size_variation = 0.4;
+        sparse.brush.dabs.angle_variation_degrees = 35.0;
+        let mut dense_samples = Vec::new();
+        for segment in corners.windows(2) {
+            for step in 0..4 {
+                let t = step as f32 / 4.0;
+                dense_samples.push((
+                    segment[0].0.lerp(segment[1].0, t),
+                    segment[0].1 + (segment[1].1 - segment[0].1) * t,
+                ));
+            }
+        }
+        dense_samples.push(*corners.last().unwrap());
+        let mut dense = stroke(&dense_samples, 0.25, 0.5);
+        dense.brush.dabs.scatter = sparse.brush.dabs.scatter;
+        dense.brush.dabs.size_variation = sparse.brush.dabs.size_variation;
+        dense.brush.dabs.angle_variation_degrees = sparse.brush.dabs.angle_variation_degrees;
+
+        let sparse_dabs = sample(&sparse).unwrap();
+        let dense_dabs = sample(&dense).unwrap();
+        assert_eq!(sparse_dabs.len(), dense_dabs.len());
+        for (left, right) in sparse_dabs.iter().zip(&dense_dabs) {
+            assert!(left.position.distance(right.position) <= 1.0e-5);
+            assert!((left.pressure - right.pressure).abs() <= 1.0e-5);
+            assert!((left.size_scale - right.size_scale).abs() <= 1.0e-5);
+            assert!((left.angle_degrees - right.angle_degrees).abs() <= 1.0e-5);
+            assert!((left.gradient_t - right.gradient_t).abs() <= 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn exact_reversal_keeps_the_incoming_tangent_and_duplicate_samples_are_safe() {
+        let path = stroke(
+            &[
+                (Vec3::ZERO, 1.0),
+                (Vec3::ZERO, 1.0),
+                (Vec3::new(0.3, 0.0, 0.0), 1.0),
+                (Vec3::new(0.3, 0.0, 0.0), 1.0),
+                (Vec3::ZERO, 1.0),
+            ],
+            0.1,
+            3.0,
+        );
+        let dabs = sample(&path).unwrap();
+        assert_eq!(dabs.len(), 3);
+        assert!(dabs.iter().all(|dab| dab.position.is_finite()));
+        assert!(dabs[1].tangent.dot(Vec3::X) > 0.999);
+    }
+
+    #[test]
+    fn native_roundtrip_keeps_the_resolved_dab_sequence() {
+        let mut original = stroke(
+            &[(Vec3::ZERO, 0.3), (Vec3::new(0.75, 0.0, 0.0), 0.8)],
+            0.1,
+            0.5,
+        );
+        original.brush.dabs.scatter = 0.25;
+        original.brush.dabs.size_variation = 0.2;
+        original.brush.dabs.angle_variation_degrees = 20.0;
+        let before = sample(&original).unwrap();
+        let bytes = serde_json::to_vec(&original).unwrap();
+        let reloaded: Stroke = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(before, sample(&reloaded).unwrap());
+    }
+
+    #[test]
+    fn generated_mesh_uses_exactly_the_resolved_dab_count() {
+        let path = stroke(
+            &[(Vec3::ZERO, 1.0), (Vec3::new(0.3, 0.0, 0.0), 1.0)],
+            0.1,
+            0.5,
+        );
+        let dabs = sample(&path).unwrap();
+        let mesh = crate::geometry::stroke_mesh(&path);
+        assert_eq!(mesh.len(), dabs.len() * 24);
+        assert!(mesh.iter().all(|vertex| {
+            Vec3::from(vertex.position).is_finite() && Vec3::from(vertex.normal).is_finite()
+        }));
+    }
+}

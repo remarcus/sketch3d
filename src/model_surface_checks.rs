@@ -1,5 +1,8 @@
 use super::*;
-use crate::{document::model_references::ObjReferenceResource, geometry::Plane};
+use crate::{
+    document::{model_references::ObjReferenceResource, Brush},
+    geometry::Plane,
+};
 
 impl SketchApp {
     /// Exercise the production brush pointer path against a synthetic OBJ mesh.
@@ -25,6 +28,15 @@ impl SketchApp {
         self.camera.target = Vec3::ZERO;
         self.camera.align(Plane::Front);
         self.camera.distance = 6.0;
+        self.brush = Brush {
+            dabs: crate::dynamics::DabSettings {
+                enabled: true,
+                spacing: 0.5,
+                ..Default::default()
+            },
+            ..Brush::default()
+        };
+        self.radius = 0.1;
 
         const MODEL_ID: u64 = 9401;
         let resource = ObjReferenceResource {
@@ -81,6 +93,9 @@ impl SketchApp {
             .points
             .iter()
             .all(|point| point.position.z.abs() < 0.0001));
+        let first_dabs = crate::dab_placement::sample(first).unwrap();
+        assert!(!first_dabs.is_empty());
+        assert!(first_dabs.iter().all(|dab| dab.position.z.abs() < 0.0001));
         let adjacent_strokes = self.doc.strokes.clone();
         assert_eq!(self.undo.len(), 1, "model stroke creates one history edit");
         self.undo();
@@ -149,6 +164,18 @@ impl SketchApp {
             .points
             .iter()
             .all(|point| point.position.x > 1.0));
+        for stroke in &self.doc.strokes {
+            let dabs = crate::dab_placement::sample(stroke).unwrap();
+            assert!(!dabs.is_empty());
+            assert!(
+                if stroke.points[0].position.x < 0.0 {
+                    dabs.iter().all(|dab| dab.position.x < -1.0)
+                } else {
+                    dabs.iter().all(|dab| dab.position.x > 1.0)
+                },
+                "zero-scatter dabs remain on each separate model-surface run"
+            );
+        }
         let split_strokes = self.doc.strokes.clone();
         self.undo();
         assert_eq!(
@@ -161,6 +188,17 @@ impl SketchApp {
             self.doc.strokes, split_strokes,
             "redo restores both split runs"
         );
+
+        let before_rejected_scatter = self.doc.strokes.clone();
+        let history_before_rejected_scatter = self.undo.len();
+        self.brush.dabs.scatter = 0.25;
+        self.pointer_action(left_run[0], 0.5, rect, true, false);
+        assert!(
+            self.active.is_none(),
+            "model-surface scatter is rejected before drawing"
+        );
+        assert_eq!(self.doc.strokes, before_rejected_scatter);
+        assert_eq!(self.undo.len(), history_before_rejected_scatter);
 
         self.status = "Model-surface pointer checks passed.".into();
         self.dirty = false;

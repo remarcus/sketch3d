@@ -184,13 +184,14 @@ fn pick_filtered(
             doc.visible(stroke)
         }
     }) {
-        let textured = stroke.fill.is_none()
+        let mesh_covered = stroke.fill.is_none()
             && (stroke.brush.flow.enabled
                 || stroke.brush.strands.enabled
+                || stroke.brush.dabs.enabled
                 || stroke.brush.tip_asset_id != 0
                 || (stroke.brush.texture.kind != crate::texture::TextureKind::Solid
                     && stroke.brush.texture.strength > 0.0));
-        if textured {
+        if mesh_covered {
             let extent = crate::geometry::stroke_extent(stroke);
             let close = stroke.points.iter().any(|point| {
                 project(camera, rect, point.position).is_some_and(|(screen, _)| {
@@ -595,6 +596,56 @@ mod tests {
             "transparent mask holes reveal the stroke behind them"
         );
         assert!(covered_pick, "covered textured surface remains pickable");
+    }
+
+    #[test]
+    fn dab_stroke_picker_skips_gaps_between_visible_marks() {
+        let mut camera = Camera::default();
+        camera.align(Plane::Front);
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let line = |id, z| Stroke {
+            gradient: None,
+            curve: None,
+            material: Default::default(),
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id,
+            color: [0.5; 3],
+            radius: 0.1,
+            brush: Default::default(),
+            points: vec![
+                Point {
+                    position: Vec3::new(-1.0, 0.0, z),
+                    pressure: 1.0,
+                    tilt: None,
+                    time_ms: 0,
+                },
+                Point {
+                    position: Vec3::new(1.0, 0.0, z),
+                    pressure: 1.0,
+                    tilt: None,
+                    time_ms: 0,
+                },
+            ],
+        };
+        let mut dabs = line(1, 1.0);
+        dabs.brush.dabs.enabled = true;
+        dabs.brush.dabs.spacing = 4.0;
+        dabs.brush.dab_seed = crate::dab_placement::seed_for_stroke(dabs.id);
+        let behind = line(2, 0.0);
+        let doc = Document {
+            linked_stroke_groups: Default::default(),
+            strokes: vec![dabs, behind],
+            ..Document::default()
+        };
+
+        let gap = project(&camera, rect, Vec3::new(-0.8, 0.0, 1.0)).unwrap().0;
+        let covered = project(&camera, rect, Vec3::new(-0.95, 0.0, 1.0))
+            .unwrap()
+            .0;
+        assert_eq!(pick(&doc, &camera, rect, gap), Some(2));
+        assert_eq!(pick(&doc, &camera, rect, covered), Some(1));
     }
     #[test]
     fn axis_drag_parameters_follow_world_coordinates() {

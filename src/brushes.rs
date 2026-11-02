@@ -311,6 +311,9 @@ impl SketchApp {
                     .enumerate()
                 {
                     self.brush.kind = kind;
+                    self.brush.dabs.enabled = kind == BrushKind::Round;
+                    self.brush.dabs.spacing = 0.5;
+                    self.brush.dabs.scatter = 0.0;
                     self.brush.angle_degrees = 25.0;
                     self.radius = 0.1;
                     let start = rect.center() + egui::vec2(-120.0, (i as f32 - 1.0) * 80.0);
@@ -321,6 +324,15 @@ impl SketchApp {
                     let stroke = self.doc.strokes.last().unwrap().clone();
                     assert_eq!(stroke.brush.kind, kind);
                     assert!(stroke.brush.normal.abs_diff_eq(self.guide.basis().2, 1e-6));
+                    if stroke.brush.dabs.enabled {
+                        let dabs = crate::dab_placement::sample(&stroke).unwrap();
+                        assert!(!dabs.is_empty());
+                        assert_eq!(
+                            geometry::stroke_mesh(&stroke).len(),
+                            dabs.len() * 24,
+                            "planar input preview uses the saved dab placements"
+                        );
+                    }
                     let midpoint = stroke.points[1].position;
                     let screen = gizmo::project(&self.camera, rect, midpoint).unwrap().0;
                     assert_eq!(

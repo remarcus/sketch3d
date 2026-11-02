@@ -1,5 +1,9 @@
 use super::*;
-use crate::{document::guide_resources::GuideGeometry, geometry::Projection, surface::Surface};
+use crate::{
+    document::{guide_resources::GuideGeometry, Brush},
+    geometry::Projection,
+    surface::Surface,
+};
 
 impl SketchApp {
     /// Exercise saved-ring placement, pointer drawing, misses, and cancellation.
@@ -33,6 +37,15 @@ impl SketchApp {
             depth: 0.0,
         });
         self.camera.distance = 6.0;
+        self.brush = Brush {
+            dabs: crate::dynamics::DabSettings {
+                enabled: true,
+                spacing: 0.5,
+                ..Default::default()
+            },
+            ..Brush::default()
+        };
+        self.radius = 0.1;
 
         let placed_center = self.camera.target;
         self.add_saved_guide(
@@ -94,6 +107,18 @@ impl SketchApp {
         let cancel_end = screen_at(1.55, 0.3);
         assert!(across_hole.iter().all(|point| rect.contains(*point)));
 
+        self.brush.dabs.scatter = 0.25;
+        let strokes_before_rejected_scatter = self.doc.strokes.clone();
+        let history_before_rejected_scatter = self.undo.len();
+        self.pointer_action(across_hole[0], 0.35, rect, true, false);
+        assert!(
+            self.active.is_none(),
+            "ring scatter is rejected before drawing"
+        );
+        assert_eq!(self.doc.strokes, strokes_before_rejected_scatter);
+        assert_eq!(self.undo.len(), history_before_rejected_scatter);
+        self.brush.dabs.scatter = 0.0;
+
         self.pointer_action(across_hole[0], 0.35, rect, true, false);
         self.pointer_action(across_hole[1], 0.5, rect, false, false);
         self.pointer_action(across_hole[2], 0.65, rect, false, false);
@@ -117,6 +142,17 @@ impl SketchApp {
                 assert!(
                     ((radial - major_radius).hypot(local.y) - minor_radius).abs() < 0.003,
                     "stabilized ink remains on the torus surface"
+                );
+                assert!(radial > major_radius - minor_radius - 0.003);
+            }
+            let dabs = crate::dab_placement::sample(stroke).unwrap();
+            assert!(!dabs.is_empty(), "saved-ring run resolves visible dabs");
+            for dab in dabs {
+                let local = ring.rotation.inverse() * (dab.position - ring.center);
+                let radial = local.x.hypot(local.z);
+                assert!(
+                    ((radial - major_radius).hypot(local.y) - minor_radius).abs() < 0.003,
+                    "dab centers follow the captured torus path within chordal tolerance"
                 );
                 assert!(radial > major_radius - minor_radius - 0.003);
             }

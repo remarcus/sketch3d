@@ -2,6 +2,30 @@ use super::ui_style;
 use super::*;
 use crate::{document::PressureMapping, export_check};
 
+fn apply_synthetic_pointer_samples(app: &mut SketchApp, rect: Rect, samples: Vec<PenSample>) {
+    for sample in samples {
+        match sample.phase {
+            Phase::Cancel => app.cancel(),
+            Phase::Up => app.finish(),
+            phase if sample.contact => {
+                let tilt = crate::dynamics::screen_tilt(
+                    sample.tilt,
+                    app.camera.basis().0,
+                    app.camera.basis().1,
+                );
+                app.add_point_with_tilt(
+                    sample.position,
+                    sample.pressure.unwrap_or(1.0),
+                    rect,
+                    phase == Phase::Down,
+                    tilt,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
 fn mapping_controls(ui: &mut egui::Ui, label: &str, mapping: &mut PressureMapping) {
     ui.checkbox(&mut mapping.enabled, label);
     if mapping.enabled {
@@ -95,6 +119,10 @@ impl SketchApp {
                 self.request(Pending::New);
                 self.camera.align_guide(self.guide);
                 self.brush.kind = BrushKind::Chisel;
+                self.brush.dabs.enabled = true;
+                self.brush.dabs.spacing = 0.5;
+                self.brush.dabs.scatter = 0.0;
+                self.radius = 0.1;
                 self.brush.opacity = 0.64;
                 self.brush.softness = 0.0;
                 self.brush.dynamics.width.minimum = 0.05;
@@ -109,11 +137,10 @@ impl SketchApp {
                 self.brush.dynamics.taper_start = 0.3;
                 self.brush.dynamics.taper_end = 0.5;
                 self.stabilization = 0.8;
-                let scale = ctx.pixels_per_point();
                 let start = rect.center() - egui::vec2(130.0, 0.0);
                 let end = start + egui::vec2(260.0, 40.0);
                 let sample = |position: Pos2, pressure, tilt, phase, contact| PenSample {
-                    position: egui::pos2(position.x * scale, position.y * scale),
+                    position,
                     pressure: Some(pressure),
                     tilt,
                     phase,
@@ -121,8 +148,8 @@ impl SketchApp {
                     eraser: false,
                     barrel: false,
                 };
-                self.canvas_input(
-                    ctx,
+                apply_synthetic_pointer_samples(
+                    self,
                     rect,
                     vec![
                         sample(start, 0.15, [Some(20.0), Some(30.0)], Phase::Down, true),
@@ -157,14 +184,27 @@ impl SketchApp {
                     .unwrap()
                     .abs_diff_eq(tilt, 1e-5));
                 assert!(stroke.points.len() > 3, "release tail must be retained");
+                let stroke_length = crate::dynamics::arc_lengths(&stroke.points)
+                    .last()
+                    .copied()
+                    .unwrap_or(0.0);
+                let dab_spacing = stroke.radius * stroke.brush.dabs.spacing;
+                let resolved_dabs = crate::dab_placement::sample(&stroke).unwrap();
+                assert!(resolved_dabs.len() > 1);
+                assert!(resolved_dabs.iter().all(|dab| {
+                    let distance = dab.gradient_t * stroke_length;
+                    (distance / dab_spacing - (distance / dab_spacing).round()).abs() < 1.0e-4
+                }));
+                let final_dab_distance = resolved_dabs.last().unwrap().gradient_t * stroke_length;
+                assert!(stroke_length - final_dab_distance < dab_spacing + 1.0e-5);
                 assert_eq!(self.undo.len(), 1);
                 self.undo();
                 assert!(self.doc.strokes.is_empty());
                 self.redo();
                 assert_eq!(self.doc.strokes[0], stroke);
                 // A canceled second stroke contributes neither geometry nor an undo item.
-                self.canvas_input(
-                    ctx,
+                apply_synthetic_pointer_samples(
+                    self,
                     rect,
                     vec![
                         sample(start, 0.6, [Some(20.0), Some(20.0)], Phase::Down, true),
@@ -173,8 +213,8 @@ impl SketchApp {
                 );
                 assert_eq!(self.doc.strokes, vec![stroke.clone()]);
                 assert_eq!(self.undo.len(), 1);
-                self.canvas_input(
-                    ctx,
+                apply_synthetic_pointer_samples(
+                    self,
                     rect,
                     vec![
                         sample(start, 0.7, [None, None], Phase::Down, true),

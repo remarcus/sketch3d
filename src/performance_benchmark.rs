@@ -1,6 +1,8 @@
 //! Repeatable CPU workload benchmarks. These do not estimate GPU time or pen latency.
 use crate::{
+    dab_placement,
     document::{Brush, Document, Point, Stroke},
+    dynamics::DabSettings,
     editing, geometry, gizmo,
 };
 use eframe::egui::{pos2, Rect};
@@ -14,6 +16,7 @@ const SAMPLES: usize = 7;
 pub fn run() -> Result<(), String> {
     let cases = vec![
         benchmark_long_stroke(),
+        benchmark_long_dab_stroke(),
         benchmark_many_short_strokes(),
         benchmark_pick(),
         benchmark_large_selection()?,
@@ -124,6 +127,62 @@ fn benchmark_long_stroke() -> Value {
         "points_per_stroke": stroke.points.len(),
         "vertices": vertex_count,
         "timing": stats(&timing)
+    })
+}
+
+fn benchmark_long_dab_stroke() -> Value {
+    const POINTS: usize = 4_096;
+    const LENGTH: f32 = 57.3;
+    let mut stroke = make_stroke(71, POINTS, 0.0);
+    stroke.radius = 0.02;
+    stroke.points = (0..POINTS)
+        .map(|index| {
+            let t = index as f32 / (POINTS - 1) as f32;
+            Point {
+                position: Vec3::new(LENGTH * t, 0.0, 0.0),
+                pressure: 0.25 + 0.75 * t,
+                tilt: None,
+                time_ms: 0,
+            }
+        })
+        .collect();
+    stroke.brush.dab_seed = dab_placement::seed_for_stroke(stroke.id);
+    stroke.brush.dabs = DabSettings {
+        enabled: true,
+        spacing: 0.35,
+        ..Default::default()
+    };
+
+    let expected_dabs = dab_placement::point_count(&stroke)
+        .expect("benchmark dab fixture stays within the placement budget");
+    let mut sampled_dabs = 0usize;
+    let sampler_timing = measure(|| {
+        let dabs = dab_placement::sample(black_box(&stroke))
+            .expect("benchmark dab fixture has valid settings");
+        sampled_dabs = dabs.len();
+        black_box(dabs);
+    });
+    let preview_vertices = geometry::stroke_mesh(&stroke).len();
+    let preview_timing = measure(|| {
+        let mesh = geometry::stroke_mesh(black_box(&stroke));
+        black_box(mesh);
+    });
+    json!({
+        "name": "long_dab_active_preview",
+        "fixture": "4,096 evenly spaced world-space points over a 57.3-unit path; radius 0.02; spacing 0.35 radii",
+        "points": stroke.points.len(),
+        "world_length": LENGTH,
+        "resolved_dabs": sampled_dabs,
+        "expected_resolved_dabs": expected_dabs,
+        "mesh_vertices": preview_vertices,
+        "sampler": {
+            "operation": "dab_placement::sample",
+            "timing": stats(&sampler_timing)
+        },
+        "active_preview_geometry_rebuild": {
+            "operation": "geometry::stroke_mesh for the current active stroke",
+            "timing": stats(&preview_timing)
+        }
     })
 }
 
