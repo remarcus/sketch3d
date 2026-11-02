@@ -76,7 +76,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.platform }}
-          path: dist/*
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
           if-no-files-found: error
 
   publish:
@@ -92,10 +94,14 @@ jobs:
           pattern: release-*
           merge-multiple: true
       - name: Create SHA-256 checksums
-        run: sha256sum dist/* > dist/SHA256SUMS.txt
+        working-directory: dist
+        run: sha256sum *.zip *.tar.gz > SHA256SUMS.txt
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
-          files: dist/*
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
           fail_on_unmatched_files: true
