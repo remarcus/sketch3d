@@ -651,6 +651,7 @@ mod layer_picking_tests {
             name: "Back".into(),
             visible: true,
             locked: false,
+            opacity: 1.0,
         });
         assert_eq!(pick(&doc, &camera, rect, rect.center()), Some(1));
         assert_eq!(pick_visible(&doc, &camera, rect, rect.center()), Some(1));

@@ -203,6 +203,8 @@ pub struct Layer {
     pub name: String,
     pub visible: bool,
     pub locked: bool,
+    #[serde(default = "default_opacity")]
+    pub opacity: f32,
 }
 pub fn default_layer_id() -> u64 {
     1
@@ -213,6 +215,7 @@ pub fn layers_default() -> Vec<Layer> {
         name: "Layer 1".into(),
         visible: true,
         locked: false,
+        opacity: 1.0,
     }]
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -323,7 +326,7 @@ impl Default for Document {
         Self {
             layers: layers_default(),
             active_layer: 1,
-            version: 20,
+            version: 21,
             strokes: Vec::new(),
             image_planes: Vec::new(),
             active_image_plane: None,
@@ -363,6 +366,12 @@ impl Document {
             .iter()
             .any(|l| l.id == stroke.layer_id && l.visible)
     }
+    pub fn layer_opacity(&self, layer_id: u64) -> f32 {
+        self.layers
+            .iter()
+            .find(|layer| layer.id == layer_id)
+            .map_or(0.0, |layer| layer.opacity)
+    }
     pub fn editable(&self, stroke: &Stroke) -> bool {
         self.layers
             .iter()
@@ -401,7 +410,7 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=20)) {
+        if !matches!(version, Some(1..=21)) {
             return Err("Unsupported document version".into());
         }
         if matches!(version, Some(1..=6)) {
@@ -485,7 +494,7 @@ impl Document {
                 }
             }
         }
-        doc.version = 20;
+        doc.version = 21;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
         }
@@ -502,6 +511,8 @@ impl Document {
                 || layer.name.is_empty()
                 || layer.name.chars().count() > 64
                 || layer.name.chars().any(char::is_control)
+                || !layer.opacity.is_finite()
+                || !(0.0..=1.0).contains(&layer.opacity)
                 || !names.insert(layer.name.to_lowercase())
             {
                 return Err("Invalid or duplicate layer metadata".into());
@@ -1061,7 +1072,7 @@ mod layer_tests {
         value["active_layer"] = serde_json::json!(99);
         value["strokes"][0]["layer_id"] = serde_json::json!("unknown");
         let migrated = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(migrated.version, 20);
+        assert_eq!(migrated.version, 21);
         assert_eq!(migrated.strokes, vec![original]);
         assert_eq!(migrated.layers, layers_default());
         assert_eq!(migrated.active_layer, 1);
@@ -1074,6 +1085,7 @@ mod layer_tests {
             name: "Roof".into(),
             visible: true,
             locked: true,
+            opacity: 1.0,
         });
         doc.active_layer = 2;
         let stroke = Stroke {
@@ -1124,6 +1136,7 @@ mod layer_tests {
                     name: "layer 1".into(),
                     visible: true,
                     locked: false,
+                    opacity: 1.0,
                 }),
                 "blank_name" => doc.layers[0].name = " ".into(),
                 "active_missing" => doc.active_layer = 2,
@@ -1455,6 +1468,7 @@ mod group_tests {
             name: "Roof".into(),
             visible: false,
             locked: true,
+            opacity: 1.0,
         });
         doc.active_layer = 2;
         for stroke in &mut doc.strokes {
@@ -1518,6 +1532,7 @@ mod group_tests {
             name: "Other".into(),
             visible: true,
             locked: false,
+            opacity: 1.0,
         });
         let mut second = mark(2);
         second.layer_id = 2;

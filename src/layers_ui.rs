@@ -1,12 +1,16 @@
 use super::*;
 use crate::{
-    editing::{self, LayerAction},
+    editing::{self, LayerAction, LayerState},
     gizmo,
 };
 use eframe::egui::{WidgetInfo, WidgetType};
 
 const RENAMING_LAYER_ID: &str = "layer-list-renaming-id";
 const FOCUS_RENAME_LAYER_ID: &str = "layer-list-focus-rename-id";
+
+pub(super) struct LayerOpacityDraft {
+    before: LayerState,
+}
 
 fn layer_actions_menu(
     ui: &mut egui::Ui,
@@ -39,6 +43,7 @@ fn layer_actions_menu(
 
 impl SketchApp {
     pub(super) fn apply_layer_action(&mut self, action: LayerAction) {
+        self.finish_layer_opacity_edit(true);
         self.finish();
         match editing::layer_edit(&self.doc, action) {
             Ok(edit) => {
@@ -55,8 +60,36 @@ impl SketchApp {
         }
     }
 
+    pub(super) fn finish_layer_opacity_edit(&mut self, apply: bool) {
+        let Some(draft) = self.layer_opacity_draft.take() else {
+            return;
+        };
+        let edit = editing::Edit::Layers {
+            before: draft.before,
+            after: LayerState::capture(&self.doc),
+        };
+        if apply {
+            let changed = match &edit {
+                editing::Edit::Layers { before, after } => before != after,
+                _ => false,
+            };
+            if changed {
+                self.undo.push(edit);
+                self.redo.clear();
+                self.dirty = true;
+                self.record_recovery_edit();
+                self.status = "Layer opacity updated. One undo restores the previous value.".into();
+            }
+        } else {
+            edit.apply(&mut self.doc, false);
+            self.status = "Layer opacity preview cancelled.".into();
+        }
+        self.renderer.invalidate();
+    }
+
     pub(super) fn layer_controls(&mut self, ui: &mut egui::Ui) {
         let mut action = None;
+        let mut opacity_responses = Vec::new();
         let rename_id = egui::Id::new(RENAMING_LAYER_ID);
         let focus_rename_id = egui::Id::new(FOCUS_RENAME_LAYER_ID);
         let renaming = ui.memory(|memory| memory.data.get_temp::<u64>(rename_id));
@@ -210,6 +243,34 @@ impl SketchApp {
                                         },
                                     );
                                 });
+
+                                ui.horizontal(|ui| {
+                                    let mut opacity = layer.opacity;
+                                    let response = ui
+                                        .add(
+                                            egui::Slider::new(&mut opacity, 0.0..=1.0)
+                                                .text("Opacity")
+                                                .custom_formatter(|value, _| {
+                                                    format!("{:.0}%", value * 100.0)
+                                                })
+                                                .custom_parser(|text| {
+                                                    text.trim_end_matches('%')
+                                                        .parse::<f64>()
+                                                        .ok()
+                                                        .map(|value| value / 100.0)
+                                                }),
+                                        )
+                                        .on_hover_text(
+                                            "Multiplies the opacity of each mark in this layer",
+                                        );
+                                    opacity_responses.push((
+                                        layer_id,
+                                        opacity,
+                                        response.changed(),
+                                        response.drag_stopped(),
+                                        response.lost_focus(),
+                                    ));
+                                });
                             });
                     });
 
@@ -297,6 +358,36 @@ impl SketchApp {
                 }
                 ui.small("F2 renames the active layer. Hidden ink is excluded from view and export; locked ink stays visible but cannot be edited. Only empty layers can be deleted.");
             });
+
+        let cancel_opacity =
+            ui.input(|input| input.key_pressed(Key::Escape)) && self.layer_opacity_draft.is_some();
+        if cancel_opacity {
+            self.finish_layer_opacity_edit(false);
+        } else {
+            for (layer_id, opacity, changed, drag_stopped, lost_focus) in opacity_responses {
+                if changed {
+                    if self.layer_opacity_draft.is_none() {
+                        self.finish();
+                        self.layer_opacity_draft = Some(LayerOpacityDraft {
+                            before: LayerState::capture(&self.doc),
+                        });
+                    }
+                    if let Some(layer) = self.doc.layers.iter_mut().find(|l| l.id == layer_id) {
+                        layer.opacity = opacity;
+                        self.renderer.invalidate();
+                        self.status =
+                            "Previewing layer opacity. Release to apply or press Escape to cancel."
+                                .into();
+                    }
+                }
+                if drag_stopped {
+                    self.finish_layer_opacity_edit(true);
+                }
+                if lost_focus && self.layer_opacity_draft.is_some() {
+                    self.finish_layer_opacity_edit(true);
+                }
+            }
+        }
 
         if let Some(action) = action {
             self.apply_layer_action(action);

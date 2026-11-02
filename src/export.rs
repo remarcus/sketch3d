@@ -204,7 +204,7 @@ pub fn encode_with_images(
     selected: Option<&HashSet<u64>>,
     image_root: Option<&Path>,
 ) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=17) {
+    if !matches!(doc.version, 1..=21) {
         return Err("Unsupported source document version".into());
     }
     crate::brush_tip::validate_catalog(&doc.brush_tip_assets)?;
@@ -224,6 +224,8 @@ pub fn encode_with_images(
                 || l.name.is_empty()
                 || l.name.chars().count() > 64
                 || l.name.chars().any(char::is_control)
+                || !l.opacity.is_finite()
+                || !(0.0..=1.0).contains(&l.opacity)
                 || !layer_names.insert(l.name.to_lowercase())
         })
         || doc.layers.iter().any(|l| !layer_ids.insert(l.id))
@@ -277,7 +279,11 @@ pub fn encode_with_images(
         if !ids.insert(stroke.id) {
             return Err("Source document has duplicate stroke IDs".into());
         }
-        let mesh = stroke_mesh(stroke)?;
+        let layer_opacity = doc.layer_opacity(stroke.layer_id);
+        let mut mesh = stroke_mesh(stroke)?;
+        for vertex in &mut mesh.vertices {
+            vertex[11] *= layer_opacity;
+        }
         if mesh.indices.is_empty() {
             continue;
         }
@@ -326,7 +332,8 @@ pub fn encode_with_images(
         let settings = stroke.brush.texture;
         let texture_key = (tip_key.is_none() && settings.kind != TextureKind::Solid)
             .then(|| texture::key(settings));
-        let alpha_blended = stroke.brush.opacity < 1.0
+        let alpha_blended = layer_opacity < 1.0
+            || stroke.brush.opacity < 1.0
             || stroke.brush.flow.enabled
             || tip_key.is_some()
             || (stroke.fill.is_none() && stroke.brush.softness > 0.0)
@@ -432,7 +439,7 @@ pub fn encode_with_images(
         let color = accessors.len();
         accessors.push(json!({"bufferView":vertex_view,"byteOffset":32,"componentType":5126,"count":mesh.vertices.len(),"type":"VEC4"}));
         meshes.push(json!({"name":name,"primitives":[{"attributes":{"POSITION":position,"NORMAL":normal,"TEXCOORD_0":uv,"COLOR_0":color},"indices":indices,"material":material,"mode":4}]}));
-        let mut node = json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":doc.layers.iter().find(|l|l.id==stroke.layer_id).unwrap().name}});
+        let mut node = json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":doc.layers.iter().find(|l|l.id==stroke.layer_id).unwrap().name,"spatialSketchLayerOpacity":layer_opacity}});
         node["extras"]["spatialSketchMaterial"] = json!(match stroke.material {
             crate::document::StrokeMaterial::Shaded => "shaded",
             crate::document::StrokeMaterial::Unlit => "unlit",

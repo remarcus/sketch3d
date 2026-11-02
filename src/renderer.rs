@@ -55,6 +55,7 @@ struct Mesh {
     points: usize,
     brush_kind: BrushKind,
     material: StrokeMaterial,
+    layer_opacity: f32,
     bounds: Option<(Vec3, Vec3)>,
 }
 
@@ -123,11 +124,12 @@ fn canvas_sample_count(adapter: &wgpu::Adapter) -> u32 {
     }
 }
 
-fn is_translucent(stroke: &Stroke) -> bool {
+fn is_translucent(stroke: &Stroke, layer_opacity: f32) -> bool {
     if stroke.material == StrokeMaterial::Cutout {
         return false;
     }
-    stroke.brush.opacity < 0.999_999
+    layer_opacity < 0.999_999
+        || stroke.brush.opacity < 0.999_999
         || stroke.brush.tip_asset_id != 0
         || (stroke.brush.dynamics.opacity.enabled
             && stroke.brush.dynamics.opacity.minimum < 0.999_999)
@@ -1293,12 +1295,15 @@ impl SceneRenderer {
     pub fn sample_count(&self) -> u32 {
         self.target.as_ref().map_or(1, |target| target.sample_count)
     }
-    pub fn set_repeat_preview(&mut self, strokes: &[crate::document::Stroke]) {
+    pub fn set_repeat_preview(&mut self, strokes: &[crate::document::Stroke], doc: &Document) {
         if self
             .repeat_preview
             .iter()
             .map(|(stroke, _)| stroke)
             .eq(strokes.iter())
+            && self.repeat_preview.iter().all(|(stroke, mesh)| {
+                (mesh.layer_opacity - doc.layer_opacity(stroke.layer_id)).abs() < 0.000_001
+            })
         {
             return;
         }
@@ -1311,11 +1316,12 @@ impl SceneRenderer {
                 }
                 (
                     stroke.clone(),
-                    self.mesh(
+                    self.layer_mesh(
                         &vertices,
                         stroke.points.len(),
                         stroke.brush.kind,
                         stroke.material,
+                        doc.layer_opacity(stroke.layer_id),
                     ),
                 )
             })
@@ -1346,8 +1352,25 @@ impl SceneRenderer {
             points,
             brush_kind,
             material,
+            layer_opacity: 1.0,
             bounds: vertex_bounds(vertices),
         }
+    }
+    fn layer_mesh(
+        &self,
+        vertices: &[Vertex],
+        points: usize,
+        brush_kind: BrushKind,
+        material: StrokeMaterial,
+        layer_opacity: f32,
+    ) -> Mesh {
+        let mut vertices = vertices.to_vec();
+        for vertex in &mut vertices {
+            vertex.opacity *= layer_opacity;
+        }
+        let mut mesh = self.mesh(&vertices, points, brush_kind, material);
+        mesh.layer_opacity = layer_opacity;
+        mesh
     }
     #[allow(clippy::too_many_arguments)]
     fn record_post_effects(
@@ -1632,10 +1655,12 @@ impl SceneRenderer {
         let ids: HashSet<u64> = doc.strokes.iter().map(|s| s.id).collect();
         self.meshes.retain(|id, _| ids.contains(id));
         for stroke in doc.strokes.iter().filter(|s| doc.visible(s)) {
+            let layer_opacity = doc.layer_opacity(stroke.layer_id);
             if self.meshes.get(&stroke.id).is_some_and(|m| {
                 m.points == stroke.points.len()
                     && m.brush_kind == stroke.brush.kind
                     && m.material == stroke.material
+                    && (m.layer_opacity - layer_opacity).abs() < 0.000_001
             }) {
                 continue;
             }
@@ -1655,6 +1680,9 @@ impl SceneRenderer {
                     vertex.color = selection_color;
                 }
             }
+            for vertex in &mut vertices {
+                vertex.opacity *= layer_opacity;
+            }
             let data = bytemuck::cast_slice(&vertices);
             if let Some(mesh) = self
                 .meshes
@@ -1667,14 +1695,16 @@ impl SceneRenderer {
                 mesh.count = vertices.len() as u32;
                 mesh.points = stroke.points.len();
                 mesh.material = stroke.material;
+                mesh.layer_opacity = layer_opacity;
                 mesh.bounds = vertex_bounds(&vertices);
             } else {
-                let mesh = self.mesh(
+                let mut mesh = self.mesh(
                     &vertices,
                     stroke.points.len(),
                     stroke.brush.kind,
                     stroke.material,
                 );
+                mesh.layer_opacity = layer_opacity;
                 self.meshes.insert(stroke.id, mesh);
             }
         }
@@ -1822,7 +1852,7 @@ impl SceneRenderer {
             for stroke in doc
                 .strokes
                 .iter()
-                .filter(|s| doc.visible(s) && !is_translucent(s))
+                .filter(|s| doc.visible(s) && !is_translucent(s, doc.layer_opacity(s.layer_id)))
             {
                 if let Some(mesh) = self.meshes.get(&stroke.id) {
                     pass.set_bind_group(1, self.brush_texture(stroke), &[]);
@@ -1930,7 +1960,7 @@ impl SceneRenderer {
             for stroke in doc
                 .strokes
                 .iter()
-                .filter(|s| doc.visible(s) && !is_translucent(s))
+                .filter(|s| doc.visible(s) && !is_translucent(s, doc.layer_opacity(s.layer_id)))
             {
                 if let Some(mesh) = self.meshes.get(&stroke.id) {
                     pass.set_pipeline(if stroke.material == StrokeMaterial::Cutout {
@@ -1948,7 +1978,9 @@ impl SceneRenderer {
                 doc.strokes
                     .iter()
                     .filter(|s| {
-                        doc.visible(s) && is_translucent(s) && s.material != StrokeMaterial::Cutout
+                        doc.visible(s)
+                            && is_translucent(s, doc.layer_opacity(s.layer_id))
+                            && s.material != StrokeMaterial::Cutout
                     })
                     .filter_map(|s| self.meshes.get(&s.id).map(|m| (s, m)))
                     .collect(),
@@ -2219,11 +2251,12 @@ impl SceneRenderer {
                 let vertices = geometry::stroke_mesh(stroke);
                 (
                     stroke,
-                    self.mesh(
+                    self.layer_mesh(
                         &vertices,
                         stroke.points.len(),
                         stroke.brush.kind,
                         stroke.material,
+                        doc.layer_opacity(stroke.layer_id),
                     ),
                 )
             })
@@ -2334,7 +2367,10 @@ impl SceneRenderer {
             });
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.bind, &[]);
-            for (stroke, mesh) in meshes.iter().filter(|(stroke, _)| !is_translucent(stroke)) {
+            for (stroke, mesh) in meshes
+                .iter()
+                .filter(|(stroke, _)| !is_translucent(stroke, doc.layer_opacity(stroke.layer_id)))
+            {
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
@@ -2414,7 +2450,10 @@ impl SceneRenderer {
                     }
                 }
             }
-            for (stroke, mesh) in meshes.iter().filter(|(stroke, _)| !is_translucent(stroke)) {
+            for (stroke, mesh) in meshes
+                .iter()
+                .filter(|(stroke, _)| !is_translucent(stroke, doc.layer_opacity(stroke.layer_id)))
+            {
                 pass.set_pipeline(if stroke.material == StrokeMaterial::Cutout {
                     cutout_triangles
                 } else if background.is_none() {
@@ -2430,7 +2469,8 @@ impl SceneRenderer {
                 meshes
                     .iter()
                     .filter(|(stroke, _)| {
-                        is_translucent(stroke) && stroke.material != StrokeMaterial::Cutout
+                        is_translucent(stroke, doc.layer_opacity(stroke.layer_id))
+                            && stroke.material != StrokeMaterial::Cutout
                     })
                     .map(|(stroke, mesh)| (*stroke, mesh))
                     .collect(),

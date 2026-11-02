@@ -163,6 +163,7 @@ pub fn prepare_insert(
                 name: unique_name(&layer.name, &mut used_layer_names, 64),
                 visible: layer.visible,
                 locked: layer.locked,
+                opacity: layer.opacity,
             })
         })
         .collect::<Result<_, String>>()?;

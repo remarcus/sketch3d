@@ -23,6 +23,7 @@ type MaterialKey = (
     u32,
     StrokeMaterial,
     u64,
+    u32,
 );
 
 /// Write a compact OBJ/MTL fixture with one stroke for each material mode.
@@ -118,12 +119,20 @@ pub fn write_obj_bundle(
     if strokes.is_empty() {
         return Err("No visible strokes to export".into());
     }
+    if doc
+        .layers
+        .iter()
+        .any(|layer| !layer.opacity.is_finite() || !(0.0..=1.0).contains(&layer.opacity))
+    {
+        return Err("A layer has an invalid opacity value".into());
+    }
 
     let mut materials = Vec::<Material>::new();
     let mut material_ids = HashMap::<MaterialKey, usize>::new();
     for stroke in &strokes {
         export::stroke_mesh(stroke)?;
-        let key = material_key(stroke);
+        let layer_opacity = doc.layer_opacity(stroke.layer_id);
+        let key = material_key(stroke, layer_opacity);
         let has_tip = stroke.brush.tip_asset_id != 0;
         let textured = !has_tip && key.4 != TextureKind::Solid;
         if let std::collections::hash_map::Entry::Vacant(entry) = material_ids.entry(key) {
@@ -142,7 +151,7 @@ pub fn write_obj_bundle(
                 opacity: if stroke.material == StrokeMaterial::Cutout {
                     0.0
                 } else {
-                    stroke.brush.opacity
+                    stroke.brush.opacity * layer_opacity
                 },
                 texture: stroke.brush.texture,
                 mask_file,
@@ -166,6 +175,12 @@ pub fn write_obj_bundle(
     mtl.push_str("# Sketch3D cutout strokes export as fully transparent geometry; destination erasure is not represented by OBJ/MTL.\n");
     if strokes.iter().any(|stroke| stroke.brush.flow.enabled) {
         mtl.push_str("# Airbrush timing and per-vertex soft opacity are baked into mesh placement only approximately; OBJ/MTL cannot preserve per-vertex alpha.\n");
+    }
+    if strokes
+        .iter()
+        .any(|stroke| doc.layer_opacity(stroke.layer_id) < 1.0)
+    {
+        mtl.push_str("# Layer opacity is folded into MTL material opacity; OBJ/MTL cannot preserve per-point alpha or layer compositing.\n");
     }
     for material in &materials {
         writeln!(mtl, "newmtl {}", material.name).unwrap();
@@ -310,7 +325,7 @@ pub fn write_obj_bundle(
             if mesh.indices.is_empty() {
                 continue;
             }
-            let material = material_ids[&material_key(stroke)];
+            let material = material_ids[&material_key(stroke, doc.layer_opacity(stroke.layer_id))];
             writeln!(writer, "\ng stroke_{}", stroke.id).map_err(|error| error.to_string())?;
             writeln!(writer, "usemtl material_{material:05}").map_err(|error| error.to_string())?;
             for vertex in &mesh.vertices {
@@ -375,7 +390,7 @@ pub fn write_obj_bundle(
     result
 }
 
-fn material_key(stroke: &Stroke) -> MaterialKey {
+fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
     let texture = texture::key(stroke.brush.texture);
     (
         stroke.color[0].to_bits(),
@@ -387,6 +402,7 @@ fn material_key(stroke: &Stroke) -> MaterialKey {
         texture.2,
         stroke.material,
         stroke.brush.tip_asset_id,
+        layer_opacity.to_bits(),
     )
 }
 

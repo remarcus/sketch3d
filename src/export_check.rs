@@ -393,12 +393,14 @@ pub fn layered_fixture() -> Document {
         name: "Hidden study".into(),
         visible: false,
         locked: false,
+        opacity: 1.0,
     });
     doc.layers.push(crate::document::Layer {
         id: 3,
         name: "Protected ink".into(),
         visible: true,
         locked: true,
+        opacity: 1.0,
     });
     doc.strokes[1].layer_id = 2;
     doc.strokes[1].color = [1.0, 0.0, 1.0];

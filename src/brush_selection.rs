@@ -310,12 +310,14 @@ mod tests {
                 name: "Locked".into(),
                 visible: true,
                 locked: true,
+                opacity: 1.0,
             },
             Layer {
                 id: 3,
                 name: "Hidden".into(),
                 visible: false,
                 locked: false,
+                opacity: 1.0,
             },
         ]);
         let point = Vec3::ZERO;

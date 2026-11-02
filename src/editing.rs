@@ -1022,6 +1022,7 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 name: name.trim().into(),
                 visible: true,
                 locked: false,
+                opacity: 1.0,
             });
             after.active_layer = id;
         }

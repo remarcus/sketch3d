@@ -948,6 +948,7 @@ mod tests {
             name: "Hidden".into(),
             visible: false,
             locked: false,
+            opacity: 1.0,
         });
         document.strokes[0].layer_id = 2;
         assert!(matches!(

@@ -226,6 +226,7 @@ pub struct SketchApp {
     recovery_offer_requested: bool,
     layer_name: String,
     layer_target: u64,
+    layer_opacity_draft: Option<layers_ui::LayerOpacityDraft>,
     layer_verification_frame: Option<u32>,
     image_plane_verification_frame: Option<u32>,
     mirror_verification_frame: Option<u32>,
@@ -1328,6 +1329,7 @@ impl SketchApp {
             recovery_offer_requested: false,
             layer_name: String::new(),
             layer_target: 1,
+            layer_opacity_draft: None,
             layer_verification_frame: None,
             image_plane_verification_frame: None,
             mirror_verification_frame: None,
@@ -1979,6 +1981,7 @@ impl SketchApp {
     }
 
     fn finish(&mut self) {
+        self.finish_layer_opacity_edit(true);
         let model_surface_stroke = self.model_stroke_contact.is_some();
         self.finish_appearance_edit(false);
         self.finish_partial_erase(true);
@@ -6917,6 +6920,7 @@ mod native_merge_apply_tests {
                     name: "Layer 1 (import 2)".into(),
                     visible: true,
                     locked: false,
+                    opacity: 1.0,
                 }],
                 image_planes: Vec::new(),
                 guides: Vec::new(),

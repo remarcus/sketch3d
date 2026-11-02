@@ -747,17 +747,17 @@ impl SketchApp {
 
     fn update_repeat_preview(&mut self) -> Result<Vec<Stroke>, String> {
         let Some(repeat) = &self.repeat else {
-            self.renderer.set_repeat_preview(&[]);
+            self.renderer.set_repeat_preview(&[], &self.doc);
             return Ok(Vec::new());
         };
         match self.repeated_strokes(repeat) {
             Ok(copies) => {
                 let strokes: Vec<_> = copies.into_iter().map(|(_, stroke)| stroke).collect();
-                self.renderer.set_repeat_preview(&strokes);
+                self.renderer.set_repeat_preview(&strokes, &self.doc);
                 Ok(strokes)
             }
             Err(error) => {
-                self.renderer.set_repeat_preview(&[]);
+                self.renderer.set_repeat_preview(&[], &self.doc);
                 Err(error)
             }
         }
@@ -804,7 +804,7 @@ impl SketchApp {
 
     fn cancel_repeat(&mut self) {
         self.repeat = None;
-        self.renderer.set_repeat_preview(&[]);
+        self.renderer.set_repeat_preview(&[], &self.doc);
     }
 
     fn apply_repeat(&mut self) {
@@ -988,6 +988,7 @@ impl SketchApp {
                     .iter()
                     .map(|(_, stroke)| stroke.clone())
                     .collect::<Vec<_>>(),
+                &self.doc,
             );
             self.cancel_repeat();
             assert_eq!(self.doc.strokes, grouped_doc);
