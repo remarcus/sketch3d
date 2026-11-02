@@ -348,6 +348,7 @@ mod tests {
             geometry: crate::document::guide_resources::GuideGeometry::Freeform { surface: source },
         };
         let mut doc = crate::document::Document {
+            linked_stroke_groups: Default::default(),
             guide_resources: vec![guide.clone()],
             active_guide: Some(31),
             ..Default::default()

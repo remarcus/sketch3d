@@ -81,6 +81,7 @@ fn fixture() -> Document {
         .map(|step| Vec3::new(step as f32 * 0.09, -0.45, 0.0))
         .collect();
     Document {
+        linked_stroke_groups: Default::default(),
         strokes: vec![
             stroke(1, StrokeMaterial::Shaded, [0.72, 0.68, 0.26], curve),
             stroke(2, StrokeMaterial::Emissive, [0.98, 0.2, 0.08], emissive),

@@ -91,6 +91,7 @@ fn build_export_document_snapshot(
 ) -> Document {
     let include_scene_resources = include_scene_resources && selection.is_none();
     Document {
+        linked_stroke_groups: Default::default(),
         layers: document.layers.clone(),
         active_layer: document.active_layer,
         version: document.version,
@@ -367,6 +368,7 @@ mod tests {
 
     fn document_with_scene_resources() -> Document {
         Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![stroke(1), stroke(2)],
             image_planes: vec![ImagePlane::from_asset(
                 7,

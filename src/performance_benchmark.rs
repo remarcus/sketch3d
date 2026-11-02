@@ -17,6 +17,7 @@ pub fn run() -> Result<(), String> {
         benchmark_many_short_strokes(),
         benchmark_pick(),
         benchmark_large_selection()?,
+        benchmark_linked_groups()?,
     ];
 
     let report = json!({
@@ -152,6 +153,7 @@ fn benchmark_many_short_strokes() -> Value {
 
 fn benchmark_pick() -> Value {
     let doc = Document {
+        linked_stroke_groups: Default::default(),
         strokes: (0..1_000)
             .map(|index| make_stroke(index + 1, 16, index as f32 * 0.001))
             .collect(),
@@ -177,6 +179,7 @@ fn benchmark_pick() -> Value {
 
 fn benchmark_large_selection() -> Result<Value, String> {
     let doc = Document {
+        linked_stroke_groups: Default::default(),
         strokes: (0..1_000)
             .map(|index| make_stroke(index + 1, 20, index as f32 * 0.0002))
             .collect(),
@@ -233,5 +236,189 @@ fn benchmark_large_selection() -> Result<Value, String> {
         "bounds": {"min": bounds.map(|value| value.0.to_array()), "max": bounds.map(|value| value.1.to_array()), "timing": stats(&bounds_timing)},
         "transform": {"changed_strokes": transformed_count, "timing": stats(&transform_timing)},
         "apply_undo_redo_pair": stats(&apply_timing)
+    }))
+}
+
+fn benchmark_linked_groups() -> Result<Value, String> {
+    const GROUP_STROKES: usize = 12;
+    const POINTS_PER_STROKE: usize = 80;
+    const COPIES: usize = 20;
+    let source_strokes: Vec<_> = (0..GROUP_STROKES)
+        .map(|index| {
+            let mut stroke = make_stroke(index as u64 + 1, POINTS_PER_STROKE, index as f32 * 0.08);
+            stroke.group_id = Some(500);
+            stroke
+        })
+        .collect();
+    let source_ids: HashSet<_> = source_strokes.iter().map(|stroke| stroke.id).collect();
+    let mut linked = Document {
+        strokes: source_strokes.clone(),
+        ..Document::default()
+    };
+    let first =
+        editing::create_linked_group(&linked, &source_ids, 10_000, 1, Vec3::new(1.0, 0.5, 0.0))?;
+    first.apply(&mut linked, true);
+    let definition_id = linked.linked_stroke_groups.definitions[0].id;
+    let mut next_stroke_id = 10_000 + GROUP_STROKES as u64;
+    for index in 1..COPIES {
+        let edit = editing::add_linked_instance(
+            &linked,
+            definition_id,
+            next_stroke_id,
+            1,
+            Vec3::new(1.0, (index + 1) as f32 * 0.5, 0.0),
+        )?;
+        edit.apply(&mut linked, true);
+        next_stroke_id += GROUP_STROKES as u64;
+    }
+
+    let mut repeated = Document {
+        strokes: source_strokes.clone(),
+        ..Document::default()
+    };
+    let source_snapshot = editing::snapshot(&repeated, &source_ids);
+    let mut repeated_copy_ids = HashSet::new();
+    let mut copy_id = 10_000_u64;
+    for index in 0..COPIES {
+        let mut copy = editing::transformed(
+            &source_snapshot,
+            Vec3::ZERO,
+            Vec3::new(1.0, (index + 1) as f32 * 0.5, 0.0),
+            Quat::IDENTITY,
+            1.0,
+        )?;
+        for (_, stroke) in &mut copy {
+            stroke.id = copy_id;
+            copy_id += 1;
+            stroke.group_id = None;
+            repeated_copy_ids.insert(stroke.id);
+        }
+        repeated
+            .strokes
+            .extend(copy.into_iter().map(|(_, stroke)| stroke));
+    }
+
+    let linked_bytes = serde_json::to_vec(&linked)
+        .map_err(|error| error.to_string())?
+        .len();
+    let repeated_bytes = serde_json::to_vec(&repeated)
+        .map_err(|error| error.to_string())?
+        .len();
+    let repeated_selected: HashSet<_> = repeated_copy_ids
+        .iter()
+        .copied()
+        .chain(source_ids.iter().copied())
+        .collect();
+    let repeated_all_snapshot = editing::snapshot(&repeated, &repeated_selected);
+    let linked_after = editing::transformed(
+        &editing::snapshot(&linked, &source_ids),
+        Vec3::ZERO,
+        Vec3::new(0.03, -0.02, 0.0),
+        Quat::IDENTITY,
+        1.0,
+    )?;
+    let linked_edit = editing::Edit::Change {
+        before: editing::snapshot(&linked, &source_ids),
+        after: linked_after,
+    };
+    let repeated_after = editing::transformed(
+        &repeated_all_snapshot,
+        Vec3::ZERO,
+        Vec3::new(0.03, -0.02, 0.0),
+        Quat::IDENTITY,
+        1.0,
+    )?;
+    let repeated_edit = editing::Edit::Change {
+        before: repeated_all_snapshot,
+        after: repeated_after,
+    };
+    let linked_edit_timing = measure(|| {
+        let mut sample = linked.clone();
+        linked_edit.apply(&mut sample, true);
+        linked_edit.apply(&mut sample, false);
+        black_box(sample);
+    });
+    let repeated_edit_timing = measure(|| {
+        let mut sample = repeated.clone();
+        repeated_edit.apply(&mut sample, true);
+        repeated_edit.apply(&mut sample, false);
+        black_box(sample);
+    });
+    let linked_render_timing = measure(|| {
+        let vertices: usize = linked
+            .strokes
+            .iter()
+            .map(|stroke| geometry::stroke_mesh(black_box(stroke)).len())
+            .sum();
+        black_box(vertices);
+    });
+    let repeated_render_timing = measure(|| {
+        let vertices: usize = repeated
+            .strokes
+            .iter()
+            .map(|stroke| geometry::stroke_mesh(black_box(stroke)).len())
+            .sum();
+        black_box(vertices);
+    });
+    let estimate_heap = |document: &Document| {
+        std::mem::size_of::<Document>()
+            + document.strokes.capacity() * std::mem::size_of::<Stroke>()
+            + document
+                .strokes
+                .iter()
+                .map(|stroke| {
+                    stroke.points.capacity() * std::mem::size_of::<Point>()
+                        + stroke.curve.as_ref().map_or(0, |curve| {
+                            curve.anchors.capacity()
+                                * std::mem::size_of::<crate::document::CurveAnchor>()
+                        })
+                })
+                .sum::<usize>()
+            + document.linked_stroke_groups.definitions.capacity()
+                * std::mem::size_of::<crate::document::LinkedStrokeGroupDefinition>()
+            + document
+                .linked_stroke_groups
+                .definitions
+                .iter()
+                .map(|definition| {
+                    definition.source_stroke_ids.capacity() * std::mem::size_of::<u64>()
+                })
+                .sum::<usize>()
+            + document.linked_stroke_groups.instances.capacity()
+                * std::mem::size_of::<crate::document::LinkedStrokeGroupInstance>()
+            + document
+                .linked_stroke_groups
+                .instances
+                .iter()
+                .map(|instance| instance.stroke_ids.capacity() * std::mem::size_of::<u64>())
+                .sum::<usize>()
+    };
+    Ok(json!({
+        "name": "linked_group_vs_independent_repeated_copies",
+        "fixture": {
+            "source_strokes": GROUP_STROKES,
+            "points_per_stroke": POINTS_PER_STROKE,
+            "instances": COPIES,
+            "total_expanded_strokes": linked.strokes.len(),
+            "total_control_points": linked.strokes.iter().map(|stroke| stroke.points.len()).sum::<usize>()
+        },
+        "method": "Same deterministic planar architectural-detail strokes and baked geometry in both documents; synchronous CPU source edit plus undo pair; CPU stroke mesh generation; serialized native document byte count as a portable storage proxy.",
+        "linked": {
+            "native_json_bytes": linked_bytes,
+            "estimated_heap_bytes": estimate_heap(&linked),
+            "edit_and_undo": stats(&linked_edit_timing),
+            "cpu_mesh_generation": stats(&linked_render_timing)
+        },
+        "independent_repeated_copies": {
+            "native_json_bytes": repeated_bytes,
+            "estimated_heap_bytes": estimate_heap(&repeated),
+            "edit_and_undo": stats(&repeated_edit_timing),
+            "cpu_mesh_generation": stats(&repeated_render_timing)
+        },
+        "limitations": [
+            "Serialized byte count is a storage proxy, not allocator-measured resident heap size.",
+            "Mesh timings exclude GPU upload, draw calls, and frame time.",
+            "The linked implementation intentionally stores baked strokes for selection, recovery, and portable export, so it does not reduce expanded geometry memory."
+        ]
     }))
 }

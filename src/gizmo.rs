@@ -506,6 +506,7 @@ mod tests {
             ],
         };
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             version: 1,
             strokes: vec![stroke(1, 1.0), stroke(2, 0.0)],
             ..Document::default()
@@ -561,6 +562,7 @@ mod tests {
             point.position.z = 0.0;
         }
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![mark.clone(), behind.clone()],
             ..Document::default()
         };
@@ -643,6 +645,7 @@ mod layer_picking_tests {
             ],
         };
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![mark(1, 1, 1.0), mark(2, 2, 0.0)],
             ..Document::default()
         };

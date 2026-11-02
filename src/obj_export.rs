@@ -486,6 +486,7 @@ mod material_tests {
         let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let destination = root.path().join("materials.obj");
         let document = Document {
+            linked_stroke_groups: Default::default(),
             strokes: [
                 StrokeMaterial::Shaded,
                 StrokeMaterial::Unlit,

@@ -849,6 +849,7 @@ mod ring_tests {
             .all(|pair| pair[0].position.distance(pair[1].position) < 0.2));
 
         let document = crate::document::Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![crate::document::Stroke {
                 curve: None,
                 material: Default::default(),

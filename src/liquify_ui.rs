@@ -116,7 +116,8 @@ impl SketchApp {
                 self.status = error;
             }
         }
-        self.renderer.invalidate_ids(&ids);
+        self.renderer
+            .invalidate_ids(&self.doc.linked_affected_stroke_ids(&ids));
     }
 
     pub(super) fn finish_liquify(&mut self, apply: bool) {
@@ -150,7 +151,8 @@ impl SketchApp {
             }
             .into();
         }
-        self.renderer.invalidate_ids(&ids);
+        self.renderer
+            .invalidate_ids(&self.doc.linked_affected_stroke_ids(&ids));
     }
 
     pub(super) fn liquify_controls(&mut self, ui: &mut egui::Ui) {
@@ -434,7 +436,8 @@ impl SketchApp {
         });
         if let Some((true, after, before, ids)) = restore {
             crate::editing::replace(&mut self.doc, &before, &after, false);
-            self.renderer.invalidate_ids(&ids);
+            self.renderer
+                .invalidate_ids(&self.doc.linked_affected_stroke_ids(&ids));
         }
     }
 

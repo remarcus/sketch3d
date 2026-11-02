@@ -360,6 +360,7 @@ mod tests {
                 let outside = center + right * (scale * 12.0);
                 let path = [screen_point(&camera, canvas, center)];
                 let doc = Document {
+                    linked_stroke_groups: Default::default(),
                     strokes: vec![stroke(1, 1, None, inside), stroke(2, 1, None, outside)],
                     ..Document::default()
                 };
@@ -376,6 +377,7 @@ mod tests {
     #[test]
     fn select_deselect_and_repeated_previews_only_change_ids_from_the_starting_set() {
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![
                 stroke(1, 1, Some(7), Vec3::ZERO),
                 stroke(2, 1, Some(7), Vec3::X),

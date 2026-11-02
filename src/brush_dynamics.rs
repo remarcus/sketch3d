@@ -193,7 +193,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 23);
+                assert_eq!(loaded.version, 24);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.load_dynamics();
                 self.brush.dynamics = Default::default();
@@ -299,6 +299,7 @@ impl SketchApp {
             0.0,
         );
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![red.clone(), blue.clone()],
             ..Default::default()
         };
@@ -407,6 +408,7 @@ impl SketchApp {
         );
         opaque.brush.dynamics.opacity.enabled = false;
         let opaque_only = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![opaque.clone()],
             ..Default::default()
         };

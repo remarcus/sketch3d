@@ -116,6 +116,7 @@ pub fn run(output: &Path) -> Result<(), String> {
         target: Vec3::ZERO,
     };
     let document = Document {
+        linked_stroke_groups: Default::default(),
         strokes: vec![stroke()],
         ..Document::default()
     };

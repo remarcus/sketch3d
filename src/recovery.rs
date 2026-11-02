@@ -517,6 +517,7 @@ mod tests {
     use glam::Vec3;
     fn document() -> Document {
         Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![Stroke {
                 curve: None,
                 material: Default::default(),

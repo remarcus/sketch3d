@@ -69,10 +69,16 @@ pub fn plan_partial_erase(
         return Err("Document exceeds the partial-eraser work limits".into());
     }
     let erase_segments = path_segments(path);
+    let linked_ids = doc.linked_generated_ids();
     let eligible_segments: usize = doc
         .strokes
         .iter()
-        .filter(|stroke| doc.editable(stroke) && stroke.fill.is_none())
+        .filter(|stroke| {
+            doc.editable(stroke)
+                && !linked_ids.contains(&stroke.id)
+                && !doc.has_linked_source(stroke.id)
+                && stroke.fill.is_none()
+        })
         .map(|stroke| stroke.points.len().saturating_sub(1))
         .sum();
     if eligible_segments.saturating_mul(erase_segments.len()) > MAX_SEGMENT_PAIRS {
@@ -85,7 +91,11 @@ pub fn plan_partial_erase(
     let mut before: Snapshot = Vec::new();
     let mut changed_fragments: Vec<(usize, Vec<Stroke>)> = Vec::new();
     for (index, stroke) in doc.strokes.iter().enumerate() {
-        if !doc.editable(stroke) || stroke.points.is_empty() {
+        if !doc.editable(stroke)
+            || linked_ids.contains(&stroke.id)
+            || doc.has_linked_source(stroke.id)
+            || stroke.points.is_empty()
+        {
             continue;
         }
         if stroke.fill.is_some() {
@@ -559,6 +569,7 @@ mod tests {
         let canvas = canvas();
         let source = line([Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)]);
         let mut doc = crate::document::Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![source.clone()],
             ..Default::default()
         };
@@ -687,6 +698,7 @@ mod tests {
             time_ms: 0,
         }]);
         let mut dot_doc = crate::document::Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![dot.clone()],
             ..Default::default()
         };
@@ -701,6 +713,7 @@ mod tests {
 
         let source = line([Vec3::new(-2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)]);
         let mut repeated_doc = crate::document::Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![source],
             ..Default::default()
         };
@@ -726,6 +739,7 @@ mod tests {
 
         let short = line([Vec3::new(-0.02, 0.0, 0.0), Vec3::new(0.02, 0.0, 0.0)]);
         let mut short_doc = crate::document::Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![short],
             ..Default::default()
         };

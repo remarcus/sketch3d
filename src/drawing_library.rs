@@ -1520,6 +1520,7 @@ mod tests {
         )
         .unwrap();
         let document = crate::document::Document {
+            linked_stroke_groups: Default::default(),
             image_planes: vec![image.clone()],
             ..Default::default()
         };
@@ -1610,6 +1611,7 @@ mod tests {
             asset: model_asset,
         };
         let document = crate::document::Document {
+            linked_stroke_groups: Default::default(),
             image_planes: vec![image.clone()],
             model_references: vec![model_reference.clone()],
             ..Default::default()

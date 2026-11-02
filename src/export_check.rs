@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 pub fn pressure_fixture() -> Document {
     Document {
+        linked_stroke_groups: Default::default(),
         version: 7,
         strokes: vec![
             Stroke {
@@ -676,6 +677,7 @@ pub fn run() -> Result<(), String> {
     let model_min = Vec3::new(2.0, 1.0, -0.5);
     let model_max = Vec3::new(4.0, 3.0, -0.5);
     let image_plane_doc = Document {
+        linked_stroke_groups: Default::default(),
         image_planes: vec![plane.clone()],
         model_references: vec![model_resource.clone()],
         strokes: vec![pressure_fixture().strokes[0].clone()],

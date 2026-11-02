@@ -69,14 +69,7 @@ impl SketchApp {
             .max()
             .unwrap_or(0)
             .saturating_add(1);
-        let first_group_id = self
-            .doc
-            .strokes
-            .iter()
-            .filter_map(|stroke| stroke.group_id)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
+        let first_group_id = self.doc.next_group_resource_id();
         let inserted = super::native_merge::prepare_insert(
             &self.doc,
             &inserted_path,

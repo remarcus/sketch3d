@@ -2541,6 +2541,15 @@ impl SketchApp {
             .iter()
             .position(|stroke| Some(stroke.id) == picked);
         if let Some(i) = index {
+            let stroke_id = self.doc.strokes[i].id;
+            if self.doc.linked_instance_for_stroke(stroke_id).is_some() {
+                self.status = "Delete the linked instance from the selection controls, or make it unique before erasing.".into();
+                return;
+            }
+            if self.doc.has_linked_source(stroke_id) {
+                self.status = "A linked source cannot be erased while instances use it. Delete or make unique its instances first.".into();
+                return;
+            }
             let stroke = self.doc.strokes.remove(i);
             self.undo.push(Edit::Remove(i, stroke));
             self.redo.clear();
@@ -3785,14 +3794,7 @@ impl SketchApp {
                 .max()
                 .unwrap_or(0)
                 .saturating_add(1);
-            let next_group_id = self
-                .doc
-                .strokes
-                .iter()
-                .filter_map(|stroke| stroke.group_id)
-                .max()
-                .unwrap_or(0)
-                .saturating_add(1);
+            let next_group_id = self.doc.next_group_resource_id();
             let offset = Vec3::from_array(self.insert_offset);
             match native_merge::prepare_insert(
                 &self.doc,
@@ -6431,11 +6433,11 @@ impl SketchApp {
             } else if self.preset_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["preset application captures resolved settings","create duplicate rename update delete and defaults","restart persistence","live GPU previews","library edits preserve existing ink and export","corrupt library fallback and explicit repair backup"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.texture_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 23 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","texture transforms preserve UVs","stroke duplication and undo","textured drawing and erasing","version 24 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.dynamics_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 23 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 24 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 23 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 24 save/reload","GPU brush sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {
@@ -6836,6 +6838,7 @@ mod native_merge_apply_tests {
         }
 
         let source = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![stroke(1, 1, -0.5)],
             ..Document::default()
         };
@@ -6895,6 +6898,7 @@ mod native_merge_apply_tests {
     #[test]
     fn applying_insert_is_one_edit_and_preserves_camera_and_presentation_state() {
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![stroke(1, 1, -1.0)],
             ..Document::default()
         };
@@ -6929,6 +6933,7 @@ mod native_merge_apply_tests {
                 image_planes: Vec::new(),
                 guides: Vec::new(),
                 model_references: Vec::new(),
+                linked_stroke_groups: Default::default(),
                 previous_active_layer: 1,
                 inserted_active_layer: 2,
             },

@@ -105,6 +105,7 @@ pub fn run(output: &Path) -> Result<(), String> {
     let model_asset = obj_reference_storage::import_bundle(&parsed_model, &source_assets, 8)?;
 
     let mut source = Document {
+        linked_stroke_groups: Default::default(),
         strokes: vec![stroke(1, [0.1, 0.7, 0.3], -0.8, 0.8)],
         image_planes: vec![plane],
         active_image_plane: Some(7),
@@ -129,6 +130,7 @@ pub fn run(output: &Path) -> Result<(), String> {
     .map_err(|error| error.to_string())?;
 
     let mut destination = Document {
+        linked_stroke_groups: Default::default(),
         strokes: vec![stroke(1, [0.2, 0.3, 0.9], -1.5, -0.8)],
         ..Document::default()
     };

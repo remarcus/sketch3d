@@ -87,6 +87,7 @@ fn stroke_segment(
 
 fn document(material: StrokeMaterial) -> Document {
     Document {
+        linked_stroke_groups: Default::default(),
         strokes: vec![stroke(1, material, 0.22, 0.0)],
         ..Document::default()
     }
@@ -193,6 +194,7 @@ pub fn run(output: &Path) -> Result<(), String> {
     }
 
     let layered = Document {
+        linked_stroke_groups: Default::default(),
         strokes: vec![
             stroke(1, StrokeMaterial::Shaded, 0.3, 0.0),
             stroke_segment(2, StrokeMaterial::Cutout, 0.3, -0.25, 0.25, 0.0),

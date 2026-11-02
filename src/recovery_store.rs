@@ -719,6 +719,7 @@ mod tests {
             session.into(),
             None,
             Document {
+                linked_stroke_groups: Default::default(),
                 strokes: vec![Stroke {
                     curve: None,
                     material: Default::default(),
@@ -795,6 +796,7 @@ mod tests {
             "image-session".into(),
             None,
             Document {
+                linked_stroke_groups: Default::default(),
                 image_planes: vec![plane.clone()],
                 ..Document::default()
             },
@@ -865,6 +867,7 @@ mod tests {
                 .collect(),
         };
         let mut document = Document {
+            linked_stroke_groups: Default::default(),
             model_references: vec![resource.clone()],
             active_model_reference: Some(42),
             ..Document::default()

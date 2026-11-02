@@ -218,7 +218,7 @@ pub fn encode_with_images(
     selected: Option<&HashSet<u64>>,
     image_root: Option<&Path>,
 ) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=23) {
+    if !matches!(doc.version, 1..=24) {
         return Err("Unsupported source document version".into());
     }
     crate::brush_tip::validate_catalog(&doc.brush_tip_assets)?;
@@ -899,6 +899,7 @@ mod tests {
     #[test]
     fn binary_roundtrip_preserves_pressure_geometry_material_and_outward_normals() {
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             version: 1,
             strokes: vec![stroke(7, [0.2, 0.6, 0.8])],
             ..Document::default()
@@ -946,6 +947,7 @@ mod tests {
     #[test]
     fn edited_stroke_color_opacity_and_radius_survive_glb_export() {
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![stroke(9, [0.2, 0.4, 0.6])],
             ..Document::default()
         };
@@ -1008,6 +1010,7 @@ mod tests {
             StrokeMaterial::Cutout,
         ];
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             version: 13,
             strokes: materials
                 .into_iter()
@@ -1191,6 +1194,7 @@ mod tests {
             curve: 1.0,
         };
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![a, b, c, d],
             ..Document::default()
         };
@@ -1264,6 +1268,7 @@ mod tests {
             curve: 1.0,
         };
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![mark],
             ..Document::default()
         };
@@ -1293,7 +1298,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 23);
+        assert_eq!(loaded.version, 24);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -1328,6 +1333,7 @@ mod tests {
     #[test]
     fn selected_scope_uses_original_colors_and_excludes_other_strokes() {
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             version: 1,
             strokes: vec![stroke(1, [0.9, 0.1, 0.2]), stroke(2, [0.1, 0.8, 0.3])],
             ..Document::default()
@@ -1352,6 +1358,7 @@ mod tests {
         let mut a = stroke(1, [0.5; 3]);
         a.points.truncate(1);
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             version: 1,
             strokes: vec![a, stroke(2, [0.5; 3])],
             ..Document::default()
@@ -1464,6 +1471,7 @@ mod tests {
         c.id = 3;
         c.brush.texture.seed += 1;
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![a, b, c],
             ..Document::default()
         };
@@ -1503,6 +1511,7 @@ mod tests {
         assert!(write_glb(&Document::default(), None, &path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"keep this file");
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             version: 1,
             strokes: vec![stroke(1, [0.5; 3])],
             ..Document::default()
@@ -1522,6 +1531,7 @@ mod tests {
         let path = dir.path().join("drawing.glb");
         std::fs::write(&path, b"old").unwrap();
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             version: 1,
             strokes: vec![stroke(1, [0.5; 3])],
             ..Document::default()
@@ -1598,7 +1608,7 @@ mod group_export_tests {
     fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
         let doc = crate::export_check::grouped_fixture();
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-        assert_eq!(loaded.version, 23);
+        assert_eq!(loaded.version, 24);
         assert_eq!(loaded.strokes, doc.strokes);
         let encoded = encode(&doc, None).unwrap();
         let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
@@ -1671,6 +1681,7 @@ mod image_plane_export_tests {
         .unwrap();
         plane.opacity = 0.75;
         let document = Document {
+            linked_stroke_groups: Default::default(),
             image_planes: vec![plane.clone()],
             ..Document::default()
         };
@@ -1770,6 +1781,7 @@ mod image_plane_export_tests {
         .unwrap();
         assert_eq!(plane.size, Vec2::new(2.0, 1.0));
         let document = Document {
+            linked_stroke_groups: Default::default(),
             image_planes: vec![plane],
             ..Document::default()
         };
@@ -1866,6 +1878,7 @@ mod obj_reference_export_tests {
         let resource = imported_model(directory.path(), 77);
         let asset_root = directory.path().join("managed");
         let document = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![sample_stroke()],
             model_references: vec![resource.clone()],
             ..Document::default()
@@ -1986,6 +1999,7 @@ mod obj_reference_export_tests {
         }
 
         let model_only = Document {
+            linked_stroke_groups: Default::default(),
             model_references: vec![resource.clone()],
             ..Document::default()
         };
@@ -2026,6 +2040,7 @@ mod obj_reference_export_tests {
         hidden.asset.bundle_dir = "models/89".into();
         hidden.asset.id = 89;
         let document = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![sample_stroke()],
             model_references: vec![hidden.clone()],
             ..Document::default()
@@ -2052,6 +2067,7 @@ mod obj_reference_export_tests {
             })
             .collect();
         let oversized_catalog = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![sample_stroke()],
             model_references: too_many_models,
             ..Document::default()
@@ -2066,6 +2082,7 @@ mod obj_reference_export_tests {
         let mut out_of_bounds = resource.clone();
         out_of_bounds.center = Vec3::splat(10_000.0);
         let invalid_geometry = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![sample_stroke()],
             model_references: vec![out_of_bounds],
             ..Document::default()
@@ -2078,6 +2095,7 @@ mod obj_reference_export_tests {
         );
 
         let missing = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![sample_stroke()],
             model_references: vec![resource],
             ..Document::default()

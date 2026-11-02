@@ -777,6 +777,7 @@ fn describe_preset(ui: &mut egui::Ui, preset: &Preset) {
 /// A preview copies resolved settings and never refers back to a library ID.
 pub fn preview_document(preset: &Preset) -> Document {
     Document {
+        linked_stroke_groups: Default::default(),
         strokes: vec![Stroke {
             curve: None,
             material: Default::default(),

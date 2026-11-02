@@ -167,14 +167,16 @@ impl SketchApp {
                     draft.after = draft.before.clone();
                     draft.has_preview = false;
                 }
-                self.renderer.invalidate_ids(&ids);
+                self.renderer
+                    .invalidate_ids(&self.doc.linked_affected_stroke_ids(&ids));
                 self.status =
                     "Appearance preview only. Apply to keep it or Cancel to restore.".into();
             }
             Err(error) => {
                 draft.after = draft.before.clone();
                 draft.has_preview = false;
-                self.renderer.invalidate_ids(&ids);
+                self.renderer
+                    .invalidate_ids(&self.doc.linked_affected_stroke_ids(&ids));
                 self.status = error;
             }
         }
@@ -200,11 +202,13 @@ impl SketchApp {
                 }
                 Err(error) => self.status = error,
             }
-            self.renderer.invalidate_ids(&ids);
+            self.renderer
+                .invalidate_ids(&self.doc.linked_affected_stroke_ids(&ids));
         } else {
             if draft.has_preview {
                 editing::replace(&mut self.doc, &draft.after, &Vec::new(), false);
-                self.renderer.invalidate_ids(&ids);
+                self.renderer
+                    .invalidate_ids(&self.doc.linked_affected_stroke_ids(&ids));
             }
             self.status = if apply {
                 "No appearance properties were changed.".into()
@@ -301,13 +305,21 @@ impl SketchApp {
     pub(super) fn cancel_transform(&mut self) {
         if let Some(drag) = self.drag.take() {
             editing::replace(&mut self.doc, &drag.before, &Vec::new(), false);
-            self.renderer.invalidate_ids(&self.selected);
+            self.renderer
+                .invalidate_ids(&self.doc.linked_affected_stroke_ids(&self.selected));
             self.status = "Transform cancelled".into();
         }
         self.clear_planar_snap();
     }
     fn layout(&self, rect: Rect) -> Option<Layout> {
         if !self.select_mode {
+            return None;
+        }
+        if self
+            .selected
+            .iter()
+            .any(|id| self.doc.linked_instance_for_stroke(*id).is_some())
+        {
             return None;
         }
         let (min, max) = editing::bounds(&self.doc, &self.selected)?;
@@ -600,7 +612,8 @@ impl SketchApp {
         ) {
             Ok(after) => {
                 editing::replace(&mut self.doc, &drag.before, &after, true);
-                self.renderer.invalidate_ids(&self.selected);
+                self.renderer
+                    .invalidate_ids(&self.doc.linked_affected_stroke_ids(&self.selected));
                 if let Some(drag) = self.drag.as_mut() {
                     drag.translation = translation;
                 }
@@ -610,6 +623,15 @@ impl SketchApp {
     }
     pub(super) fn duplicate_selected(&mut self) {
         self.finish();
+        if self
+            .selected
+            .iter()
+            .any(|id| self.doc.linked_instance_for_stroke(*id).is_some())
+        {
+            self.status =
+                "Make the linked instance unique before duplicating or editing it.".into();
+            return;
+        }
         let before = editing::snapshot(&self.doc, &self.selected);
         if before.is_empty() {
             return;
@@ -1100,6 +1122,46 @@ impl SketchApp {
     }
     pub(super) fn delete_selected(&mut self) {
         self.finish();
+        let linked_instances: HashSet<_> = self
+            .selected
+            .iter()
+            .filter_map(|id| self.doc.linked_instance_for_stroke(*id).map(|i| i.id))
+            .collect();
+        if !linked_instances.is_empty() {
+            if linked_instances.len() != 1
+                || self
+                    .selected
+                    .iter()
+                    .any(|id| self.doc.linked_instance_for_stroke(*id).is_none())
+            {
+                self.status =
+                    "Delete linked instances one at a time, or make them unique first.".into();
+                return;
+            }
+            let instance_id = *linked_instances.iter().next().unwrap();
+            match editing::remove_linked_instance(&self.doc, instance_id, false) {
+                Ok(edit) => {
+                    edit.apply(&mut self.doc, true);
+                    self.undo.push(edit);
+                    self.redo.clear();
+                    self.selected.clear();
+                    self.dirty = true;
+                    self.record_recovery_edit();
+                    self.renderer.invalidate();
+                    self.status = "Linked instance deleted. Undo restores the link.".into();
+                }
+                Err(error) => self.status = error,
+            }
+            return;
+        }
+        if self
+            .selected
+            .iter()
+            .any(|id| self.doc.has_linked_source(*id))
+        {
+            self.status = "A linked source cannot be deleted while instances use it. Delete or make unique its instances first.".into();
+            return;
+        }
         let before = editing::snapshot(&self.doc, &self.selected);
         if before.is_empty() {
             return;
@@ -1118,6 +1180,14 @@ impl SketchApp {
     }
     pub(super) fn numeric_transform(&mut self) {
         self.finish();
+        if self
+            .selected
+            .iter()
+            .any(|id| self.doc.linked_instance_for_stroke(*id).is_some())
+        {
+            self.status = "Use the linked instance controls to transform this copy.".into();
+            return;
+        }
         let before = editing::snapshot(&self.doc, &self.selected);
         let Some((min, max)) = editing::bounds(&self.doc, &self.selected) else {
             return;
@@ -1157,7 +1227,8 @@ impl SketchApp {
                 edit.apply(&mut self.doc, true);
                 self.undo.push(edit);
                 self.redo.clear();
-                self.renderer.invalidate_ids(&self.selected);
+                self.renderer
+                    .invalidate_ids(&self.doc.linked_affected_stroke_ids(&self.selected));
                 self.dirty = true;
                 self.record_recovery_edit();
                 self.transform_values = [0.0; 3];
@@ -1772,6 +1843,7 @@ impl SketchApp {
                     .collect(),
             };
             app.doc = Document {
+                linked_stroke_groups: Default::default(),
                 strokes: vec![source.clone()],
                 ..Document::default()
             };
@@ -1920,6 +1992,7 @@ impl SketchApp {
                     .collect(),
             };
             app.doc = Document {
+                linked_stroke_groups: Default::default(),
                 strokes: vec![make_stroke(501, 0.8), make_stroke(502, -0.8)],
                 ..Document::default()
             };
@@ -2366,6 +2439,7 @@ impl SketchApp {
             .expect("scaled selection bounds are available");
         let original_bounds = editing::bounds(
             &Document {
+                linked_stroke_groups: Default::default(),
                 strokes: before_view_scale.clone(),
                 ..Document::default()
             },

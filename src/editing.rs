@@ -1,5 +1,7 @@
 //! Reversible edits and transforms, independent of the interface and GPU.
-use crate::document::{BrushKind, Document, Layer, LayerBlendMode, Stroke, StrokeMaterial};
+use crate::document::{
+    BrushKind, Document, Layer, LayerBlendMode, LinkedStrokeGroups, Stroke, StrokeMaterial,
+};
 use glam::{Mat3, Quat, Vec3};
 use std::collections::HashSet;
 
@@ -36,6 +38,7 @@ pub struct MergeEdit {
     pub image_planes: Vec<crate::image_planes::ImagePlane>,
     pub guides: Vec<crate::document::guide_resources::GuideResource>,
     pub model_references: Vec<crate::document::model_references::ObjReferenceResource>,
+    pub linked_stroke_groups: LinkedStrokeGroups,
     pub previous_active_layer: u64,
     pub inserted_active_layer: u64,
 }
@@ -190,6 +193,12 @@ pub enum Edit {
         before: crate::mixed_resources::ResourceState,
         after: crate::mixed_resources::ResourceState,
     },
+    LinkedStrokeGroups {
+        before: LinkedStrokeGroups,
+        after: LinkedStrokeGroups,
+        /// Strokes retained as ordinary artwork when a linked instance is made unique.
+        detached: Vec<Stroke>,
+    },
     Merge(MergeEdit),
 }
 impl Edit {
@@ -253,6 +262,37 @@ impl Edit {
             Self::MixedResources { before, after } => {
                 crate::mixed_resources::restore_state(doc, if forward { after } else { before });
             }
+            Self::LinkedStrokeGroups {
+                before,
+                after,
+                detached,
+            } => {
+                let target = if forward { after } else { before };
+                let target_ids: HashSet<_> = target
+                    .instances
+                    .iter()
+                    .flat_map(|instance| instance.stroke_ids.iter().copied())
+                    .collect();
+                let detached_ids: HashSet<_> = detached.iter().map(|stroke| stroke.id).collect();
+                if forward {
+                    let previous_ids = doc.linked_generated_ids();
+                    doc.strokes.retain(|stroke| {
+                        !previous_ids.contains(&stroke.id)
+                            || target_ids.contains(&stroke.id)
+                            || detached_ids.contains(&stroke.id)
+                    });
+                    doc.linked_stroke_groups = after.clone();
+                    for stroke in detached {
+                        if !doc.strokes.iter().any(|existing| existing.id == stroke.id) {
+                            doc.strokes.push(stroke.clone());
+                        }
+                    }
+                } else {
+                    doc.strokes
+                        .retain(|stroke| !detached_ids.contains(&stroke.id));
+                    doc.linked_stroke_groups = before.clone();
+                }
+            }
             Self::Merge(merge) => {
                 if forward {
                     doc.strokes.extend(merge.strokes.iter().cloned());
@@ -261,6 +301,12 @@ impl Edit {
                     doc.guide_resources.extend(merge.guides.iter().cloned());
                     doc.model_references
                         .extend(merge.model_references.iter().cloned());
+                    doc.linked_stroke_groups
+                        .definitions
+                        .extend(merge.linked_stroke_groups.definitions.iter().cloned());
+                    doc.linked_stroke_groups
+                        .instances
+                        .extend(merge.linked_stroke_groups.instances.iter().cloned());
                     doc.active_layer = merge.inserted_active_layer;
                 } else {
                     let stroke_ids: HashSet<_> = merge.strokes.iter().map(|s| s.id).collect();
@@ -269,26 +315,54 @@ impl Edit {
                     let guide_ids: HashSet<_> = merge.guides.iter().map(|g| g.id).collect();
                     let model_ids: HashSet<_> =
                         merge.model_references.iter().map(|m| m.id).collect();
+                    let definition_ids: HashSet<_> = merge
+                        .linked_stroke_groups
+                        .definitions
+                        .iter()
+                        .map(|definition| definition.id)
+                        .collect();
+                    let instance_ids: HashSet<_> = merge
+                        .linked_stroke_groups
+                        .instances
+                        .iter()
+                        .map(|instance| instance.id)
+                        .collect();
                     doc.strokes.retain(|s| !stroke_ids.contains(&s.id));
                     doc.layers.retain(|l| !layer_ids.contains(&l.id));
                     doc.image_planes.retain(|p| !plane_ids.contains(&p.id));
                     doc.guide_resources.retain(|g| !guide_ids.contains(&g.id));
                     doc.model_references.retain(|m| !model_ids.contains(&m.id));
+                    doc.linked_stroke_groups
+                        .definitions
+                        .retain(|definition| !definition_ids.contains(&definition.id));
+                    doc.linked_stroke_groups
+                        .instances
+                        .retain(|instance| !instance_ids.contains(&instance.id));
                     doc.active_layer = merge.previous_active_layer;
                 }
             }
         }
+        let _ = doc.refresh_linked_instances();
     }
 }
 pub fn snapshot(doc: &Document, selected: &HashSet<u64>) -> Snapshot {
+    let generated = doc.linked_generated_ids();
     doc.strokes
         .iter()
         .enumerate()
-        .filter(|(_, s)| selected.contains(&s.id) && doc.editable(s))
+        .filter(|(_, s)| selected.contains(&s.id) && !generated.contains(&s.id) && doc.editable(s))
         .map(|(i, s)| (i, s.clone()))
         .collect()
 }
 pub fn replace(doc: &mut Document, before: &Snapshot, after: &Snapshot, forward: bool) {
+    replace_raw(doc, before, after, forward);
+    if doc.refresh_linked_instances().is_err() {
+        replace_raw(doc, before, after, !forward);
+        let _ = doc.refresh_linked_instances();
+    }
+}
+
+fn replace_raw(doc: &mut Document, before: &Snapshot, after: &Snapshot, forward: bool) {
     let ids: HashSet<u64> = before.iter().chain(after).map(|(_, s)| s.id).collect();
     let source = if forward { after } else { before };
     let mut ordered: Vec<_> = source.iter().collect();
@@ -315,10 +389,11 @@ pub fn replace(doc: &mut Document, before: &Snapshot, after: &Snapshot, forward:
 pub fn bounds(doc: &Document, selected: &HashSet<u64>) -> Option<(Vec3, Vec3)> {
     let mut min = Vec3::splat(f32::INFINITY);
     let mut max = Vec3::splat(f32::NEG_INFINITY);
+    let generated = doc.linked_generated_ids();
     for stroke in doc
         .strokes
         .iter()
-        .filter(|s| selected.contains(&s.id) && doc.editable(s))
+        .filter(|s| selected.contains(&s.id) && !generated.contains(&s.id) && doc.editable(s))
     {
         let extent = Vec3::splat(crate::geometry::stroke_extent(stroke));
         for point in &stroke.points {
@@ -668,6 +743,7 @@ mod tests {
     #[test]
     fn batch_delete_duplicate_and_transform_restore_exact_order() {
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             version: 1,
             strokes: (1..=5).map(|id| stroke(id, id as f32)).collect(),
             ..Document::default()
@@ -785,6 +861,7 @@ mod tests {
         let mut sibling = stroke(2, 2.0);
         sibling.group_id = Some(19);
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![filled, sibling],
             ..Document::default()
         };
@@ -873,6 +950,7 @@ mod tests {
                 ..Brush::default()
             };
             let mut doc = Document {
+                linked_stroke_groups: Default::default(),
                 version: 7,
                 strokes: vec![s],
                 ..Document::default()
@@ -903,6 +981,7 @@ mod tests {
         s.brush.kind = BrushKind::Chisel;
         s.brush.thickness = 1.0;
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             version: 7,
             strokes: vec![s],
             ..Document::default()
@@ -933,6 +1012,7 @@ mod tests {
                     ..Brush::default()
                 };
                 let sample = Document {
+                    linked_stroke_groups: Default::default(),
                     version: 7,
                     strokes: vec![dot],
                     ..Document::default()
@@ -954,6 +1034,7 @@ mod tests {
         s.brush.dynamics.taper_start = 0.4;
         s.brush.dynamics.taper_end = 0.7;
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             version: 7,
             strokes: vec![s],
             ..Document::default()
@@ -1104,6 +1185,19 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
             if ids.is_empty() {
                 return Err("Select strokes to move".into());
             }
+            if ids
+                .iter()
+                .any(|id| doc.linked_instance_for_stroke(*id).is_some())
+            {
+                return Err(
+                    "Make a linked instance unique before moving it to another layer".into(),
+                );
+            }
+            if ids.iter().any(|id| doc.has_linked_source(*id)) {
+                return Err(
+                    "A linked source must stay on its original layer while instances use it".into(),
+                );
+            }
             let mut touched = HashSet::new();
             let mut found = 0;
             for stroke in doc.strokes.iter().filter(|s| ids.contains(&s.id)) {
@@ -1170,6 +1264,7 @@ mod layer_tests {
     use crate::document::{Brush, Point};
     fn sample() -> Document {
         Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![Stroke {
                 curve: None,
                 material: Default::default(),
@@ -1257,6 +1352,12 @@ pub fn toggle_selection(selected: &mut HashSet<u64>, ids: &HashSet<u64>, shift: 
     }
 }
 pub fn group_selected(doc: &Document, ids: &HashSet<u64>) -> Result<Edit, String> {
+    if ids
+        .iter()
+        .any(|id| doc.linked_instance_for_stroke(*id).is_some())
+    {
+        return Err("Make a linked instance unique before changing its group".into());
+    }
     if ids.len() < 2 {
         return Err("Select at least two editable strokes to group".into());
     }
@@ -1292,6 +1393,12 @@ pub fn group_selected(doc: &Document, ids: &HashSet<u64>) -> Result<Edit, String
     Ok(Edit::Change { before, after })
 }
 pub fn ungroup_selected(doc: &Document, ids: &HashSet<u64>) -> Result<Edit, String> {
+    if ids
+        .iter()
+        .any(|id| doc.linked_instance_for_stroke(*id).is_some())
+    {
+        return Err("Make a linked instance unique before changing its group".into());
+    }
     let groups: HashSet<_> = doc
         .strokes
         .iter()
@@ -1316,6 +1423,223 @@ pub fn ungroup_selected(doc: &Document, ids: &HashSet<u64>) -> Result<Edit, Stri
         stroke.group_id = None;
     }
     Ok(Edit::Change { before, after })
+}
+
+fn linked_group_edit(
+    doc: &Document,
+    after: LinkedStrokeGroups,
+    detached: Vec<Stroke>,
+) -> Result<Edit, String> {
+    let edit = Edit::LinkedStrokeGroups {
+        before: doc.linked_stroke_groups.clone(),
+        after,
+        detached,
+    };
+    let mut preview = doc.clone();
+    edit.apply(&mut preview, true);
+    preview.refresh_linked_instances()?;
+    Ok(edit)
+}
+
+fn allocate_instance_stroke_ids(
+    doc: &Document,
+    next_stroke_id: u64,
+    count: usize,
+) -> Result<Vec<u64>, String> {
+    let end = next_stroke_id
+        .checked_add(count as u64)
+        .filter(|end| *end < u64::MAX)
+        .ok_or("No more stroke IDs available")?;
+    let used: HashSet<_> = doc.strokes.iter().map(|stroke| stroke.id).collect();
+    let ids: Vec<_> = (next_stroke_id..end).collect();
+    if ids.iter().any(|id| used.contains(id)) {
+        return Err("Next stroke ID collides with existing artwork".into());
+    }
+    Ok(ids)
+}
+
+fn validate_instance_layer(doc: &Document, layer_id: u64) -> Result<(), String> {
+    let layer = doc
+        .layers
+        .iter()
+        .find(|layer| layer.id == layer_id)
+        .ok_or("Linked instance target layer does not exist")?;
+    if !layer.visible || layer.locked {
+        return Err("Linked instance target layer must be visible and unlocked".into());
+    }
+    Ok(())
+}
+
+pub fn create_linked_group(
+    doc: &Document,
+    selected: &HashSet<u64>,
+    next_stroke_id: u64,
+    target_layer: u64,
+    translation: Vec3,
+) -> Result<Edit, String> {
+    validate_instance_layer(doc, target_layer)?;
+    if selected.len() < 2
+        || selected
+            .iter()
+            .any(|id| doc.linked_instance_for_stroke(*id).is_some())
+    {
+        return Err("Select a complete regular stroke group with at least two strokes".into());
+    }
+    let source = snapshot(doc, selected);
+    if source.len() != selected.len() {
+        return Err("All linked group source strokes must be editable".into());
+    }
+    let group_id = source[0]
+        .1
+        .group_id
+        .ok_or("Group the source strokes first")?;
+    let layer_id = source[0].1.layer_id;
+    if source
+        .iter()
+        .any(|(_, stroke)| stroke.group_id != Some(group_id) || stroke.layer_id != layer_id)
+        || doc.group_members(group_id) != *selected
+    {
+        return Err("Select the complete regular group from one layer".into());
+    }
+    if source
+        .iter()
+        .any(|(_, stroke)| doc.has_linked_source(stroke.id))
+    {
+        return Err("A linked source cannot be nested in another linked group".into());
+    }
+    let stroke_ids = allocate_instance_stroke_ids(doc, next_stroke_id, source.len())?;
+    let pivot = bounds(doc, selected)
+        .map(|(min, max)| (min + max) * 0.5)
+        .ok_or("The source group has no editable geometry")?;
+    let definition_id = doc.next_group_resource_id();
+    let instance_id = definition_id
+        .checked_add(1)
+        .filter(|id| *id < u64::MAX)
+        .ok_or("No linked group IDs available")?;
+    let mut after = doc.linked_stroke_groups.clone();
+    after
+        .definitions
+        .push(crate::document::LinkedStrokeGroupDefinition {
+            id: definition_id,
+            source_stroke_ids: source.iter().map(|(_, stroke)| stroke.id).collect(),
+            pivot,
+        });
+    after
+        .instances
+        .push(crate::document::LinkedStrokeGroupInstance {
+            id: instance_id,
+            definition_id,
+            layer_id: target_layer,
+            translation,
+            rotation: Quat::IDENTITY,
+            scale: 1.0,
+            stroke_ids,
+        });
+    linked_group_edit(doc, after, Vec::new())
+}
+
+pub fn add_linked_instance(
+    doc: &Document,
+    definition_id: u64,
+    next_stroke_id: u64,
+    target_layer: u64,
+    translation: Vec3,
+) -> Result<Edit, String> {
+    validate_instance_layer(doc, target_layer)?;
+    let definition = doc
+        .linked_stroke_groups
+        .definitions
+        .iter()
+        .find(|definition| definition.id == definition_id)
+        .ok_or("Linked group definition not found")?;
+    let stroke_ids =
+        allocate_instance_stroke_ids(doc, next_stroke_id, definition.source_stroke_ids.len())?;
+    let instance_id = doc.next_group_resource_id();
+    let mut after = doc.linked_stroke_groups.clone();
+    after
+        .instances
+        .push(crate::document::LinkedStrokeGroupInstance {
+            id: instance_id,
+            definition_id,
+            layer_id: target_layer,
+            translation,
+            rotation: Quat::IDENTITY,
+            scale: 1.0,
+            stroke_ids,
+        });
+    linked_group_edit(doc, after, Vec::new())
+}
+
+pub fn transform_linked_instance(
+    doc: &Document,
+    instance_id: u64,
+    translation_delta: Vec3,
+    rotation_delta: Quat,
+    scale_factor: f32,
+) -> Result<Edit, String> {
+    let mut after = doc.linked_stroke_groups.clone();
+    let instance = after
+        .instances
+        .iter_mut()
+        .find(|instance| instance.id == instance_id)
+        .ok_or("Linked instance not found")?;
+    validate_instance_layer(doc, instance.layer_id)?;
+    if !translation_delta.is_finite()
+        || !rotation_delta.is_finite()
+        || rotation_delta.length_squared() < 1e-8
+        || !scale_factor.is_finite()
+        || !(0.001..=100.0).contains(&scale_factor)
+    {
+        return Err("Invalid linked instance transform".into());
+    }
+    instance.translation += translation_delta;
+    instance.rotation = (rotation_delta.normalize() * instance.rotation).normalize();
+    instance.scale *= scale_factor;
+    linked_group_edit(doc, after, Vec::new())
+}
+
+pub fn remove_linked_instance(
+    doc: &Document,
+    instance_id: u64,
+    make_unique: bool,
+) -> Result<Edit, String> {
+    let instance = doc
+        .linked_stroke_groups
+        .instances
+        .iter()
+        .find(|instance| instance.id == instance_id)
+        .ok_or("Linked instance not found")?;
+    validate_instance_layer(doc, instance.layer_id)?;
+    let detached = if make_unique {
+        instance
+            .stroke_ids
+            .iter()
+            .map(|id| {
+                doc.strokes
+                    .iter()
+                    .find(|stroke| stroke.id == *id)
+                    .cloned()
+                    .ok_or_else(|| "Linked instance geometry is missing".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+    let definition_id = instance.definition_id;
+    let mut after = doc.linked_stroke_groups.clone();
+    after
+        .instances
+        .retain(|instance| instance.id != instance_id);
+    if !after
+        .instances
+        .iter()
+        .any(|instance| instance.definition_id == definition_id)
+    {
+        after
+            .definitions
+            .retain(|definition| definition.id != definition_id);
+    }
+    linked_group_edit(doc, after, detached)
 }
 /// Whole copied groups receive a new identity; individual copies are detached.
 pub fn remap_duplicate_groups(
@@ -1380,6 +1704,7 @@ mod group_tests {
     use crate::document::{Brush, Point};
     fn sample() -> Document {
         Document {
+            linked_stroke_groups: Default::default(),
             strokes: (1..=3)
                 .map(|id| Stroke {
                     curve: None,
@@ -1486,6 +1811,7 @@ mod large_group_tests {
     #[test]
     fn large_group_regroup_copy_and_move_preserve_membership() {
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: (1..=10000)
                 .map(|id| Stroke {
                     curve: None,
@@ -1575,6 +1901,7 @@ mod appearance_tests {
         second.brush.opacity = 0.9;
         second.brush.kind = BrushKind::Chisel;
         Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![first, second],
             ..Document::default()
         }

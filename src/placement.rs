@@ -218,6 +218,7 @@ mod tests {
     #[test]
     fn nearest_visible_locked_surface_and_rotated_plane_frames() {
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![panel(1, 0.0), panel(2, 1.0)],
             ..Default::default()
         };
@@ -313,6 +314,7 @@ mod tests {
         front.brush.texture.kind = texture::TextureKind::Pattern;
         front.brush.texture.strength = 0.5;
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![front, panel(2, -0.5)],
             ..Default::default()
         };

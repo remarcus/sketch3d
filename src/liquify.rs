@@ -183,6 +183,7 @@ mod tests {
 
     fn sample_document() -> Document {
         Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![Stroke {
                 curve: None,
                 fill: None,

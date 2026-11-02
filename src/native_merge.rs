@@ -52,6 +52,7 @@ pub fn prepare_insert(
     let mut source = Document::from_json(&text)?;
     if group_as_one
         && (source.layers.len() != 1
+            || !source.linked_stroke_groups.instances.is_empty()
             || source
                 .strokes
                 .iter()
@@ -176,8 +177,13 @@ pub fn prepare_insert(
         }
     }
     let top_group = group_as_one.then(|| group_ids.take()).transpose()?;
+    let stroke_id_map: HashMap<u64, u64> = source
+        .strokes
+        .iter()
+        .map(|stroke| Ok((stroke.id, ids.take()?)))
+        .collect::<Result<_, String>>()?;
     for stroke in &mut source.strokes {
-        stroke.id = ids.take()?;
+        stroke.id = stroke_id_map[&stroke.id];
         stroke.layer_id = layer_map[&stroke.layer_id];
         stroke.group_id = top_group.or_else(|| stroke.group_id.map(|group| group_map[&group]));
         for point in &mut stroke.points {
@@ -196,6 +202,37 @@ pub fn prepare_insert(
             if !curve.is_valid() {
                 return Err("Insertion offset moves curve controls outside document bounds".into());
             }
+        }
+    }
+
+    let mut linked_stroke_groups = source.linked_stroke_groups.clone();
+    let definition_map: HashMap<u64, u64> = linked_stroke_groups
+        .definitions
+        .iter()
+        .map(|definition| Ok((definition.id, group_ids.take()?)))
+        .collect::<Result<_, String>>()?;
+    let instance_map: HashMap<u64, u64> = linked_stroke_groups
+        .instances
+        .iter()
+        .map(|instance| Ok((instance.id, group_ids.take()?)))
+        .collect::<Result<_, String>>()?;
+    for definition in &mut linked_stroke_groups.definitions {
+        definition.id = definition_map[&definition.id];
+        definition.pivot += offset;
+        for stroke_id in &mut definition.source_stroke_ids {
+            *stroke_id = *stroke_id_map
+                .get(stroke_id)
+                .ok_or("Linked definition refers to a missing source stroke")?;
+        }
+    }
+    for instance in &mut linked_stroke_groups.instances {
+        instance.id = instance_map[&instance.id];
+        instance.definition_id = definition_map[&instance.definition_id];
+        instance.layer_id = layer_map[&instance.layer_id];
+        for stroke_id in &mut instance.stroke_ids {
+            *stroke_id = *stroke_id_map
+                .get(stroke_id)
+                .ok_or("Linked instance refers to a missing generated stroke")?;
         }
     }
 
@@ -284,6 +321,7 @@ pub fn prepare_insert(
         image_planes: source.image_planes.clone(),
         guides: source.guide_resources.clone(),
         model_references: source.model_references.clone(),
+        linked_stroke_groups,
         previous_active_layer: destination.active_layer,
         inserted_active_layer: destination.active_layer,
     };

@@ -2,7 +2,7 @@ pub use crate::dynamics::{
     AirbrushSettings, DabSettings, Dynamics, PressureMapping, StrandSettings,
 };
 use crate::texture::TextureSettings;
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
 #[path = "guide_resources.rs"]
@@ -306,6 +306,35 @@ pub struct CurveData {
     pub tension: f32,
 }
 
+/// A non-recursive linked definition backed by regular source strokes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LinkedStrokeGroupDefinition {
+    pub id: u64,
+    pub source_stroke_ids: Vec<u64>,
+    pub pivot: Vec3,
+}
+
+/// One transformed, baked view of a linked definition.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LinkedStrokeGroupInstance {
+    pub id: u64,
+    pub definition_id: u64,
+    pub layer_id: u64,
+    pub translation: Vec3,
+    pub rotation: Quat,
+    pub scale: f32,
+    /// Stable IDs for the regenerated strokes; removed when the instance is deleted.
+    pub stroke_ids: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LinkedStrokeGroups {
+    #[serde(default)]
+    pub definitions: Vec<LinkedStrokeGroupDefinition>,
+    #[serde(default)]
+    pub instances: Vec<LinkedStrokeGroupInstance>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CurveAnchor {
     pub position: Vec3,
@@ -374,13 +403,15 @@ pub struct Document {
     /// Self-contained imported tip images keyed by their content fingerprint.
     #[serde(default)]
     pub brush_tip_assets: Vec<crate::brush_tip::BrushTipAsset>,
+    #[serde(default)]
+    pub linked_stroke_groups: LinkedStrokeGroups,
 }
 impl Default for Document {
     fn default() -> Self {
         Self {
             layers: layers_default(),
             active_layer: 1,
-            version: 23,
+            version: 24,
             strokes: Vec::new(),
             image_planes: Vec::new(),
             active_image_plane: None,
@@ -389,10 +420,235 @@ impl Default for Document {
             model_references: Vec::new(),
             active_model_reference: None,
             brush_tip_assets: Vec::new(),
+            linked_stroke_groups: LinkedStrokeGroups::default(),
         }
     }
 }
 impl Document {
+    pub fn linked_instance_for_stroke(&self, stroke_id: u64) -> Option<&LinkedStrokeGroupInstance> {
+        self.linked_stroke_groups
+            .instances
+            .iter()
+            .find(|instance| instance.stroke_ids.contains(&stroke_id))
+    }
+
+    pub fn linked_generated_ids(&self) -> std::collections::HashSet<u64> {
+        self.linked_stroke_groups
+            .instances
+            .iter()
+            .flat_map(|instance| instance.stroke_ids.iter().copied())
+            .collect()
+    }
+
+    pub fn has_linked_source(&self, stroke_id: u64) -> bool {
+        self.linked_stroke_groups
+            .definitions
+            .iter()
+            .any(|definition| definition.source_stroke_ids.contains(&stroke_id))
+    }
+
+    pub fn linked_affected_stroke_ids(
+        &self,
+        changed_source_ids: &std::collections::HashSet<u64>,
+    ) -> std::collections::HashSet<u64> {
+        let changed_definitions: std::collections::HashSet<u64> = self
+            .linked_stroke_groups
+            .definitions
+            .iter()
+            .filter(|definition| {
+                definition
+                    .source_stroke_ids
+                    .iter()
+                    .any(|id| changed_source_ids.contains(id))
+            })
+            .map(|definition| definition.id)
+            .collect();
+        let mut affected = changed_source_ids.clone();
+        for instance in &self.linked_stroke_groups.instances {
+            if changed_definitions.contains(&instance.definition_id) {
+                affected.extend(instance.stroke_ids.iter().copied());
+            }
+        }
+        affected
+    }
+
+    pub fn next_group_resource_id(&self) -> u64 {
+        self.strokes
+            .iter()
+            .filter_map(|stroke| stroke.group_id)
+            .chain(
+                self.linked_stroke_groups
+                    .definitions
+                    .iter()
+                    .map(|definition| definition.id),
+            )
+            .chain(
+                self.linked_stroke_groups
+                    .instances
+                    .iter()
+                    .map(|instance| instance.id),
+            )
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
+    /// Rebuild baked instance strokes from their editable sources. The stored
+    /// stroke IDs keep selection, renderer caches, and exported geometry stable.
+    pub fn refresh_linked_instances(&mut self) -> Result<(), String> {
+        let groups = &self.linked_stroke_groups;
+        if groups.definitions.len() > 10_000 || groups.instances.len() > 10_000 {
+            return Err("Linked group metadata exceeds the 10,000 item limit".into());
+        }
+        let generated_ids: Vec<u64> = groups
+            .instances
+            .iter()
+            .flat_map(|instance| instance.stroke_ids.iter().copied())
+            .collect();
+        let generated_set: std::collections::HashSet<u64> = generated_ids.iter().copied().collect();
+        if generated_ids.len() > 100_000
+            || generated_ids.iter().any(|id| *id == 0 || *id == u64::MAX)
+            || generated_set.len() != generated_ids.len()
+        {
+            return Err("Invalid or over-budget linked instance stroke IDs".into());
+        }
+        let mut definition_map = std::collections::HashMap::new();
+        let mut group_resource_ids = std::collections::HashSet::new();
+        let source_ids: std::collections::HashSet<u64> = groups
+            .definitions
+            .iter()
+            .flat_map(|definition| definition.source_stroke_ids.iter().copied())
+            .collect();
+        for definition in &groups.definitions {
+            if definition.id == 0
+                || definition.id == u64::MAX
+                || definition.source_stroke_ids.is_empty()
+                || definition.source_stroke_ids.len() > 100_000
+                || !definition.pivot.is_finite()
+                || definition.pivot.abs().max_element() > 10_000.0
+                || definition.source_stroke_ids.iter().any(|id| *id == 0)
+                || definition
+                    .source_stroke_ids
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != definition.source_stroke_ids.len()
+                || !group_resource_ids.insert(definition.id)
+                || definition_map.insert(definition.id, definition).is_some()
+            {
+                return Err("Invalid linked group definition".into());
+            }
+        }
+        let mut referenced_definitions = std::collections::HashSet::new();
+        for instance in &groups.instances {
+            let definition = definition_map
+                .get(&instance.definition_id)
+                .ok_or("Linked instance refers to a missing definition")?;
+            if instance.id == 0
+                || instance.id == u64::MAX
+                || !group_resource_ids.insert(instance.id)
+                || instance.layer_id == 0
+                || !instance.translation.is_finite()
+                || instance.translation.abs().max_element() > 10_000.0
+                || !instance.rotation.is_finite()
+                || instance.rotation.length_squared() < 1e-8
+                || !(0.001..=100.0).contains(&instance.scale)
+                || instance.stroke_ids.len() != definition.source_stroke_ids.len()
+            {
+                return Err("Invalid linked group instance transform or ownership".into());
+            }
+            referenced_definitions.insert(instance.definition_id);
+        }
+        if referenced_definitions.len() != groups.definitions.len() {
+            return Err("Linked group definition has no instances".into());
+        }
+        if source_ids.iter().any(|id| generated_set.contains(id)) {
+            return Err("Linked group definitions cannot reference instance strokes".into());
+        }
+        let source_map: std::collections::HashMap<u64, Stroke> = self
+            .strokes
+            .iter()
+            .filter(|stroke| !generated_set.contains(&stroke.id))
+            .map(|stroke| (stroke.id, stroke.clone()))
+            .collect();
+        for definition in &groups.definitions {
+            let mut layer_id = None;
+            for id in &definition.source_stroke_ids {
+                let source = source_map
+                    .get(id)
+                    .ok_or("Linked group source stroke is missing")?;
+                if layer_id.is_some_and(|layer| layer != source.layer_id) {
+                    return Err("Linked group sources must remain on one layer".into());
+                }
+                layer_id = Some(source.layer_id);
+            }
+        }
+        let known_ids: std::collections::HashSet<u64> = self
+            .strokes
+            .iter()
+            .filter(|stroke| !generated_set.contains(&stroke.id))
+            .map(|stroke| stroke.id)
+            .collect();
+        if generated_set.iter().any(|id| known_ids.contains(id)) {
+            return Err("Linked instance stroke ID collides with ordinary artwork".into());
+        }
+        let base_strokes: Vec<Stroke> = self
+            .strokes
+            .iter()
+            .filter(|stroke| !generated_set.contains(&stroke.id))
+            .cloned()
+            .collect();
+        let mut expanded = Vec::new();
+        for instance in &self.linked_stroke_groups.instances {
+            if !self
+                .layers
+                .iter()
+                .any(|layer| layer.id == instance.layer_id)
+            {
+                return Err("Linked instance target layer is missing".into());
+            }
+            let definition = definition_map[&instance.definition_id];
+            let before: crate::editing::Snapshot = definition
+                .source_stroke_ids
+                .iter()
+                .map(|id| {
+                    let stroke = source_map
+                        .get(id)
+                        .ok_or("Linked group source stroke is missing")?;
+                    Ok((0, stroke.clone()))
+                })
+                .collect::<Result<_, &str>>()?;
+            let mut after = crate::editing::transformed(
+                &before,
+                definition.pivot,
+                instance.translation,
+                instance.rotation.normalize(),
+                instance.scale,
+            )
+            .map_err(|_| "Linked group transform exceeds document bounds")?;
+            for (index, (_, stroke)) in after.iter_mut().enumerate() {
+                stroke.id = instance.stroke_ids[index];
+                stroke.layer_id = instance.layer_id;
+                stroke.group_id = None;
+            }
+            expanded.extend(after.into_iter().map(|(_, stroke)| stroke));
+        }
+        if base_strokes.len().saturating_add(expanded.len()) > 100_000
+            || base_strokes
+                .iter()
+                .chain(&expanded)
+                .map(|stroke| stroke.points.len())
+                .sum::<usize>()
+                > 2_000_000
+        {
+            return Err("Expanded linked groups exceed document stroke or point limits".into());
+        }
+        self.strokes = base_strokes;
+        self.strokes.extend(expanded);
+        Ok(())
+    }
+
     pub fn add_brush_tip_asset(
         &mut self,
         asset: crate::brush_tip::BrushTipAsset,
@@ -458,6 +714,19 @@ impl Document {
         let Some(stroke) = self.strokes.iter().find(|s| s.id == id && self.editable(s)) else {
             return Default::default();
         };
+        if let Some(instance) = self.linked_instance_for_stroke(id) {
+            return instance
+                .stroke_ids
+                .iter()
+                .filter(|stroke_id| {
+                    self.strokes
+                        .iter()
+                        .find(|stroke| stroke.id == **stroke_id)
+                        .is_some_and(|stroke| self.editable(stroke))
+                })
+                .copied()
+                .collect();
+        }
         if individual || stroke.group_id.is_none() {
             return std::collections::HashSet::from([id]);
         }
@@ -470,7 +739,7 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=23)) {
+        if !matches!(version, Some(1..=24)) {
             return Err("Unsupported document version".into());
         }
         if matches!(version, Some(1..=6)) {
@@ -554,7 +823,8 @@ impl Document {
                 }
             }
         }
-        doc.version = 23;
+        doc.version = 24;
+        doc.refresh_linked_instances()?;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
         }
@@ -757,6 +1027,7 @@ mod tests {
             s.brush.dynamics.tilt_orientation = true;
             s.points[0].tilt = Some(Vec3::X);
             let doc = Document {
+                linked_stroke_groups: Default::default(),
                 layers: layers_default(),
                 active_layer: 1,
                 version: 8,
@@ -770,7 +1041,7 @@ mod tests {
                 brush_tip_assets: Vec::new(),
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-            assert_eq!(loaded.version, 23);
+            assert_eq!(loaded.version, 24);
             assert_eq!(loaded.strokes, doc.strokes);
         }
     }
@@ -778,6 +1049,7 @@ mod tests {
     fn legacy_documents_upgrade_without_changing_ink() {
         let original = stroke();
         let mut old = serde_json::to_value(Document {
+            linked_stroke_groups: Default::default(),
             layers: layers_default(),
             active_layer: 1,
             version: 1,
@@ -795,7 +1067,7 @@ mod tests {
         // a new shape, or prevent an otherwise valid legacy file from opening.
         old["strokes"][0]["brush"] = serde_json::json!({"kind": "future_brush"});
         let loaded = Document::from_json(&old.to_string()).unwrap();
-        assert_eq!(loaded.version, 23);
+        assert_eq!(loaded.version, 24);
         assert_eq!(loaded.strokes, vec![original]);
         old["strokes"][0].as_object_mut().unwrap().remove("brush");
         let without_extension = Document::from_json(&old.to_string()).unwrap();
@@ -804,6 +1076,7 @@ mod tests {
     #[test]
     fn version_seven_migration_defaults_missing_opacity_to_opaque() {
         let mut value = serde_json::to_value(Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![stroke()],
             ..Default::default()
         })
@@ -823,7 +1096,7 @@ mod tests {
             .remove("opacity");
 
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 23);
+        assert_eq!(loaded.version, 24);
         assert_eq!(loaded.strokes[0].brush.opacity, 1.0);
         assert_eq!(loaded.strokes[0].brush.softness, 0.0);
         assert_eq!(
@@ -833,7 +1106,7 @@ mod tests {
 
         let saved = serde_json::to_string(&loaded).unwrap();
         let reopened = Document::from_json(&saved).unwrap();
-        assert_eq!(reopened.version, 23);
+        assert_eq!(reopened.version, 24);
         assert_eq!(reopened.strokes, loaded.strokes);
     }
     #[test]
@@ -895,6 +1168,7 @@ mod tests {
             let mut s = stroke();
             s.brush = brush;
             let doc = Document {
+                linked_stroke_groups: Default::default(),
                 layers: layers_default(),
                 active_layer: 1,
                 version: 7,
@@ -929,6 +1203,7 @@ mod tests {
     fn rejects_invalid_documents() {
         assert!(Document::from_json("{\"version\":99,\"strokes\":[]}").is_err());
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             layers: layers_default(),
             active_layer: 1,
             version: 7,
@@ -953,6 +1228,7 @@ mod tests {
         original.brush.thickness = 0.6;
         original.brush.angle_degrees = 43.0;
         let mut value = serde_json::to_value(Document {
+            linked_stroke_groups: Default::default(),
             layers: layers_default(),
             active_layer: 1,
             version: 2,
@@ -969,12 +1245,13 @@ mod tests {
         value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
         value["strokes"][0]["points"][0]["tilt"] = serde_json::json!("unknown extension");
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 23);
+        assert_eq!(loaded.version, 24);
         assert_eq!(loaded.strokes, vec![original]);
     }
     #[test]
     fn rejects_invalid_dynamics_and_tilt_metadata() {
         let original = Document {
+            linked_stroke_groups: Default::default(),
             layers: layers_default(),
             active_layer: 1,
             version: 7,
@@ -1048,6 +1325,7 @@ mod tests {
             seed: 1234,
         };
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             layers: layers_default(),
             active_layer: 1,
             version: 7,
@@ -1067,7 +1345,7 @@ mod tests {
         legacy["strokes"][0]["brush"]["texture"] = serde_json::json!({"kind":"future_pattern"});
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
         mark.brush.texture = TextureSettings::default();
-        assert_eq!(loaded.version, 23);
+        assert_eq!(loaded.version, 24);
         assert_eq!(loaded.strokes, vec![mark]);
     }
     #[test]
@@ -1079,6 +1357,7 @@ mod tests {
             ("strength", -0.1),
         ] {
             let mut doc = serde_json::to_value(Document {
+                linked_stroke_groups: Default::default(),
                 layers: layers_default(),
                 active_layer: 1,
                 version: 7,
@@ -1127,6 +1406,7 @@ mod layer_tests {
         stroke.brush.texture.seed = 321;
         let original = stroke.clone();
         let mut value = serde_json::to_value(Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![stroke],
             ..Default::default()
         })
@@ -1136,7 +1416,7 @@ mod layer_tests {
         value["active_layer"] = serde_json::json!(99);
         value["strokes"][0]["layer_id"] = serde_json::json!("unknown");
         let migrated = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(migrated.version, 23);
+        assert_eq!(migrated.version, 24);
         assert_eq!(migrated.strokes, vec![original]);
         assert_eq!(migrated.layers, layers_default());
         assert_eq!(migrated.active_layer, 1);
@@ -1294,6 +1574,7 @@ mod saved_guide_document_tests {
         let ink = vec![sample_stroke()];
         let loft = guide(27, "Canopy loft", sample_loft());
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: ink.clone(),
             guide_resources: vec![loft.clone()],
             active_guide: Some(27),
@@ -1358,6 +1639,7 @@ mod saved_guide_document_tests {
     #[test]
     fn primitive_guides_roundtrip_transform_undo_without_moving_existing_ink() {
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![sample_stroke()],
             guide_resources: vec![
                 guide(
@@ -1483,6 +1765,7 @@ mod saved_guide_document_tests {
     #[test]
     fn pre_guide_native_file_migration_keeps_ink_and_uses_empty_catalog() {
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![sample_stroke()],
             guide_resources: vec![guide(10, "Sphere", GuideGeometry::sphere(Vec3::ZERO, 1.0))],
             active_guide: Some(10),
@@ -1493,7 +1776,7 @@ mod saved_guide_document_tests {
         legacy.as_object_mut().unwrap().remove("guide_resources");
         legacy.as_object_mut().unwrap().remove("active_guide");
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
-        assert_eq!(loaded.version, 23);
+        assert_eq!(loaded.version, 24);
         assert!(loaded.guide_resources.is_empty());
         assert_eq!(loaded.active_guide, None);
         assert_eq!(loaded.strokes, doc.strokes);
@@ -1526,6 +1809,7 @@ mod group_tests {
     #[test]
     fn legacy_five_preserves_resolved_ink_and_layers_but_ignores_group_extensions() {
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![mark(1), mark(2)],
             ..Default::default()
         };
@@ -1550,13 +1834,14 @@ mod group_tests {
             s.group_id = None;
         }
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 23);
+        assert_eq!(loaded.version, 24);
         assert_eq!(loaded.strokes, doc.strokes);
         assert_eq!(loaded.layers, doc.layers);
     }
     #[test]
     fn groups_roundtrip_select_as_a_unit_and_allow_individual_access() {
         let mut doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![mark(1), mark(2)],
             ..Default::default()
         };
@@ -1584,6 +1869,7 @@ mod group_tests {
     #[test]
     fn invalid_group_ids_and_cross_layer_groups_are_rejected_but_singletons_are_valid() {
         let doc = Document {
+            linked_stroke_groups: Default::default(),
             strokes: vec![mark(1)],
             ..Default::default()
         };
