@@ -22,15 +22,21 @@
           id="artwork-viewer"
           alt="Interactive 3D artwork. Drag to orbit, right-drag or use a modifier to pan, and scroll or pinch to zoom."
           camera-controls
+          ar
+          ar-scale="fixed"
+          ar-placement="floor"
+          ar-modes="webxr quick-look"
           touch-action="pan-y"
           interaction-prompt="when-focused"
           shadow-intensity="0.7"
           exposure="1"
           loading="eager"
           reveal="auto">
+          <button class="ar-button" slot="ar-button" type="button">View in your space</button>
           <span class="viewer-empty">Choose a GLB file to view artwork.</span>
         </model-viewer>
         <div class="viewer-status" id="viewer-status" role="status" aria-live="polite">Viewer ready. GLB files up to 10 MiB are supported.</div>
+        <p class="ar-fallback" id="ar-fallback" role="status" aria-live="polite" hidden></p>
         <p class="viewer-error" id="viewer-error" role="alert" hidden></p>
       </section>
 
@@ -44,7 +50,7 @@
       </section>
 
       <footer>
-        <p>Only the selected GLB is loaded. This viewer does not access your drawing library, recovery files, camera, or microphone.</p>
+        <p>Only the selected GLB is loaded. Camera access is handed to the system AR viewer only after you choose <strong>View in your space</strong>; this page does not record or upload camera or microphone data. Unsupported devices can keep using the 3D viewer.</p>
       </footer>
     </main>
   </body>

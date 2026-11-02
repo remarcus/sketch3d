@@ -55,7 +55,10 @@ model-viewer[src] .viewer-empty { display: none; }
 
 .viewer-status, .viewer-error { margin: 0; padding: 11px 16px; font-size: 0.92rem; }
 .viewer-status { color: #344252; background: #f7f9fb; }
+.ar-fallback { margin: 0; padding: 10px 16px; color: #344252; background: #fff8e6; font-size: 0.92rem; line-height: 1.45; }
 .viewer-error { color: #8f1d16; background: #fff0ee; }
+.ar-button { min-height: 42px; margin: 14px; border: 1px solid #087f86; border-radius: 8px; background: #087f86; color: white; font: inherit; font-weight: 700; cursor: pointer; }
+.ar-button:focus-visible { outline: 3px solid #202733; outline-offset: 3px; }
 
 .controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px 0; }
 button, .file-control span {
@@ -83,6 +86,7 @@ footer { border-top: 1px solid #c6ced7; padding-top: 14px; }
   model-viewer { background: linear-gradient(135deg, #263241, #354353); }
   .viewer-empty { color: #e3ebf3; }
   .viewer-status { background: #202a37; color: #dce5ed; }
+  .ar-fallback { background: #453c24; color: #fff1c2; }
   .viewer-error { color: #ffd4ce; background: #512b2b; }
   button:focus-visible, .file-control:focus-within span { outline-color: #f1f5f8; }
   button:disabled { border-color: #66717d; background: #303b48; color: #d1d8df; }

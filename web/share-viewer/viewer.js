@@ -121,9 +121,10 @@ export function initializeViewer(documentLike = globalThis.document, locationLik
   const viewer = documentLike.querySelector("#artwork-viewer");
   const fileInput = documentLike.querySelector("#glb-file");
   const status = documentLike.querySelector("#viewer-status");
+  const arFallback = documentLike.querySelector("#ar-fallback");
   const error = documentLike.querySelector("#viewer-error");
   const resetButton = documentLike.querySelector("#reset-view");
-  if (!viewer || !fileInput || !status || !error || !resetButton) return;
+  if (!viewer || !fileInput || !status || !arFallback || !error || !resetButton) return;
 
   let activeObjectUrl = null;
   let currentName = "artwork";
@@ -132,6 +133,7 @@ export function initializeViewer(documentLike = globalThis.document, locationLik
   const showError = (message) => {
     error.textContent = message;
     error.hidden = false;
+    arFallback.hidden = true;
     resetButton.disabled = true;
     viewer.removeAttribute("src");
     if (activeObjectUrl) URL.revokeObjectURL(activeObjectUrl);
@@ -173,6 +175,12 @@ export function initializeViewer(documentLike = globalThis.document, locationLik
     clearError();
     resetButton.disabled = false;
     setStatus(`${currentName} loaded. Drag to orbit, right-drag or use a modifier to pan, and scroll or pinch to zoom.`);
+    if (viewer.canActivateAR) {
+      arFallback.hidden = true;
+    } else {
+      arFallback.textContent = "AR is not available on this device or browser. You can continue viewing and orbiting the model here.";
+      arFallback.hidden = false;
+    }
   });
   viewer.addEventListener("error", () => showError("The GLB passed its header checks but could not be rendered. The model may contain unsupported or damaged data."));
   viewer.addEventListener("progress", (event) => {
@@ -180,18 +188,36 @@ export function initializeViewer(documentLike = globalThis.document, locationLik
     if (percent < 100) setStatus(`Loading ${currentName}… ${percent}%`);
   });
 
-  const setModel = (bytes, name) => {
+  viewer.addEventListener("ar-status", (event) => {
+    if (event.detail?.status === "failed") {
+      arFallback.textContent = "The system AR viewer could not open this model. You can continue viewing it in 3D here.";
+      arFallback.hidden = false;
+    } else if (event.detail?.status === "session-started" || event.detail?.status === "object-placed") {
+      arFallback.hidden = true;
+    }
+  });
+
+  const setModel = (bytes, name, shareUrl = null) => {
     validateGlb(bytes);
     generation += 1;
-    const blob = new Blob([bytes], { type: "model/gltf-binary" });
-    const nextObjectUrl = URL.createObjectURL(blob);
     if (activeObjectUrl) URL.revokeObjectURL(activeObjectUrl);
-    activeObjectUrl = nextObjectUrl;
+    activeObjectUrl = null;
+    if (shareUrl) {
+      // Scene Viewer requires a hosted HTTPS model URL; the same-site URL has
+      // already been bounded, validated, and rejected on redirects above.
+      viewer.setAttribute("ar-modes", "scene-viewer webxr quick-look");
+      viewer.src = shareUrl.href;
+    } else {
+      const blob = new Blob([bytes], { type: "model/gltf-binary" });
+      activeObjectUrl = URL.createObjectURL(blob);
+      viewer.setAttribute("ar-modes", "webxr quick-look");
+      viewer.src = activeObjectUrl;
+    }
     currentName = name;
     resetButton.disabled = true;
+    arFallback.hidden = true;
     clearError();
     setStatus(`Loading ${name}…`);
-    viewer.src = nextObjectUrl;
     viewer.removeAttribute("camera-orbit");
     viewer.setAttribute("camera-target", "auto auto auto");
   };
@@ -239,7 +265,7 @@ export function initializeViewer(documentLike = globalThis.document, locationLik
         });
         const bytes = await readBoundedResponse(response);
         if (requestGeneration !== generation) return;
-        setModel(bytes, decodeURIComponent(url.pathname.split("/").pop() || "shared artwork"));
+        setModel(bytes, decodeURIComponent(url.pathname.split("/").pop() || "shared artwork"), url);
       } catch (loadError) {
         if (requestGeneration === generation) {
           showError(loadError instanceof Error ? loadError.message : "The shared artwork could not be loaded.");

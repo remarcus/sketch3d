@@ -38,6 +38,17 @@ test("hides the empty-state prompt after a model source is set", async () => {
   assert.match(css, /model-viewer\[src\]\s+\.viewer-empty\s*\{\s*display:\s*none;\s*\}/);
 });
 
+test("offers user-initiated AR with scale controls and an explicit 3D fallback", async () => {
+  const html = await readFile(new URL("../web/share-viewer/index.html", import.meta.url), "utf8");
+  const css = await readFile(new URL("../web/share-viewer/viewer.css", import.meta.url), "utf8");
+  assert.match(html, /\bar\s+ar-scale="fixed"\s+ar-placement="floor"/);
+  assert.match(html, /ar-modes="webxr quick-look"/);
+  assert.match(html, /slot="ar-button"[^>]*>View in your space</);
+  assert.match(html, /camera access is handed to the system AR viewer only after you choose/i);
+  assert.match(html, /does not record or upload camera or microphone data/i);
+  assert.match(css, /\.ar-fallback/);
+});
+
 test("rejects bad magic, other GLB versions, and mismatched file lengths", () => {
   const badMagic = makeGlb();
   badMagic.writeUInt32LE(0, 0);
@@ -153,6 +164,7 @@ class FakeElement {
 
   updateFraming() { this.framingUpdated = true; }
   jumpCameraToGoal() { this.cameraJumped = true; }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
 }
 
 function makeViewerDocument() {
@@ -160,6 +172,7 @@ function makeViewerDocument() {
     ["#artwork-viewer", new FakeElement()],
     ["#glb-file", new FakeElement()],
     ["#viewer-status", new FakeElement()],
+    ["#ar-fallback", new FakeElement()],
     ["#viewer-error", new FakeElement()],
     ["#reset-view", new FakeElement()],
     ["#model-viewer-library", new FakeElement()],
@@ -193,6 +206,16 @@ test("local file workflow loads a checked GLB and restores camera controls", asy
   viewer.dispatch("load");
   assert.equal(reset.disabled, false);
   assert.match(status.textContent, /sample\.glb loaded/);
+  assert.equal(viewer.getAttribute("ar-modes"), "webxr quick-look");
+  assert.equal(document.querySelector("#ar-fallback").hidden, false);
+  assert.match(document.querySelector("#ar-fallback").textContent, /continue viewing and orbiting/i);
+
+  viewer.canActivateAR = true;
+  viewer.dispatch("load");
+  assert.equal(document.querySelector("#ar-fallback").hidden, true);
+  viewer.dispatch("ar-status", { detail: { status: "failed" } });
+  assert.equal(document.querySelector("#ar-fallback").hidden, false);
+  assert.match(document.querySelector("#ar-fallback").textContent, /system AR viewer could not open/i);
 
   reset.dispatch("click");
   assert.equal(viewer.cameraOrbit, "0deg 75deg 105%");
@@ -237,8 +260,15 @@ test("same-site share links fetch without cookies and surface network failures",
   assert.equal(requests[0].options.credentials, "omit");
   assert.equal(requests[0].options.redirect, "error");
   assert.equal(requests[0].options.cache, "no-store");
-  assert.match(document.querySelector("#artwork-viewer").src, /^blob:/);
-  assert.match(document.querySelector("#viewer-status").textContent, /Loading sample\.glb/);
+  const viewer = document.querySelector("#artwork-viewer");
+  assert.equal(viewer.src, "https://viewer.example/artwork/sample.glb");
+  assert.equal(viewer.getAttribute("ar-modes"), "scene-viewer webxr quick-look");
+  viewer.canActivateAR = true;
+  viewer.dispatch("load");
+  assert.equal(document.querySelector("#ar-fallback").hidden, true);
+  viewer.dispatch("ar-status", { detail: { status: "failed" } });
+  assert.equal(document.querySelector("#ar-fallback").hidden, false);
+  assert.match(document.querySelector("#viewer-status").textContent, /sample\.glb loaded/);
 
   const failedDocument = makeViewerDocument();
   const failedLocation = {
