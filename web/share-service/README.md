@@ -23,6 +23,8 @@ The public ID and management capability are generated independently. Only the SH
 
 The Worker also applies a configurable Cloudflare Rate Limiting binding to API mutations (5 requests per IP per 60 seconds) and public model downloads (120 requests per model ID per 60 seconds). A denied request returns 429 with `Retry-After: 60`; if the binding errors, the request fails closed with 503. Cloudflare rate limits are approximate and enforced independently at each Cloudflare location, so requests can exceed the configured count and this is not a global quota or spending cap. API limits are keyed by client IP, which can group people behind a shared NAT. Choose unique rate-limit namespace IDs for the account before deployment and monitor usage and abuse reports.
 
+Shared viewer pages display an abuse-report email link only when `ABUSE_CONTACT` is set to a valid email address. The link opens the visitor's email app with the shared artwork URL prefilled; the Worker does not receive report contents or reporter details. Configure the address for the responsible operator before enabling this path in production.
+
 ## R2 lifecycle setup
 
 Before deployment:
@@ -35,4 +37,4 @@ Authenticated DELETE removes an object immediately. Cloudflare lifecycle deletio
 
 ## Deployment prerequisites
 
-The Wrangler configuration binds an R2 bucket, a SQLite-backed Durable Object, the static `web/share-viewer` assets, and request rate limiters. Before deployment, configure unique rate-limit namespace IDs for the account. Deployment remains gated on a named billing/account owner, an approved monthly cost ceiling, lifecycle and abuse-response ownership, and account configuration. Cloudflare free allowances and budget alerts are not a hard bill cap for R2; the code quotas bound active stored bytes and objects, while rate limiting is approximate and request/operation volume and provider/account policies still require monitoring.
+The Wrangler configuration binds an R2 bucket, a SQLite-backed Durable Object, the static `web/share-viewer` assets, and request rate limiters. Before deployment, configure unique rate-limit namespace IDs and `ABUSE_CONTACT` for the account. Deployment remains gated on a named billing/account owner, an approved monthly cost ceiling, lifecycle and abuse-response ownership, and account configuration. Cloudflare free allowances and budget alerts are not a hard bill cap for R2; the code quotas bound active stored bytes and objects, while rate limiting is approximate and request/operation volume and provider/account policies still require monitoring.

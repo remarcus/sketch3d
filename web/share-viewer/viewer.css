@@ -78,6 +78,9 @@ button:disabled { border-color: #929ca8; background: #e0e4e8; color: #4b5560; cu
 .file-control input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 .size-note { color: #4d5968; font-size: 0.9rem; }
 footer { border-top: 1px solid #c6ced7; padding-top: 14px; }
+.abuse-report { margin-top: 10px; }
+.abuse-report a { color: #087f86; font-weight: 650; }
+.abuse-report a:focus-visible { outline: 3px solid #202733; outline-offset: 3px; }
 
 @media (prefers-color-scheme: dark) {
   :root, body { background: #151c25; color: #f1f5f8; }
@@ -91,6 +94,8 @@ footer { border-top: 1px solid #c6ced7; padding-top: 14px; }
   button:focus-visible, .file-control:focus-within span { outline-color: #f1f5f8; }
   button:disabled { border-color: #66717d; background: #303b48; color: #d1d8df; }
   footer { border-color: #45515e; }
+  .abuse-report a { color: #6bd8dc; }
+  .abuse-report a:focus-visible { outline-color: #f1f5f8; }
 }
 
 @media (max-width: 560px) {

@@ -124,12 +124,28 @@ export function initializeViewer(documentLike = globalThis.document, locationLik
   const arFallback = documentLike.querySelector("#ar-fallback");
   const error = documentLike.querySelector("#viewer-error");
   const resetButton = documentLike.querySelector("#reset-view");
+  const abuseReport = documentLike.querySelector("#abuse-report");
+  const abuseReportLink = documentLike.querySelector("#abuse-report-link");
   if (!viewer || !fileInput || !status || !arFallback || !error || !resetButton) return;
 
   let activeObjectUrl = null;
   let currentName = "artwork";
+  let abuseContact = null;
+  let currentShareUrl = null;
   let generation = 0;
   const setStatus = (message) => { status.textContent = message; };
+  const refreshAbuseReport = () => {
+    if (!abuseReport || !abuseReportLink) return;
+    if (!abuseContact || !currentShareUrl) {
+      abuseReport.hidden = true;
+      abuseReportLink.removeAttribute("href");
+      return;
+    }
+    const subject = "Report shared artwork";
+    const body = `I would like to report this shared artwork: ${currentShareUrl.href}`;
+    abuseReportLink.href = `mailto:${abuseContact}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    abuseReport.hidden = false;
+  };
   const showError = (message) => {
     error.textContent = message;
     error.hidden = false;
@@ -200,6 +216,8 @@ export function initializeViewer(documentLike = globalThis.document, locationLik
   const setModel = (bytes, name, shareUrl = null) => {
     validateGlb(bytes);
     generation += 1;
+    currentShareUrl = shareUrl;
+    refreshAbuseReport();
     if (activeObjectUrl) URL.revokeObjectURL(activeObjectUrl);
     activeObjectUrl = null;
     if (shareUrl) {
@@ -225,6 +243,8 @@ export function initializeViewer(documentLike = globalThis.document, locationLik
   fileInput.addEventListener("change", async () => {
     const file = fileInput.files?.[0];
     if (!file) return;
+    currentShareUrl = null;
+    refreshAbuseReport();
     const requestGeneration = ++generation;
     try {
       await libraryReady;
@@ -251,11 +271,26 @@ export function initializeViewer(documentLike = globalThis.document, locationLik
 
   const sharedPath = new URL(locationLike.href).searchParams.get("model");
   if (sharedPath) {
+    fetchImpl(new URL("/api/v1/config", locationLike.href), {
+      mode: "same-origin",
+      credentials: "omit",
+      redirect: "error",
+      cache: "no-store",
+    }).then(async (response) => {
+      if (!response.ok) return;
+      const config = await response.json();
+      if (typeof config?.abuseContact === "string" && /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}$/iu.test(config.abuseContact)) {
+        abuseContact = config.abuseContact;
+        refreshAbuseReport();
+      }
+    }).catch(() => {});
     (async () => {
       const requestGeneration = ++generation;
       try {
         await libraryReady;
         const url = resolveShareModelUrl(sharedPath, locationLike);
+        currentShareUrl = url;
+        refreshAbuseReport();
         setStatus("Downloading shared artwork…");
         const response = await fetchImpl(url, {
           mode: "same-origin",

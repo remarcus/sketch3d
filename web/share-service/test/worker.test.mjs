@@ -133,6 +133,19 @@ test("fails closed if the configured rate limiter is unavailable", async () => {
   assert.equal(bucket.objects.size, 0);
 });
 
+test("exposes only a validated abuse-report contact without collecting report data", async () => {
+  const { env } = harness();
+  env.ABUSE_CONTACT = "abuse@example.org";
+  const response = await worker.fetch(new Request("https://share.example/api/v1/config"), env);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await response.json(), { abuseContact: "abuse@example.org" });
+
+  env.ABUSE_CONTACT = "abuse@example.org?subject=unsafe";
+  const invalid = await worker.fetch(new Request("https://share.example/api/v1/config"), env);
+  assert.deepEqual(await invalid.json(), { abuseContact: null });
+});
+
 test("creates public URLs and keeps only a capability hash in R2 metadata", async () => {
   const { bucket, env } = harness();
   const bytes = makeGlb();

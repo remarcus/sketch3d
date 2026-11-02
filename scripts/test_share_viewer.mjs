@@ -175,6 +175,8 @@ function makeViewerDocument() {
     ["#ar-fallback", new FakeElement()],
     ["#viewer-error", new FakeElement()],
     ["#reset-view", new FakeElement()],
+    ["#abuse-report", new FakeElement()],
+    ["#abuse-report-link", new FakeElement()],
     ["#model-viewer-library", new FakeElement()],
   ]);
   return {
@@ -250,16 +252,29 @@ test("same-site share links fetch without cookies and surface network failures",
   const requests = [];
   initializeViewer(document, location, async (url, options) => {
     requests.push({ url: url.href, options });
+    if (url.pathname === "/api/v1/config") {
+      return Response.json({ abuseContact: "abuse@example.org" });
+    }
     return new Response(bytes, { status: 200, headers: { "content-length": String(bytes.byteLength) } });
   });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, "https://viewer.example/artwork/sample.glb");
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].url, "https://viewer.example/api/v1/config");
   assert.equal(requests[0].options.mode, "same-origin");
   assert.equal(requests[0].options.credentials, "omit");
   assert.equal(requests[0].options.redirect, "error");
   assert.equal(requests[0].options.cache, "no-store");
+  assert.equal(requests[1].url, "https://viewer.example/artwork/sample.glb");
+  assert.equal(requests[1].options.mode, "same-origin");
+  assert.equal(requests[1].options.credentials, "omit");
+  assert.equal(requests[1].options.redirect, "error");
+  assert.equal(requests[1].options.cache, "no-store");
+  const report = document.querySelector("#abuse-report");
+  const reportLink = document.querySelector("#abuse-report-link");
+  assert.equal(report.hidden, false);
+  assert.match(reportLink.href, /^mailto:abuse@example\.org\?/u);
+  assert.match(decodeURIComponent(reportLink.href), /https:\/\/viewer\.example\/artwork\/sample\.glb/u);
   const viewer = document.querySelector("#artwork-viewer");
   assert.equal(viewer.src, "https://viewer.example/artwork/sample.glb");
   assert.equal(viewer.getAttribute("ar-modes"), "scene-viewer webxr quick-look");
@@ -269,6 +284,14 @@ test("same-site share links fetch without cookies and surface network failures",
   viewer.dispatch("ar-status", { detail: { status: "failed" } });
   assert.equal(document.querySelector("#ar-fallback").hidden, false);
   assert.match(document.querySelector("#viewer-status").textContent, /sample\.glb loaded/);
+
+  const noContactDocument = makeViewerDocument();
+  initializeViewer(noContactDocument, location, async (url) => {
+    if (url.pathname === "/api/v1/config") return Response.json({ abuseContact: null });
+    return new Response(bytes, { status: 200, headers: { "content-length": String(bytes.byteLength) } });
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(noContactDocument.querySelector("#abuse-report").hidden, true);
 
   const failedDocument = makeViewerDocument();
   const failedLocation = {

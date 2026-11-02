@@ -31,7 +31,8 @@
   ],
   "vars": {
     "MAX_ACTIVE_SHARES": "900",
-    "MAX_TOTAL_BYTES": "9663676416"
+    "MAX_TOTAL_BYTES": "9663676416",
+    "ABUSE_CONTACT": ""
   },
   "ratelimits": [
     {

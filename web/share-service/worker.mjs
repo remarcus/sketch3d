@@ -135,6 +135,11 @@ function readLimit(env, name, fallback) {
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
+function abuseContactFrom(env) {
+  const contact = typeof env.ABUSE_CONTACT === "string" ? env.ABUSE_CONTACT.trim() : "";
+  return /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}$/iu.test(contact) ? contact : null;
+}
+
 async function enforceRateLimit(binding, key) {
   try {
     const result = await binding.limit({ key });
@@ -346,6 +351,9 @@ export default {
     }
 
     if (url.pathname.startsWith("/api/v1/")) {
+      if (url.pathname === "/api/v1/config" && request.method === "GET") {
+        return json({ abuseContact: abuseContactFrom(env) });
+      }
       if (request.method !== "POST" && request.method !== "PUT" && request.method !== "DELETE") {
         return error("Method not allowed.", 405, { allow: "POST, PUT, DELETE" });
       }
