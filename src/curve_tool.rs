@@ -89,6 +89,7 @@ impl SketchApp {
         self.cancel_line_tool();
         self.cancel_fill_tool();
         self.cancel_shape_draft();
+        self.clear_planar_snap();
         self.curve_tool.draft = None;
         self.curve_tool.enabled = true;
         self.select_mode = false;
@@ -102,6 +103,7 @@ impl SketchApp {
         if self.curve_tool.draft.take().is_some() {
             self.status = "Curve preview cancelled.".into();
         }
+        self.clear_planar_snap();
     }
 
     pub(super) fn cancel_curve_tool(&mut self) {
@@ -217,6 +219,22 @@ impl SketchApp {
         if !rect.contains(pos) {
             return;
         }
+        if self.curve_tool.draft.is_some() && self.snapping.options.enabled {
+            let (target, excluded) = self
+                .curve_tool
+                .draft
+                .as_ref()
+                .map(|draft| {
+                    (
+                        draft.target,
+                        draft.editing_stroke_id.into_iter().collect::<HashSet<_>>(),
+                    )
+                })
+                .expect("curve draft remains active");
+            if self.planar_snap_index_stale(target, rect, &excluded) {
+                self.prepare_planar_snap(target, rect, &excluded);
+            }
+        }
         if begin {
             if self.curve_tool.draft.is_none() {
                 let Some(target) = self.planar_drawing_target() else {
@@ -266,15 +284,29 @@ impl SketchApp {
                     viewport_height: rect.height().max(1.0),
                 });
             }
+            if self.snapping.options.enabled {
+                let (target, excluded) = self
+                    .curve_tool
+                    .draft
+                    .as_ref()
+                    .map(|draft| {
+                        let excluded = draft.editing_stroke_id.into_iter().collect::<HashSet<_>>();
+                        (draft.target, excluded)
+                    })
+                    .expect("curve draft was initialized");
+                if self.planar_snap_index_stale(target, rect, &excluded) {
+                    self.prepare_planar_snap(target, rect, &excluded);
+                }
+            }
             let Some(world) = self.curve_world(pos, rect) else {
                 return;
             };
-            let target = self
+            let handle = self
                 .curve_tool
                 .draft
                 .as_ref()
                 .and_then(|draft| self.curve_handle_at(draft, pos, rect));
-            if let Some(handle) = target {
+            if let Some(handle) = handle {
                 if let Some(draft) = &mut self.curve_tool.draft {
                     draft.dragging = Some(handle);
                     draft.selected_anchor = Some(match handle {
@@ -285,6 +317,15 @@ impl SketchApp {
                     });
                 }
             } else {
+                let target = self
+                    .curve_tool
+                    .draft
+                    .as_ref()
+                    .expect("curve draft remains active")
+                    .target;
+                let world = self.snap_planar_point(world, pos, target, rect, None);
+                let insertion_pos = crate::gizmo::project(&self.camera, rect, world)
+                    .map_or(pos, |(screen, _)| screen);
                 let insertion = self.curve_tool.draft.as_ref().and_then(|draft| {
                     if draft.anchors.len() < 2 {
                         return None;
@@ -305,7 +346,7 @@ impl SketchApp {
                         ) else {
                             continue;
                         };
-                        let distance = point_segment_distance(pos, a, b);
+                        let distance = point_segment_distance(insertion_pos, a, b);
                         if distance < nearest.0 {
                             nearest = (distance, pair_index + 1);
                         }
@@ -351,6 +392,17 @@ impl SketchApp {
             let Some(world) = self.curve_world(pos, rect) else {
                 return;
             };
+            let world = if let HandleRef::Anchor(_) = handle {
+                let target = self
+                    .curve_tool
+                    .draft
+                    .as_ref()
+                    .expect("curve draft remains active")
+                    .target;
+                self.snap_planar_point(world, pos, target, rect, None)
+            } else {
+                world
+            };
             self.curve_move_handle(handle, world);
             self.curve_refresh(rect);
         }
@@ -360,6 +412,7 @@ impl SketchApp {
         if let Some(draft) = &mut self.curve_tool.draft {
             draft.dragging = None;
         }
+        self.clear_planar_snap_cue();
     }
 
     fn curve_world(&self, pos: Pos2, rect: Rect) -> Option<Vec3> {
@@ -615,6 +668,7 @@ impl SketchApp {
             self.status = "Apply or cancel the current curve preview first.".into();
             return;
         }
+        self.clear_planar_snap();
         let Some(stroke) = self
             .doc
             .strokes
@@ -729,6 +783,7 @@ impl SketchApp {
             self.record_recovery_edit_labeled("Edit curve");
             self.renderer.invalidate();
             self.curve_tool.error = None;
+            self.clear_planar_snap();
             self.status = "Curve edit applied as one undo step.".into();
             return;
         }
@@ -755,6 +810,7 @@ impl SketchApp {
         stroke.id = self.next_id;
         self.next_id += 1;
         self.commit_drawn_stroke(stroke, false, 0);
+        self.clear_planar_snap();
         self.curve_tool.error = None;
         self.status = "Smooth curve committed as one editable stroke.".into();
     }

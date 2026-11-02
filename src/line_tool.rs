@@ -63,6 +63,7 @@ impl SketchApp {
         if self.line.draft.take().is_some() {
             self.resume_ink = false;
         }
+        self.clear_planar_snap();
     }
     pub(super) fn cancel_line_tool(&mut self) {
         self.cancel_line();
@@ -139,6 +140,8 @@ impl SketchApp {
             let Some(world) = target.hit(o, d) else {
                 return;
             };
+            self.prepare_planar_snap(target, rect, &HashSet::new());
+            let world = self.snap_planar_point(world, pos, target, rect, None);
             let plane = target.plane;
             let point = Point {
                 position: world,
@@ -182,27 +185,44 @@ impl SketchApp {
         self.line_position(pos, rect);
     }
     fn line_position(&mut self, pos: Pos2, rect: Rect) -> bool {
-        let Some(draft) = &mut self.line.draft else {
+        let Some(draft) = self.line.draft.as_ref() else {
             return false;
         };
         if !rect.contains(pos) {
             return false;
         }
+        let target = draft.target;
+        let plane = target.plane;
+        let constraint = draft.constraint;
+        let step = draft.step;
+        let start = draft.mark.points[0].position;
         let (o, d) = crate::gizmo::ray(&self.camera, rect, pos);
-        let Some(world) = draft.target.hit(o, d) else {
+        let Some(world) = target.hit(o, d) else {
             return false;
         };
-        let plane = draft.target.plane;
-        let end = constrain(
-            draft.mark.points[0].position,
-            world,
-            plane,
-            draft.constraint,
-            draft.step,
+        let constrained_end = constrain(start, world, plane, constraint, step);
+        let constrained = constraint != Constraint::Free;
+        let snap_cursor = if constrained {
+            crate::gizmo::project(&self.camera, rect, constrained_end)
+                .map_or(pos, |(screen, _)| screen)
+        } else {
+            pos
+        };
+        let excluded = HashSet::new();
+        if self.planar_snap_index_stale(target, rect, &excluded) {
+            self.prepare_planar_snap(target, rect, &excluded);
+        }
+        let end = self.snap_planar_point(
+            constrained_end,
+            snap_cursor,
+            target,
+            rect,
+            constrained.then_some((start, constrained_end)),
         );
-        if !end.is_finite() || end.abs().max_element() > 10000.0 || !draft.target.contains(end) {
+        if !end.is_finite() || end.abs().max_element() > 10000.0 || !target.contains(end) {
             return false;
         }
+        let draft = self.line.draft.as_mut().expect("line draft remains active");
         draft.mark.points[1].position = end;
         true
     }
@@ -212,8 +232,10 @@ impl SketchApp {
             return;
         }
         let Some(draft) = self.line.draft.take() else {
+            self.clear_planar_snap();
             return;
         };
+        self.clear_planar_snap();
         let mut mark = draft.mark;
         if mark.points[0].position.distance(mark.points[1].position) < 0.00001 {
             self.status = "Zero-length line cancelled.".into();
@@ -240,6 +262,7 @@ impl SketchApp {
         mark.id = self.next_id;
         self.next_id += 1;
         self.commit_drawn_stroke(mark, false, 0);
+        self.clear_planar_snap();
     }
     pub(super) fn line_shortcuts(&mut self, ctx: &egui::Context) {
         let (l, escape, mods) = ctx.input(|i| {

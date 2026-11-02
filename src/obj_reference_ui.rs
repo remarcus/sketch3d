@@ -406,6 +406,28 @@ fn nearest_obj_reference_hit(
     models: &std::collections::HashMap<u64, crate::obj_reference::ObjModel>,
     indices: &mut std::collections::HashMap<u64, crate::obj_mesh_index::ObjMeshIndex>,
 ) -> Option<u64> {
+    nearest_obj_reference_hit_with_depth(origin, direction, resources, models, indices)
+        .map(|(_, id)| id)
+}
+
+pub(super) fn nearest_obj_reference_depth(
+    origin: glam::Vec3,
+    direction: glam::Vec3,
+    resources: &[ObjReferenceResource],
+    models: &std::collections::HashMap<u64, crate::obj_reference::ObjModel>,
+    indices: &mut std::collections::HashMap<u64, crate::obj_mesh_index::ObjMeshIndex>,
+) -> Option<f32> {
+    nearest_obj_reference_hit_with_depth(origin, direction, resources, models, indices)
+        .map(|(distance, _)| distance)
+}
+
+fn nearest_obj_reference_hit_with_depth(
+    origin: glam::Vec3,
+    direction: glam::Vec3,
+    resources: &[ObjReferenceResource],
+    models: &std::collections::HashMap<u64, crate::obj_reference::ObjModel>,
+    indices: &mut std::collections::HashMap<u64, crate::obj_mesh_index::ObjMeshIndex>,
+) -> Option<(f32, u64)> {
     let mut nearest: Option<(f32, u64)> = None;
     for resource in resources.iter().filter(|resource| resource.visible) {
         let id = resource.id;
@@ -433,7 +455,7 @@ fn nearest_obj_reference_hit(
             nearest = Some((ray_t, id));
         }
     }
-    nearest.map(|(_, id)| id)
+    nearest
 }
 
 fn import_obj_reference_button(ui: &mut egui::Ui) -> egui::Response {

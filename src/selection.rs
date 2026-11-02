@@ -22,6 +22,8 @@ pub(super) struct Drag {
     view_normal: Vec3,
     translation: Vec3,
     scale_basis: Quat,
+    snap_target: Option<super::guide_resource_ui::PlanarTarget>,
+    snap_source_points: Vec<Vec3>,
 }
 
 pub(super) struct BrushSelectionDrag {
@@ -262,6 +264,7 @@ impl SketchApp {
         let Some(drag) = self.drag.take() else {
             return;
         };
+        self.clear_planar_snap();
         let ids = drag.before.iter().map(|(_, s)| s.id).collect();
         let after = editing::snapshot(&self.doc, &ids);
         if drag.before != after {
@@ -281,6 +284,7 @@ impl SketchApp {
             self.renderer.invalidate_ids(&self.selected);
             self.status = "Transform cancelled".into();
         }
+        self.clear_planar_snap();
     }
     fn layout(&self, rect: Rect) -> Option<Layout> {
         if !self.select_mode {
@@ -330,8 +334,21 @@ impl SketchApp {
             if !shift {
                 if let Some(layout) = self.layout(rect) {
                     if let Some(kind) = layout.hit(pos) {
+                        let before = editing::snapshot(&self.doc, &self.selected);
+                        let snap_target = (self.transform_mode == Mode::Move
+                            && self.snapping.options.enabled)
+                            .then(|| self.planar_drawing_target())
+                            .flatten();
+                        let snap_source_points = snap_target
+                            .map_or_else(Vec::new, |target| selected_snap_points(&before, target));
+                        if let Some(target) = snap_target {
+                            let excluded = self.selected.clone();
+                            self.prepare_planar_snap(target, rect, &excluded);
+                        } else {
+                            self.clear_planar_snap();
+                        }
                         self.drag = Some(Drag {
-                            before: editing::snapshot(&self.doc, &self.selected),
+                            before,
                             pivot: layout.pivot,
                             kind,
                             start: pos,
@@ -341,6 +358,8 @@ impl SketchApp {
                                 let (right, up, forward) = self.camera.basis();
                                 Quat::from_mat3(&Mat3::from_cols(right, up, forward))
                             },
+                            snap_target,
+                            snap_source_points,
                         });
                         return;
                     }
@@ -386,6 +405,12 @@ impl SketchApp {
         }
     }
     fn preview_transform(&mut self, pos: Pos2, rect: Rect) {
+        if let Some(target) = self.drag.as_ref().and_then(|drag| drag.snap_target) {
+            let excluded = self.selected.clone();
+            if self.planar_snap_index_stale(target, rect, &excluded) {
+                self.prepare_planar_snap(target, rect, &excluded);
+            }
+        }
         let Some(drag) = self.drag.as_ref() else {
             return;
         };
@@ -487,6 +512,63 @@ impl SketchApp {
                 }
             }
         }
+        let mut snap_cue = None;
+        if let Some(target) = drag.snap_target {
+            let options = self.snapping.options;
+            if options.enabled && !options.bypass {
+                if let Some(index) = self.snapping.index.as_ref() {
+                    let mut best: Option<(f32, Vec3, Vec3, super::snapping::SnapCue)> = None;
+                    for source in &drag.snap_source_points {
+                        let moved = *source + translation;
+                        let origin = target.plane.origin();
+                        let normal = target.plane.basis().2;
+                        if (moved - origin).dot(normal).abs() > 0.005 {
+                            continue;
+                        }
+                        let Some((screen, _)) = gizmo::project(&self.camera, rect, moved) else {
+                            continue;
+                        };
+                        let Some((snapped, cue)) = index.query(
+                            &self.doc,
+                            &self.camera,
+                            rect,
+                            screen,
+                            options,
+                            None,
+                            false,
+                        ) else {
+                            continue;
+                        };
+                        let distance = screen.distance(cue.screen);
+                        if best.is_none_or(|(old_distance, _, _, old_cue)| {
+                            distance < old_distance - 0.001
+                                || ((distance - old_distance).abs() <= 0.001
+                                    && cue.kind.priority() < old_cue.kind.priority())
+                        }) {
+                            best = Some((distance, snapped, snapped - *source, cue));
+                        }
+                    }
+                    if let Some((_, _snapped, snapped_translation, cue)) =
+                        best.filter(|(_, snapped, _, cue)| {
+                            index.candidate_visible(&self.doc, &self.camera, rect, *cue)
+                                && !super::snapping::snap_occluded_by_scene_resources(
+                                    &self.doc,
+                                    &self.obj_reference_models,
+                                    &mut self.obj_surface_indices,
+                                    &self.camera,
+                                    rect,
+                                    cue.screen,
+                                    *snapped,
+                                )
+                        })
+                    {
+                        translation = snapped_translation;
+                        snap_cue = Some(cue);
+                    }
+                }
+            }
+        }
+        self.snapping.cue = snap_cue;
         match editing::transformed_with_scale(
             &drag.before,
             drag.pivot,
@@ -1380,6 +1462,41 @@ if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete
         )
         .gamma_multiply(alpha as f32 / 255.0)
     }
+}
+
+fn selected_snap_points(
+    snapshot: &Snapshot,
+    target: super::guide_resource_ui::PlanarTarget,
+) -> Vec<Vec3> {
+    const MAX_POINTS: usize = 4096;
+    let origin = target.plane.origin();
+    let normal = target.plane.basis().2;
+    let on_plane = |point: Vec3| (point - origin).dot(normal).abs() <= 0.005;
+    let mut result = Vec::new();
+    for (_, stroke) in snapshot {
+        for point in [stroke.points.first(), stroke.points.last()]
+            .into_iter()
+            .flatten()
+        {
+            if on_plane(point.position) {
+                result.push(point.position);
+            }
+        }
+        for pair in stroke.points.windows(2) {
+            if on_plane(pair[0].position) && on_plane(pair[1].position) {
+                result.push(pair[0].position.lerp(pair[1].position, 0.5));
+            }
+            if result.len() >= MAX_POINTS {
+                result.truncate(MAX_POINTS);
+                return result;
+            }
+        }
+        if result.len() >= MAX_POINTS {
+            result.truncate(MAX_POINTS);
+            return result;
+        }
+    }
+    result
 }
 
 fn paint_selection_box(

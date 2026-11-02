@@ -86,6 +86,7 @@ impl SketchApp {
         if self.shape_tool.draft.take().is_some() {
             self.status = "Shape preview cancelled.".into();
         }
+        self.clear_planar_snap();
     }
 
     pub(super) fn shape_controls(&mut self, ui: &mut egui::Ui) {
@@ -153,6 +154,8 @@ impl SketchApp {
             let Some(world) = target.hit(origin, direction) else {
                 return;
             };
+            self.prepare_planar_snap(target, rect, &HashSet::new());
+            let world = self.snap_planar_point(world, pos, target, rect, None);
             let plane = target.plane;
             let mut brush = self.brush;
             brush.dynamics.taper_start = 0.0;
@@ -170,63 +173,81 @@ impl SketchApp {
                 preview: None,
             });
         }
-        let Some(draft) = self.shape_tool.draft.as_mut() else {
+        let Some(draft) = self.shape_tool.draft.as_ref() else {
             return;
         };
         if !rect.contains(pos) {
             return;
         }
         let (origin, direction) = crate::gizmo::ray(&self.camera, rect, pos);
-        if let Some(world) = draft.target.hit(origin, direction) {
-            draft.current = world;
+        let target = draft.target;
+        let plane = draft.plane;
+        let first = draft.first;
+        let mode = draft.mode;
+        let color = draft.color;
+        let radius = draft.radius;
+        let pressure = draft.pressure;
+        let brush = draft.brush;
+        if let Some(world) = target.hit(origin, direction) {
+            let excluded = HashSet::new();
+            if self.planar_snap_index_stale(target, rect, &excluded) {
+                self.prepare_planar_snap(target, rect, &excluded);
+            }
+            let world = self.snap_planar_point(world, pos, target, rect, None);
             let id = self.next_id;
-            let result = match (draft.mode, self.shape_tool.precise) {
+            let result = match (mode, self.shape_tool.precise) {
                 (ShapeMode::Circle, true) => crate::shape_geometry::circle_from_center(
-                    draft.plane,
-                    draft.first,
+                    plane,
+                    first,
                     self.shape_tool.radius,
                     id,
                     self.doc.active_layer,
-                    draft.color,
-                    draft.radius,
-                    draft.pressure,
-                    draft.brush,
+                    color,
+                    radius,
+                    pressure,
+                    brush,
                 ),
                 (ShapeMode::Circle, false) => crate::shape_geometry::circle_from_center_edge(
-                    draft.plane,
-                    draft.first,
-                    draft.current,
+                    plane,
+                    first,
+                    world,
                     id,
                     self.doc.active_layer,
-                    draft.color,
-                    draft.radius,
-                    draft.pressure,
-                    draft.brush,
+                    color,
+                    radius,
+                    pressure,
+                    brush,
                 ),
                 (ShapeMode::Ellipse, true) => crate::shape_geometry::ellipse_from_center(
-                    draft.plane,
-                    draft.first,
+                    plane,
+                    first,
                     self.shape_tool.width * 0.5,
                     self.shape_tool.height * 0.5,
                     id,
                     self.doc.active_layer,
-                    draft.color,
-                    draft.radius,
-                    draft.pressure,
-                    draft.brush,
+                    color,
+                    radius,
+                    pressure,
+                    brush,
                 ),
                 (ShapeMode::Ellipse, false) => crate::shape_geometry::ellipse_from_bounds(
-                    draft.plane,
-                    draft.first,
-                    draft.current,
+                    plane,
+                    first,
+                    world,
                     id,
                     self.doc.active_layer,
-                    draft.color,
-                    draft.radius,
-                    draft.pressure,
-                    draft.brush,
+                    color,
+                    radius,
+                    pressure,
+                    brush,
                 ),
             };
+            let draft = self
+                .shape_tool
+                .draft
+                .as_mut()
+                .expect("shape draft remains active");
+            draft.current = world;
             match result {
                 Ok(stroke)
                     if stroke
@@ -251,8 +272,10 @@ impl SketchApp {
     pub(super) fn release_shape(&mut self, pos: Pos2, pressure: f32, rect: Rect) {
         self.shape_input(pos, pressure, rect, false);
         let Some(mut draft) = self.shape_tool.draft.take() else {
+            self.clear_planar_snap();
             return;
         };
+        self.clear_planar_snap();
         let Some(mut stroke) = draft.preview.take() else {
             self.status = "Shape was too small or outside the valid document range.".into();
             return;

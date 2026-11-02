@@ -106,6 +106,8 @@ mod ring_checks;
 mod selection;
 #[path = "shape_tool.rs"]
 mod shape_tool;
+#[path = "snapping.rs"]
+mod snapping;
 #[path = "starter.rs"]
 mod starter;
 #[path = "tutorial_ui.rs"]
@@ -156,6 +158,7 @@ pub struct SketchApp {
     line: line_tool::LineUi,
     curve_tool: curve_tool::CurveUi,
     shape_tool: shape_tool::ShapeTool,
+    snapping: snapping::SnapUi,
     mirror_ui: mirror_ui::MirrorUi,
     drawing_library: crate::drawing_library::DrawingLibrary,
     show_drawing_library: bool,
@@ -1266,6 +1269,7 @@ impl SketchApp {
             line: Default::default(),
             curve_tool: Default::default(),
             shape_tool: Default::default(),
+            snapping: Default::default(),
             mirror_ui: Default::default(),
             show_view: false,
             view_verification_frame: None,
@@ -3131,6 +3135,7 @@ impl SketchApp {
             self.mixed_resource_controls(ui);
             return;
         }
+        self.snapping.controls(ui);
         self.line_controls(ui);
         self.curve_controls(ui);
         self.fill_controls(ui);
@@ -4351,6 +4356,10 @@ impl SketchApp {
                 i.smooth_scroll_delta.y,
             )
         });
+        self.snapping.options.bypass = alt;
+        if alt {
+            self.snapping.cue = None;
+        }
         if !ctx.input(|i| i.focused)
             && self.appearance_layout_verification.is_none()
             && self.verification_frame.is_none()
@@ -5349,6 +5358,7 @@ impl eframe::App for SketchApp {
                     self.mirror_overlay(ui, rect);
                     self.fill_overlay(ui, rect);
                     self.shape_overlay(ui, rect);
+                    snapping::overlay(ui, self.snapping.cue, rect);
                     self.selection_overlay(ui, rect);
                     self.plane_overlay(ui, rect);
                     self.placement_overlay(ui, rect);
