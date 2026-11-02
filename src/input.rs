@@ -1436,10 +1436,7 @@ pub struct PenInput;
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 impl PenInput {
     pub fn install(_: &eframe::CreationContext<'_>) -> Result<Self, String> {
-        Err(
-            "Native pen backend currently implemented on Windows only; mouse drawing is available."
-                .into(),
-        )
+        Err("Native pen input is unavailable on this platform; mouse drawing is available.".into())
     }
     pub fn drain(&self) -> Vec<PenSample> {
         Vec::new()

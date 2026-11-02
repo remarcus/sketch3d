@@ -3310,11 +3310,9 @@ impl SketchApp {
         ui.label(RichText::new(&self.renderer.adapter).small());
         ui.add_space(12.0);
         ui.separator();
-        ui.label("Windows tablet setup");
-        ui.label(
-            "Enable Windows Ink in your tablet driver. Map the tablet to the intended monitor.",
-        );
-        ui.label("Wintab and native macOS / Linux pen backends are future work.");
+        ui.label("Tablet setup");
+        ui.label("Windows: enable Windows Ink in the tablet driver. Linux X11: XInput2. Linux Wayland: compositor tablet-v2. macOS: AppKit.");
+        ui.label("Native pen setup errors appear above; mouse drawing remains available. Linux/macOS runtime and physical tablet checks remain open (SKETCH-006/008).");
         ui.separator();
         ui.label("RECOVERY");
         ui.label(&self.recovery.notice);

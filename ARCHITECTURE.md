@@ -8,7 +8,7 @@ Native tablet messages -> chronological normalized samples -> ray/plane intersec
 
 - `document.rs`: versioned file schema and validation. Does not depend on the UI or platform APIs.
 - `geometry.rs`: camera, ray/plane intersection, grid, and brush meshes with pressure/tilt/taper. Unit tested separately from graphics hardware.
-- `input.rs`: normalized sample type and Windows Ink listener. Contains the platform-specific unsafe boundary.
+- `input.rs`: normalized pen samples and platform listeners: Windows Ink, Linux XInput2, Linux Wayland tablet-v2, and macOS AppKit. Platform-specific API boundaries live behind the shared sample interface.
 - `renderer.rs`: custom WGSL pipeline, offscreen color/depth targets, camera uniform, grid and per-stroke GPU cache. Reallocates buffers geometrically; completed stroke buffers are reused.
 - `editing.rs`: grouped snapshots, reversible edits, selection bounds, and validated transforms. Tests cover exact stroke order and attribute preservation.
 - `gizmo.rs`: projection, depth-aware picking, axis/ray constraints, and screen-sized world-space handles.
@@ -17,11 +17,11 @@ Native tablet messages -> chronological normalized samples -> ray/plane intersec
 
 ## Tablet boundary
 
-The Windows listener hooks the app's own window procedure on its UI thread and forwards all messages to eframe. It reads pointer history while handling each pointer message, since the history belongs to that message. History is reversed to chronological order before queueing. Screen coordinates are converted to client pixels, then to egui points using pixels_per_point. Focus/capture loss cancels an in-progress stroke. The previous window procedure is restored on drop if our hook is still installed.
+The Windows listener hooks the app's own window procedure on its UI thread and forwards all messages to eframe. It reads pointer history while handling each pointer message, since the history belongs to that message. History is reversed to chronological order before queueing. Screen coordinates are converted to client pixels, then to egui points using pixels_per_point. Focus/capture loss cancels an in-progress stroke. The previous window procedure is restored on drop if our hook is still installed. Linux selects XInput2 on X11 or imports the active Wayland display/surface and binds tablet-v2; macOS installs an AppKit event monitor on the main thread. Native listener setup failures are reported through the Input lab, and mouse input remains available.
 
 Pressure is optional in the normalized sample. A pressure value of zero is valid, not a marker for missing input. A missing pressure value produces constant-width drawing while diagnostics continue to say not reported. Mouse-promoted pen events are temporarily suppressed on the canvas when native samples are arriving; egui still receives those events for tool widgets.
 
-Future backends should preserve sample order, pressure availability, tilt availability, contact lifecycle, and cancellation. Avoid coupling the document format to Windows structures. Before broad tablet support, add pointer-ID/device routing and verify cancellation/capture behavior with actual devices. The prototype assumes one active pen.
+Every backend maps into the same ordered sample and contact lifecycle without coupling document data to platform structures. Cross-target checks and device-free mapping checks do not establish runtime event-loop/compositor behavior or physical-device pressure, tilt, cancellation, and coordinate handling. Linux Wayland requires the compositor to expose tablet-v2. Runtime validation remains open for Linux and macOS; physical-device validation remains open for all platforms under SKETCH-006/008. The prototype assumes one active pen.
 
 ## Rendering and performance
 
@@ -35,7 +35,7 @@ The document schema contains only semantic drawing data, not GPU vertices. Edit 
 
 ## Scope
 
-The application uses independent code and its own UI and document format. It does not read Feather's proprietary files. Native cross-platform pen support and package distribution require additional implementation and validation.
+The application uses independent code and its own UI and document format. It does not read Feather's proprietary files. Native pen backends exist across Windows, Linux, and macOS; Linux/macOS runtime behavior, physical tablets, and platform package distribution still need validation.
 
 ## Selection transactions
 

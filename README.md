@@ -13,7 +13,7 @@ Sketch3D is an open-source, tablet-first 3D sketching app written in Rust. Draw 
 - Automatic recovery and a local drawing library for organizing native drawings.
 - Artwork image, OBJ, and GLB exports, plus animated GIF and MP4 exports.
 
-Windows tablet input uses Windows Ink. Linux X11 includes an XInput2 backend and macOS includes an AppKit event monitor; both pass cross-target compile checks, but neither has been runtime or device tested. Wayland currently supports mouse input only. Physical-device behavior remains unverified.
+Native pen backends are implemented for Windows Ink, Linux XInput2 on X11, Linux tablet-v2 on Wayland, and macOS AppKit. Linux and macOS cross-target checks pass, but their runtime event-loop behavior has not been verified. Physical tablet behavior has not been verified on any platform; mouse drawing remains available when native pen setup fails or is unavailable.
 
 ## Run
 
@@ -29,7 +29,14 @@ On Debian/Ubuntu, install the development packages used by winit, Wayland/X11, a
 
 ## Tablet setup
 
-On Windows, install your tablet manufacturer's driver and enable **Windows Ink** in its application profile. Linux pen input is limited to X11 and uses the tablet valuators exposed by XInput2; Wayland is not supported yet. macOS uses AppKit tablet events. Map the tablet to the intended monitor and preserve the correct aspect ratio. Sketch3D receives driver-mapped coordinates and does not provide its own tablet calibration. Linux and macOS pen behavior still needs runtime and device validation.
+Sketch3D attempts to install the native pen listener when the application window starts. The Input lab reports whether setup succeeded; if it fails, mouse drawing remains available.
+
+- **Windows:** uses Windows Ink. Install the tablet manufacturer's driver and enable **Windows Ink** in its application profile.
+- **Linux on X11:** uses XInput2 tablet valuators.
+- **Linux on Wayland:** uses the stable tablet-v2 protocol. The compositor must expose that protocol; otherwise native pen setup is unavailable and drawing falls back to mouse input.
+- **macOS:** uses AppKit tablet events.
+
+Map the tablet to the intended monitor and preserve the correct aspect ratio. Sketch3D receives driver-mapped coordinates and does not provide its own tablet calibration. Linux and macOS backends are compile-checked, but their compositor/runtime event flow is unverified. Physical-device behavior remains unverified on all platforms; see SKETCH-006 and SKETCH-008 in `TASKS.md` for the remaining evidence.
 
 Draw in the central canvas. The Input lab reports pen samples, pressure, and tilt. If it shows **WAITING FOR PEN**, input is arriving as mouse input and pressure is unavailable. Unsupported tilt is shown as not reported. Mouse drawing uses constant pressure.
 
