@@ -49,6 +49,21 @@ class MemoryBucket {
   }
 }
 
+function fakeRateLimiter(success = true, fail = false) {
+  const keys = [];
+  const state = { success, fail };
+  return {
+    keys,
+    set success(value) { state.success = value; },
+    set fail(value) { state.fail = value; },
+    async limit({ key }) {
+      keys.push(key);
+      if (state.fail) throw new Error("simulated limiter failure");
+      return { success: state.success };
+    },
+  };
+}
+
 function harness({ maxObjects = 900, maxBytes = 9 * 1024 * 1024 * 1024 } = {}) {
   const bucket = new MemoryBucket();
   const manager = new ShareManager({}, {
@@ -60,18 +75,22 @@ function harness({ maxObjects = 900, maxBytes = 9 * 1024 * 1024 * 1024 } = {}) {
     idFromName(name) { assert.equal(name, "global-share-quota-v1"); return name; },
     get() { return manager; },
   };
+  const apiRateLimiter = fakeRateLimiter();
+  const downloadRateLimiter = fakeRateLimiter();
   const env = {
     SHARES: bucket,
     SHARE_MANAGER: namespace,
+    API_RATE_LIMITER: apiRateLimiter,
+    DOWNLOAD_RATE_LIMITER: downloadRateLimiter,
     ASSETS: { async fetch() { return new Response("viewer asset", { status: 200 }); } },
   };
-  return { bucket, manager, env };
+  return { bucket, manager, env, apiRateLimiter, downloadRateLimiter };
 }
 
 async function createShare(env, bytes = makeGlb()) {
   return await worker.fetch(new Request("https://share.example/api/v1/models", {
     method: "POST",
-    headers: { "content-type": "model/gltf-binary" },
+    headers: { "content-type": "model/gltf-binary", "cf-connecting-ip": "198.51.100.9" },
     body: bytes,
   }), env);
 }
@@ -85,6 +104,33 @@ test("validates GLB 2.0 and rejects external resources", () => {
   const invalidVersion = makeGlb();
   invalidVersion.writeUInt32LE(1, 4);
   assert.throws(() => validateGlb(invalidVersion), /not a glTF 2.0 GLB/i);
+});
+
+test("applies mutation and public-download rate limits before storage work", async () => {
+  const mutation = harness();
+  mutation.apiRateLimiter.success = false;
+  const deniedCreate = await createShare(mutation.env);
+  assert.equal(deniedCreate.status, 429);
+  assert.equal(deniedCreate.headers.get("retry-after"), "60");
+  assert.deepEqual(mutation.apiRateLimiter.keys, ["198.51.100.9"]);
+  assert.equal(mutation.bucket.objects.size, 0);
+
+  const download = harness();
+  const created = await (await createShare(download.env)).json();
+  download.downloadRateLimiter.success = false;
+  const deniedRead = await worker.fetch(new Request(
+    `https://share.example/models/${created.id}.glb`,
+  ), download.env);
+  assert.equal(deniedRead.status, 429);
+  assert.deepEqual(download.downloadRateLimiter.keys, [created.id]);
+});
+
+test("fails closed if the configured rate limiter is unavailable", async () => {
+  const { env, apiRateLimiter, bucket } = harness();
+  apiRateLimiter.fail = true;
+  const response = await createShare(env);
+  assert.equal(response.status, 503);
+  assert.equal(bucket.objects.size, 0);
 });
 
 test("creates public URLs and keeps only a capability hash in R2 metadata", async () => {

@@ -27,13 +27,13 @@ This is the current service adapter for the static viewer plus upload/update/del
 - These rates do not include a custom domain, billing administration, monitoring, abuse handling, or support. R2 usage above its free allowance is billable, so the service would need hard per-model and aggregate storage quotas, expiration, deletion accounting, and usage monitoring before launch. The Workers Free request limit stops excess requests with an error; that does not cap accumulated R2 storage.
 - The $5 Workers plan is a possible baseline if the free request/CPU limits prove too small; it is not a total monthly-cost ceiling. No budget, account owner, retention period, or billing account has been approved.
 
-The Worker uses a serialized Durable Object to enforce 900 active objects and 9 GiB total GLB storage, with a 10 MiB per-model cap. Links expire after 30 days; expired URLs return 404 immediately, while R2 lifecycle cleanup can take up to 24 hours. Authenticated delete removes an object immediately. These quotas do not cap request volume or total account charges, and budget alerts are not hard spending caps. Add rate limits and monitoring before deployment.
+The Worker uses a serialized Durable Object to enforce 900 active objects and 9 GiB total GLB storage, with a 10 MiB per-model cap. Links expire after 30 days; expired URLs return 404 immediately, while R2 lifecycle cleanup can take up to 24 hours. Authenticated delete removes an object immediately. Cloudflare Rate Limiting bindings now limit API mutations to 5 requests per IP per 60 seconds and public GLB downloads to 120 requests per model ID per 60 seconds. These limits are approximate and location-scoped, so they may be exceeded and are not global quotas or spending caps. API limits can group users behind shared NAT. Binding errors fail closed with 503; denied requests return 429. Configure unique namespace IDs and monitor usage before deployment.
 
 Pricing changes over time. Recheck the official pages and estimate costs against an approved monthly ceiling before deployment.
 
 ## Validation before implementation
 
-Before deployment, name the account/billing owner and abuse-response owner, approve a monthly hard budget and 30-day retention, and add request-level abuse controls. Validate the viewer and GLB limits on low-end Android/iOS browsers, and verify remote lifecycle behavior against the real provider. The desktop app has no service URL configured by default; publishing cannot occur until an operator explicitly configures one.
+Before deployment, name the account/billing owner and abuse-response owner, approve a monthly budget and 30-day retention, configure unique rate-limit namespace IDs, and establish monitoring. Validate the viewer and GLB limits on low-end Android/iOS browsers, and verify remote lifecycle behavior against the real provider. The desktop app has no service URL configured by default; publishing cannot occur until an operator explicitly configures one.
 
 ## Viewer, client, and service implementation
 
@@ -41,4 +41,4 @@ The static viewer is implemented in `web/share-viewer/`, the Cloudflare adapter 
 
 The viewer accepts a local `.glb` or a same-site HTTPS `.glb` URL, checks the binary glTF 2.0 container before rendering, and provides orbit/pan/zoom/reset controls plus loading and error messages. It rejects external buffer/image URI references in a GLB; shared fetches omit credentials and reject redirects. Local files are not uploaded. The pinned Google `<model-viewer>` 4.4.0 component offers user-initiated AR. The page itself does not record or upload camera/microphone data and announces a 3D fallback when AR is unavailable or fails.
 
-The 14 viewer Node checks, 9 Worker fake tests, formatting, Cargo compile check, and strict Clippy pass. Headless Chrome rendered the real house GLB. Live remote API use, deployed lifecycle and billing, and mobile hardware behavior remain unverified. The service has no configured account or production origin.
+The 14 viewer Node checks, Worker fake tests (including rate-limit rejection and binding failure), formatting, Cargo compile check, and strict Clippy pass. Headless Chrome rendered the real house GLB. Live remote API use, deployed lifecycle and billing, and mobile hardware behavior remain unverified. The service has no configured account or production origin.

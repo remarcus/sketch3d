@@ -135,6 +135,16 @@ function readLimit(env, name, fallback) {
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
+async function enforceRateLimit(binding, key) {
+  try {
+    const result = await binding.limit({ key });
+    if (result?.success) return null;
+    return error("Too many requests. Please try again later.", 429, { "retry-after": "60" });
+  } catch {
+    return error("The share service is temporarily unavailable. Please retry.", 503);
+  }
+}
+
 export class ShareManager {
   constructor(state, env) {
     this.state = state;
@@ -329,12 +339,19 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const modelId = publicModelIdFromPath(url.pathname);
-    if (modelId) return await publicModel(request, env, modelId);
+    if (modelId) {
+      const rateLimitResponse = await enforceRateLimit(env.DOWNLOAD_RATE_LIMITER, modelId);
+      if (rateLimitResponse) return rateLimitResponse;
+      return await publicModel(request, env, modelId);
+    }
 
     if (url.pathname.startsWith("/api/v1/")) {
       if (request.method !== "POST" && request.method !== "PUT" && request.method !== "DELETE") {
         return error("Method not allowed.", 405, { allow: "POST, PUT, DELETE" });
       }
+      const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
+      const rateLimitResponse = await enforceRateLimit(env.API_RATE_LIMITER, clientIp);
+      if (rateLimitResponse) return rateLimitResponse;
       const id = env.SHARE_MANAGER.idFromName("global-share-quota-v1");
       const manager = env.SHARE_MANAGER.get(id);
       return await manager.fetch(request);

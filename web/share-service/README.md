@@ -10,7 +10,7 @@ Run the provider-independent Worker tests with:
 node --test web/share-service/test/worker.test.mjs
 ```
 
-They use an in-memory R2 fake and a single Durable Object instance. They do not prove remote Cloudflare behavior, billing limits, or device/browser support.
+They use in-memory R2 and rate-limiter fakes plus a single Durable Object instance. They do not prove remote Cloudflare behavior, billing limits, or device/browser support.
 
 ## API
 
@@ -20,6 +20,8 @@ They use an in-memory R2 fake and a single Durable Object instance. They do not 
 - `GET /models/{id}.glb` serves the public GLB without caching.
 
 The public ID and management capability are generated independently. Only the SHA-256 hash of the capability is stored in private R2 metadata. Capability bytes are never put in the URL or response logs. The global Durable Object serializes writes and enforces at most 900 active shares and 9 GiB total stored GLBs. Each share expires 30 days after its latest publish/update; an expired URL returns 404 immediately, even while R2 lifecycle cleanup is pending.
+
+The Worker also applies a configurable Cloudflare Rate Limiting binding to API mutations (5 requests per IP per 60 seconds) and public model downloads (120 requests per model ID per 60 seconds). A denied request returns 429 with `Retry-After: 60`; if the binding errors, the request fails closed with 503. Cloudflare rate limits are approximate and enforced independently at each Cloudflare location, so requests can exceed the configured count and this is not a global quota or spending cap. API limits are keyed by client IP, which can group people behind a shared NAT. Choose unique rate-limit namespace IDs for the account before deployment and monitor usage and abuse reports.
 
 ## R2 lifecycle setup
 
@@ -33,4 +35,4 @@ Authenticated DELETE removes an object immediately. Cloudflare lifecycle deletio
 
 ## Deployment prerequisites
 
-The Wrangler configuration binds an R2 bucket, a SQLite-backed Durable Object, and the static `web/share-viewer` assets. Deployment remains gated on a named billing/account owner, an approved monthly cost ceiling, lifecycle and abuse-response ownership, and account configuration. Cloudflare free allowances and budget alerts are not a hard bill cap for R2; the code quotas bound active stored bytes and objects, but request/operation volume and provider/account policies still require monitoring.
+The Wrangler configuration binds an R2 bucket, a SQLite-backed Durable Object, the static `web/share-viewer` assets, and request rate limiters. Before deployment, configure unique rate-limit namespace IDs for the account. Deployment remains gated on a named billing/account owner, an approved monthly cost ceiling, lifecycle and abuse-response ownership, and account configuration. Cloudflare free allowances and budget alerts are not a hard bill cap for R2; the code quotas bound active stored bytes and objects, while rate limiting is approximate and request/operation volume and provider/account policies still require monitoring.
