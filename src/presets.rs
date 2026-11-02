@@ -964,6 +964,116 @@ mod tests {
         assert_eq!(ink_brush, resolved.brush);
     }
     #[test]
+    fn stipple_and_spray_presets_resolve_density_pressure_and_spread_deterministically() {
+        let library = Library::default();
+        for name in ["Stipple", "Spray"] {
+            let preset = library
+                .presets
+                .iter()
+                .find(|preset| preset.name == name)
+                .expect("built-in dab preset exists");
+            assert!(preset.brush.dabs.enabled);
+            assert!(preset.brush.dabs.pressure_size.enabled);
+            assert!(preset.brush.dynamics.opacity.enabled);
+            assert_eq!(
+                preset.brush.dabs.scatter == 0.0,
+                name == "Stipple",
+                "Stipple is regular; Spray has bounded spread"
+            );
+            assert!(preset.brush.dabs.spacing.is_finite());
+            assert!(preset.brush.dabs.spacing > 0.0);
+
+            let make_stroke = |points| crate::document::Stroke {
+                curve: None,
+                material: Default::default(),
+                id: preset.id,
+                fill: None,
+                group_id: None,
+                layer_id: 1,
+                color: preset.color,
+                gradient: None,
+                radius: preset.radius,
+                brush: crate::document::Brush {
+                    dab_seed: crate::dab_placement::seed_for_stroke(preset.id),
+                    ..preset.brush
+                },
+                points,
+            };
+            let sparse = make_stroke(vec![
+                crate::document::Point {
+                    position: glam::Vec3::ZERO,
+                    pressure: 0.15,
+                    tilt: None,
+                    time_ms: 0,
+                },
+                crate::document::Point {
+                    position: glam::Vec3::X * 3.0,
+                    pressure: 1.0,
+                    tilt: None,
+                    time_ms: 1000,
+                },
+            ]);
+            let mut dense = sparse.clone();
+            dense.points = (0..=80)
+                .map(|index| {
+                    let t = index as f32 / 80.0;
+                    crate::document::Point {
+                        position: glam::Vec3::X * (3.0 * t),
+                        pressure: 0.15 + 0.85 * t,
+                        tilt: None,
+                        time_ms: (1000.0 * t).round() as u32,
+                    }
+                })
+                .collect();
+            let resolved = crate::dab_placement::sample(&sparse).unwrap();
+            assert_eq!(resolved, crate::dab_placement::sample(&sparse).unwrap());
+            let dense_resolved = crate::dab_placement::sample(&dense).unwrap();
+            assert_eq!(resolved.len(), dense_resolved.len());
+            for (sparse_dab, dense_dab) in resolved.iter().zip(&dense_resolved) {
+                assert!(sparse_dab.position.distance(dense_dab.position) < 1.0e-5);
+                assert!((sparse_dab.pressure - dense_dab.pressure).abs() < 1.0e-5);
+                assert!((sparse_dab.size_scale - dense_dab.size_scale).abs() < 1.0e-5);
+            }
+            assert!(resolved.len() > 1);
+            assert!(resolved.len() <= crate::dab_placement::MAX_DABS_PER_STROKE);
+            assert!(resolved.iter().all(|dab| dab.position.is_finite()));
+            assert!(resolved.first().unwrap().pressure < resolved.last().unwrap().pressure);
+
+            let tap = make_stroke(vec![sparse.points[0]]);
+            let tap_dabs = crate::dab_placement::sample(&tap).unwrap();
+            assert_eq!(tap_dabs.len(), 1);
+            assert!(tap_dabs[0].position.is_finite());
+
+            let mut sparse_density = sparse.clone();
+            sparse_density.brush.dabs.spacing *= 1.5;
+            assert!(crate::dab_placement::sample(&sparse_density).unwrap().len() < resolved.len());
+
+            let mut pressure_neutral = sparse.clone();
+            pressure_neutral.brush.dabs.pressure_size.enabled = false;
+            let neutral = crate::dab_placement::sample(&pressure_neutral).unwrap();
+            assert!(resolved[0].size_scale < neutral[0].size_scale);
+            assert!(resolved
+                .iter()
+                .zip(neutral)
+                .all(|(mapped, unmapped)| { mapped.size_scale <= unmapped.size_scale + 1.0e-6 }));
+
+            if name == "Spray" {
+                let mut no_spread = sparse.clone();
+                no_spread.brush.dabs.scatter = 0.0;
+                let regular = crate::dab_placement::sample(&no_spread).unwrap();
+                assert!(resolved
+                    .iter()
+                    .zip(regular)
+                    .any(
+                        |(sprayed, regular)| sprayed.position.distance(regular.position) > 1.0e-4
+                    ));
+                assert!(resolved.iter().all(|dab| dab.position.y.abs()
+                    <= sparse.radius * sparse.brush.dabs.scatter + 1.0e-6));
+            }
+        }
+    }
+
+    #[test]
     fn invalid_changes_are_transactional_and_names_are_unique() {
         let mut library = Library::default();
         let original = library.clone();

@@ -14,7 +14,7 @@ const WARMUPS: usize = 1;
 const SAMPLES: usize = 7;
 
 pub fn run() -> Result<(), String> {
-    let cases = vec![
+    let mut cases = vec![
         benchmark_long_stroke(),
         benchmark_long_dab_stroke(),
         benchmark_many_short_strokes(),
@@ -22,6 +22,7 @@ pub fn run() -> Result<(), String> {
         benchmark_large_selection()?,
         benchmark_linked_groups()?,
     ];
+    cases.extend(benchmark_dab_presets());
 
     let report = json!({
         "passed": true,
@@ -184,6 +185,93 @@ fn benchmark_long_dab_stroke() -> Value {
             "timing": stats(&preview_timing)
         }
     })
+}
+
+fn benchmark_dab_presets() -> Vec<Value> {
+    const POINTS: usize = 4_096;
+    let library = crate::presets::Library::default();
+    [
+        ("Stipple", 57.3, None),
+        ("Spray", 57.3, None),
+        ("Spray_dense_limit", 19.0, Some(0.1)),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (name, length, spacing_override))| {
+        let preset_name = if name == "Spray_dense_limit" {
+            "Spray"
+        } else {
+            name
+        };
+        let preset = library
+            .presets
+            .iter()
+            .find(|preset| preset.name == preset_name)
+            .expect("built-in dab benchmark preset exists");
+        let mut stroke = make_stroke(730 + index as u64, POINTS, 0.0);
+        stroke.radius = preset.radius;
+        stroke.brush = preset.brush;
+        stroke.brush.dab_seed = dab_placement::seed_for_stroke(stroke.id);
+        if let Some(spacing) = spacing_override {
+            stroke.brush.dabs.spacing = spacing;
+        }
+        stroke.points = (0..POINTS)
+            .map(|point| {
+                let t = point as f32 / (POINTS - 1) as f32;
+                Point {
+                    position: Vec3::new(length * t, 0.0, 0.0),
+                    pressure: 0.15 + 0.85 * t,
+                    tilt: None,
+                    time_ms: (1000.0 * t).round() as u32,
+                }
+            })
+            .collect();
+        let resolved = dab_placement::sample(&stroke)
+            .expect("built-in dab benchmark settings resolve within the budget");
+        let expected_dabs = dab_placement::point_count(&stroke)
+            .expect("built-in dab benchmark point count stays within the budget");
+        assert_eq!(resolved.len(), expected_dabs);
+        let mut sampled_count = 0usize;
+        let sampler_timing = measure(|| {
+            let dabs = dab_placement::sample(black_box(&stroke))
+                .expect("built-in dab benchmark settings remain valid");
+            sampled_count = dabs.len();
+            black_box(dabs);
+        });
+        let mesh = geometry::stroke_mesh(&stroke);
+        let mesh_timing = measure(|| {
+            black_box(geometry::stroke_mesh(black_box(&stroke)));
+        });
+        let document = Document {
+            linked_stroke_groups: Default::default(),
+            strokes: vec![stroke.clone()],
+            ..Document::default()
+        };
+        let glb = crate::export::encode(&document, None)
+            .expect("built-in dab benchmark GLB remains within export budgets");
+        let export_timing = measure(|| {
+            black_box(
+                crate::export::encode(black_box(&document), None)
+                    .expect("built-in dab benchmark GLB remains within export budgets"),
+            );
+        });
+        json!({
+            "name": format!("{}_preset_placement_mesh_export", name.to_lowercase()),
+            "fixture": "4,096 evenly spaced points over a planar path with interpolated pressure",
+            "points": POINTS,
+            "world_length": length,
+            "radius": stroke.radius,
+            "spacing_in_radii": stroke.brush.dabs.spacing,
+            "scatter_in_radii": stroke.brush.dabs.scatter,
+            "resolved_dabs": sampled_count,
+            "mesh_vertices": mesh.len(),
+            "glb_bytes": glb.bytes.len(),
+            "sampler": stats(&sampler_timing),
+            "mesh_rebuild": stats(&mesh_timing),
+            "glb_encode": stats(&export_timing),
+        })
+    })
+    .collect()
 }
 
 fn benchmark_many_short_strokes() -> Value {

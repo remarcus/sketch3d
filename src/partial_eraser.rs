@@ -109,38 +109,49 @@ pub fn plan_partial_erase(
             continue;
         };
         if stroke.points.len() == 1 {
-            let world = stroke.points[0].position;
-            let Some((screen, _)) = projected.first() else {
-                continue;
+            let touched = if stroke.brush.dabs.enabled {
+                dab_marks_hit(stroke, camera, canvas, &erase_segments, radius_px)?
+            } else {
+                let world = stroke.points[0].position;
+                let Some((screen, _)) = projected.first() else {
+                    continue;
+                };
+                let width = crate::geometry::stroke_extent(stroke)
+                    / camera.world_per_pixel(world, canvas.height());
+                erase_segments
+                    .iter()
+                    .any(|(a, b)| point_segment_distance(*screen, *a, *b).0 <= radius_px + width)
             };
-            let width = crate::geometry::stroke_extent(stroke)
-                / camera.world_per_pixel(world, canvas.height());
-            if erase_segments
-                .iter()
-                .any(|(a, b)| point_segment_distance(*screen, *a, *b).0 <= radius_px + width)
-            {
+            if touched {
                 before.push((index, stroke.clone()));
                 changed_fragments.push((index, Vec::new()));
             }
             continue;
         }
 
-        let mut cuts = Vec::with_capacity(stroke.points.len() - 1);
-        let mut touched = false;
-        for segment_index in 0..stroke.points.len() - 1 {
-            let (screen_a, _) = projected[segment_index];
-            let (screen_b, _) = projected[segment_index + 1];
-            let world_a = stroke.points[segment_index].position;
-            let world_b = stroke.points[segment_index + 1].position;
-            let world_mid = world_a.lerp(world_b, 0.5);
-            let threshold = radius_px
-                + crate::geometry::stroke_extent(stroke)
-                    / camera.world_per_pixel(world_mid, canvas.height());
-            let intervals = erased_intervals(screen_a, screen_b, &erase_segments, threshold);
-            touched |= !intervals.is_empty();
-            cuts.push(intervals);
-        }
-        if touched {
+        let cuts = if stroke.brush.dabs.enabled {
+            dab_erase_intervals(stroke, camera, canvas, &erase_segments, radius_px)?
+        } else {
+            let mut cuts = Vec::with_capacity(stroke.points.len() - 1);
+            for segment_index in 0..stroke.points.len() - 1 {
+                let (screen_a, _) = projected[segment_index];
+                let (screen_b, _) = projected[segment_index + 1];
+                let world_a = stroke.points[segment_index].position;
+                let world_b = stroke.points[segment_index + 1].position;
+                let world_mid = world_a.lerp(world_b, 0.5);
+                let threshold = radius_px
+                    + crate::geometry::stroke_extent(stroke)
+                        / camera.world_per_pixel(world_mid, canvas.height());
+                cuts.push(erased_intervals(
+                    screen_a,
+                    screen_b,
+                    &erase_segments,
+                    threshold,
+                ));
+            }
+            cuts
+        };
+        if cuts.iter().any(|intervals| !intervals.is_empty()) {
             let fragments = retained_fragments(stroke, &cuts);
             before.push((index, stroke.clone()));
             changed_fragments.push((index, fragments));
@@ -200,6 +211,108 @@ fn project_points(stroke: &Stroke, camera: &Camera, canvas: Rect) -> Option<Vec<
         .iter()
         .map(|point| gizmo::project(camera, canvas, point.position))
         .collect()
+}
+
+fn dab_marks_hit(
+    stroke: &Stroke,
+    camera: &Camera,
+    canvas: Rect,
+    eraser: &[(Pos2, Pos2)],
+    radius_px: f32,
+) -> Result<bool, String> {
+    let dabs = crate::dab_placement::sample(stroke)?;
+    let footprint = dab_footprint(stroke);
+    for dab in dabs {
+        let Some((screen, _)) = gizmo::project(camera, canvas, dab.position) else {
+            continue;
+        };
+        let dab_radius_px =
+            footprint * dab.size_scale / camera.world_per_pixel(dab.position, canvas.height());
+        if eraser
+            .iter()
+            .any(|(a, b)| point_segment_distance(screen, *a, *b).0 <= radius_px + dab_radius_px)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn dab_erase_intervals(
+    stroke: &Stroke,
+    camera: &Camera,
+    canvas: Rect,
+    eraser: &[(Pos2, Pos2)],
+    radius_px: f32,
+) -> Result<Vec<Vec<(f32, f32)>>, String> {
+    let distances = crate::dynamics::arc_lengths(&stroke.points);
+    let length = distances.last().copied().unwrap_or(0.0);
+    let step = stroke.radius * stroke.brush.dabs.spacing;
+    let footprint = dab_footprint(stroke);
+    let mut cuts = vec![Vec::new(); stroke.points.len().saturating_sub(1)];
+    if length <= 1.0e-8 || step <= 0.0 {
+        return Ok(cuts);
+    }
+
+    for dab in crate::dab_placement::sample(stroke)? {
+        let Some((screen, _)) = gizmo::project(camera, canvas, dab.position) else {
+            continue;
+        };
+        let dab_radius_px =
+            footprint * dab.size_scale / camera.world_per_pixel(dab.position, canvas.height());
+        let hit = eraser
+            .iter()
+            .any(|(a, b)| point_segment_distance(screen, *a, *b).0 <= radius_px + dab_radius_px);
+        if !hit {
+            continue;
+        }
+
+        // Remove the spacing cell owned by each visible dab that the eraser
+        // touches. This maps a scattered mark back to its saved centerline
+        // phase, preserving every unaffected dab and its random variation.
+        let center = dab.gradient_t * length;
+        let start = (center - step * 0.5).max(0.0);
+        let end = (center + step * 0.5).min(length);
+        for segment in 0..cuts.len() {
+            let segment_start = distances[segment];
+            let segment_end = distances[segment + 1];
+            let segment_length = segment_end - segment_start;
+            if segment_length <= 1.0e-8 || start >= segment_end || end <= segment_start {
+                continue;
+            }
+            cuts[segment].push((
+                ((start - segment_start) / segment_length).clamp(0.0, 1.0),
+                ((end - segment_start) / segment_length).clamp(0.0, 1.0),
+            ));
+        }
+    }
+
+    for intervals in &mut cuts {
+        merge_intervals(intervals);
+    }
+    Ok(cuts)
+}
+
+fn dab_footprint(stroke: &Stroke) -> f32 {
+    let maximum =
+        crate::geometry::stroke_extent(stroke) - stroke.radius * stroke.brush.dabs.scatter;
+    (maximum / (1.0 + stroke.brush.dabs.size_variation).max(1.0e-6)).max(stroke.radius)
+}
+
+fn merge_intervals(intervals: &mut Vec<(f32, f32)>) {
+    intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f32, f32)> = Vec::with_capacity(intervals.len());
+    for interval in intervals.drain(..) {
+        if let Some(last) = merged
+            .last_mut()
+            .filter(|last| interval.0 <= last.1 + 0.00001)
+        {
+            last.1 = last.1.max(interval.1);
+        } else {
+            merged.push(interval);
+        }
+    }
+    *intervals = merged;
 }
 
 fn erased_intervals(a: Pos2, b: Pos2, eraser: &[(Pos2, Pos2)], radius: f32) -> Vec<(f32, f32)> {
@@ -562,6 +675,80 @@ mod tests {
             pitch: 0.0,
             ..Camera::default()
         }
+    }
+
+    #[test]
+    fn scattered_dab_pick_and_partial_erase_follow_visible_marks_and_gaps() {
+        let camera = front_camera();
+        let canvas = canvas();
+        let mut source = line([Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)]);
+        source.brush.kind = crate::document::BrushKind::Round;
+        source.brush.normal = Vec3::Z;
+        source.brush.tangent = Vec3::X;
+        source.brush.texture.kind = crate::texture::TextureKind::Solid;
+        source.radius = 0.05;
+        source.brush.dabs.enabled = true;
+        source.brush.dabs.spacing = 2.4;
+        source.brush.dabs.scatter = 3.5;
+        source.brush.dabs.size_variation = 0.0;
+        source.brush.dab_seed = 733;
+
+        let dabs = crate::dab_placement::sample(&source).unwrap();
+        let scattered = dabs
+            .iter()
+            .find(|dab| dab.position.y.abs() >= 0.12)
+            .expect("spray fixture resolves marks away from its centerline");
+        let mark = point(&camera, canvas, scattered.position);
+        let document = crate::document::Document {
+            linked_stroke_groups: Default::default(),
+            strokes: vec![source.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            gizmo::pick(&document, &camera, canvas, mark),
+            Some(source.id),
+            "picking resolves the rendered scattered dab mesh"
+        );
+
+        let plan = plan_partial_erase(&document, &camera, canvas, &[mark], 1.0, 100)
+            .unwrap()
+            .expect("a visible scattered dab can be partially erased");
+        assert_eq!(plan.split, 1);
+        let mut erased = document.clone();
+        plan.edit.apply(&mut erased, true);
+        assert!(erased.strokes.len() >= 2);
+        let surviving_dabs: Vec<_> = erased
+            .strokes
+            .iter()
+            .flat_map(|stroke| crate::dab_placement::sample(stroke).unwrap())
+            .collect();
+        assert!(surviving_dabs
+            .iter()
+            .all(|dab| { dab.position.distance(scattered.position) > 1.0e-4 }));
+
+        let distances = crate::dynamics::arc_lengths(&source.points);
+        let length = *distances.last().unwrap();
+        let gap = (1..1000)
+            .map(|step| Vec3::new(-1.0 + 2.0 * step as f32 / 1000.0, 0.0, 0.0))
+            .find(|centerline| {
+                let screen = point(&camera, canvas, *centerline);
+                dabs.iter().all(|dab| {
+                    let dab_screen = point(&camera, canvas, dab.position);
+                    let radius = (crate::geometry::stroke_extent(&source)
+                        - source.radius * source.brush.dabs.scatter)
+                        / camera.world_per_pixel(dab.position, canvas.height());
+                    screen.distance(dab_screen) > 1.0 + radius
+                })
+            })
+            .expect("spray fixture has a visible empty gap");
+        let gap_screen = point(&camera, canvas, gap);
+        assert!(
+            plan_partial_erase(&document, &camera, canvas, &[gap_screen], 1.0, 100)
+                .unwrap()
+                .is_none(),
+            "empty scattered gaps are not erased as if the centerline were painted"
+        );
+        assert!(length > 0.0);
     }
 
     #[test]

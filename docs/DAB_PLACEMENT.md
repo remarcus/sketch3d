@@ -46,7 +46,10 @@ space between dabs.
 - Partial erase stores each retained fragment's original arc-distance offset
   and full length. The global dab phase, random values, and taper survive a
   split. Rigid transforms preserve the phase; uniform scaling scales its
-  distance values with the drawing.
+  distance values with the drawing. Partial erasing projects the resolved dab
+  marks and tests their visible footprints, then removes the spacing cell for
+  each hit dab. Empty gaps are not erased merely because the conservative
+  scatter bound overlaps the gesture.
 - Stipple and spray presets use this same saved geometry path. Stipple uses
   regular spacing with no scatter; spray uses a bounded uniform-area offset in
   the captured plane. Scatter is rejected for curved guides and model targets,
