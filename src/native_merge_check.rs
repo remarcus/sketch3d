@@ -15,6 +15,7 @@ use std::{collections::HashMap, io::Cursor, path::Path};
 
 fn stroke(id: u64, color: [f32; 3], start_x: f32, end_x: f32) -> Stroke {
     Stroke {
+        curve: None,
         fill: None,
         material: Default::default(),
         group_id: None,

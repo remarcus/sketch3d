@@ -154,6 +154,7 @@ impl SketchApp {
                 constraint: self.line.constraint,
                 step: self.line.step,
                 mark: Stroke {
+                    curve: None,
                     material: Default::default(),
                     fill: None,
                     group_id: None,

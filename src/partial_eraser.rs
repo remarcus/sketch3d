@@ -362,6 +362,7 @@ fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> 
             (points.len() >= 2).then(|| {
                 let mut fragment = stroke.clone();
                 fragment.points = points;
+                fragment.curve = None;
                 if fragment.brush.dabs.enabled {
                     fragment.brush.dab_distance_origin = origin;
                 }
@@ -500,6 +501,7 @@ mod tests {
         brush.texture.kind = crate::texture::TextureKind::Pattern;
         brush.texture.seed = 29;
         Stroke {
+            curve: None,
             id: 5,
             color: [0.2, 0.4, 0.7],
             radius: 0.025,

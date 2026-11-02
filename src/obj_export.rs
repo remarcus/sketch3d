@@ -49,6 +49,7 @@ pub fn write_material_verification_bundle(directory: &Path) -> Result<(), String
 
 fn material_stroke(id: u64, material: StrokeMaterial) -> Stroke {
     Stroke {
+        curve: None,
         material,
         fill: None,
         group_id: None,

@@ -103,6 +103,7 @@ pub fn preview(before: &Snapshot, settings: LiquifySettings) -> Result<Snapshot,
     let mut result = before.clone();
     let mut changed = false;
     for (_, stroke) in &mut result {
+        let mut stroke_changed = false;
         for point in &mut stroke.points {
             let distance_squared = point.position.distance_squared(settings.center);
             if distance_squared >= radius_squared {
@@ -122,7 +123,11 @@ pub fn preview(before: &Snapshot, settings: LiquifySettings) -> Result<Snapshot,
                 return Err("Liquify preview would move points outside document bounds".into());
             }
             changed |= position != point.position;
+            stroke_changed |= position != point.position;
             point.position = position;
+        }
+        if stroke_changed {
+            stroke.curve = None;
         }
     }
     if !changed {
@@ -179,6 +184,7 @@ mod tests {
     fn sample_document() -> Document {
         Document {
             strokes: vec![Stroke {
+                curve: None,
                 fill: None,
                 material: Default::default(),
                 group_id: None,

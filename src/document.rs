@@ -231,6 +231,65 @@ pub struct Stroke {
     #[serde(default)]
     pub brush: Brush,
     pub points: Vec<Point>,
+    /// Exact control points for curves created by the smooth curve tool.
+    /// The sampled points remain authoritative for rendering and export.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<CurveData>,
+}
+
+/// Editable source data retained alongside a curve's sampled stroke.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CurveData {
+    pub anchors: Vec<CurveAnchor>,
+    pub frame_origin: Vec3,
+    pub frame_normal: Vec3,
+    pub frame_tangent: Vec3,
+    #[serde(default)]
+    pub half_extent: Option<glam::Vec2>,
+    pub tension: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CurveAnchor {
+    pub position: Vec3,
+    pub pressure: f32,
+    pub incoming: Vec3,
+    pub outgoing: Vec3,
+    pub manual: bool,
+}
+
+impl CurveData {
+    pub fn is_valid(&self) -> bool {
+        let unit = |v: Vec3| v.is_finite() && (v.length_squared() - 1.0).abs() <= 0.001;
+        self.anchors.len() >= 2
+            && self.anchors.len() <= 256
+            && self.frame_origin.is_finite()
+            && self.frame_origin.abs().max_element() <= 10_000.0
+            && unit(self.frame_normal)
+            && unit(self.frame_tangent)
+            && self.frame_normal.dot(self.frame_tangent).abs() <= 0.001
+            && self.tension.is_finite()
+            && (0.0..=2.0).contains(&self.tension)
+            && self.half_extent.is_none_or(|extent| {
+                extent.is_finite() && extent.min_element() > 0.0 && extent.max_element() <= 10_000.0
+            })
+            && self.anchors.iter().all(|anchor| {
+                anchor.position.is_finite()
+                    && anchor.position.abs().max_element() <= 10_000.0
+                    && anchor.pressure.is_finite()
+                    && (0.0..=1.0).contains(&anchor.pressure)
+                    && anchor.incoming.is_finite()
+                    && anchor.incoming.abs().max_element() <= 10_000.0
+                    && anchor.outgoing.is_finite()
+                    && anchor.outgoing.abs().max_element() <= 10_000.0
+                    && anchor.incoming.dot(self.frame_normal).abs() <= 0.01
+                    && anchor.outgoing.dot(self.frame_normal).abs() <= 0.01
+                    && (anchor.position - self.frame_origin)
+                        .dot(self.frame_normal)
+                        .abs()
+                        <= 0.01
+            })
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlanarFill {
@@ -553,6 +612,17 @@ impl Document {
                     .iter()
                     .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
                 || stroke.points.iter().any(|p| !p.is_valid())
+                || stroke.curve.as_ref().is_some_and(|curve| {
+                    !curve.is_valid()
+                        || stroke.points.len() > crate::curve_geometry::MAX_CURVE_POINTS
+                        || stroke
+                            .points
+                            .first()
+                            .is_none_or(|point| point.position != curve.anchors[0].position)
+                        || stroke.points.last().is_none_or(|point| {
+                            point.position != curve.anchors[curve.anchors.len() - 1].position
+                        })
+                })
             {
                 return Err("Invalid or oversized stroke data".into());
             }
@@ -565,6 +635,7 @@ mod tests {
     use super::*;
     fn stroke() -> Stroke {
         Stroke {
+            curve: None,
             material: Default::default(),
             fill: None,
             group_id: None,
@@ -958,6 +1029,7 @@ mod layer_tests {
     #[test]
     fn version_four_migration_preserves_all_resolved_ink() {
         let mut stroke = Stroke {
+            curve: None,
             material: Default::default(),
             fill: None,
             group_id: None,
@@ -1005,6 +1077,7 @@ mod layer_tests {
         });
         doc.active_layer = 2;
         let stroke = Stroke {
+            curve: None,
             material: Default::default(),
             fill: None,
             group_id: None,
@@ -1055,6 +1128,7 @@ mod layer_tests {
                 "blank_name" => doc.layers[0].name = " ".into(),
                 "active_missing" => doc.active_layer = 2,
                 "orphan" => doc.strokes.push(Stroke {
+                    curve: None,
                     material: Default::default(),
                     fill: None,
                     group_id: None,
@@ -1093,6 +1167,7 @@ mod saved_guide_document_tests {
 
     fn sample_stroke() -> Stroke {
         Stroke {
+            curve: None,
             material: Default::default(),
             fill: None,
             group_id: None,
@@ -1351,6 +1426,7 @@ mod group_tests {
     use super::*;
     fn mark(id: u64) -> Stroke {
         Stroke {
+            curve: None,
             material: Default::default(),
             id,
             fill: None,

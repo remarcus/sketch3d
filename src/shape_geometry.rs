@@ -215,6 +215,7 @@ pub fn create_ellipse(
         return Err("Shape geometry exceeds the valid document bounds".into());
     }
     Ok(Stroke {
+        curve: None,
         material: Default::default(),
         fill: None,
         group_id: None,

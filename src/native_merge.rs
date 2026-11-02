@@ -186,6 +186,15 @@ pub fn prepare_insert(
                 );
             }
         }
+        if let Some(curve) = &mut stroke.curve {
+            curve.frame_origin += offset;
+            for anchor in &mut curve.anchors {
+                anchor.position += offset;
+            }
+            if !curve.is_valid() {
+                return Err("Insertion offset moves curve controls outside document bounds".into());
+            }
+        }
     }
 
     let image_map: HashMap<u64, u64> = source
@@ -471,6 +480,7 @@ mod tests {
         fs::create_dir_all(&asset_root).unwrap();
         let mut source = Document::default();
         source.strokes.push(Stroke {
+            curve: None,
             id: 1,
             layer_id: 1,
             group_id: None,

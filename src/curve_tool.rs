@@ -2,6 +2,7 @@ use super::guide_resource_ui::PlanarTarget;
 use super::ui_style;
 use super::*;
 use crate::curve_geometry::{CubicBezier, PressureSegment};
+use crate::document::{CurveAnchor, CurveData};
 
 #[derive(Clone, Copy, Debug)]
 struct Anchor {
@@ -14,6 +15,7 @@ struct Anchor {
 
 #[derive(Clone, Copy, Debug)]
 enum HandleRef {
+    Anchor(usize),
     Incoming(usize),
     Outgoing(usize),
     NewAnchor(usize),
@@ -25,6 +27,8 @@ struct CurveDraft {
     anchors: Vec<Anchor>,
     preview: Option<Stroke>,
     dragging: Option<HandleRef>,
+    selected_anchor: Option<usize>,
+    editing_stroke_id: Option<u64>,
     viewport_height: f32,
 }
 
@@ -76,7 +80,7 @@ impl SketchApp {
     }
 
     pub(super) fn start_curve_tool(&mut self) {
-        if self.planar_drawing_target().is_none() {
+        if self.planar_drawing_target().is_none() && !self.has_selected_editable_curve() {
             self.status =
                 "Smooth curves require a plane guide. Activate a planar guide first.".into();
             return;
@@ -110,7 +114,14 @@ impl SketchApp {
             return;
         }
         ui.strong("SMOOTH CURVE");
-        ui.label("Click to append anchors or click near a segment to insert one. Drag an anchor to adjust its tangent. Planar guides only.");
+        ui.label("Click to append anchors or click near a segment to insert one. Reopened curves retain their captured frame and bounds.");
+        let can_edit_selected = self.has_selected_editable_curve();
+        if ui
+            .add_enabled(can_edit_selected, egui::Button::new("Edit selected curve"))
+            .clicked()
+        {
+            self.open_selected_curve();
+        }
         let tension_changed = ui_style::slider_row(
             ui,
             "Auto tension",
@@ -153,6 +164,22 @@ impl SketchApp {
             ui.colored_label(ui_style::colors(ui.ctx()).error, error);
         }
         ui.horizontal(|ui| {
+            let selected_anchor = self
+                .curve_tool
+                .draft
+                .as_ref()
+                .and_then(|draft| draft.selected_anchor);
+            if ui
+                .add_enabled(
+                    selected_anchor.is_some(),
+                    egui::Button::new("Remove selected point"),
+                )
+                .clicked()
+            {
+                if let Some(index) = selected_anchor {
+                    self.curve_remove_anchor(index);
+                }
+            }
             if ui
                 .add_enabled(count > 0, egui::Button::new("Remove last point"))
                 .clicked()
@@ -160,7 +187,21 @@ impl SketchApp {
                 self.curve_remove_last();
             }
             if ui
-                .add_enabled(count >= 2, egui::Button::new("Finish curve"))
+                .add_enabled(
+                    count >= 2,
+                    egui::Button::new(
+                        if self
+                            .curve_tool
+                            .draft
+                            .as_ref()
+                            .is_some_and(|draft| draft.editing_stroke_id.is_some())
+                        {
+                            "Apply edit"
+                        } else {
+                            "Finish curve"
+                        },
+                    ),
+                )
                 .clicked()
             {
                 self.commit_curve();
@@ -169,7 +210,7 @@ impl SketchApp {
                 self.cancel_curve();
             }
         });
-        ui.small("Enter finishes; Backspace removes the last point; Escape cancels. Commit creates one editable stroke and one undo step.");
+        ui.small("Enter applies; Backspace removes the selected point or last point; Escape cancels. Apply is one undo step.");
     }
 
     pub(super) fn curve_input(&mut self, pos: Pos2, pressure: f32, rect: Rect, begin: bool) {
@@ -195,6 +236,7 @@ impl SketchApp {
                 };
                 let (u, _, normal) = plane.basis();
                 let stroke = Stroke {
+                    curve: None,
                     material: Default::default(),
                     fill: None,
                     group_id: None,
@@ -219,6 +261,8 @@ impl SketchApp {
                     anchors: Vec::new(),
                     preview: None,
                     dragging: None,
+                    selected_anchor: None,
+                    editing_stroke_id: None,
                     viewport_height: rect.height().max(1.0),
                 });
             }
@@ -233,6 +277,12 @@ impl SketchApp {
             if let Some(handle) = target {
                 if let Some(draft) = &mut self.curve_tool.draft {
                     draft.dragging = Some(handle);
+                    draft.selected_anchor = Some(match handle {
+                        HandleRef::Anchor(i)
+                        | HandleRef::Incoming(i)
+                        | HandleRef::Outgoing(i)
+                        | HandleRef::NewAnchor(i) => i,
+                    });
                 }
             } else {
                 let insertion = self.curve_tool.draft.as_ref().and_then(|draft| {
@@ -285,6 +335,7 @@ impl SketchApp {
                         },
                     );
                     draft.dragging = Some(HandleRef::NewAnchor(idx));
+                    draft.selected_anchor = Some(idx);
                 }
                 self.curve_refresh(rect);
             }
@@ -323,8 +374,15 @@ impl SketchApp {
     }
 
     fn curve_handle_at(&self, draft: &CurveDraft, pos: Pos2, rect: Rect) -> Option<HandleRef> {
-        let mut nearest = (12.0_f32, None);
+        let mut nearest_anchor = (10.0_f32, None);
+        let mut nearest_handle = (12.0_f32, None);
         for (index, anchor) in draft.anchors.iter().enumerate() {
+            if let Some((screen, _)) = crate::gizmo::project(&self.camera, rect, anchor.position) {
+                let distance = screen.distance(pos);
+                if distance < nearest_anchor.0 {
+                    nearest_anchor = (distance, Some(HandleRef::Anchor(index)));
+                }
+            }
             for (endpoint, handle) in [
                 (
                     anchor.position + anchor.incoming,
@@ -337,13 +395,13 @@ impl SketchApp {
             ] {
                 if let Some((screen, _)) = crate::gizmo::project(&self.camera, rect, endpoint) {
                     let distance = screen.distance(pos);
-                    if distance < nearest.0 {
-                        nearest = (distance, Some(handle));
+                    if distance < nearest_handle.0 {
+                        nearest_handle = (distance, Some(handle));
                     }
                 }
             }
         }
-        nearest.1
+        nearest_anchor.1.or(nearest_handle.1)
     }
 
     fn curve_move_handle(&mut self, handle: HandleRef, world: Vec3) {
@@ -351,13 +409,17 @@ impl SketchApp {
             return;
         };
         let index = match handle {
-            HandleRef::Incoming(i) | HandleRef::Outgoing(i) | HandleRef::NewAnchor(i) => i,
+            HandleRef::Anchor(i)
+            | HandleRef::Incoming(i)
+            | HandleRef::Outgoing(i)
+            | HandleRef::NewAnchor(i) => i,
         };
         let Some(anchor) = draft.anchors.get_mut(index) else {
             return;
         };
         let offset = world - anchor.position;
         match handle {
+            HandleRef::Anchor(_) => anchor.position = world,
             HandleRef::NewAnchor(_) => {
                 let result = crate::curve_geometry::move_handle(
                     anchor.incoming,
@@ -461,8 +523,35 @@ impl SketchApp {
                     .iter()
                     .all(|point| draft.target.contains(point.position)) =>
             {
-                draft.preview = Some(stroke);
-                self.curve_tool.error = None;
+                let (tangent, _, normal) = draft.target.plane.basis();
+                let curve = CurveData {
+                    anchors: draft
+                        .anchors
+                        .iter()
+                        .map(|anchor| CurveAnchor {
+                            position: anchor.position,
+                            pressure: anchor.pressure,
+                            incoming: anchor.incoming,
+                            outgoing: anchor.outgoing,
+                            manual: anchor.manual,
+                        })
+                        .collect(),
+                    frame_origin: draft.target.plane.origin(),
+                    frame_normal: normal,
+                    frame_tangent: tangent,
+                    half_extent: draft.target.half_extent(),
+                    tension: self.curve_tool.tension,
+                };
+                if curve.is_valid() {
+                    let mut stroke = stroke;
+                    stroke.curve = Some(curve);
+                    draft.preview = Some(stroke);
+                    self.curve_tool.error = None;
+                } else {
+                    draft.preview = None;
+                    self.curve_tool.error =
+                        Some("Curve control data is outside supported bounds.".into());
+                }
             }
             Ok(_) => {
                 draft.preview = None;
@@ -480,6 +569,7 @@ impl SketchApp {
         if let Some(draft) = &mut self.curve_tool.draft {
             draft.anchors.pop();
             draft.dragging = None;
+            draft.selected_anchor = draft.anchors.len().checked_sub(1);
         }
         self.curve_tool.error = None;
         let height = self
@@ -488,6 +578,88 @@ impl SketchApp {
             .as_ref()
             .map_or(900.0, |draft| draft.viewport_height);
         self.curve_refresh(Rect::from_min_size(Pos2::ZERO, Vec2::new(1.0, height)));
+    }
+
+    fn curve_remove_anchor(&mut self, index: usize) {
+        let Some(draft) = &mut self.curve_tool.draft else {
+            return;
+        };
+        if index >= draft.anchors.len() {
+            return;
+        }
+        draft.anchors.remove(index);
+        draft.dragging = None;
+        draft.selected_anchor = if draft.anchors.is_empty() {
+            None
+        } else {
+            Some(index.min(draft.anchors.len() - 1))
+        };
+        self.curve_tool.error = None;
+        let height = draft.viewport_height;
+        self.curve_refresh(Rect::from_min_size(Pos2::ZERO, Vec2::new(1.0, height)));
+    }
+
+    fn has_selected_editable_curve(&self) -> bool {
+        if self.selected.len() != 1 {
+            return false;
+        }
+        self.doc.strokes.iter().any(|stroke| {
+            self.selected.contains(&stroke.id)
+                && stroke.curve.as_ref().is_some_and(CurveData::is_valid)
+                && self.doc.editable(stroke)
+        })
+    }
+
+    fn open_selected_curve(&mut self) {
+        if self.curve_tool.draft.is_some() {
+            self.status = "Apply or cancel the current curve preview first.".into();
+            return;
+        }
+        let Some(stroke) = self
+            .doc
+            .strokes
+            .iter()
+            .find(|stroke| self.selected.contains(&stroke.id) && self.doc.editable(stroke))
+        else {
+            self.status = "Select one visible, unlocked curve to edit.".into();
+            return;
+        };
+        let Some(curve) = stroke.curve.as_ref().filter(|curve| curve.is_valid()) else {
+            self.status = "The selected stroke has no editable curve anchors.".into();
+            return;
+        };
+        let Some(target) = PlanarTarget::from_curve_frame(
+            curve.frame_origin,
+            curve.frame_normal,
+            curve.frame_tangent,
+            curve.half_extent,
+        ) else {
+            self.status = "The selected curve has an invalid captured drawing frame.".into();
+            return;
+        };
+        self.curve_tool.tension = curve.tension;
+        self.curve_tool.draft = Some(CurveDraft {
+            target,
+            stroke: stroke.clone(),
+            anchors: curve
+                .anchors
+                .iter()
+                .map(|anchor| Anchor {
+                    position: anchor.position,
+                    pressure: anchor.pressure,
+                    incoming: anchor.incoming,
+                    outgoing: anchor.outgoing,
+                    manual: anchor.manual,
+                })
+                .collect(),
+            preview: Some(stroke.clone()),
+            dragging: None,
+            selected_anchor: None,
+            editing_stroke_id: Some(stroke.id),
+            viewport_height: 900.0,
+        });
+        self.curve_refresh(Rect::from_min_size(Pos2::ZERO, Vec2::new(1.0, 900.0)));
+        self.status = "Curve edit preview ready. Apply to commit once or Escape to cancel.".into();
     }
 
     pub(super) fn commit_curve(&mut self) {
@@ -512,6 +684,54 @@ impl SketchApp {
             self.curve_tool.draft = Some(draft);
             return;
         };
+        if let Some(id) = draft.editing_stroke_id {
+            let Some(index) = self.doc.strokes.iter().position(|item| item.id == id) else {
+                self.curve_tool.draft = Some(CurveDraft {
+                    preview: Some(stroke),
+                    ..draft
+                });
+                self.status =
+                    "The curve changed while its preview was open. Reopen it to edit.".into();
+                return;
+            };
+            let before_stroke = self.doc.strokes[index].clone();
+            let total_points = self
+                .doc
+                .strokes
+                .iter()
+                .map(|item| item.points.len())
+                .sum::<usize>();
+            if !self.doc.editable(&before_stroke)
+                || !stroke.curve.as_ref().is_some_and(CurveData::is_valid)
+                || total_points.saturating_sub(before_stroke.points.len()) + stroke.points.len()
+                    > 2_000_000
+            {
+                self.curve_tool.draft = Some(CurveDraft {
+                    preview: Some(stroke),
+                    ..draft
+                });
+                self.status = "Curve edit exceeds the layer or document limits.".into();
+                return;
+            }
+            stroke.id = id;
+            if stroke == before_stroke {
+                self.status = "Curve is unchanged.".into();
+                return;
+            }
+            let edit = Edit::Change {
+                before: vec![(index, before_stroke)],
+                after: vec![(index, stroke)],
+            };
+            edit.apply(&mut self.doc, true);
+            self.undo.push(edit);
+            self.redo.clear();
+            self.dirty = true;
+            self.record_recovery_edit_labeled("Edit curve");
+            self.renderer.invalidate();
+            self.curve_tool.error = None;
+            self.status = "Curve edit applied as one undo step.".into();
+            return;
+        }
         if self.next_id == u64::MAX
             || self.doc.strokes.len() >= 100_000
             || self
@@ -557,7 +777,16 @@ impl SketchApp {
                 self.cancel_curve();
                 self.mouse_down = false;
             } else if backspace {
-                self.curve_remove_last();
+                if let Some(index) = self
+                    .curve_tool
+                    .draft
+                    .as_ref()
+                    .and_then(|draft| draft.selected_anchor)
+                {
+                    self.curve_remove_anchor(index);
+                } else {
+                    self.curve_remove_last();
+                }
             } else if enter {
                 self.commit_curve();
             }

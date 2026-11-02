@@ -120,6 +120,7 @@ impl SketchApp {
         let draft = self.fills.draft.get_or_insert_with(|| FillDraft {
             target,
             mark: Stroke {
+                curve: None,
                 material: Default::default(),
                 fill: Some(PlanarFill {
                     offset: self.fills.offset,

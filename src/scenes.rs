@@ -32,6 +32,7 @@ impl Artist {
         }
         let count = positions.len();
         self.doc.strokes.push(Stroke {
+            curve: None,
             material: Default::default(),
             brush: Default::default(),
             id: self.doc.strokes.len() as u64 + 1,

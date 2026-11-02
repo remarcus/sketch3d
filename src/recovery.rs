@@ -518,6 +518,7 @@ mod tests {
     fn document() -> Document {
         Document {
             strokes: vec![Stroke {
+                curve: None,
                 material: Default::default(),
                 id: 1,
                 fill: None,

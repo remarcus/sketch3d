@@ -235,6 +235,7 @@ fn opacity_test_stroke(
         curve: 1.0,
     };
     Stroke {
+        curve: None,
         material: Default::default(),
         fill: None,
         group_id: None,

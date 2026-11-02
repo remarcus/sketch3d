@@ -114,6 +114,9 @@ pub fn mirror_stroke(
 
     let mut mirrored = source.clone();
     mirrored.id = fresh_id;
+    // Reflection copies sampled ink; the reflected anchor topology is not kept
+    // aligned with seam-clipped runs or other source-dependent edits.
+    mirrored.curve = None;
     for point in &mut mirrored.points {
         *point = mirror_point(*point, plane)?;
         if !point.is_valid() {
@@ -243,6 +246,7 @@ mod tests {
             ..Brush::default()
         };
         Stroke {
+            curve: None,
             id: 7,
             color: [0.2, 0.4, 0.8],
             radius: 0.08,

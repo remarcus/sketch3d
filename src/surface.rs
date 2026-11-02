@@ -844,6 +844,7 @@ mod ring_tests {
 
         let document = crate::document::Document {
             strokes: vec![crate::document::Stroke {
+                curve: None,
                 material: Default::default(),
                 fill: None,
                 group_id: None,

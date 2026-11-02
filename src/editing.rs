@@ -448,6 +448,47 @@ pub fn transformed_with_scale(
                 return Err("Transform exceeds document bounds");
             }
         }
+        if let Some(curve) = &mut stroke.curve {
+            let old_origin = curve.frame_origin;
+            let old_normal = curve.frame_normal;
+            let old_tangent = curve.frame_tangent;
+            let old_bitangent = old_normal.cross(old_tangent).normalize_or_zero();
+            let transform_point = |point: Vec3| pivot + linear * (point - pivot) + translation;
+            let next_origin = transform_point(old_origin);
+            let next_normal = (normal_matrix * old_normal)
+                .try_normalize()
+                .ok_or("Curve frame collapsed")?;
+            let tangent_raw = linear * old_tangent;
+            let next_tangent = (tangent_raw - next_normal * tangent_raw.dot(next_normal))
+                .try_normalize()
+                .ok_or("Curve frame collapsed")?;
+            if let Some(extent) = curve.half_extent {
+                let mut next_extent = glam::Vec2::ZERO;
+                for x in [-extent.x, extent.x] {
+                    for y in [-extent.y, extent.y] {
+                        let corner =
+                            transform_point(old_origin + old_tangent * x + old_bitangent * y);
+                        let offset = corner - next_origin;
+                        next_extent.x = next_extent.x.max(offset.dot(next_tangent).abs());
+                        next_extent.y = next_extent
+                            .y
+                            .max(offset.dot(next_normal.cross(next_tangent)).abs());
+                    }
+                }
+                curve.half_extent = Some(next_extent);
+            }
+            curve.frame_origin = next_origin;
+            curve.frame_normal = next_normal;
+            curve.frame_tangent = next_tangent;
+            for anchor in &mut curve.anchors {
+                anchor.position = transform_point(anchor.position);
+                anchor.incoming = linear * anchor.incoming;
+                anchor.outgoing = linear * anchor.outgoing;
+            }
+            if !curve.is_valid() {
+                return Err("Transform exceeds curve control bounds");
+            }
+        }
         if stroke.fill.is_some() && crate::polygon::triangulate(stroke).is_err() {
             return Err("Transform would exceed planar fill limits");
         }
@@ -461,6 +502,7 @@ mod tests {
     use crate::document::{Brush, BrushKind, Point};
     fn stroke(id: u64, x: f32) -> Stroke {
         Stroke {
+            curve: None,
             material: Default::default(),
             fill: None,
             group_id: None,
@@ -1092,6 +1134,7 @@ mod layer_tests {
     fn sample() -> Document {
         Document {
             strokes: vec![Stroke {
+                curve: None,
                 material: Default::default(),
                 id: 1,
                 fill: None,
@@ -1302,6 +1345,7 @@ mod group_tests {
         Document {
             strokes: (1..=3)
                 .map(|id| Stroke {
+                    curve: None,
                     material: Default::default(),
                     id,
                     fill: None,
@@ -1407,6 +1451,7 @@ mod large_group_tests {
         let mut doc = Document {
             strokes: (1..=10000)
                 .map(|id| Stroke {
+                    curve: None,
                     material: Default::default(),
                     id,
                     fill: None,
@@ -1457,6 +1502,7 @@ mod appearance_tests {
 
     fn sample_document() -> Document {
         let first = Stroke {
+            curve: None,
             material: StrokeMaterial::Shaded,
             id: 1,
             fill: None,

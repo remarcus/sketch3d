@@ -266,6 +266,7 @@ mod tests {
 
     fn stroke(id: u64, layer_id: u64, group_id: Option<u64>, position: Vec3) -> Stroke {
         Stroke {
+            curve: None,
             id,
             layer_id,
             group_id,

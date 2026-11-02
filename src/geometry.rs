@@ -679,6 +679,7 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
         let stroke =
             if stroke.brush.dynamics.taper_start > 0.0 || stroke.brush.dynamics.taper_end > 0.0 {
                 prepared = Stroke {
+                    curve: None,
                     points: taper_points(stroke),
                     ..stroke.clone()
                 };
@@ -1781,6 +1782,7 @@ mod tests {
     #[test]
     fn pressure_geometry() {
         let make = |pressure| Stroke {
+            curve: None,
             material: Default::default(),
             id: 1,
             fill: None,
@@ -1833,6 +1835,7 @@ mod curve_regression {
             })
             .collect();
         let stroke = Stroke {
+            curve: None,
             material: Default::default(),
             id: 1,
             fill: None,
@@ -1923,6 +1926,7 @@ mod brush_tests {
 
     fn mark(kind: BrushKind, positions: &[Vec3]) -> Stroke {
         Stroke {
+            curve: None,
             material: Default::default(),
             id: 7,
             fill: None,
@@ -2077,6 +2081,7 @@ mod dynamics_tests {
 
     fn line(kind: BrushKind, xs: &[f32]) -> Stroke {
         Stroke {
+            curve: None,
             material: Default::default(),
             id: 100,
             fill: None,
@@ -2124,6 +2129,7 @@ mod dynamics_tests {
             sparse.brush.dynamics.taper_start = 0.25;
             sparse.brush.dynamics.taper_end = 0.25;
             let prepared = Stroke {
+                curve: None,
                 points: taper_points(&sparse),
                 ..sparse.clone()
             };
@@ -2210,6 +2216,7 @@ mod dynamics_boundary_tests {
     fn zero_pressure_dimensions_and_tilt_azimuth_wrap_stay_finite() {
         for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
             let mut stroke = Stroke {
+                curve: None,
                 material: Default::default(),
                 id: 101,
                 fill: None,
@@ -2302,6 +2309,7 @@ mod seam_dynamics_tests {
                     && p.tilt == Some(Vec3::Y)
             }));
             let mut stroke = Stroke {
+                curve: None,
                 material: Default::default(),
                 id: 1,
                 fill: None,
@@ -2319,6 +2327,7 @@ mod seam_dynamics_tests {
             stroke.brush.dynamics.taper_start = 0.08;
             stroke.brush.dynamics.taper_end = 0.1;
             let prepared = Stroke {
+                curve: None,
                 points: taper_points(&stroke),
                 ..stroke.clone()
             };
@@ -2352,6 +2361,7 @@ mod texture_uv_tests {
         brush.texture.kind = TextureKind::Grain;
         brush.texture.scale = 0.2;
         Stroke {
+            curve: None,
             material: Default::default(),
             id: 1,
             fill: None,

@@ -462,6 +462,7 @@ fn append_storefront_details(doc: &mut Document) {
             ..Default::default()
         };
         doc.strokes.push(Stroke {
+            curve: None,
             material: Default::default(),
             fill: Some(crate::document::PlanarFill { offset: 0.004 }),
             group_id: None,
@@ -475,6 +476,7 @@ fn append_storefront_details(doc: &mut Document) {
         let mut outline = points;
         outline.push(outline[0]);
         doc.strokes.push(Stroke {
+            curve: None,
             material: Default::default(),
             fill: None,
             group_id: None,

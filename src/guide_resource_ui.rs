@@ -23,6 +23,38 @@ pub(super) struct PlanarTarget {
 }
 
 impl PlanarTarget {
+    pub fn from_curve_frame(
+        origin: Vec3,
+        normal: Vec3,
+        tangent: Vec3,
+        half_extent: Option<glam::Vec2>,
+    ) -> Option<Self> {
+        if !origin.is_finite()
+            || !normal.is_finite()
+            || !tangent.is_finite()
+            || (normal.length_squared() - 1.0).abs() > 0.001
+            || (tangent.length_squared() - 1.0).abs() > 0.001
+            || normal.dot(tangent).abs() > 0.001
+            || half_extent.is_some_and(|extent| !extent.is_finite() || extent.min_element() <= 0.0)
+        {
+            return None;
+        }
+        let bitangent = normal.cross(tangent).normalize_or_zero();
+        if bitangent == Vec3::ZERO {
+            return None;
+        }
+        let rotation = glam::Quat::from_mat3(&glam::Mat3::from_cols(tangent, bitangent, normal));
+        let (z, y, x) = rotation.to_euler(glam::EulerRot::ZYX);
+        Some(Self {
+            plane: DrawingPlane {
+                anchor: origin,
+                rotation_degrees: Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI),
+                depth: 0.0,
+            },
+            half_extent,
+        })
+    }
+
     pub fn hit(self, origin: Vec3, direction: Vec3) -> Option<Vec3> {
         let point = intersect_plane(origin, direction, self.plane)?;
         self.contains(point).then_some(point)
@@ -37,6 +69,10 @@ impl PlanarTarget {
         let tolerance = 1e-5 * half_extent.max_element().max(1.0);
         offset.dot(u).abs() <= half_extent.x + tolerance
             && offset.dot(v).abs() <= half_extent.y + tolerance
+    }
+
+    pub fn half_extent(self) -> Option<glam::Vec2> {
+        self.half_extent
     }
 }
 
@@ -1257,6 +1293,7 @@ mod loft_ui_tests {
 
     fn line(id: u64, start: Vec3, end: Vec3) -> Stroke {
         Stroke {
+            curve: None,
             material: Default::default(),
             fill: None,
             group_id: None,
@@ -1659,6 +1696,7 @@ mod planar_target_tests {
             origin - u * 0.5 + v * 0.25,
         ];
         let fill = Stroke {
+            curve: None,
             material: StrokeMaterial::default(),
             fill: Some(crate::document::PlanarFill { offset: 0.01 }),
             group_id: None,
@@ -1724,6 +1762,7 @@ mod planar_target_tests {
             .any(|point| !target.contains(point.position)));
 
         let prototype = Stroke {
+            curve: None,
             material: StrokeMaterial::default(),
             fill: None,
             group_id: None,

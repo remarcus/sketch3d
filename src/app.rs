@@ -2270,6 +2270,7 @@ impl SketchApp {
                 Surface::Plane
             });
             self.doc.strokes.push(Stroke {
+                curve: None,
                 material: Default::default(),
                 fill: None,
                 group_id: None,
@@ -2466,6 +2467,7 @@ impl SketchApp {
             let view_right = self.camera.basis().0;
             let tangent = (view_right - normal * view_right.dot(normal)).normalize_or_zero();
             self.doc.strokes.push(Stroke {
+                curve: None,
                 material: Default::default(),
                 fill: None,
                 group_id: None,
@@ -2550,6 +2552,10 @@ impl SketchApp {
             self.remove_fill_corner();
             return;
         }
+        if self.curve_draft_active() {
+            self.cancel_curve();
+            return;
+        }
         self.finish();
         if let Some(edit) = self.undo.pop() {
             let image_planes_changed = matches!(
@@ -2586,6 +2592,10 @@ impl SketchApp {
         }
         if self.fills.draft.is_some() {
             self.status = "Finish or cancel the fill contour before redoing document edits.".into();
+            return;
+        }
+        if self.curve_draft_active() {
+            self.cancel_curve();
             return;
         }
         self.finish();
@@ -2891,6 +2901,7 @@ impl SketchApp {
                 });
             }
             self.doc.strokes.push(Stroke {
+                curve: None,
                 material: Default::default(),
                 fill: None,
                 group_id: None,
@@ -6710,6 +6721,7 @@ mod native_merge_apply_tests {
 
     fn stroke(id: u64, layer_id: u64, x: f32) -> Stroke {
         Stroke {
+            curve: None,
             fill: None,
             material: Default::default(),
             group_id: None,

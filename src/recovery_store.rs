@@ -720,6 +720,7 @@ mod tests {
             None,
             Document {
                 strokes: vec![Stroke {
+                    curve: None,
                     material: Default::default(),
                     id: 123,
                     fill: None,
@@ -839,6 +840,7 @@ mod tests {
             },
         ];
         let surface_stroke = crate::document::Stroke {
+            curve: None,
             material: Default::default(),
             fill: None,
             group_id: None,

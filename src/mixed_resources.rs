@@ -347,6 +347,7 @@ mod tests {
     fn fixture() -> Document {
         let mut document = Document::default();
         document.strokes.push(Stroke {
+            curve: None,
             fill: None,
             material: Default::default(),
             group_id: None,

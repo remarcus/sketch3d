@@ -58,6 +58,7 @@ fn stroke_segment(
     z: f32,
 ) -> Stroke {
     Stroke {
+        curve: None,
         fill: None,
         material,
         group_id: None,

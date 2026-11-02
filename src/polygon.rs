@@ -210,6 +210,7 @@ pub fn study() -> crate::document::Document {
             })
             .collect();
         doc.strokes.push(Stroke {
+            curve: None,
             material: Default::default(),
             fill: Some(PlanarFill { offset: 0.003 }),
             group_id: None,
@@ -227,6 +228,7 @@ pub fn study() -> crate::document::Document {
         let mut outline = points;
         outline.push(outline[0]);
         doc.strokes.push(Stroke {
+            curve: None,
             material: Default::default(),
             fill: None,
             group_id: None,
@@ -320,6 +322,7 @@ mod tests {
     use crate::document::{Brush, Document, PlanarFill, Point};
     fn mark(points: &[[f32; 2]]) -> Stroke {
         Stroke {
+            curve: None,
             material: Default::default(),
             fill: Some(PlanarFill { offset: 0.003 }),
             group_id: None,

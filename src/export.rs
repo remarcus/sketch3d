@@ -827,6 +827,7 @@ mod tests {
     use crate::document::{Point, StrokeMaterial};
     fn stroke(id: u64, color: [f32; 3]) -> Stroke {
         Stroke {
+            curve: None,
             material: Default::default(),
             id,
             fill: None,
@@ -1788,6 +1789,7 @@ mod obj_reference_export_tests {
 
     fn sample_stroke() -> Stroke {
         Stroke {
+            curve: None,
             fill: None,
             material: Default::default(),
             group_id: None,
