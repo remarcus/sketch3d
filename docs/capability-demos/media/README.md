@@ -1,6 +1,6 @@
 # Capability demo media
 
-These locally curated outputs are current-build SKETCH-066 drafts. Every replay uses deterministic synthetic input with `pressure=None`; none is tablet-pressure or latency evidence. The native picker and insert-preview dialog are not shown in the reference-export clip. Review flags in the manifests remain false until complete playback, captions, privacy, and intended-surface review is finished.
+These locally curated outputs are current-build SKETCH-066 drafts. Every replay uses deterministic synthetic input with `pressure=None`; none is tablet-pressure or latency evidence. The native picker and insert-preview dialog are not shown in the reference-export clip. Hashes, size bounds, privacy scan, and caption structure have been checked; full motion/readability review at native dimensions and the rendered README surface remain pending, so the aggregate `reviewed` flag remains false.
 
 Click any poster or GIF to open its MP4. Short clips have six-second single-play GIF previews. The overview and tutorials use accelerated six-second GIF previews; use their full captioned MP4s for normal-speed viewing. VTT captions and static tutorial alternatives are available for every instructional workflow.
 

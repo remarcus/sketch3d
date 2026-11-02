@@ -1,10 +1,10 @@
 # Select, transform, and save a scene
 
-**Status:** Static steps pair with the current-build 60-second [captioned capture](../media/house-tutorial.mp4) and [VTT captions](../media/house-tutorial.en.vtt). Review timing, playback, and readability before publication. The clip uses synthetic pressure-free input.
+**Status:** Static steps pair with the current-build 60-second [captioned capture](../media/house-tutorial.mp4) and [VTT captions](../media/house-tutorial.en.vtt). Cue ordering and duration validate; full motion and readability review remains pending. The clip uses synthetic pressure-free input.
 
 **Sample:** [Garden house](../fixtures/garden-house.sketch.json), generated from the built-in original fixture in `src/scenes.rs`.
 
-**Draft timed captions:** [WebVTT sidecar](house-editing.en.vtt), planned for a 60-second tutorial. Check every cue against the final recording before publishing.
+**Timed captions:** [WebVTT sidecar](house-editing.en.vtt), aligned to the replay's draw, select/move/undo/redo, orbit, save, and reopen checkpoints. VTT ordering and duration validate; visual timing sign-off remains pending.
 
 **Prerequisites:** Sketch3D; mouse or tablet. Mouse input uses constant pressure.
 
@@ -18,7 +18,7 @@
 
 ## Draft narration / caption transcript
 
-This narration transcript follows the visible action order in the recording. Confirm cue timing and control visibility before publication.
+This narration transcript follows the visible action order and validated replay checkpoints. Confirm the cues against full playback at the intended size before publication.
 
 - “Start from the editable garden-house scene.”
 - “Draw a detail on the front plane.”

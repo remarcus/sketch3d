@@ -64,7 +64,7 @@ To refine an ordinary stroke, select it with **V** and choose **Edit points…**
 
 ## Capability gallery
 
-Click a preview to open its captioned MP4. These deterministic current-build replays use synthetic input without pressure data; they do not measure tablet pressure or latency. GIF previews play once, and the longer ones are accelerated six-second summaries. Full playback, caption, privacy, and embed-size review remains pending.
+Click a preview to open its captioned MP4. These deterministic current-build replays use synthetic input without pressure data; they do not measure tablet pressure or latency. GIF previews play once, and the longer ones are accelerated six-second summaries. Key-frame, caption-timing, hash, size, and privacy checks are complete; full-motion readability at native video size and rendered README-surface review remain pending.
 
 | Overview | Draw and orbit | Partial erase and undo |
 | --- | --- | --- |

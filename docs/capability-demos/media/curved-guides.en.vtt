@@ -1,10 +1,13 @@
 WEBVTT
 
-00:00:00.000 --> 00:00:00.500
-Deterministic app replay. Synthetic input has no pressure data.
+00:00:00.000 --> 00:00:02.000
+Draw across the saved cylinder; the line is reflected around its axis.
 
-00:00:00.500 --> 00:00:05.200
-A simulated barrel gesture orbits to reveal the curved drawing.
+00:00:02.000 --> 00:00:03.300
+The source stroke and reflected copy are now editable.
+
+00:00:03.300 --> 00:00:05.200
+Orbit to inspect the curved result.
 
 00:00:05.200 --> 00:00:06.000
-The cylinder and mirrored strokes remain editable.
+Synthetic replay uses no pressure data.

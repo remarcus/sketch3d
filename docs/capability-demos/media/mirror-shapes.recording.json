@@ -1,18 +1,21 @@
 {
-  "app_commit": "c44f980ee6ec5b15e54a8437643d2fdc36128cb7",
+  "app_commit": "65f46deec40a855801c5b6a8ccc46c5bfa0ce83e",
+  "capture_export_action": null,
+  "capture_import_action": false,
+  "capture_insert_action": false,
   "capture_mode": "deterministic hidden in-app replay through canvas_input",
   "capture_size": [
     1280,
     720
   ],
   "clip": "mirror-shapes",
-  "cursor_cue": "The mirrored line and ellipse are prepared by production handlers before capture; playback shows a synthetic ORBIT cursor and persistent no-pressure disclosure.",
+  "cursor_cue": "The synthetic pointer ring is labeled DRAW while drawing the reflected line and ellipse, then ORBIT during camera navigation; a banner discloses no pressure data.",
   "dpi_percent": 100,
   "duration_seconds": 6,
   "encoding": {
-    "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; 6 seconds; <=5 MiB.",
-    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps.",
-    "poster": "First full-resolution app frame encoded as PNG."
+    "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; <=5 MiB.",
+    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps; repeated frame holds preserve the 6s duration.",
+    "poster": "Selected full-resolution action frame encoded as PNG."
   },
   "fixture": "Mirrored front-guide line and ellipse",
   "fixture_version": 1,
@@ -22,37 +25,49 @@
     640,
     360
   ],
-  "input_note": "The mirrored line and ellipse are prepared by production handlers before capture. Captured PenSample orbit input uses pressure=None and no tilt; no tablet pressure or latency was measured.",
+  "input_note": "A pressure-free synthetic line gesture creates the mirrored pair through the production line handler; a second gesture places the ellipse through the production shape handler. Synthetic barrel samples then orbit through canvas_input. No tablet pressure or latency was measured.",
   "license_or_provenance": "Procedurally generated from an empty Sketch3D document through the production line-mirror and shape handlers; no external artwork or assets.",
   "manifest_version": 1,
+  "mp4_frame_count": 60,
   "outputs": {
     "captions": {
-      "bytes": 284,
+      "bytes": 333,
       "file": "mirror-shapes.en.vtt",
       "format": "WebVTT",
       "timing_reviewed": true
     },
     "gif": {
-      "bytes": 3598086,
+      "bytes": 3784592,
       "file": "mirror-shapes.gif"
     },
     "mp4": {
-      "bytes": 741126,
+      "bytes": 849932,
       "file": "mirror-shapes.mp4"
     },
+    "native_sample": null,
     "poster": {
-      "alt": "An editable cyan mirrored line pair and ellipse on Sketch3D's front drawing guide.",
-      "bytes": 245184,
-      "file": "mirror-shapes.png"
-    }
+      "alt": "Editable cyan mirrored line pair and ellipse immediately after their production drawing actions.",
+      "bytes": 277859,
+      "file": "mirror-shapes.png",
+      "frame_index": 30,
+      "frame_index_base": 0
+    },
+    "sha256": {
+      "png": "cbdf26aac4a99bacd6cf4beb56842475eaa049e4fd16f89383dbf865fc811dd4",
+      "en.vtt": "5da8044f2eb774fd5f9ab24874e0f99fc48d421847691059c0428d2af08b4546",
+      "mp4": "0b7f28e82324c786f5662d9fae8cd083de8163c9c49d70814fd808f6bda9ebf0",
+      "gif": "ad8f87105febc5d3ba9463143164672bf078448ed71495961fe061f36c71fd33"
+    },
+    "gif_preview": "6-second single-play preview."
   },
-  "recorded_unix_seconds": 1793574901,
+  "prepared_scene_export": null,
+  "recorded_unix_seconds": 1793649300,
   "review": {
     "captions_timing_checked": true,
     "intended_readme_surface_checked": false,
-    "loop_boundary_checked": false,
-    "notes": "Synthetic mirror-shapes draft. The mirrored line and ellipse are prepared through production handlers before the captured orbit; review playback and readability before use.",
-    "private_content_checked": false,
+    "loop_boundary_checked": true,
+    "notes": "Synthetic mirror-shapes replay. The poster is an action frame immediately after creating the mirrored line and ellipse; the MP4 then orbits the result. Reviewed GIF key frames at 0/10/20/30/40/50, checked selected full-resolution posters, compared all VTT cues with action checkpoints, and validated VTT order/duration. Confirmed GIFs have no loop extension and scanned manifests/media for private paths. Full native-resolution motion/readability and rendered README-surface review remain pending.",
+    "private_content_checked": true,
     "reviewed": false,
     "reviewer": null
   },

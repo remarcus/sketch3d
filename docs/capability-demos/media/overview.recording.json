@@ -1,0 +1,86 @@
+{
+  "app_commit": "65f46deec40a855801c5b6a8ccc46c5bfa0ce83e",
+  "capture_export_action": null,
+  "capture_import_action": false,
+  "capture_insert_action": false,
+  "capture_mode": "deterministic hidden in-app replay through canvas_input",
+  "capture_size": [
+    1280,
+    720
+  ],
+  "clip": "overview",
+  "cursor_cue": "A synthetic pointer ring is labeled DRAW while drawing, SELECT while editing, and ORBIT during camera navigation; persistent text discloses synthetic input and no pressure data.",
+  "dpi_percent": 100,
+  "duration_seconds": 18,
+  "encoding": {
+    "gif": "Accelerated six-second preview of the same 60 replay checkpoints; plays once without a loop extension. Use the captioned MP4 master for normal-speed instruction.",
+    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps; repeated frame holds preserve the 18s duration.",
+    "poster": "Selected full-resolution action frame encoded as PNG."
+  },
+  "fixture": "Japanese garden house scene",
+  "fixture_version": 1,
+  "format": "spatial-sketch-capability-demo",
+  "frame_rate": 10,
+  "gif_size": [
+    640,
+    360
+  ],
+  "input_note": "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured.",
+  "license_or_provenance": "Original Japanese garden-house scene built into Sketch3D; the detail stroke and camera orbit are created during capture.",
+  "manifest_version": 1,
+  "mp4_frame_count": 180,
+  "outputs": {
+    "captions": {
+      "bytes": 441,
+      "file": "overview.en.vtt",
+      "format": "WebVTT",
+      "timing_reviewed": true
+    },
+    "gif": {
+      "bytes": 4083886,
+      "file": "overview.gif"
+    },
+    "mp4": {
+      "bytes": 1634029,
+      "file": "overview.mp4"
+    },
+    "native_sample": null,
+    "poster": {
+      "alt": "Selected cyan detail stroke and move gizmo in open canvas above the garden-house.",
+      "bytes": 502450,
+      "file": "overview.png",
+      "frame_index": 30,
+      "frame_index_base": 0
+    },
+    "sha256": {
+      "png": "dbf592af28cfef8d558a8fc657eba0ca6c690c008c2d2b4c95fcfd87230ae17e",
+      "en.vtt": "ed9d0b99a2855b6c078ac7eda31db01dc962a41b4e8e42f8383313fefc960663",
+      "mp4": "d28f6c912b3ae0ef4931c974c33c59d87dec6d90dcb0b5c97d28d41f254fc727",
+      "gif": "4e33f9baf302d118e960eca5c07a6852ff59b0e1f9cb2243c87dfcdb6895effe"
+    },
+    "gif_preview": "Accelerated 6-second preview; use the MP4 and timed VTT for normal-speed playback."
+  },
+  "prepared_scene_export": null,
+  "recorded_unix_seconds": 1793649507,
+  "review": {
+    "captions_timing_checked": true,
+    "intended_readme_surface_checked": false,
+    "loop_boundary_checked": true,
+    "notes": "Synthetic 18-second overview replay. Reviewed GIF key frames at 0/10/20/30/40/50, checked selected full-resolution posters, compared all VTT cues with action checkpoints, and validated VTT order/duration. Confirmed GIFs have no loop extension and scanned manifests/media for private paths. Full native-resolution motion/readability and rendered README-surface review remain pending.",
+    "private_content_checked": true,
+    "reviewed": false,
+    "reviewer": null
+  },
+  "shot_steps": [
+    "Show the editable garden-house scene.",
+    "Draw a detail, select and move it, then undo and redo the transform.",
+    "Orbit to inspect the result and show production GLB export options."
+  ],
+  "source_tree_dirty": false,
+  "theme": "Dark",
+  "viewport": [
+    1280,
+    720
+  ],
+  "window_visible": false
+}

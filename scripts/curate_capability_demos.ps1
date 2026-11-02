@@ -10,6 +10,26 @@ $clipNames = @(
     'draw-orbit', 'curved-guides', 'mirror-shapes', 'edit-erase', 'reference-export',
     'overview', 'house-tutorial', 'curved-tutorial'
 )
+$posterFrames = @{
+    'draw-orbit' = 28
+    'curved-guides' = 27
+    'mirror-shapes' = 30
+    'edit-erase' = 39
+    'reference-export' = 35
+    'overview' = 30
+    'house-tutorial' = 30
+    'curved-tutorial' = 56
+}
+$posterDescriptions = @{
+    'draw-orbit' = 'Japanese garden-house scene with the newly drawn cyan stroke visible before camera orbit.'
+    'curved-guides' = 'Saved cylinder with editable curved source and reflected strokes after drawing.'
+    'mirror-shapes' = 'Editable cyan mirrored line pair and ellipse immediately after their production drawing actions.'
+    'edit-erase' = 'Two editable orange fragments after a partial erase, with the synthetic-input disclosure.'
+    'reference-export' = 'Garden-house scene with inserted lantern, reference image, OBJ model, and completed GLB export.'
+    'overview' = 'Selected cyan detail stroke and move gizmo in open canvas above the garden-house.'
+    'house-tutorial' = 'Selected cyan detail stroke and move gizmo in clear canvas above the garden-house.'
+    'curved-tutorial' = 'Saved cylinder with selected editable curved source and reflected strokes after reopening.'
+}
 
 if (-not (Test-Path -LiteralPath $draftRoot -PathType Container)) {
     throw "Missing local draft folder: $draftRoot"
@@ -45,6 +65,11 @@ foreach ($name in $clipNames) {
     if ($manifest.source_tree_dirty -ne $false) {
         throw "Refusing to curate ${name}: source_tree_dirty is not false."
     }
+    $frameIndex = $posterFrames[$name]
+    $manifest.encoding.poster = 'Selected full-resolution action frame encoded as PNG.'
+    $manifest.outputs.poster.frame_index = $frameIndex
+    $manifest.outputs.poster.frame_index_base = 0
+    $manifest.outputs.poster.alt = $posterDescriptions[$name]
     $gifPath = $sourceFiles['gif']
     if ((Get-Item -LiteralPath $gifPath).Length -gt 5MB) {
         throw "Refusing to curate ${name}: GIF exceeds 5 MiB."

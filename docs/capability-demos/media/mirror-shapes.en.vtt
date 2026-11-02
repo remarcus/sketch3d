@@ -1,10 +1,13 @@
 WEBVTT
 
-00:00:00.000 --> 00:00:00.500
-A mirrored line and ellipse were prepared on the front guide.
+00:00:00.000 --> 00:00:01.300
+Draw a line on the front guide; mirror creates the reflected stroke.
 
-00:00:00.500 --> 00:00:05.200
-A synthetic barrel gesture orbits to reveal the editable geometry.
+00:00:01.300 --> 00:00:02.900
+Place an editable ellipse on the same guide.
+
+00:00:03.300 --> 00:00:05.200
+Orbit to inspect the mirrored line and ellipse.
 
 00:00:05.200 --> 00:00:06.000
-The replay uses synthetic input with no pressure data.
+Synthetic replay uses no pressure data.

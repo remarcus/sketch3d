@@ -1,18 +1,21 @@
 {
-  "app_commit": "c44f980ee6ec5b15e54a8437643d2fdc36128cb7",
+  "app_commit": "65f46deec40a855801c5b6a8ccc46c5bfa0ce83e",
+  "capture_export_action": null,
+  "capture_import_action": false,
+  "capture_insert_action": false,
   "capture_mode": "deterministic hidden in-app replay through canvas_input",
   "capture_size": [
     1280,
     720
   ],
   "clip": "curved-guides",
-  "cursor_cue": "The curved-guide strokes are prepared by scripted production handlers before capture; playback shows a synthetic ORBIT cursor and a persistent no-pressure disclosure.",
+  "cursor_cue": "The synthetic pointer ring is labeled DRAW while drawing across the cylinder and ORBIT during camera navigation; a persistent banner discloses no pressure data.",
   "dpi_percent": 100,
   "duration_seconds": 6,
   "encoding": {
-    "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; 6 seconds; <=5 MiB.",
-    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps.",
-    "poster": "First full-resolution app frame encoded as PNG."
+    "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; <=5 MiB.",
+    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps; repeated frame holds preserve the 6s duration.",
+    "poster": "Selected full-resolution action frame encoded as PNG."
   },
   "fixture": "Saved cylinder mirror study",
   "fixture_version": 1,
@@ -22,37 +25,49 @@
     640,
     360
   ],
-  "input_note": "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured.",
+  "input_note": "Pressure-free synthetic screen positions sampled from the saved cylinder surface create the mirrored stroke through the production pointer-action handler. Synthetic barrel samples then orbit through canvas_input; no tablet pressure or latency was measured.",
   "license_or_provenance": "Procedurally generated from an empty Sketch3D document by the production pointer-action handlers; no external artwork or assets.",
   "manifest_version": 1,
+  "mp4_frame_count": 60,
   "outputs": {
     "captions": {
-      "bytes": 279,
+      "bytes": 333,
       "file": "curved-guides.en.vtt",
       "format": "WebVTT",
       "timing_reviewed": true
     },
     "gif": {
-      "bytes": 3277181,
+      "bytes": 3271193,
       "file": "curved-guides.gif"
     },
     "mp4": {
-      "bytes": 771833,
+      "bytes": 552552,
       "file": "curved-guides.mp4"
     },
+    "native_sample": null,
     "poster": {
-      "alt": "A saved cylinder with editable curved and mirrored strokes in Sketch3D's dark workspace.",
-      "bytes": 251986,
-      "file": "curved-guides.png"
-    }
+      "alt": "Saved cylinder with editable curved source and reflected strokes after drawing.",
+      "bytes": 277413,
+      "file": "curved-guides.png",
+      "frame_index": 27,
+      "frame_index_base": 0
+    },
+    "sha256": {
+      "png": "12b15ccd4a8c831fda9304f5783bb369d375f2bb964c128e292d368d092a2bd3",
+      "en.vtt": "9d5238f7e4d98a90efcfe352c17b71b562325e9585a4f9f5d36552fb8310f2ed",
+      "mp4": "bab2513c691053c9ac616ed98a26d0e1400e97743b69a1121e7c30c6d7145f70",
+      "gif": "9c410997f1d4def25f72fba1eb164181ad0597e1f5597f1ce42853efbdb8988e"
+    },
+    "gif_preview": "6-second single-play preview."
   },
-  "recorded_unix_seconds": 1793574835,
+  "prepared_scene_export": null,
+  "recorded_unix_seconds": 1793649230,
   "review": {
     "captions_timing_checked": true,
     "intended_readme_surface_checked": false,
-    "loop_boundary_checked": false,
-    "notes": "Synthetic curved-guide draft. The strokes are scripted through production handlers before the captured orbit; review playback and visual readability before use.",
-    "private_content_checked": false,
+    "loop_boundary_checked": true,
+    "notes": "Synthetic curved-guide replay. The cylinder stroke and reflected copy are created through production canvas input during capture. Reviewed GIF key frames at 0/10/20/30/40/50, checked selected full-resolution posters, compared all VTT cues with action checkpoints, and validated VTT order/duration. Confirmed GIFs have no loop extension and scanned manifests/media for private paths. Full native-resolution motion/readability and rendered README-surface review remain pending.",
+    "private_content_checked": true,
     "reviewed": false,
     "reviewer": null
   },

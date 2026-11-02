@@ -1,0 +1,91 @@
+{
+  "app_commit": "65f46deec40a855801c5b6a8ccc46c5bfa0ce83e",
+  "capture_export_action": null,
+  "capture_import_action": false,
+  "capture_insert_action": false,
+  "capture_mode": "deterministic hidden in-app replay through canvas_input",
+  "capture_size": [
+    1280,
+    720
+  ],
+  "clip": "house-tutorial",
+  "cursor_cue": "A synthetic pointer ring is labeled DRAW while drawing, SELECT while editing, and ORBIT during camera navigation; persistent text discloses synthetic input and no pressure data.",
+  "dpi_percent": 100,
+  "duration_seconds": 60,
+  "encoding": {
+    "gif": "Accelerated six-second preview of the same 60 replay checkpoints; plays once without a loop extension. Use the captioned MP4 master for normal-speed instruction.",
+    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps; repeated frame holds preserve the 60s duration.",
+    "poster": "Selected full-resolution action frame encoded as PNG."
+  },
+  "fixture": "Japanese house scene",
+  "fixture_version": 1,
+  "format": "spatial-sketch-capability-demo",
+  "frame_rate": 10,
+  "gif_size": [
+    640,
+    360
+  ],
+  "input_note": "This deterministic tutorial uses synthetic pressure=None pointer samples. Drawing, selection, transform, undo/redo, native save, and native reopen use production app handlers. MP4 checkpoints are held to make the action steps readable; no tablet pressure or latency was measured.",
+  "license_or_provenance": "Original Japanese garden-house scene built into Sketch3D; the stroke and transforms are created during capture by production editing handlers.",
+  "manifest_version": 1,
+  "mp4_frame_count": 600,
+  "outputs": {
+    "captions": {
+      "bytes": 663,
+      "file": "house-tutorial.en.vtt",
+      "format": "WebVTT",
+      "timing_reviewed": true
+    },
+    "gif": {
+      "bytes": 4038182,
+      "file": "house-tutorial.gif"
+    },
+    "mp4": {
+      "bytes": 4956199,
+      "file": "house-tutorial.mp4"
+    },
+    "native_sample": {
+      "bytes": 2201612,
+      "file": "house-tutorial-saved.sketch.json",
+      "saved_and_reopened_through_production_handlers": true
+    },
+    "poster": {
+      "alt": "Selected cyan detail stroke and move gizmo in clear canvas above the garden-house.",
+      "bytes": 502450,
+      "file": "house-tutorial.png",
+      "frame_index": 30,
+      "frame_index_base": 0
+    },
+    "sha256": {
+      "png": "dbf592af28cfef8d558a8fc657eba0ca6c690c008c2d2b4c95fcfd87230ae17e",
+      "en.vtt": "9a7c7ad5ab89e0c21c2b753c042d1b3a9f1935c1617e3f94258e4447cfc41530",
+      "mp4": "b38ca36c0ac297d65d8d4269158387f2832c86bba3e6bcb6a9771a937652e656",
+      "saved.sketch.json": "ed5b50f70579b749fd2cd6b169cd8eccc694c5eea74cda7d91b10d30a70ea880",
+      "gif": "2573a0910898ceb9e7666cd8de86b0fc0ca1aefbb46dbd0dc58d3daf2b1d08f0"
+    },
+    "gif_preview": "Accelerated 6-second preview; use the MP4 and timed VTT for normal-speed playback."
+  },
+  "prepared_scene_export": null,
+  "recorded_unix_seconds": 1793649684,
+  "review": {
+    "captions_timing_checked": true,
+    "intended_readme_surface_checked": false,
+    "loop_boundary_checked": true,
+    "notes": "Synthetic 60-second tutorial with captured draw/select/move/undo/redo and production native save/reopen steps. The GIF is an accelerated six-second preview; use the MP4 and VTT for instruction. Reviewed GIF key frames at 0/10/20/30/40/50, checked selected full-resolution posters, compared all VTT cues with action checkpoints, and validated VTT order/duration. Confirmed GIFs have no loop extension and scanned manifests/media for private paths. Full native-resolution motion/readability and rendered README-surface review remain pending.",
+    "private_content_checked": true,
+    "reviewed": false,
+    "reviewer": null
+  },
+  "shot_steps": [
+    "Draw a detail on the front plane, then select and move it through the production selection handlers.",
+    "Undo and redo the transform, orbit the camera, then save and reopen through production native document paths.",
+    "The native save is stored next to the recording as a sample document."
+  ],
+  "source_tree_dirty": false,
+  "theme": "Dark",
+  "viewport": [
+    1280,
+    720
+  ],
+  "window_visible": false
+}

@@ -1,34 +1,33 @@
 # SKETCH-066 coverage and freshness audit
 
-Audited 2026-11-02 against the current capture implementation and local draft manifests. The eight current-build output sets are refreshed after the implementation commit; the final curated hashes live in each media manifest. This is a source/metadata and selected-frame review, not a full playback or intended-surface sign-off. Manifest review flags remain false until a human reviews those outputs.
+Audited 2026-11-02 against the current capture implementation and curated manifests from commit `65f46de`. All eight outputs decode end-to-end, VTT cues validate and match their action checkpoints, hashes/sizes/provenance match, and selected frames/posters have been visually reviewed. `captions_timing_checked`, `loop_boundary_checked`, and `private_content_checked` are recorded per manifest. Native-size motion readability and rendered hosted-README review remain open, so aggregate `reviewed` remains false.
 
 The five focused clips, 18-second overview, and two 60-second tutorials now have bounded current-build replays. Each uses synthetic pressure-free input and discloses that no tablet pressure or latency was measured. The reference-export replay uses an injected generated file-picker result and does not show the native picker or insert-preview dialog.
 
 ## Existing clips
 
-The five focused clips are six seconds at 10 fps with full-size MP4/posters and bounded 640×360 single-play GIFs. The overview is an 18-second 10-fps MP4; tutorials are 60-second 10-fps MP4s. Their six-second GIFs are accelerated previews, not normal-speed instruction. Every clip has a VTT and manifest; long tutorials include native sample files saved/reopened through production handlers. All manifests retain review flags as false pending complete playback, caption, privacy, and README-size review.
+The five focused clips are six seconds at 10 fps with full-size MP4/posters and bounded 640×360 single-play GIFs. The overview is an 18-second 10-fps MP4; tutorials are 60-second 10-fps MP4s. Their six-second GIFs are accelerated previews, not normal-speed instruction. Every clip has a VTT and manifest; long tutorials include native sample files saved/reopened through production handlers. Caption timing, single-play behavior, privacy/path scans, and selected-frame/poster review are complete; native-size motion and hosted-surface review are not.
 
 | Clip | Recorded app commit | What is actually captured | Gap and refresh action |
 | --- | --- | --- | --- |
-| `draw-orbit` | Current implementation commit | Draw through `canvas_input`, then orbit | Current focused action clip. Synthetic input; no tablet measurements. |
-| `curved-guides` | Current implementation commit | Create and draw across a saved cylinder via production pointer handler; orbit | Cylinder guide/mirror action is shown. Ring guide remains outside this clip. |
-| `mirror-shapes` | Current implementation commit | Create a mirrored line and editable ellipse through production handlers; orbit | Radial symmetry remains outside this clip and must not be inferred. |
-| `edit-erase` | Current implementation commit | Select and recolor during capture; partially erase; inspect fragments; undo; orbit | Native selection/appearance/erase handlers are used. |
-| `reference-export` | Current implementation commit | Production OBJ Import control with injected path; native merge; whole-scene GLB export; orbit | The OS picker and insertion preview are not displayed. |
-| `overview` | Current implementation commit | Draw; select/move/undo/redo; orbit; show production GLB export options | 18-second overview, synthetic replay. |
-| `house-tutorial` | Current implementation commit | Draw; select/move/undo/redo; orbit; production native save/reopen | 60-second MP4, accelerated GIF preview, captioned and paired with saved sample. |
-| `curved-tutorial` | Current implementation commit | Draw/reflected stroke; select/move/undo/redo; orbit; native save/reopen | 60-second MP4, accelerated GIF preview, captioned and paired with saved cylinder sample. |
+| `draw-orbit` | `65f46de` | Draw through `canvas_input`, then orbit | Current focused action clip. Synthetic input; no tablet measurements. |
+| `curved-guides` | `65f46de` | Create and draw across a saved cylinder via production pointer handler; orbit | Cylinder guide/mirror action is shown. Ring guide remains outside this clip. |
+| `mirror-shapes` | `65f46de` | Create a mirrored line and editable ellipse through production handlers; orbit | Radial symmetry remains outside this clip and must not be inferred. |
+| `edit-erase` | `65f46de` | Select and recolor during capture; partially erase; inspect fragments; undo; orbit | Native selection/appearance/erase handlers are used. |
+| `reference-export` | `65f46de` | Production OBJ Import control with injected path; native merge; whole-scene GLB export; orbit | The OS picker and insertion preview are not displayed. |
+| `overview` | `65f46de` | Draw; select/move/undo/redo; orbit; show production GLB export options | 18-second overview, synthetic replay. |
+| `house-tutorial` | `65f46de` | Draw; select/move/undo/redo; orbit; production native save/reopen | 60-second MP4, accelerated GIF preview, captioned and paired with saved sample. |
+| `curved-tutorial` | `65f46de` | Draw/reflected stroke; select/move/undo/redo; orbit; native save/reopen | 60-second MP4, accelerated GIF preview, captioned and paired with saved cylinder sample. |
 
-All refreshed outputs leave caption timing and review flags false. The long-form VTT cues correspond to the replay checkpoint intervals but still need human synchronization against the complete MP4.
+The eight VTT files pass ordering, overlap, and duration validation. Their cue ranges match the deterministic action checkpoints. Native-size playback readability and the exact hosted surface remain to be reviewed.
 
 ## What remains to finish the original 066 acceptance
 
-- Review full MP4/GIF playback, final-frame behavior, VTT timing, cursor cues, privacy, and readability at intended README/tutorial sizes. Keep the review flags false until that pass is complete.
-- The native file picker and insertion preview are not shown in `reference-export`; describe this limitation wherever that clip is embedded.
-- Long-form GIFs are accelerated six-second previews. Link the full MP4 and VTT for normal-speed tutorials and keep the static written alternatives available.
-- Add the planned Light/Dark comparison. Existing footage is Dark-only. SKETCH-056 has substantial software theme evidence, with OS/manual checks still open; identify exactly which software-verified state a comparison demonstrates.
-- Resolve the 640px draft versus initial 960px README budget using actual embed review. Upscaling a draft does not add UI detail. Use a suitable fresh capture/preview or a poster-linked MP4 if the GIF is unreadable or over budget.
-- Complete reproducibility and review metadata, then publish bounded curated assets or stable project-controlled links. The README currently offers two static tutorial rows, not a published five-clip gallery. Keep the written alternatives, posters/alt text and user-controlled video playback.
+- Review motion readability at native video resolution and inspect the final README rendering at its hosted surface; then update the aggregate `reviewed` and `intended_readme_surface_checked` flags for that exact output set.
+- The native file picker and insertion preview are not shown in `reference-export`; keep this limitation in its caption/README description.
+- Long-form GIFs are accelerated six-second previews. The README links the full MP4 and VTT for normal-speed tutorials and keeps static written alternatives available.
+- Light/Dark comparison is optional and was removed from publication requirements by user direction (2026-11-02). Existing footage is Dark-only.
+- The GIFs are 640px wide and under 5 MiB. Confirm that size on the hosted README; do not upscale if it makes UI text softer. Use poster-linked MP4 if the GIF is unreadable.
 
 ## Current functionality absent from the gallery plan
 

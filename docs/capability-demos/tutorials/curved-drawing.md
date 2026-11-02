@@ -1,10 +1,10 @@
 # Explore and edit a curved drawing
 
-**Status:** Static steps pair with the current-build 60-second [captioned capture](../media/curved-tutorial.mp4) and [VTT captions](../media/curved-tutorial.en.vtt). Review timing, playback, and readability before publication. The clip uses synthetic pressure-free input.
+**Status:** Static steps pair with the current-build 60-second [captioned capture](../media/curved-tutorial.mp4) and [VTT captions](../media/curved-tutorial.en.vtt). Cue ordering and duration validate; full motion and readability review remains pending. The clip uses synthetic pressure-free input.
 
 **Samples:** [Captured cylinder drawing](../media/curved-tutorial-saved.sketch.json), saved and reopened during the capture; also try the [cylindrical lantern](../fixtures/cylindrical-lantern.sketch.json), generated from the built-in original fixture.
 
-**Draft timed captions:** [WebVTT sidecar](curved-drawing.en.vtt), planned for a 60-second tutorial. Check every cue against the final recording before publishing.
+**Timed captions:** [WebVTT sidecar](curved-drawing.en.vtt), aligned to the replay's cylinder draw, selection transform, orbit, save, and reopen checkpoints. VTT ordering and duration validate; visual timing sign-off remains pending.
 
 **Prerequisites:** Sketch3D; mouse or tablet. Mouse input uses constant pressure. This walkthrough makes no tablet-pressure or latency claims.
 
@@ -18,7 +18,7 @@
 
 ## Draft narration / caption transcript
 
-This narration transcript follows the visible action order in the recording. Confirm cue timing and control visibility before publication.
+This narration transcript follows the visible action order and validated replay checkpoints. Confirm the cues against full playback at the intended size before publication.
 
 - “Inspect the saved cylinder and its editable guide.”
 - “Draw across the cylinder. The mirrored copy follows the same axis.”

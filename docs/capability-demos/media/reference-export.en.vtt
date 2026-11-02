@@ -1,10 +1,16 @@
 WEBVTT
 
-00:00:00.000 --> 00:00:00.500
-The reference image, imported OBJ, and saved drawing are staged before capture.
+00:00:00.000 --> 00:00:00.800
+Open the OBJ references controls; this replay uses a generated source file.
 
-00:00:00.500 --> 00:00:05.200
-The whole scene was exported as an editable GLB; orbit to inspect the combined resources.
+00:00:00.800 --> 00:00:02.000
+The production Import OBJ button runs with an injected file-picker result; the native picker is not shown.
+
+00:00:02.000 --> 00:00:03.200
+Insert the lantern with the production native-merge path; its preview dialog is not shown.
+
+00:00:03.200 --> 00:00:05.200
+Start a whole-scene GLB export through the production worker, then orbit the combined scene.
 
 00:00:05.200 --> 00:00:06.000
 This replay uses synthetic input; no tablet pressure was measured.

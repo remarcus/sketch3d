@@ -1,0 +1,16 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:00.900
+Sketch3D opens on an editable garden-house scene.
+
+00:00:00.900 --> 00:00:07.800
+Draw a cyan detail on the front drawing plane.
+
+00:00:07.800 --> 00:00:10.200
+Select and move the detail, then undo and redo the transform.
+
+00:00:10.200 --> 00:00:15.300
+Orbit the camera to inspect the stroke in 3D.
+
+00:00:15.300 --> 00:00:18.000
+Open the production export options. Synthetic input has no pressure data.

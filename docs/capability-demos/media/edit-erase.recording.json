@@ -1,18 +1,21 @@
 {
-  "app_commit": "e60b7ef96ee384af2fb1206b18d0fd727d89ef75",
+  "app_commit": "65f46deec40a855801c5b6a8ccc46c5bfa0ce83e",
+  "capture_export_action": null,
+  "capture_import_action": false,
+  "capture_insert_action": false,
   "capture_mode": "deterministic hidden in-app replay through canvas_input",
   "capture_size": [
     1280,
     720
   ],
   "clip": "edit-erase",
-  "cursor_cue": "A synthetic pointer ring is labeled ERASE or ORBIT during the captured workflow; the selected stroke and appearance are prepared by production handlers before capture, and a persistent banner discloses no pressure data.",
+  "cursor_cue": "A synthetic cursor ring shows SELECT over the stroke, ERASE during the partial erase, and ORBIT during camera navigation; a persistent banner discloses no pressure data.",
   "dpi_percent": 100,
   "duration_seconds": 6,
   "encoding": {
-    "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; 6 seconds; <=5 MiB.",
-    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps.",
-    "poster": "First full-resolution app frame encoded as PNG."
+    "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; <=5 MiB.",
+    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps; repeated frame holds preserve the 6s duration.",
+    "poster": "Selected full-resolution action frame encoded as PNG."
   },
   "fixture": "Selected editable stroke",
   "fixture_version": 1,
@@ -25,34 +28,46 @@
   "input_note": "The fixture stroke is created through the production pointer-action handler and its appearance edit through the production selection handler. Captured PenSample input uses pressure=None and no tilt; no tablet pressure or latency was measured.",
   "license_or_provenance": "Procedurally generated from an empty Sketch3D document by the production pointer-action handler; no external artwork or assets.",
   "manifest_version": 1,
+  "mp4_frame_count": 60,
   "outputs": {
     "captions": {
-      "bytes": 485,
+      "bytes": 471,
       "file": "edit-erase.en.vtt",
       "format": "WebVTT",
-      "timing_reviewed": false
+      "timing_reviewed": true
     },
     "gif": {
-      "bytes": 2881216,
+      "bytes": 3059756,
       "file": "edit-erase.gif"
     },
     "mp4": {
-      "bytes": 443642,
+      "bytes": 412720,
       "file": "edit-erase.mp4"
     },
+    "native_sample": null,
     "poster": {
-      "alt": "An orange editable stroke on the Sketch3D front plane with a synthetic-input disclosure.",
-      "bytes": 223626,
-      "file": "edit-erase.png"
-    }
+      "alt": "Two editable orange fragments after a partial erase, with the synthetic-input disclosure.",
+      "bytes": 248064,
+      "file": "edit-erase.png",
+      "frame_index": 39,
+      "frame_index_base": 0
+    },
+    "sha256": {
+      "png": "808a2116e10e723b2cc0255365e107a89a5527cb342a4bac399561bc36772bfe",
+      "en.vtt": "acb6dccc7bebd1538bb491cb94304265dda537e04afe5717653ab2071a1b8f87",
+      "mp4": "5be0ef11404c9a491091600893ea9b09361c65f08c2fcf4c2cab2920c9f4ffbb",
+      "gif": "9de2529962b266fe4f4ad1b51ca50b0c85ebe6ac0d57065c99463cfb6b67e041"
+    },
+    "gif_preview": "6-second single-play preview."
   },
-  "recorded_unix_seconds": 1793574075,
+  "prepared_scene_export": null,
+  "recorded_unix_seconds": 1793649367,
   "review": {
-    "captions_timing_checked": false,
+    "captions_timing_checked": true,
     "intended_readme_surface_checked": false,
-    "loop_boundary_checked": false,
-    "notes": "Synthetic edit-erase draft. The selected stroke and appearance are prepared by production handlers before the captured eraser and undo sequence; review playback and readability before use.",
-    "private_content_checked": false,
+    "loop_boundary_checked": true,
+    "notes": "Synthetic edit-erase replay. Selection and appearance editing run through production handlers during capture, followed by a partial erase, undo, and orbit. Reviewed GIF key frames at 0/10/20/30/40/50, checked selected full-resolution posters, compared all VTT cues with action checkpoints, and validated VTT order/duration. Confirmed GIFs have no loop extension and scanned manifests/media for private paths. Full native-resolution motion/readability and rendered README-surface review remain pending.",
+    "private_content_checked": true,
     "reviewed": false,
     "reviewer": null
   },

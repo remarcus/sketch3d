@@ -1,5 +1,8 @@
 {
-  "app_commit": "d134602cc84a9332d60353cbec641a1587b8c132",
+  "app_commit": "65f46deec40a855801c5b6a8ccc46c5bfa0ce83e",
+  "capture_export_action": null,
+  "capture_import_action": false,
+  "capture_insert_action": false,
   "capture_mode": "deterministic hidden in-app replay through canvas_input",
   "capture_size": [
     1280,
@@ -10,9 +13,9 @@
   "dpi_percent": 100,
   "duration_seconds": 6,
   "encoding": {
-    "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; 6 seconds; <=5 MiB.",
-    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps.",
-    "poster": "First full-resolution app frame encoded as PNG."
+    "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; <=5 MiB.",
+    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps; repeated frame holds preserve the 6s duration.",
+    "poster": "Selected full-resolution action frame encoded as PNG."
   },
   "fixture": "Japanese house",
   "fixture_version": 1,
@@ -25,34 +28,46 @@
   "input_note": "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured.",
   "license_or_provenance": "Original Japanese garden house scene built into Sketch3D; no external artwork or assets.",
   "manifest_version": 1,
+  "mp4_frame_count": 60,
   "outputs": {
     "captions": {
       "bytes": 335,
       "file": "draw-orbit.en.vtt",
       "format": "WebVTT",
-      "timing_reviewed": false
+      "timing_reviewed": true
     },
     "gif": {
-      "bytes": 4221845,
+      "bytes": 3889957,
       "file": "draw-orbit.gif"
     },
     "mp4": {
-      "bytes": 895478,
+      "bytes": 792146,
       "file": "draw-orbit.mp4"
     },
+    "native_sample": null,
     "poster": {
-      "alt": "Japanese garden house in Sketch3D's dark workspace before the scripted cyan stroke is added.",
-      "bytes": 552563,
-      "file": "draw-orbit.png"
-    }
+      "alt": "Japanese garden-house scene with the newly drawn cyan stroke visible before camera orbit.",
+      "bytes": 485014,
+      "file": "draw-orbit.png",
+      "frame_index": 28,
+      "frame_index_base": 0
+    },
+    "sha256": {
+      "png": "f8dec378d5ee585cc31e30bac9eae8089ed28736826b8d42fb488fc05e775532",
+      "en.vtt": "9e9a4503888b8e8e435a09b72c276dc161e00d4a1185e6370eeb4f1eb40edb13",
+      "mp4": "e7737f40079467780f47cb4cc53da28183b155867ae5ad2d41f4a905ef5cc384",
+      "gif": "d0440eaab71dcbf836239b3da9644ba4b8d40ee4ffbf1fc51b997480021b2ddb"
+    },
+    "gif_preview": "6-second single-play preview."
   },
-  "recorded_unix_seconds": 1793572604,
+  "prepared_scene_export": null,
+  "recorded_unix_seconds": 1793649163,
   "review": {
-    "captions_timing_checked": false,
+    "captions_timing_checked": true,
     "intended_readme_surface_checked": false,
-    "loop_boundary_checked": false,
-    "notes": "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use.",
-    "private_content_checked": false,
+    "loop_boundary_checked": true,
+    "notes": "Synthetic replay. The GIF plays once to avoid a false loop seam. Reviewed GIF key frames at 0/10/20/30/40/50, checked selected full-resolution posters, compared all VTT cues with action checkpoints, and validated VTT order/duration. Confirmed GIFs have no loop extension and scanned manifests/media for private paths. Full native-resolution motion/readability and rendered README-surface review remain pending.",
+    "private_content_checked": true,
     "reviewed": false,
     "reviewer": null
   },

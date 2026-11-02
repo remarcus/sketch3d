@@ -1,5 +1,19 @@
 {
-  "app_commit": "b8ea60b81207cd2f7cd8220831d4b3b6f997d2fa",
+  "app_commit": "65f46deec40a855801c5b6a8ccc46c5bfa0ce83e",
+  "capture_export_action": {
+    "bytes": 6604596,
+    "file": "reference-export\\captured-reference-export.glb",
+    "summary": {
+      "bytes": 6604596,
+      "image_planes": 1,
+      "model_references": 2,
+      "strokes": 562,
+      "triangles": 139894,
+      "vertices": 89017
+    }
+  },
+  "capture_import_action": true,
+  "capture_insert_action": true,
   "capture_mode": "deterministic hidden in-app replay through canvas_input",
   "capture_size": [
     1280,
@@ -10,9 +24,9 @@
   "dpi_percent": 100,
   "duration_seconds": 6,
   "encoding": {
-    "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; 6 seconds; <=5 MiB.",
-    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps.",
-    "poster": "First full-resolution app frame encoded as PNG."
+    "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; <=5 MiB.",
+    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps; repeated frame holds preserve the 6s duration.",
+    "poster": "Selected full-resolution action frame encoded as PNG."
   },
   "fixture": "Imported reference, inserted lantern, and exported scene",
   "fixture_version": 1,
@@ -22,57 +36,69 @@
     640,
     360
   ],
-  "input_note": "The reference image and OBJ are generated, the saved lantern drawing is inserted, and the combined scene is GLB-exported before capture through production code paths. Captured PenSample orbit input uses pressure=None and no tilt; no tablet pressure or latency was measured.",
+  "input_note": "The image-plane reference and first OBJ are prepared through production storage/render paths before capture. During capture the production OBJ Import control receives a generated path through the existing picker-injection hook; the native picker is not shown. The lantern is inserted through the production native-merge handler without showing its preview dialog, then the production whole-scene export worker writes a GLB. Captured orbit samples use pressure=None and no tilt; no tablet pressure or latency was measured.",
   "license_or_provenance": "The garden-house and lantern drawings are generated from built-in original editable artwork. The reference image and OBJ mesh are generated procedurally for this clip; no external artwork or assets.",
   "manifest_version": 1,
+  "mp4_frame_count": 60,
   "outputs": {
     "captions": {
-      "bytes": 337,
+      "bytes": 596,
       "file": "reference-export.en.vtt",
       "format": "WebVTT",
       "timing_reviewed": true
     },
     "gif": {
-      "bytes": 3539753,
+      "bytes": 3408160,
       "file": "reference-export.gif"
     },
     "mp4": {
-      "bytes": 1066875,
+      "bytes": 917864,
       "file": "reference-export.mp4"
     },
+    "native_sample": null,
     "poster": {
-      "alt": "A garden-house scene with an inserted cylindrical lantern, a reference image plane, and a small OBJ model.",
-      "bytes": 549506,
-      "file": "reference-export.png"
-    }
+      "alt": "Garden-house scene with inserted lantern, reference image, OBJ model, and completed GLB export.",
+      "bytes": 434986,
+      "file": "reference-export.png",
+      "frame_index": 35,
+      "frame_index_base": 0
+    },
+    "sha256": {
+      "png": "559dab4c282bc1781b2a9065fa1e09cd2b722a541b0d13112f6c5305fbda193c",
+      "en.vtt": "426d04dfbe82302142f6e0310a70f7ad97e1fbc29ac41151fd038afa25d82ebd",
+      "mp4": "5dcb4df3ea2317a513acf8b8db7c688fd7de5275baee4dc1003240d5e520973e",
+      "scene.glb": "a8830215cb4777465b8b4fea295cb4a4f350251824e695c273b4fbbcbf7de3da",
+      "gif": "3226e99a89b94b5f69d816cbe2bff755e9e30396922f76858dfeb04a2a6d42ea"
+    },
+    "gif_preview": "6-second single-play preview."
   },
   "prepared_scene_export": {
     "fixture": "reference-export/reference-export.sketch.json",
     "glb": "reference-export/reference-export.glb",
-    "glb_bytes": 6536564,
+    "glb_bytes": 4950824,
     "summary": {
-      "bytes": 6536564,
+      "bytes": 4950824,
       "image_planes": 1,
       "model_references": 1,
-      "strokes": 562,
-      "triangles": 139876,
-      "vertices": 88963
+      "strokes": 497,
+      "triangles": 100500,
+      "vertices": 66047
     }
   },
-  "recorded_unix_seconds": 1793576088,
+  "recorded_unix_seconds": 1793649434,
   "review": {
     "captions_timing_checked": true,
     "intended_readme_surface_checked": false,
-    "loop_boundary_checked": false,
-    "notes": "Synthetic reference-export draft. The image/model references, inserted lantern, and GLB export are prepared before the captured camera orbit; review playback and readability before use.",
-    "private_content_checked": false,
+    "loop_boundary_checked": true,
+    "notes": "Synthetic reference-export replay. The production OBJ import control uses an injected generated file result, the native-merge handler inserts the lantern, and the export worker writes the combined GLB. The native file picker and insert preview are not shown. Reviewed GIF key frames at 0/10/20/30/40/50, checked selected full-resolution posters, compared all VTT cues with action checkpoints, and validated VTT order/duration. Confirmed GIFs have no loop extension and scanned manifests/media for private paths. Full native-resolution motion/readability and rendered README-surface review remain pending.",
+    "private_content_checked": true,
     "reviewed": false,
     "reviewer": null
   },
   "shot_steps": [
-    "Import a procedural reference image and OBJ model through production storage and renderer paths before capture.",
-    "Insert the saved cylindrical-lantern drawing using the production native-merge path.",
-    "Export the combined visible scene as GLB, then orbit the camera using synthetic canvas input."
+    "During capture, click the production Import OBJ control with a generated file-picker result; the native picker is not shown.",
+    "During capture, insert the saved cylindrical-lantern drawing with the production native-merge path; the preview dialog is not shown.",
+    "During capture, start a whole-scene GLB export through the production export worker, then orbit using synthetic canvas input."
   ],
   "source_tree_dirty": false,
   "theme": "Dark",
