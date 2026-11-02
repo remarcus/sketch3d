@@ -2,6 +2,8 @@
 
 Record only after the associated task's checks pass. Suggested timings are edit lengths, not required capture speed. Keep cursor/input cues visible, avoid showing private paths, and pause briefly on each important control.
 
+The [coverage audit](coverage-audit.md) distinguishes these intended shots from actions actually captured in the existing drafts and lists newer features awaiting acceptance before additional clips.
+
 ## Overview
 
 **Name:** `sketch3d-overview` · **Target:** 18–22 seconds · **Fixture:** Japanese house or another licensed original fixture.

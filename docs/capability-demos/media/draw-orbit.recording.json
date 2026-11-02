@@ -1,0 +1,71 @@
+{
+  "app_commit": "d134602cc84a9332d60353cbec641a1587b8c132",
+  "capture_mode": "deterministic hidden in-app replay through canvas_input",
+  "capture_size": [
+    1280,
+    720
+  ],
+  "clip": "draw-orbit",
+  "cursor_cue": "A synthetic pointer ring is labeled DRAW or ORBIT while input is active; a persistent banner discloses synthetic replay and no pressure data.",
+  "dpi_percent": 100,
+  "duration_seconds": 6,
+  "encoding": {
+    "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; 6 seconds; <=5 MiB.",
+    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps.",
+    "poster": "First full-resolution app frame encoded as PNG."
+  },
+  "fixture": "Japanese house",
+  "fixture_version": 1,
+  "format": "spatial-sketch-capability-demo",
+  "frame_rate": 10,
+  "gif_size": [
+    640,
+    360
+  ],
+  "input_note": "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured.",
+  "license_or_provenance": "Original Japanese garden house scene built into Sketch3D; no external artwork or assets.",
+  "manifest_version": 1,
+  "outputs": {
+    "captions": {
+      "bytes": 335,
+      "file": "draw-orbit.en.vtt",
+      "format": "WebVTT",
+      "timing_reviewed": false
+    },
+    "gif": {
+      "bytes": 4221845,
+      "file": "draw-orbit.gif"
+    },
+    "mp4": {
+      "bytes": 895478,
+      "file": "draw-orbit.mp4"
+    },
+    "poster": {
+      "alt": "Japanese garden house in Sketch3D's dark workspace before the scripted cyan stroke is added.",
+      "bytes": 552563,
+      "file": "draw-orbit.png"
+    }
+  },
+  "recorded_unix_seconds": 1793572604,
+  "review": {
+    "captions_timing_checked": false,
+    "intended_readme_surface_checked": false,
+    "loop_boundary_checked": false,
+    "notes": "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use.",
+    "private_content_checked": false,
+    "reviewed": false,
+    "reviewer": null
+  },
+  "shot_steps": [
+    "Draw a short stroke on the Japanese house drawing plane with pressure-free synthetic input.",
+    "Orbit the camera using a synthetic barrel gesture through canvas_input.",
+    "Pause on the edited view."
+  ],
+  "source_tree_dirty": false,
+  "theme": "Dark",
+  "viewport": [
+    1280,
+    720
+  ],
+  "window_visible": false
+}

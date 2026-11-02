@@ -1,0 +1,71 @@
+{
+  "app_commit": "c44f980ee6ec5b15e54a8437643d2fdc36128cb7",
+  "capture_mode": "deterministic hidden in-app replay through canvas_input",
+  "capture_size": [
+    1280,
+    720
+  ],
+  "clip": "curved-guides",
+  "cursor_cue": "The curved-guide strokes are prepared by scripted production handlers before capture; playback shows a synthetic ORBIT cursor and a persistent no-pressure disclosure.",
+  "dpi_percent": 100,
+  "duration_seconds": 6,
+  "encoding": {
+    "gif": "In-app screenshot frames downscaled to 640x360; image GIF encoder without a loop extension (plays once); 10 fps; 6 seconds; <=5 MiB.",
+    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps.",
+    "poster": "First full-resolution app frame encoded as PNG."
+  },
+  "fixture": "Saved cylinder mirror study",
+  "fixture_version": 1,
+  "format": "spatial-sketch-capability-demo",
+  "frame_rate": 10,
+  "gif_size": [
+    640,
+    360
+  ],
+  "input_note": "Synthetic PenSample input uses pressure=None and no tilt. The app applies its fixed default mouse-like width; no tablet pressure or latency was measured.",
+  "license_or_provenance": "Procedurally generated from an empty Sketch3D document by the production pointer-action handlers; no external artwork or assets.",
+  "manifest_version": 1,
+  "outputs": {
+    "captions": {
+      "bytes": 279,
+      "file": "curved-guides.en.vtt",
+      "format": "WebVTT",
+      "timing_reviewed": true
+    },
+    "gif": {
+      "bytes": 3277181,
+      "file": "curved-guides.gif"
+    },
+    "mp4": {
+      "bytes": 771833,
+      "file": "curved-guides.mp4"
+    },
+    "poster": {
+      "alt": "A saved cylinder with editable curved and mirrored strokes in Sketch3D's dark workspace.",
+      "bytes": 251986,
+      "file": "curved-guides.png"
+    }
+  },
+  "recorded_unix_seconds": 1793574835,
+  "review": {
+    "captions_timing_checked": true,
+    "intended_readme_surface_checked": false,
+    "loop_boundary_checked": false,
+    "notes": "Synthetic curved-guide draft. The strokes are scripted through production handlers before the captured orbit; review playback and visual readability before use.",
+    "private_content_checked": false,
+    "reviewed": false,
+    "reviewer": null
+  },
+  "shot_steps": [
+    "Create a saved cylinder and mirrored curved strokes through the production pointer-action handlers.",
+    "Orbit the camera using a synthetic barrel gesture through canvas_input.",
+    "Pause on the editable cylinder and reflected strokes."
+  ],
+  "source_tree_dirty": false,
+  "theme": "Dark",
+  "viewport": [
+    1280,
+    720
+  ],
+  "window_visible": false
+}

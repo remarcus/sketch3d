@@ -1,6 +1,8 @@
 # Capability demo recording workflow
 
-This folder defines the capture recipe for SKETCH-066. **No capability clips are published yet.** Record and review each clip only after the workflow it demonstrates has passed its feature checks.
+This folder defines the capture recipe for SKETCH-066. **Five historical synthetic previews are now included in the main README.** Their original manifests retain incomplete review flags; current-build refresh and full review remain open. Light/Dark comparison is optional per user direction. Record and review each clip only after the workflow it demonstrates has passed its feature checks.
+
+See the [2026-11-02 coverage and freshness audit](coverage-audit.md) for each draft's actual action coverage, missing deliverables, newer functionality, and refresh rules. The existing drafts predate SKETCH-071–086 and require current-build comparison before publication.
 
 The editable sample documents are generated from the built-in original scenes with `cargo run -- --write-capability-fixtures docs/capability-demos/fixtures`. The command refuses to overwrite existing files and removes files it created if fixture generation stops partway through. Static tutorial alternatives, caption transcripts, and draft 60-second WebVTT tracks are in `tutorials/`.
 

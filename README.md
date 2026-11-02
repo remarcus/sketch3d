@@ -2,6 +2,10 @@
 
 Sketch3D is an open-source, tablet-first 3D sketching app written in Rust. Draw editable strokes in space, work on flat or curved guides, and export artwork for other tools.
 
+![Sketch3D's dark workspace showing an editable Japanese garden house, drawing tools, and brush properties](docs/capability-demos/media/draw-orbit.png)
+
+*The editable garden-house starter scene, shown in an earlier-build demo capture.*
+
 ## Features
 
 - Pressure-sensitive 3D brush strokes with stabilization, editable brushes, and undo/redo.
@@ -58,14 +62,26 @@ The **Help** menu and in-app tutorial describe the drawing tools and workflows. 
 
 ## Capability gallery
 
-Reviewed video clips are not published yet. These text tutorials and editable fixtures are available as static alternatives while recording and review remain pending.
+Click a preview to open its MP4. These six-second app captures use synthetic input without pressure data. They show earlier builds; newer features are not covered, and full playback/current-build review remains pending. GIF previews play once; open the MP4 to replay.
+
+| Draw and orbit | Partial erase and undo |
+| --- | --- |
+| [![Draw a cyan stroke in the garden-house scene, then orbit to inspect its depth](docs/capability-demos/media/draw-orbit.gif)](docs/capability-demos/media/draw-orbit.mp4) | [![Erase the middle of an orange stroke, undo, then orbit](docs/capability-demos/media/edit-erase.gif)](docs/capability-demos/media/edit-erase.mp4) |
+| Drawing through the canvas handler, followed by a camera orbit. | Partial erasing and restoration; selection and recoloring were prepared before capture. |
+
+| Curved drawing | Mirror and shapes | References and scene export |
+| --- | --- | --- |
+| [![Orbit a saved cylinder with curved mirrored strokes](docs/capability-demos/media/curved-guides.gif)](docs/capability-demos/media/curved-guides.mp4) | [![Orbit a mirrored line pair and editable ellipse](docs/capability-demos/media/mirror-shapes.gif)](docs/capability-demos/media/mirror-shapes.mp4) | [![Orbit a garden-house scene with an inserted lantern, image plane and OBJ reference](docs/capability-demos/media/reference-export.gif)](docs/capability-demos/media/reference-export.mp4) |
+| Prepared cylinder drawing, shown from changing angles. | Prepared mirrored lines and ellipse, shown in 3D. | Prepared imported references and inserted drawing; GLB export runs before capture. |
+
+The last three clips show the resulting scenes. Their setup actions happen before recording. [Posters, captions, source commits and capture manifests](docs/capability-demos/media/README.md) accompany the clips. Written walkthroughs and editable samples are below.
 
 | Workflow | Recording | Static tutorial | Editable fixture |
 | --- | --- | --- | --- |
 | Explore and edit a curved drawing | Pending review | [Curved drawing tutorial](docs/capability-demos/tutorials/curved-drawing.md) | [Cylindrical lantern](docs/capability-demos/fixtures/cylindrical-lantern.sketch.json) |
 | Select, transform, and save a scene | Pending review | [House editing tutorial](docs/capability-demos/tutorials/house-editing.md) | [Garden house](docs/capability-demos/fixtures/garden-house.sketch.json) |
 
-See the [recording workflow](docs/capability-demos/README.md) and [shot list](docs/capability-demos/shot-list.md) for planned clips. Tutorials include draft narration for future captures; timings should be aligned to reviewed recordings before publication.
+See the [recording workflow](docs/capability-demos/README.md) and [shot list](docs/capability-demos/shot-list.md) for additional captures. Tutorials include draft narration for future recordings.
 
 ## Drawings and exports
 
