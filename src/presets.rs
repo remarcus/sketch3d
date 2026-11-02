@@ -987,6 +987,8 @@ mod tests {
                 curve: None,
                 material: Default::default(),
                 id: preset.id,
+                point_thickness: None,
+                modifiers: None,
                 fill: None,
                 group_id: None,
                 layer_id: 1,

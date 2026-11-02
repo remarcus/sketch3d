@@ -14,6 +14,30 @@ use std::{
 
 const MAX_FRAMES: usize = 480;
 const MAX_PIXELS: u64 = 921_600;
+const MAX_GIF_FPS: u32 = 50;
+
+fn gif_delay_centiseconds(fps: u32) -> u32 {
+    ((100.0 / f64::from(fps.max(1))).round() as u32).max(1)
+}
+
+fn encoded_frame_duration_seconds(frame_count: usize, fps: u32) -> f64 {
+    frame_count as f64 / f64::from(fps.max(1))
+}
+
+fn mp4_input_frame_rate(fps: u32) -> String {
+    fps.to_string()
+}
+
+fn valid_export_fps(mode: ExportMode, format: VideoFormat, fps: u32) -> bool {
+    match mode {
+        ExportMode::ArtworkAnimation => {
+            (u32::from(crate::animation::MIN_FPS)..=u32::from(crate::animation::MAX_FPS))
+                .contains(&fps)
+                && (format != VideoFormat::Gif || fps <= MAX_GIF_FPS)
+        }
+        _ => (4..=24).contains(&fps),
+    }
+}
 
 fn trim_range(total_ms: u64, percentages: [f32; 2]) -> Option<(u64, u64)> {
     let [start, end] = percentages;
@@ -157,6 +181,7 @@ enum ExportMode {
     Sequence(u64),
     ReconstructedReveal,
     RecordedHistory,
+    ArtworkAnimation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -334,6 +359,7 @@ impl VideoExportUi {
         &self,
         sequences: &[crate::camera_bookmarks::CameraSequence],
         history_duration_ms: u64,
+        document: &Document,
     ) -> Option<f32> {
         if self.mode == ExportMode::RecordedHistory {
             let (start_ms, end_ms) = trim_range(history_duration_ms, self.history_trim_percent)?;
@@ -343,9 +369,17 @@ impl VideoExportUi {
             let selected_ms = end_ms.saturating_sub(start_ms) as f32;
             return Some(selected_ms / 1000.0 / self.history_speed);
         }
+        if self.mode == ExportMode::ArtworkAnimation {
+            return (!document.animation.is_empty()).then(|| {
+                encoded_frame_duration_seconds(
+                    document.animation.frame_count(),
+                    u32::from(document.animation.fps),
+                ) as f32
+            });
+        }
         let seconds = match self.mode {
             ExportMode::Turntable | ExportMode::ReconstructedReveal => self.duration,
-            ExportMode::RecordedHistory => unreachable!(),
+            ExportMode::RecordedHistory | ExportMode::ArtworkAnimation => unreachable!(),
             ExportMode::Sequence(id) => sequences
                 .iter()
                 .find(|sequence| sequence.id == id)?
@@ -358,8 +392,13 @@ impl VideoExportUi {
         &self,
         sequences: &[crate::camera_bookmarks::CameraSequence],
         history_duration_ms: u64,
+        document: &Document,
     ) -> Option<usize> {
-        let seconds = self.export_duration_seconds(sequences, history_duration_ms)?;
+        if self.mode == ExportMode::ArtworkAnimation {
+            let count = document.animation.frame_count();
+            return (2..=MAX_FRAMES).contains(&count).then_some(count);
+        }
+        let seconds = self.export_duration_seconds(sequences, history_duration_ms, document)?;
         let mut count = (seconds * self.fps as f32).ceil() as usize;
         if self.mode == ExportMode::RecordedHistory && seconds.is_finite() && seconds > 0.0 {
             count = count.max(2);
@@ -472,6 +511,13 @@ impl VideoExportUi {
                                 "Recorded history",
                             );
                         }
+                        if !document.animation.is_empty() {
+                            ui.selectable_value(
+                                &mut self.mode,
+                                ExportMode::ArtworkAnimation,
+                                "Artwork animation",
+                            );
+                        }
                         for sequence in sequences {
                             ui.selectable_value(
                                 &mut self.mode,
@@ -482,6 +528,7 @@ impl VideoExportUi {
                     });
                     if !matches!(self.mode, ExportMode::Sequence(_))
                         && self.mode != ExportMode::RecordedHistory
+                        && self.mode != ExportMode::ArtworkAnimation
                     {
                         ui.add(
                             egui::Slider::new(&mut self.duration, 1.0..=20.0)
@@ -514,6 +561,8 @@ impl VideoExportUi {
                             "Recorded range {start_seconds:.2}–{end_seconds:.2}s · output {output_seconds:.2}s"
                         ));
                         ui.small("Snapshots are replayed at recorded times. Speed changes the export duration; trim percentages select a portion of the session. A very short selection exports at least two frames.");
+                    } else if self.mode == ExportMode::ArtworkAnimation {
+                        ui.small("Exports the saved integer frame range at the animation FPS. Onion skins and editor overlays are excluded.");
                     }
                     ui.horizontal(|ui| {
                         ui.add(
@@ -528,16 +577,30 @@ impl VideoExportUi {
                                 .prefix("Height "),
                         );
                     });
-                    ui.add(egui::Slider::new(&mut self.fps, 4..=24).text("Frames per second"));
+                    if self.mode == ExportMode::ArtworkAnimation {
+                        self.fps = u32::from(document.animation.fps);
+                        ui.label(format!("{} frames per second", document.animation.fps));
+                    } else {
+                        ui.add(egui::Slider::new(&mut self.fps, 4..=24).text("Frames per second"));
+                    }
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut self.format, VideoFormat::Gif, "GIF");
                         ui.selectable_value(&mut self.format, VideoFormat::Mp4, "MP4 (H.264)");
                     });
                     if self.format == VideoFormat::Mp4 {
                         ui.small("MP4 encoding uses FFmpeg with libx264, or installed Blender when FFmpeg is unavailable. Odd dimensions are padded by one pixel for H.264.");
+                    } else if self.mode == ExportMode::ArtworkAnimation {
+                        let delay = gif_delay_centiseconds(self.fps);
+                        let effective_fps = 100.0 / f64::from(delay);
+                        ui.small(format!(
+                            "GIF delays use 10 ms steps: requested {} fps is encoded as {:.2} fps ({} ms per frame). GIF export supports at most {MAX_GIF_FPS} fps.",
+                            self.fps,
+                            effective_fps,
+                            delay * 10,
+                        ));
                     }
                     ui.label(format!("{} pixels", self.width as u64 * self.height as u64));
-                    if let Some(count) = self.frame_count(sequences, history.duration_ms()) {
+                    if let Some(count) = self.frame_count(sequences, history.duration_ms(), document) {
                         ui.label(format!(
                             "{count} frames · {} · overlays excluded",
                             match self.format { VideoFormat::Gif => "GIF animation", VideoFormat::Mp4 => "MP4 video" }
@@ -560,7 +623,10 @@ impl VideoExportUi {
                     }
                     ui.horizontal(|ui| {
                         let choose_file = ui.add_enabled(
-                            self.frame_count(sequences, history.duration_ms()).is_some()
+                            self.frame_count(sequences, history.duration_ms(), document).is_some()
+                                && !(self.mode == ExportMode::ArtworkAnimation
+                                    && self.format == VideoFormat::Gif
+                                    && self.fps > MAX_GIF_FPS)
                                 && (self.mode != ExportMode::RecordedHistory
                                     || self.history_trim_percent[1]
                                         > self.history_trim_percent[0])
@@ -611,7 +677,7 @@ impl VideoExportUi {
                         fps: self.fps,
                         mode: self.mode,
                         duration: self
-                            .export_duration_seconds(sequences, history_total_ms)
+                            .export_duration_seconds(sequences, history_total_ms, document)
                             .unwrap_or(self.duration),
                         history_total_ms,
                         history_trim_percent: self.history_trim_percent,
@@ -712,6 +778,18 @@ impl VideoExportUi {
             ExportMode::Turntable
             | ExportMode::ReconstructedReveal
             | ExportMode::RecordedHistory => request.duration,
+            ExportMode::ArtworkAnimation => {
+                if document.animation.is_empty() {
+                    return Err("Artwork animation has no keyframes to export".into());
+                }
+                if !document.animation.current_pose_matches(&document.strokes) {
+                    return Err("Set or update the current artwork keyframe before export".into());
+                }
+                if u32::from(document.animation.fps) != request.fps {
+                    return Err("Artwork animation export rate must match its saved FPS".into());
+                }
+                document.animation.duration_seconds()
+            }
             ExportMode::Sequence(id) => {
                 let duration = bookmarks
                     .sequences
@@ -724,12 +802,16 @@ impl VideoExportUi {
             }
         };
         let mut frame_count = (seconds * request.fps as f32).ceil() as usize;
+        if request.mode == ExportMode::ArtworkAnimation {
+            frame_count = document.animation.frame_count();
+        }
         if request.mode == ExportMode::RecordedHistory && seconds.is_finite() && seconds > 0.0 {
             frame_count = frame_count.max(2);
         }
+        let valid_fps = valid_export_fps(request.mode, request.format, request.fps);
         if request.size.contains(&0)
             || u64::from(request.size[0]) * u64::from(request.size[1]) > MAX_PIXELS
-            || !(4..=24).contains(&request.fps)
+            || !valid_fps
             || !(2..=MAX_FRAMES).contains(&frame_count)
         {
             return Err("Animated export exceeds its frame, rate, or dimension limits".into());
@@ -878,6 +960,18 @@ impl VideoExportUi {
                     }
                 }
                 ExportMode::ReconstructedReveal => {}
+                ExportMode::ArtworkAnimation => {
+                    let frame = job
+                        .document
+                        .animation
+                        .range_start
+                        .saturating_add(job.next_frame as u32);
+                    if let Some(strokes) = job.document.animation.resolve(frame) {
+                        job.document.strokes = strokes;
+                    } else {
+                        valid_camera = false;
+                    }
+                }
                 ExportMode::RecordedHistory => {
                     if let (Some(timeline), Some((start_ms, end_ms))) =
                         (&job.history_timeline, job.history_range_ms)
@@ -1056,7 +1150,7 @@ fn encode_gif_with_repeat(
                     image,
                     0,
                     0,
-                    Delay::from_numer_denom_ms(1000, fps),
+                    Delay::from_numer_denom_ms(gif_delay_centiseconds(fps) * 10, 1),
                 ))
                 .map_err(|error| error.to_string())?;
         }
@@ -1335,7 +1429,14 @@ pub(crate) fn encode_mp4(
             "-video_size",
         ])
         .arg(format!("{}x{}", size[0], size[1]))
-        .args(["-framerate", &fps.to_string(), "-i", "pipe:0", "-an", "-vf"])
+        .args([
+            "-framerate",
+            &mp4_input_frame_rate(fps),
+            "-i",
+            "pipe:0",
+            "-an",
+            "-vf",
+        ])
         .arg("pad=ceil(iw/2)*2:ceil(ih/2)*2")
         .args([
             "-c:v",
@@ -1435,6 +1536,286 @@ pub(crate) fn encode_mp4(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gif_animation_uses_reportable_centisecond_delay_and_caps_at_50_fps() {
+        assert_eq!(gif_delay_centiseconds(24), 4);
+        assert_eq!(100.0 / f64::from(gif_delay_centiseconds(24)), 25.0);
+        assert_eq!(gif_delay_centiseconds(50), 2);
+        assert!(valid_export_fps(
+            ExportMode::ArtworkAnimation,
+            VideoFormat::Gif,
+            50
+        ));
+        assert!(!valid_export_fps(
+            ExportMode::ArtworkAnimation,
+            VideoFormat::Gif,
+            51
+        ));
+    }
+
+    #[test]
+    fn mp4_animation_keeps_exact_integer_frame_rate_and_duration() {
+        assert!(valid_export_fps(
+            ExportMode::ArtworkAnimation,
+            VideoFormat::Mp4,
+            60
+        ));
+        assert_eq!(encoded_frame_duration_seconds(60, 24), 2.5);
+        assert_eq!(encoded_frame_duration_seconds(60, 60), 1.0);
+        assert_eq!(mp4_input_frame_rate(60), "60");
+        assert!(!valid_export_fps(
+            ExportMode::Turntable,
+            VideoFormat::Mp4,
+            60
+        ));
+    }
+
+    #[test]
+    fn production_artwork_animation_mode_renders_and_encodes_saved_gif_track() {
+        use image::AnimationDecoder;
+
+        const SIZE: [u32; 2] = [64, 64];
+        const FPS: u32 = 24;
+        let Some(state) = headless_render_state_for_test() else {
+            return;
+        };
+        let mut renderer = crate::renderer::SceneRenderer::new(state);
+        let mut document = crate::export_check::brush_fixture();
+        let initial_strokes = document.strokes.clone();
+        let mut moved_strokes = initial_strokes.clone();
+        for stroke in &mut moved_strokes {
+            for point in &mut stroke.points {
+                point.position.x += 0.8;
+            }
+        }
+        let mut animation = crate::animation::ArtworkAnimation::default();
+        animation.range_end = 1;
+        animation.fps = FPS as u8;
+        animation = animation.set_keyframe(0, &initial_strokes).unwrap();
+        animation = animation.set_keyframe(1, &moved_strokes).unwrap();
+        animation.current_frame = 0;
+        document.animation = animation;
+        let original = document.clone();
+        let output_root = std::env::current_dir().unwrap().join("verification");
+        std::fs::create_dir_all(&output_root).unwrap();
+        let temp = tempfile::tempdir_in(output_root).unwrap();
+        let path = temp.path().join("artwork-track.gif");
+        let request = VideoRequest {
+            path: path.clone(),
+            size: SIZE,
+            fps: FPS,
+            mode: ExportMode::ArtworkAnimation,
+            duration: 2.0 / FPS as f32,
+            history_total_ms: 0,
+            history_trim_percent: [0.0, 100.0],
+            history_speed: 1.0,
+            format: VideoFormat::Gif,
+            replace: false,
+        };
+        let camera = crate::geometry::Camera {
+            projection: crate::geometry::Projection::Orthographic,
+            distance: 7.0,
+            pitch: 0.38,
+            ..Default::default()
+        };
+        let bookmarks = crate::camera_bookmarks::CameraBookmarkStore::default();
+        let history = crate::construction_history::ConstructionHistory::empty_for_test();
+        let mut export_ui = VideoExportUi::default();
+        export_ui
+            .start(
+                request,
+                &document,
+                camera,
+                &bookmarks,
+                [0.08, 0.12, 0.2],
+                crate::lighting::Lighting {
+                    ground: false,
+                    shadows: false,
+                    ..Default::default()
+                },
+                &history,
+                ExportResourceAvailability {
+                    image_plane_ids: HashSet::new(),
+                    model_reference_ids: HashSet::new(),
+                },
+            )
+            .unwrap();
+        let context = egui::Context::default();
+        let status = (0..10_000)
+            .find_map(|_| {
+                let status = export_ui.render_next(&mut renderer, &context);
+                if status.is_none() {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                status
+            })
+            .expect("GIF encoder finishes within polling window");
+        assert!(status.starts_with("Exported video to"), "{status}");
+        assert_eq!(
+            document.strokes, original.strokes,
+            "editor strokes are unchanged"
+        );
+        assert_eq!(
+            document.animation, original.animation,
+            "editor track is unchanged"
+        );
+
+        let frames = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(
+            std::fs::File::open(path).unwrap(),
+        ))
+        .unwrap()
+        .into_frames()
+        .collect_frames()
+        .unwrap();
+        assert_eq!(frames.len(), 2);
+        let (numerator, denominator) = frames[0].delay().numer_denom_ms();
+        assert_eq!(numerator / denominator, gif_delay_centiseconds(FPS) * 10);
+        let changed_pixels = frames[0]
+            .buffer()
+            .pixels()
+            .zip(frames[1].buffer().pixels())
+            .filter(|(left, right)| left.0 != right.0)
+            .count();
+        assert!(
+            changed_pixels > 10,
+            "keyframe motion changes rendered pixels"
+        );
+    }
+
+    #[test]
+    fn production_artwork_animation_mode_exports_mp4_with_exact_rate_when_available() {
+        if !ffmpeg_is_available() && blender_executable().is_none() {
+            eprintln!(
+                "Skipping production artwork MP4 export: neither FFmpeg nor Blender is installed."
+            );
+            return;
+        }
+        let Some(state) = headless_render_state_for_test() else {
+            return;
+        };
+        const SIZE: [u32; 2] = [64, 64];
+        const FPS: u32 = 24;
+        let mut renderer = crate::renderer::SceneRenderer::new(state);
+        let mut document = crate::export_check::brush_fixture();
+        let initial_strokes = document.strokes.clone();
+        let mut moved_strokes = initial_strokes.clone();
+        for stroke in &mut moved_strokes {
+            for point in &mut stroke.points {
+                point.position.x += 0.8;
+            }
+        }
+        let mut animation = crate::animation::ArtworkAnimation::default();
+        animation.range_end = 1;
+        animation.fps = FPS as u8;
+        animation = animation.set_keyframe(0, &initial_strokes).unwrap();
+        animation = animation.set_keyframe(1, &moved_strokes).unwrap();
+        animation.current_frame = 0;
+        document.animation = animation;
+        let original = document.clone();
+        let output_root = std::env::current_dir().unwrap().join("verification");
+        std::fs::create_dir_all(&output_root).unwrap();
+        let temp = tempfile::tempdir_in(output_root).unwrap();
+        let path = temp.path().join("artwork-track.mp4");
+        let request = VideoRequest {
+            path: path.clone(),
+            size: SIZE,
+            fps: FPS,
+            mode: ExportMode::ArtworkAnimation,
+            duration: 2.0 / FPS as f32,
+            history_total_ms: 0,
+            history_trim_percent: [0.0, 100.0],
+            history_speed: 1.0,
+            format: VideoFormat::Mp4,
+            replace: false,
+        };
+        let camera = crate::geometry::Camera {
+            projection: crate::geometry::Projection::Orthographic,
+            distance: 7.0,
+            pitch: 0.38,
+            ..Default::default()
+        };
+        let bookmarks = crate::camera_bookmarks::CameraBookmarkStore::default();
+        let history = crate::construction_history::ConstructionHistory::empty_for_test();
+        let mut export_ui = VideoExportUi::default();
+        export_ui
+            .start(
+                request,
+                &document,
+                camera,
+                &bookmarks,
+                [0.08, 0.12, 0.2],
+                crate::lighting::Lighting {
+                    ground: false,
+                    shadows: false,
+                    ..Default::default()
+                },
+                &history,
+                ExportResourceAvailability {
+                    image_plane_ids: HashSet::new(),
+                    model_reference_ids: HashSet::new(),
+                },
+            )
+            .unwrap();
+        let context = egui::Context::default();
+        let status = (0..10_000)
+            .find_map(|_| {
+                let status = export_ui.render_next(&mut renderer, &context);
+                if status.is_none() {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                status
+            })
+            .expect("MP4 encoder finishes within polling window");
+        assert!(status.starts_with("Exported video to"), "{status}");
+        assert_eq!(document.strokes, original.strokes);
+        assert_eq!(document.animation, original.animation);
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(mp4_sample_count(&bytes), Some(2));
+        let mp4_fps = mp4_average_video_fps(&bytes)
+            .expect("MP4 media timescale and sample table expose encoded frame rate");
+        assert!(
+            (mp4_fps - f64::from(FPS)).abs() < 0.001,
+            "encoded FPS: {mp4_fps}"
+        );
+
+        match Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=r_frame_rate,nb_frames",
+                "-of",
+                "default=noprint_wrappers=1",
+            ])
+            .arg(&path)
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let metadata = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    metadata.lines().any(|line| line == "r_frame_rate=24/1"),
+                    "{metadata}"
+                );
+                assert!(
+                    metadata.lines().any(|line| line == "nb_frames=2"),
+                    "{metadata}"
+                );
+            }
+            _ if ffmpeg_is_available() => {
+                let output = Command::new("ffmpeg")
+                    .args(["-hide_banner", "-i"])
+                    .arg(&path)
+                    .output()
+                    .expect("installed FFmpeg inspects encoded MP4 metadata");
+                let metadata = String::from_utf8_lossy(&output.stderr);
+                assert!(metadata.contains("24 fps"), "{metadata}");
+            }
+            _ => eprintln!("ffprobe/FFmpeg metadata commands are absent; frame count and FPS were verified from MP4 sample tables."),
+        }
+    }
     use std::{
         future::Future,
         sync::Arc,
@@ -1495,6 +1876,32 @@ mod tests {
                     .map(u32::from_be_bytes)
             })
             .max()
+    }
+
+    fn mp4_average_video_fps(bytes: &[u8]) -> Option<f64> {
+        let mdhd = bytes.windows(4).position(|window| window == b"mdhd")?;
+        let version = *bytes.get(mdhd + 4)?;
+        let timescale_at = mdhd + if version == 1 { 24 } else { 16 };
+        let timescale =
+            u32::from_be_bytes(bytes.get(timescale_at..timescale_at + 4)?.try_into().ok()?);
+        if timescale == 0 {
+            return None;
+        }
+        let stts = bytes.windows(4).position(|window| window == b"stts")?;
+        let entry_count =
+            u32::from_be_bytes(bytes.get(stts + 8..stts + 12)?.try_into().ok()?) as usize;
+        let mut offset = stts + 12;
+        let mut samples = 0u64;
+        let mut ticks = 0u64;
+        for _ in 0..entry_count {
+            let count = u32::from_be_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?) as u64;
+            let delta =
+                u32::from_be_bytes(bytes.get(offset + 4..offset + 8)?.try_into().ok()?) as u64;
+            samples = samples.checked_add(count)?;
+            ticks = ticks.checked_add(count.checked_mul(delta)?)?;
+            offset += 8;
+        }
+        (ticks > 0).then_some(samples as f64 * f64::from(timescale) / ticks as f64)
     }
 
     fn mp4_media_data(bytes: &[u8]) -> Option<&[u8]> {
@@ -1821,7 +2228,10 @@ mod tests {
             mode_position,
         );
         assert_eq!(ui.mode, ExportMode::ReconstructedReveal);
-        assert_eq!(ui.frame_count(&[], history.duration_ms()), Some(60));
+        assert_eq!(
+            ui.frame_count(&[], history.duration_ms(), &document),
+            Some(60)
+        );
 
         let output = tempfile::tempdir().unwrap();
         let choose_position = ui
@@ -2337,6 +2747,8 @@ mod tests {
         let stroke = crate::document::Stroke {
             gradient: None,
             curve: None,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             material: Default::default(),
             group_id: None,
@@ -2393,10 +2805,14 @@ mod tests {
             fps: 12,
             ..Default::default()
         };
-        assert_eq!(ui.export_duration_seconds(&[], 10_000), Some(2.5));
-        assert_eq!(ui.frame_count(&[], 10_000), Some(30));
+        let document = Document::default();
+        assert_eq!(
+            ui.export_duration_seconds(&[], 10_000, &document),
+            Some(2.5)
+        );
+        assert_eq!(ui.frame_count(&[], 10_000, &document), Some(30));
         ui.history_speed = f32::NAN;
-        assert_eq!(ui.export_duration_seconds(&[], 10_000), None);
+        assert_eq!(ui.export_duration_seconds(&[], 10_000, &document), None);
     }
 
     #[test]
@@ -2537,6 +2953,8 @@ mod tests {
         crate::document::Stroke {
             gradient: None,
             curve: None,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             material: Default::default(),
             group_id: None,

@@ -16,6 +16,111 @@ type GuideEditState = (
     Option<u64>,
 );
 
+pub(super) struct GuideBendDraft {
+    pub guide_id: u64,
+    pub center: Vec3,
+    pub rotation: glam::Quat,
+    pub depth: f32,
+    pub bend: f32,
+    pub controls: Vec<glam::Vec2>,
+    pub preview: Option<FreeformSurface>,
+    pub error: Option<String>,
+}
+
+impl GuideBendDraft {
+    fn from_guide(guide_id: u64, geometry: &GuideGeometry) -> Result<Self, String> {
+        let (center, rotation, depth, bend) = match geometry {
+            GuideGeometry::Plane { origin, rotation } => (*origin, *rotation, 4.0, 0.0),
+            GuideGeometry::Freeform { surface } => (
+                surface.center,
+                surface.rotation,
+                surface.depth,
+                surface.bend,
+            ),
+            _ => return Err("Bending currently supports saved Plane and Freeform guides.".into()),
+        };
+        if !center.is_finite()
+            || !rotation.is_finite()
+            || (rotation.length_squared() - 1.0).abs() > 0.001
+        {
+            return Err("The source guide transform is invalid.".into());
+        }
+        Ok(Self {
+            guide_id,
+            center,
+            rotation,
+            depth,
+            bend,
+            controls: Vec::with_capacity(4),
+            preview: None,
+            error: None,
+        })
+    }
+
+    fn push_world_control(&mut self, world: Vec3) -> Result<(), String> {
+        if self.controls.len() >= 4 {
+            return Err("Four cubic control points are already set.".into());
+        }
+        if !world.is_finite()
+            || world.abs().max_element()
+                > crate::document::guide_resources::freeform_surface::MAX_COORDINATE
+        {
+            return Err("Bend control is outside the supported world bounds.".into());
+        }
+        let local = self.rotation.inverse() * (world - self.center);
+        if !local.is_finite() {
+            return Err("Bend control must be finite.".into());
+        }
+        self.controls.push(local.truncate());
+        self.preview = None;
+        self.error = None;
+        if self.controls.len() == 4 {
+            match self.build_surface() {
+                Ok(surface) => self.preview = Some(surface),
+                Err(error) => self.error = Some(error.clone()),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn build_surface(&self) -> Result<FreeformSurface, String> {
+        if self.controls.len() != 4 {
+            return Err("Click four control points: start, two handles, and end.".into());
+        }
+        let chord = self.controls[3] - self.controls[0];
+        if chord.length_squared() < 0.0001 {
+            return Err("Bend endpoints must be at least 0.01 units apart.".into());
+        }
+        let angle = chord.y.atan2(chord.x);
+        let align = glam::Quat::from_rotation_z(angle);
+        let inverse = align.inverse();
+        let directrix = std::array::from_fn(|index| {
+            inverse
+                .mul_vec3(Vec3::new(
+                    self.controls[index].x,
+                    self.controls[index].y,
+                    0.0,
+                ))
+                .truncate()
+        });
+        let surface = FreeformSurface {
+            center: self.center,
+            rotation: self.rotation * align,
+            directrix,
+            depth: self.depth,
+            bend: self.bend,
+        };
+        surface.validate()?;
+        let extent = surface.directrix[3].x - surface.directrix[0].x;
+        if !extent.is_finite()
+            || extent > crate::document::guide_resources::freeform_surface::MAX_COORDINATE
+        {
+            return Err("Bend path exceeds the supported surface extent.".into());
+        }
+        Ok(surface)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PlanarTarget {
     pub plane: DrawingPlane,
@@ -77,6 +182,147 @@ impl PlanarTarget {
 }
 
 impl SketchApp {
+    pub(super) fn begin_guide_bend(&mut self, guide_id: u64) {
+        let Some(guide) = self
+            .doc
+            .guide_resources
+            .iter()
+            .find(|guide| guide.id == guide_id && guide.visible && !guide.locked)
+        else {
+            self.status = "Choose a visible, unlocked Plane or Freeform guide to bend.".into();
+            return;
+        };
+        match GuideBendDraft::from_guide(guide_id, &guide.geometry) {
+            Ok(draft) => {
+                self.guide_bend_draft = Some(draft);
+                self.status = "Bend preview: click four points on the guide (start, two cubic handles, end). Existing strokes stay in world space.".into();
+                self.renderer.invalidate();
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    pub(super) fn cancel_guide_bend(&mut self) {
+        if self.guide_bend_draft.take().is_some() {
+            self.status =
+                "Guide bend cancelled; saved guide and existing strokes are unchanged.".into();
+            self.renderer.invalidate();
+        }
+    }
+
+    pub(super) fn apply_guide_bend(&mut self) {
+        let Some(draft) = self.guide_bend_draft.take() else {
+            return;
+        };
+        let surface = match draft.preview.or_else(|| draft.build_surface().ok()) {
+            Some(surface) => surface,
+            None => {
+                self.status = draft
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Set a valid four-point bend curve first.".into());
+                self.guide_bend_draft = Some(draft);
+                return;
+            }
+        };
+        let before = self.guide_edit_state();
+        let Some(guide) = self
+            .doc
+            .guide_resources
+            .iter_mut()
+            .find(|guide| guide.id == draft.guide_id && guide.visible && !guide.locked)
+        else {
+            self.status =
+                "The source guide changed or became protected; bend preview cancelled.".into();
+            self.renderer.invalidate();
+            return;
+        };
+        guide.geometry = GuideGeometry::Freeform { surface };
+        self.commit_guide_edit(before);
+        self.status = "Guide bent into a bounded freeform ribbon. Existing artwork remains at its original world coordinates.".into();
+    }
+
+    pub(super) fn guide_bend_canvas_input(
+        &mut self,
+        ctx: &egui::Context,
+        rect: Rect,
+        events: &[egui::Event],
+        pen: &[PenSample],
+    ) {
+        if !ctx.input(|input| input.focused) {
+            self.cancel_guide_bend();
+            return;
+        }
+        if events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    key: Key::Escape,
+                    pressed: true,
+                    ..
+                }
+            )
+        }) {
+            self.cancel_guide_bend();
+            return;
+        }
+        let scale = ctx.pixels_per_point();
+        let mut clicks = Vec::new();
+        for event in events {
+            if let egui::Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed: true,
+                ..
+            } = event
+            {
+                clicks.push(*pos);
+            }
+        }
+        for sample in pen
+            .iter()
+            .filter(|sample| sample.phase == Phase::Down && sample.contact)
+        {
+            clicks.push(Pos2::new(
+                sample.position.x / scale,
+                sample.position.y / scale,
+            ));
+        }
+        for position in clicks {
+            if !canvas_pointer_allowed(ctx, rect, position) {
+                continue;
+            }
+            let (origin, direction) = crate::gizmo::ray(&self.camera, rect, position);
+            let guide_id = self.guide_bend_draft.as_ref().unwrap().guide_id;
+            let hit = self
+                .doc
+                .guide_resources
+                .iter()
+                .find(|guide| guide.id == guide_id && guide.visible && !guide.locked)
+                .and_then(|guide| guide.geometry.clone().hit(origin, direction));
+            let Some(hit) = hit else {
+                self.status =
+                    "Bend control missed the saved guide; click on the visible surface.".into();
+                continue;
+            };
+            let draft = self.guide_bend_draft.as_mut().unwrap();
+            match draft.push_world_control(hit) {
+                Ok(()) => {
+                    self.status = if let Some(error) = &draft.error {
+                        error.clone()
+                    } else if draft.preview.is_some() {
+                        "Four bend controls set. Review the guide preview, then Apply or Cancel."
+                            .into()
+                    } else {
+                        format!("Bend control {} of 4 set.", draft.controls.len())
+                    };
+                    self.renderer.invalidate();
+                }
+                Err(error) => self.status = error,
+            }
+        }
+    }
+
     pub(super) fn resource_target_active(&self) -> bool {
         self.doc.active_guide.is_some()
             || self.doc.active_image_plane.is_some()
@@ -179,8 +425,10 @@ impl SketchApp {
     }
 
     pub(super) fn saved_guide_preview(&self) -> Option<GuidePreview> {
-        self.loft_preview
-            .map(GuidePreview::Loft)
+        self.guide_bend_draft
+            .as_ref()
+            .and_then(|draft| draft.preview.map(GuidePreview::Freeform))
+            .or_else(|| self.loft_preview.map(GuidePreview::Loft))
             .or_else(|| self.saved_guide_geometry().and_then(geometry_preview))
     }
 
@@ -306,6 +554,54 @@ impl SketchApp {
                     None => {}
                 }
             }
+            if let Some(draft) = self.guide_bend_draft.as_mut() {
+                ui.separator();
+                ui.strong("Bend guide preview");
+                ui.small("Click four points on the saved guide: start, two cubic handles, and end. Existing strokes remain fixed in world space; the bend changes only this guide surface.");
+                let mut depth_changed = false;
+                ui.horizontal(|ui| {
+                    ui.label("Sweep depth");
+                    depth_changed = ui
+                        .add(
+                            egui::DragValue::new(&mut draft.depth)
+                                .range(
+                                    crate::document::guide_resources::freeform_surface::MIN_DEPTH
+                                        ..=crate::document::guide_resources::freeform_surface::MAX_DEPTH,
+                                )
+                                .speed(0.05)
+                                .suffix(" wu"),
+                        )
+                        .changed();
+                });
+                if depth_changed && draft.controls.len() == 4 {
+                    match draft.build_surface() {
+                        Ok(surface) => {
+                            draft.preview = Some(surface);
+                            draft.error = None;
+                        }
+                        Err(error) => {
+                            draft.preview = None;
+                            draft.error = Some(error);
+                        }
+                    }
+                }
+                ui.label(format!("{} / 4 control points", draft.controls.len()));
+                if let Some(error) = &draft.error {
+                    ui.colored_label(egui::Color32::LIGHT_RED, error);
+                }
+                let can_apply = draft.preview.is_some();
+                let mut apply = false;
+                let mut cancel = false;
+                ui.horizontal(|ui| {
+                    apply = ui.add_enabled(can_apply, egui::Button::new("Apply bend")).clicked();
+                    cancel = ui.button("Cancel bend").clicked();
+                });
+                if apply {
+                    self.apply_guide_bend();
+                } else if cancel {
+                    self.cancel_guide_bend();
+                }
+            }
             if self.doc.guide_resources.is_empty() {
                 ui.small("Save a plane, cylinder, or revolved guide, or add a sphere/cone/ring/freeform.");
             }
@@ -313,6 +609,7 @@ impl SketchApp {
             let before = self.guide_edit_state();
             let mut changed = false;
             let mut activate = None;
+            let mut bend = None;
             for index in 0..self.doc.guide_resources.len() {
                 let id = self.doc.guide_resources[index].id;
                 let was_active = self.doc.active_guide == Some(id);
@@ -327,6 +624,7 @@ impl SketchApp {
                 }).inner;
                 if row.remove { remove = Some(index); }
                 if let Some(active) = row.activate { activate = Some((id, active)); }
+                if row.bend { bend = Some(id); }
                 changed |= row.changed;
             }
             if let Some(index) = remove {
@@ -352,6 +650,9 @@ impl SketchApp {
                 }
             }
             if changed { self.commit_guide_edit(before); }
+            if let Some(id) = bend {
+                self.begin_guide_bend(id);
+            }
             ui.small("Saved guide transforms live in the drawing. Existing strokes never move.");
         });
         self.obj_reference_controls(ui);
@@ -597,6 +898,7 @@ struct GuideRowAction {
     activate: Option<bool>,
     changed: bool,
     remove: bool,
+    bend: bool,
     use_rect: Option<Rect>,
     visible_rect: Option<Rect>,
     locked_rect: Option<Rect>,
@@ -626,6 +928,14 @@ fn guide_row_controls(
         let remove_response = ui.small_button("Remove");
         action.remove_rect = Some(remove_response.rect);
         action.remove = remove_response.clicked();
+        if !guide.locked
+            && matches!(
+                &guide.geometry,
+                GuideGeometry::Plane { .. } | GuideGeometry::Freeform { .. }
+            )
+        {
+            action.bend = ui.small_button("Bend…").clicked();
+        }
     });
     action
 }
@@ -1282,6 +1592,175 @@ mod guide_row_tests {
 }
 
 #[cfg(test)]
+mod guide_bend_tests {
+    use super::*;
+    use crate::document::{Document, Point, Stroke};
+    use glam::Vec3;
+    use std::collections::HashMap;
+
+    fn plane() -> GuideGeometry {
+        GuideGeometry::Plane {
+            origin: Vec3::ZERO,
+            rotation: glam::Quat::IDENTITY,
+        }
+    }
+
+    fn bend_from(geometry: &GuideGeometry, controls: [Vec3; 4]) -> FreeformSurface {
+        let mut draft = GuideBendDraft::from_guide(7, geometry).unwrap();
+        for point in controls {
+            draft.push_world_control(point).unwrap();
+        }
+        draft
+            .preview
+            .expect("four controls produce a validated preview")
+    }
+
+    #[test]
+    fn mouse_control_points_produce_a_bounded_bend_and_reject_degenerate_curves() {
+        let source = plane();
+        let controls = [
+            Vec3::new(-2.0, 0.0, 0.0),
+            Vec3::new(-0.5, 1.2, 0.0),
+            Vec3::new(0.5, 1.2, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+        ];
+        let surface = bend_from(&source, controls);
+        assert!(surface.validate().is_ok());
+        assert_ne!(surface.point(0.5, 0.5).y, 0.0);
+        assert!(surface.depth >= crate::document::guide_resources::freeform_surface::MIN_DEPTH);
+
+        let mut degenerate = GuideBendDraft::from_guide(7, &source).unwrap();
+        for point in [Vec3::ZERO, Vec3::X, Vec3::X * 0.5, Vec3::X * 2.0] {
+            degenerate.push_world_control(point).unwrap();
+        }
+        assert!(
+            degenerate.preview.is_none(),
+            "non-monotone handles do not preview"
+        );
+        assert!(degenerate.error.is_some());
+
+        let mut bad_depth = GuideBendDraft::from_guide(7, &source).unwrap();
+        bad_depth.depth = f32::NAN;
+        bad_depth.controls = controls.map(|point| point.truncate()).to_vec();
+        assert!(bad_depth.build_surface().is_err());
+    }
+
+    #[test]
+    fn repeated_bends_keep_surface_hits_and_world_strokes_persist_merge_and_export() {
+        let first = bend_from(
+            &plane(),
+            [
+                Vec3::new(-2.0, 0.0, 0.0),
+                Vec3::new(-0.6, 1.0, 0.0),
+                Vec3::new(0.6, 1.0, 0.0),
+                Vec3::new(2.0, 0.0, 0.0),
+            ],
+        );
+        let second_controls = [0.0, 0.33, 0.66, 1.0].map(|u| first.point(u, 0.5));
+        let repeated = bend_from(&GuideGeometry::Freeform { surface: first }, second_controls);
+        assert!(repeated.validate().is_ok());
+        let triangles = repeated.triangles(64, 8).unwrap();
+        let [a, b, c] = triangles[64 * 4 + 4];
+        let point = (a + b + c) / 3.0;
+        let normal = (b - a).cross(c - a).normalize();
+        let hit = repeated
+            .hit(point + normal * 2.0, -normal)
+            .expect("repeated bend triangle remains hittable");
+        assert!(hit.distance(point) < 0.04, "hit={hit:?} point={point:?}");
+        let (tangent, frame_normal) = repeated.frame(0.5, 0.5);
+        assert!(tangent.is_finite() && frame_normal.is_finite());
+
+        // Existing artwork remains world-space. A new stroke sampled on the
+        // bent centerline is ordinary editable/exportable ink.
+        let stroke = Stroke {
+            point_thickness: None,
+            modifiers: None,
+            fill: None,
+            material: Default::default(),
+            group_id: None,
+            layer_id: 1,
+            id: 11,
+            color: [0.8, 0.25, 0.1],
+            gradient: None,
+            radius: 0.04,
+            brush: Default::default(),
+            points: [0.1, 0.5, 0.9]
+                .map(|u| Point {
+                    position: repeated.point(u, 0.5),
+                    pressure: 0.8,
+                    tilt: None,
+                    time_ms: 0,
+                })
+                .to_vec(),
+            curve: None,
+        };
+        let mut document = Document {
+            guide_resources: vec![GuideResource {
+                id: 7,
+                name: "Bend test".into(),
+                visible: true,
+                locked: false,
+                geometry: GuideGeometry::Freeform { surface: repeated },
+            }],
+            active_guide: Some(7),
+            strokes: vec![stroke.clone()],
+            ..Document::default()
+        };
+        let before_stroke = document.strokes.clone();
+        let native = serde_json::to_string(&document).unwrap();
+        let reloaded = Document::from_json(&native).unwrap();
+        assert_eq!(reloaded.guide_resources, document.guide_resources);
+        assert_eq!(reloaded.strokes, before_stroke);
+
+        let recovery_root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let snapshot = crate::recovery_store::RecoverySnapshot::new(
+            "guide-bend-test".into(),
+            None,
+            reloaded.clone(),
+        );
+        crate::recovery_store::write(recovery_root.path(), &snapshot).unwrap();
+        let recovered =
+            crate::recovery_store::scan(recovery_root.path(), "guide-bend-reader").unwrap();
+        assert_eq!(
+            recovered.candidates[0].snapshot.document.guide_resources,
+            document.guide_resources
+        );
+        assert_eq!(
+            recovered.candidates[0].snapshot.document.strokes,
+            before_stroke
+        );
+
+        let source_path = recovery_root.path().join("source.sketch.json");
+        std::fs::write(&source_path, native).unwrap();
+        let assets = recovery_root.path().join("merged-assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        let inserted = super::super::native_merge::prepare_insert(
+            &Document::default(),
+            &source_path,
+            &assets,
+            100,
+            10,
+            1000,
+            Vec3::new(1.0, 0.0, 0.0),
+            false,
+            &HashMap::new(),
+        )
+        .unwrap();
+        let edit = crate::editing::Edit::Merge(inserted.edit);
+        edit.apply(&mut document, true);
+        assert!(document.guide_resources.len() >= 2);
+        assert_eq!(document.strokes.len(), 2);
+        let merged_native =
+            Document::from_json(&serde_json::to_string(&document).unwrap()).unwrap();
+        assert_eq!(merged_native.strokes, document.strokes);
+        let export = crate::export::encode(&merged_native, None).unwrap();
+        assert!(export.summary.vertices > 0);
+        edit.apply(&mut document, false);
+        assert_eq!(document.strokes, before_stroke);
+    }
+}
+
+#[cfg(test)]
 mod loft_ui_tests {
     use super::{
         loft_from_strokes, loft_preview_action_buttons, loft_section_label, preview_loft_button,
@@ -1296,6 +1775,8 @@ mod loft_ui_tests {
             gradient: None,
             curve: None,
             material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -1700,6 +2181,8 @@ mod planar_target_tests {
             gradient: None,
             curve: None,
             material: StrokeMaterial::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: Some(crate::document::PlanarFill { offset: 0.01 }),
             group_id: None,
             layer_id: 1,
@@ -1767,6 +2250,8 @@ mod planar_target_tests {
             gradient: None,
             curve: None,
             material: StrokeMaterial::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,

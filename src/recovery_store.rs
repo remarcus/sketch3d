@@ -722,6 +722,8 @@ mod tests {
                 linked_stroke_groups: Default::default(),
                 strokes: vec![Stroke {
                     gradient: None,
+                    point_thickness: None,
+                    modifiers: None,
                     curve: None,
                     material: Default::default(),
                     id: 123,
@@ -844,6 +846,8 @@ mod tests {
         ];
         let surface_stroke = crate::document::Stroke {
             gradient: None,
+            point_thickness: None,
+            modifiers: None,
             curve: None,
             material: Default::default(),
             fill: None,

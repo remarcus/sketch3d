@@ -379,6 +379,8 @@ mod tests {
         };
         Stroke {
             gradient: None,
+            point_thickness: None,
+            modifiers: None,
             curve: None,
             id: 7,
             color: [0.2, 0.4, 0.8],

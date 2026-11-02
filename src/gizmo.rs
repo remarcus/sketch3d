@@ -184,6 +184,10 @@ fn pick_filtered(
             doc.visible(stroke)
         }
     }) {
+        let Ok(evaluated) = crate::stroke_modifiers::evaluated_stroke(stroke) else {
+            continue;
+        };
+        let stroke = evaluated.as_ref();
         let mesh_covered = stroke.fill.is_none()
             && (stroke.brush.flow.enabled
                 || stroke.brush.strands.enabled
@@ -483,6 +487,8 @@ mod tests {
             gradient: None,
             curve: None,
             material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -525,6 +531,8 @@ mod tests {
             gradient: None,
             curve: None,
             material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -607,6 +615,8 @@ mod tests {
             gradient: None,
             curve: None,
             material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -674,6 +684,8 @@ mod layer_picking_tests {
             gradient: None,
             curve: None,
             material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             id,

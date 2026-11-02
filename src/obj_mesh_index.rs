@@ -256,6 +256,14 @@ impl ObjMeshIndex {
             .is_some_and(|edges| edges.contains(&second))
     }
 
+    /// Return the triangle across each oriented local edge, when the edge is
+    /// manifold. The order matches `(corner[i], corner[(i + 1) % 3])`.
+    pub fn triangle_neighbors(&self, triangle: u32) -> Option<[Option<u32>; 3]> {
+        self.adjacency.get(triangle as usize).map(|neighbors| {
+            neighbors.map(|neighbor| (neighbor != NO_TRIANGLE).then_some(neighbor))
+        })
+    }
+
     /// Whether two pointer contacts may continue one model-surface stroke.
     /// A large screen-space gap or disconnected mesh edge starts a new stroke.
     pub fn stroke_contacts_connect(

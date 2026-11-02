@@ -840,3 +840,450 @@ pub(super) fn overlay(ui: &egui::Ui, cue: Option<SnapCue>, rect: Rect) {
         color,
     );
 }
+
+impl SketchApp {
+    pub(super) fn verify_planar_snapping(
+        &mut self,
+        ctx: &egui::Context,
+        rect: Rect,
+        target_stroke: &Stroke,
+    ) -> Vec<&'static str> {
+        let target = self
+            .planar_drawing_target()
+            .expect("verification image plane remains the active planar target");
+        let target_endpoint = target_stroke
+            .points
+            .last()
+            .expect("the target line has an endpoint")
+            .position;
+        assert!(target.contains(target_endpoint));
+        assert!(self
+            .doc
+            .strokes
+            .iter()
+            .any(|stroke| stroke.id == target_stroke.id));
+
+        let previous_options = self.snapping.options;
+        let previous_constraint = self.line.constraint;
+        let previous_line_enabled = self.line.enabled;
+        let previous_alt = ctx.input(|input| input.modifiers.alt);
+        self.snapping.options = SnapOptions {
+            enabled: true,
+            grid: false,
+            endpoints: true,
+            midpoints: false,
+            intersections: false,
+            spacing: previous_options.spacing,
+            tolerance: 12.0,
+            bypass: false,
+        };
+        self.line.constraint = super::line_tool::Constraint::Free;
+        self.start_line_tool();
+
+        let (u, v, _) = target.plane.basis();
+        let start_world = target.plane.origin() - u * 1.2 + v * 0.9;
+        let requested_end = target_endpoint + u * 0.035 + v * 0.01;
+        let screen = |world| {
+            crate::gizmo::project(&self.camera, rect, world)
+                .expect("snap verification point projects into the canvas")
+                .0
+        };
+        let start_screen = screen(start_world);
+        let end_screen = screen(requested_end);
+        assert!(rect.contains(start_screen) && rect.contains(end_screen));
+
+        let stroke_count = self.doc.strokes.len();
+        let undo_count = self.undo.len();
+        self.line_input(start_screen, 1.0, None, rect, true);
+        assert!(
+            self.line.draft.is_some(),
+            "line press creates a live preview"
+        );
+        assert_eq!(self.doc.strokes.len(), stroke_count);
+        self.line_input(end_screen, 1.0, None, rect, false);
+        let cue = self
+            .snapping
+            .cue
+            .expect("line preview exposes its acquired snap cue");
+        assert_eq!(cue.kind, SnapKind::Endpoint);
+        assert_eq!(cue.target_ids, [target_stroke.id, 0]);
+        let preview_endpoint = self.line.draft.as_ref().unwrap().mark.points[1].position;
+        assert!(
+            preview_endpoint.distance(target_endpoint) < 0.00001,
+            "live line preview lands on the acquired endpoint"
+        );
+        self.release_line(end_screen, rect);
+        assert_eq!(self.doc.strokes.len(), stroke_count + 1);
+        assert_eq!(self.undo.len(), undo_count + 1, "line is one undo edit");
+        let committed = self.doc.strokes.last().unwrap().clone();
+        assert!(committed.points[1].position.distance(target_endpoint) < 0.00001);
+        self.undo();
+        assert_eq!(self.doc.strokes.len(), stroke_count);
+        self.redo();
+        assert_eq!(self.doc.strokes.last(), Some(&committed));
+        let mut checks = vec![
+            "image-plane line preview displays an endpoint snap cue and commits the snapped target",
+            "snapped image-plane line endpoint survives one undo and redo",
+        ];
+
+        // Drive Alt through the same canvas-input modifier path used by the
+        // interactive app, then verify it suppresses the cue and snap.
+        ctx.input_mut(|input| input.modifiers.alt = true);
+        self.canvas_input(ctx, rect, Vec::new());
+        assert!(self.snapping.options.bypass, "Alt enables snap bypass");
+        self.start_line_tool();
+        let bypass_stroke_count = self.doc.strokes.len();
+        self.line_input(start_screen, 1.0, None, rect, true);
+        self.line_input(end_screen, 1.0, None, rect, false);
+        assert!(self.snapping.cue.is_none(), "Alt suppresses snap cues");
+        let bypass_preview = self.line.draft.as_ref().unwrap().mark.points[1].position;
+        assert!(
+            bypass_preview.distance(target_endpoint) > 0.02,
+            "Alt leaves the line preview at the unsnapped cursor position"
+        );
+        assert!(bypass_preview.distance(requested_end) < 0.001);
+        ctx.input_mut(|input| {
+            input.events = vec![egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }];
+            input.modifiers.alt = false;
+        });
+        self.line_shortcuts(ctx);
+        ctx.input_mut(|input| input.events.clear());
+        assert!(
+            self.line.draft.is_none(),
+            "Escape cancels the bypass preview"
+        );
+        assert_eq!(self.doc.strokes.len(), bypass_stroke_count);
+        assert_eq!(self.undo.len(), undo_count + 1);
+        checks.push("Alt bypasses endpoint snapping and Escape cancels without a document edit");
+
+        self.snapping.options = previous_options;
+        self.clear_planar_snap();
+        self.line.constraint = previous_constraint;
+        if !previous_line_enabled {
+            self.cancel_line_tool();
+        }
+        ctx.input_mut(|input| input.modifiers.alt = previous_alt);
+        checks
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Brush, Layer, Point, Stroke, StrokeMaterial};
+    use crate::geometry::{DrawingPlane, Projection};
+    use std::time::Instant;
+
+    fn scene() -> (PlanarTarget, Camera, Rect, Vec3, Vec3, Vec3) {
+        let plane = DrawingPlane {
+            anchor: Vec3::new(1.25, -0.75, 2.5),
+            rotation_degrees: Vec3::new(27.0, -38.0, 16.0),
+            depth: 0.0,
+        };
+        let (u, v, normal) = plane.basis();
+        let target = PlanarTarget::from_curve_frame(plane.origin(), normal, u, None)
+            .expect("the rotated plane frame is valid");
+        let mut camera = Camera {
+            projection: Projection::Orthographic,
+            ..Camera::default()
+        };
+        camera.align_guide(plane);
+        camera.distance = 9.0;
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::Vec2::new(800.0, 600.0));
+        (target, camera, rect, u, v, normal)
+    }
+
+    fn sample_point(position: Vec3) -> Point {
+        Point {
+            position,
+            pressure: 0.7,
+            tilt: None,
+            time_ms: 0,
+        }
+    }
+
+    fn stroke(id: u64, layer_id: u64, points: impl IntoIterator<Item = Vec3>) -> Stroke {
+        Stroke {
+            point_thickness: None,
+            modifiers: None,
+            fill: None,
+            material: StrokeMaterial::Shaded,
+            group_id: None,
+            layer_id,
+            id,
+            color: [0.2, 0.4, 0.6],
+            gradient: None,
+            radius: 0.02,
+            brush: Brush::default(),
+            points: points.into_iter().map(sample_point).collect(),
+            curve: None,
+        }
+    }
+
+    fn document(strokes: Vec<Stroke>) -> Document {
+        Document {
+            strokes,
+            ..Document::default()
+        }
+    }
+
+    fn project(camera: &Camera, rect: Rect, world: Vec3) -> Pos2 {
+        crate::gizmo::project(camera, rect, world)
+            .expect("test point is visible")
+            .0
+    }
+
+    fn world_at_screen(target: PlanarTarget, camera: &Camera, rect: Rect, screen: Pos2) -> Vec3 {
+        let (origin, direction) = crate::gizmo::ray(camera, rect, screen);
+        target
+            .hit(origin, direction)
+            .expect("screen ray hits plane")
+    }
+
+    fn options() -> SnapOptions {
+        SnapOptions {
+            enabled: true,
+            grid: false,
+            endpoints: true,
+            midpoints: true,
+            intersections: true,
+            spacing: 0.25,
+            tolerance: 12.0,
+            bypass: false,
+        }
+    }
+
+    #[test]
+    fn rotated_plane_candidates_follow_kind_priority_and_stroke_id_ties() {
+        let (target, camera, rect, u, v, _) = scene();
+        let center = target.plane.origin();
+        // Deliberately insert the larger ID first. Equal-distance endpoint ties
+        // resolve by ID, while a coincident endpoint outranks midpoint,
+        // intersection, and grid candidates.
+        let doc = document(vec![
+            stroke(20, 1, [center, center + u * 0.25]),
+            stroke(7, 1, [center - v * 0.25, center + v * 0.25]),
+            stroke(11, 1, [center, center - u * 0.25]),
+            stroke(3, 1, [center, center + v * 0.25]),
+        ]);
+        let index = SnapIndex::build(&doc, &camera, rect, target, &HashSet::new());
+        assert!(!index.truncated);
+        let cursor = project(&camera, rect, center);
+
+        let mut query = options();
+        query.grid = true;
+        let (world, cue) = index
+            .query(&doc, cursor, query, None, false)
+            .expect("endpoint is within the acquisition tolerance");
+        assert_eq!(cue.kind, SnapKind::Endpoint);
+        assert_eq!(cue.target_ids, [3, 0]);
+        assert!(world.distance(center) < 1.0e-5);
+
+        query.endpoints = false;
+        let (_, cue) = index
+            .query(&doc, cursor, query, None, false)
+            .expect("midpoint is within the acquisition tolerance");
+        assert_eq!(cue.kind, SnapKind::Midpoint);
+
+        query.midpoints = false;
+        let (_, cue) = index
+            .query(&doc, cursor, query, None, false)
+            .expect("crossing segments form an intersection");
+        assert_eq!(cue.kind, SnapKind::Intersection);
+
+        query.intersections = false;
+        let (_, cue) = index
+            .query(&doc, cursor, query, None, false)
+            .expect("the rotated-plane origin is the grid point");
+        assert_eq!(cue.kind, SnapKind::Grid);
+        assert_eq!(cue.target_ids, [0, 0]);
+    }
+
+    #[test]
+    fn snap_index_keeps_visible_locked_targets_and_excludes_hidden_off_plane_or_selected_ink() {
+        let (target, camera, rect, u, _, normal) = scene();
+        let center = target.plane.origin();
+        let mut doc = document(vec![
+            stroke(1, 3, [center, center + u * 0.25]),
+            stroke(8, 2, [center, center + u * 0.25]),
+            // This stroke projects over the target but has no points on the
+            // active plane, so it is not a feature source in SnapIndex.
+            stroke(
+                9,
+                1,
+                [center - normal * 0.2, center - normal * 0.2 + u * 0.25],
+            ),
+        ]);
+        doc.layers.push(Layer {
+            id: 2,
+            name: "Locked target".into(),
+            visible: true,
+            locked: true,
+            opacity: 1.0,
+            blend_mode: Default::default(),
+        });
+        doc.layers.push(Layer {
+            id: 3,
+            name: "Hidden target".into(),
+            visible: false,
+            locked: false,
+            opacity: 1.0,
+            blend_mode: Default::default(),
+        });
+        assert!(!doc.editable(&doc.strokes[1]));
+        assert!(doc.visible(&doc.strokes[1]));
+
+        let index = SnapIndex::build(&doc, &camera, rect, target, &HashSet::new());
+        assert!(!index.truncated);
+        assert!(index.features.iter().any(|feature| feature.id == 8));
+        assert!(!index.features.iter().any(|feature| feature.id == 1));
+        assert!(!index.features.iter().any(|feature| feature.id == 9));
+        assert!(index.coplanar_ids.contains(&8));
+        assert!(!index.coplanar_ids.contains(&1));
+
+        let cursor = project(&camera, rect, center);
+        let (world, cue) = index
+            .query(&doc, cursor, options(), None, false)
+            .expect("visible locked ink remains a snap target");
+        assert_eq!(cue.kind, SnapKind::Endpoint);
+        assert_eq!(cue.target_ids, [8, 0]);
+        assert!(world.distance(center) < 1.0e-5);
+        assert!(index.candidate_visible(&doc, &camera, rect, cue));
+
+        let excluded = HashSet::from([8]);
+        let selected_index = SnapIndex::build(&doc, &camera, rect, target, &excluded);
+        assert!(!selected_index
+            .features
+            .iter()
+            .any(|feature| feature.id == 8));
+        assert!(selected_index
+            .query(&doc, cursor, options(), None, false)
+            .is_none());
+    }
+
+    #[test]
+    fn angle_constraint_filters_nearer_off_ray_snap_targets() {
+        let (target, camera, rect, u, v, _) = scene();
+        let start = target.plane.origin();
+        let along_ray = start + u * 0.2;
+        let off_ray = start + v * 0.08;
+        let doc = document(vec![
+            stroke(20, 1, [along_ray, along_ray + u * 0.08]),
+            stroke(4, 1, [off_ray, off_ray + v * 0.08]),
+        ]);
+        let index = SnapIndex::build(&doc, &camera, rect, target, &HashSet::new());
+        let cursor = project(&camera, rect, off_ray);
+        let mut query = options();
+        query.grid = false;
+        query.midpoints = false;
+        query.intersections = false;
+        query.tolerance = 32.0;
+
+        let (_, unconstrained) = index
+            .query(&doc, cursor, query, None, false)
+            .expect("the exact cursor target is acquired without a constraint");
+        assert_eq!(unconstrained.target_ids, [4, 0]);
+
+        let (_, constrained) = index
+            .query(&doc, cursor, query, Some((start, start + u)), false)
+            .expect("an on-ray endpoint remains within tolerance");
+        assert_eq!(constrained.target_ids, [20, 0]);
+    }
+
+    fn nearby_index_counts(index: &SnapIndex, cursor: Pos2, tolerance: f32) -> (usize, usize) {
+        let radius = (tolerance / CELL_PIXELS).ceil() as i32 + 1;
+        let center = cell(cursor);
+        let mut features = 0;
+        let mut segments = HashSet::new();
+        for y in center.1 - radius..=center.1 + radius {
+            for x in center.0 - radius..=center.0 + radius {
+                if let Some(items) = index.feature_cells.get(&(x, y)) {
+                    features += items.len();
+                }
+                if let Some(items) = index.segment_cells.get(&(x, y)) {
+                    segments.extend(items.iter().copied());
+                }
+            }
+        }
+        (features, segments.len())
+    }
+
+    #[test]
+    fn large_scene_index_query_fixture_reports_bounded_local_work() {
+        let (target, camera, _, _, _, _) = scene();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::Vec2::new(1200.0, 800.0));
+        let mut strokes = Vec::new();
+        let mut query_screen = Pos2::ZERO;
+        let columns = 36;
+        let rows = 24;
+        for row in 0..rows {
+            for column in 0..columns {
+                let x = 24.0 + column as f32 * 32.0;
+                let y = 24.0 + row as f32 * 32.0;
+                let first_screen = Pos2::new(x - 2.0, y);
+                let last_screen = Pos2::new(x + 2.0, y);
+                let first = world_at_screen(target, &camera, rect, first_screen);
+                let last = world_at_screen(target, &camera, rect, last_screen);
+                if row == 0 && column == 0 {
+                    query_screen = first_screen;
+                }
+                strokes.push(stroke(
+                    100 + (row * columns + column) as u64,
+                    1,
+                    [first, last],
+                ));
+            }
+        }
+        let fixture = document(strokes);
+        let build_started = Instant::now();
+        let index = SnapIndex::build(&fixture, &camera, rect, target, &HashSet::new());
+        let build_elapsed = build_started.elapsed();
+        assert!(!index.truncated, "fixture stays within index budgets");
+        assert_eq!(index.features.len(), fixture.strokes.len() * 3);
+        assert_eq!(index.segments.len(), fixture.strokes.len());
+
+        let tolerance = 12.0;
+        let (candidate_features, candidate_segments) =
+            nearby_index_counts(&index, query_screen, tolerance);
+        assert!(
+            candidate_features <= 75,
+            "{candidate_features} nearby features"
+        );
+        assert!(
+            candidate_segments <= 25,
+            "{candidate_segments} nearby segments"
+        );
+
+        let mut query = options();
+        query.grid = false;
+        query.midpoints = false;
+        query.intersections = false;
+        query.tolerance = tolerance;
+        let query_started = Instant::now();
+        const QUERY_COUNT: usize = 1_000;
+        for _ in 0..QUERY_COUNT {
+            let (_, cue) = index
+                .query(&fixture, query_screen, query, None, false)
+                .expect("fixture endpoint is queryable");
+            assert_eq!(cue.target_ids[0], 100);
+        }
+        let query_elapsed = query_started.elapsed();
+        eprintln!(
+            "SNAP_FIXTURE strokes={} features={} segments={} nearby_features={} nearby_segments={} repeated_queries={} build_us={} query_total_us={}",
+            fixture.strokes.len(),
+            index.features.len(),
+            index.segments.len(),
+            candidate_features,
+            candidate_segments,
+            QUERY_COUNT,
+            build_elapsed.as_micros(),
+            query_elapsed.as_micros(),
+        );
+    }
+}

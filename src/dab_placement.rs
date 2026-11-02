@@ -52,6 +52,7 @@ struct DabParameters {
     global_distance: f32,
     total: f32,
     gradient_t: f32,
+    point_thickness: f32,
     index: u64,
 }
 
@@ -142,6 +143,7 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
                 global_distance: 0.0,
                 total,
                 gradient_t: 0.0,
+                point_thickness: stroke.point_thickness_scale(0),
                 index: 0,
             },
         ));
@@ -167,6 +169,7 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
                 } else {
                     0.0
                 },
+                point_thickness: point_thickness_at_distance(stroke, &distances, local_distance),
                 index,
             },
         ));
@@ -227,6 +230,7 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> ResolvedDab {
         global_distance,
         total,
         gradient_t,
+        point_thickness,
         index,
     } = parameters;
     let normal = (stroke.brush.normal - tangent * stroke.brush.normal.dot(tangent))
@@ -283,10 +287,36 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> ResolvedDab {
         normal,
         pressure,
         tilt,
-        size_scale: random_size * pressure_size * pressure_width * tilt_width * taper,
+        size_scale: random_size
+            * pressure_size
+            * pressure_width
+            * tilt_width
+            * taper
+            * point_thickness,
         angle_degrees: angle,
         gradient_t,
     }
+}
+
+fn point_thickness_at_distance(stroke: &Stroke, distances: &[f32], distance: f32) -> f32 {
+    let Some(values) = stroke.point_thickness.as_ref() else {
+        return 1.0;
+    };
+    if values.len() != stroke.points.len() || values.is_empty() {
+        return 1.0;
+    }
+    if values.len() == 1 {
+        return values[0];
+    }
+    let upper = distances.partition_point(|value| *value < distance);
+    let segment = upper.saturating_sub(1).min(values.len() - 2);
+    let span = distances[segment + 1] - distances[segment];
+    let t = if span > 1.0e-8 {
+        ((distance - distances[segment]) / span).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    values[segment] + (values[segment + 1] - values[segment]) * t
 }
 
 fn random01(seed: u64, index: u64, channel: u64) -> f32 {
@@ -329,6 +359,8 @@ mod tests {
             id: 17,
             curve: None,
             material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,

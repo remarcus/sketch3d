@@ -213,6 +213,8 @@ pub fn study() -> crate::document::Document {
         doc.strokes.push(Stroke {
             curve: None,
             material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: Some(PlanarFill { offset: 0.003 }),
             group_id: None,
             layer_id: 1,
@@ -232,6 +234,8 @@ pub fn study() -> crate::document::Document {
         doc.strokes.push(Stroke {
             curve: None,
             material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -328,6 +332,8 @@ mod tests {
             gradient: None,
             curve: None,
             material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: Some(PlanarFill { offset: 0.003 }),
             group_id: None,
             layer_id: 1,

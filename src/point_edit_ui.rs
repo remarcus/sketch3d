@@ -16,6 +16,27 @@ impl PointDrag {
 }
 
 impl SketchApp {
+    pub(super) fn preview_selected_cleanup(&mut self, spacing: f32, max_error: f32) {
+        if self.selected.len() != 1 {
+            self.status = "Select one ordinary stroke to preview cleanup.".into();
+            return;
+        }
+        let id = *self.selected.iter().next().unwrap();
+        match crate::point_edit::Draft::cleanup(&self.doc, id, spacing, max_error) {
+            Ok(draft) => {
+                self.point_drag = None;
+                self.point_draft = Some(draft);
+                self.presentation.preferences.layout.inspector_open = true;
+                self.presentation.preferences.layout.inspector_tab =
+                    crate::presentation::InspectorTab::Properties;
+                self.brush_select_enabled = false;
+                self.renderer.invalidate();
+                self.status = "Stroke cleanup preview is detached from the saved drawing. Apply commits one edit; Cancel restores the source.".into();
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
     pub(super) fn canvas_point_shortcuts(&mut self, ctx: &egui::Context) {
         if self.point_draft.is_some() && ctx.input(|input| input.key_pressed(Key::Escape)) {
             self.finish_canvas_point_edit(false);
@@ -54,7 +75,7 @@ impl SketchApp {
                     .unwrap();
                     std::fs::write(directory.join("report.json"), serde_json::to_vec_pretty(&serde_json::json!({
                         "passed": true, "physical_tablet_tested": false,
-                        "checks": ["mouse picking and detached view-plane dragging in perspective and orthographic views", "cancel preserves document and history", "apply is one edit and undo/redo are exact", "native save/reload and GLB survive point edits", "split and ordered join each create one exact reversible edit", "stale source preview is discarded", "preview handles and centerline screenshot"]
+                        "checks": ["mouse picking and detached view-plane dragging in perspective and orthographic views", "cancel preserves document and history", "apply is one edit and undo/redo are exact", "native save/reload and GLB survive point edits", "split and ordered join each create one exact reversible edit", "bounded cleanup preview preserves source until Apply; Cancel, undo, and redo are exact", "cleanup survives native reload, fresh recovery scan, gradient/dab checks, and GLB export", "stale source preview is discarded", "preview handles and centerline screenshot"]
                     })).unwrap()).unwrap();
                     self.allow_close = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -212,6 +233,95 @@ impl SketchApp {
         assert_eq!(self.doc.strokes, split, "join undo restores both strokes");
         self.redo();
         assert_eq!(self.doc.strokes, before_split, "join redo is exact");
+        let mut cleanup_source = original[0].clone();
+        cleanup_source.gradient = Some(crate::document::StrokeGradient {
+            start: [0.1, 0.2, 0.3],
+            end: [0.8, 0.7, 0.6],
+        });
+        cleanup_source.brush.dabs.enabled = true;
+        cleanup_source.brush.dabs.spacing = 0.35;
+        cleanup_source.points = (0..101)
+            .map(|index| {
+                let t = index as f32 / 100.0;
+                let mut point = template;
+                point.position = Vec3::new(t, (t * std::f32::consts::TAU).sin() * 0.002, 0.0);
+                point.pressure = 0.35 + 0.3 * t;
+                point.tilt = Some(Vec3::Y);
+                point.time_ms = index as u32 * 8;
+                point
+            })
+            .collect();
+        self.doc.strokes = vec![cleanup_source];
+        self.selected = HashSet::from([1]);
+        self.undo.clear();
+        self.redo.clear();
+        let before_cleanup = self.doc.strokes.clone();
+        self.preview_selected_cleanup(0.2, 0.02);
+        let first_cleanup_preview = self
+            .point_draft
+            .as_ref()
+            .unwrap_or_else(|| panic!("cleanup preview opens: {}", self.status));
+        assert!(first_cleanup_preview.cleanup_stats.is_some());
+        assert!(first_cleanup_preview.preview.points.len() < before_cleanup[0].points.len());
+        assert_eq!(
+            self.doc.strokes, before_cleanup,
+            "preview leaves source untouched"
+        );
+        self.finish_canvas_point_edit(false);
+        assert_eq!(
+            self.doc.strokes, before_cleanup,
+            "cancel restores exact source"
+        );
+        assert!(self.undo.is_empty());
+        self.preview_selected_cleanup(0.2, 0.02);
+        let cleanup_preview = self.point_draft.as_ref().unwrap().preview.clone();
+        self.finish_canvas_point_edit(true);
+        assert_eq!(self.undo.len(), 1, "Apply creates one cleanup edit");
+        assert_eq!(self.doc.strokes[0], cleanup_preview);
+        assert_eq!(self.doc.strokes[0].gradient, before_cleanup[0].gradient);
+        assert_eq!(
+            self.doc.strokes[0].brush.dab_seed,
+            before_cleanup[0].brush.dab_seed
+        );
+        let cleaned = self.doc.strokes.clone();
+        self.undo();
+        assert_eq!(self.doc.strokes, before_cleanup, "cleanup undo is exact");
+        self.redo();
+        assert_eq!(self.doc.strokes, cleaned, "cleanup redo is exact");
+        let cleanup_glb = crate::export::encode(&self.doc, None).unwrap().bytes;
+        self.file = Some(directory.join("cleanup.sketch.json"));
+        assert!(self.save(false));
+        let loaded_cleanup =
+            Document::from_json(&std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(loaded_cleanup.strokes, cleaned);
+        assert_eq!(
+            crate::export::encode(&loaded_cleanup, None).unwrap().bytes,
+            cleanup_glb
+        );
+        let cleanup_recovery_root = directory.join(format!(
+            "cleanup-recovery-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cleanup_snapshot = crate::recovery_store::RecoverySnapshot::new(
+            "stroke-cleanup-verification".into(),
+            None,
+            self.doc.clone(),
+        );
+        crate::recovery_store::write(&cleanup_recovery_root, &cleanup_snapshot).unwrap();
+        let cleanup_recovered = crate::recovery_store::scan(
+            &cleanup_recovery_root,
+            "stroke-cleanup-verification-reader",
+        )
+        .unwrap();
+        assert_eq!(
+            cleanup_recovered.candidates[0].snapshot.document.strokes,
+            cleaned
+        );
+
         self.doc.strokes = original.clone();
         self.selected = HashSet::from([1]);
         self.undo.clear();
@@ -256,8 +366,13 @@ impl SketchApp {
         let Some(draft) = self.point_draft.take() else {
             return;
         };
+        let was_cleanup = draft.cleanup_stats.is_some();
         if !apply {
-            self.status = "Point editing cancelled; the drawing is unchanged.".into();
+            self.status = if was_cleanup {
+                "Cleanup preview cancelled; the drawing is unchanged.".into()
+            } else {
+                "Point editing cancelled; the drawing is unchanged.".into()
+            };
             return;
         }
         match draft.edit(&self.doc) {
@@ -268,7 +383,11 @@ impl SketchApp {
                 self.renderer.invalidate_ids(&self.selected);
                 self.dirty = true;
                 self.record_recovery_edit();
-                self.status = "Point changes applied as one undo step.".into();
+                self.status = if was_cleanup {
+                    "Stroke cleanup applied as one undo step.".into()
+                } else {
+                    "Point changes applied as one undo step.".into()
+                };
             }
             Err(error) => self.status = error,
         }
@@ -294,6 +413,9 @@ impl SketchApp {
         let Some(draft) = self.point_draft.as_mut() else {
             return;
         };
+        if draft.cleanup_stats.is_some() {
+            return;
+        }
         if begin {
             self.point_drag = None;
             let hit = nearest_point(&draft.preview, &self.camera, rect, pos);
@@ -326,42 +448,63 @@ impl SketchApp {
         let Some(draft) = self.point_draft.as_mut() else {
             return;
         };
-        ui.heading("Edit stroke points");
-        ui.small("Click a point, then drag in the view plane. Handles include points behind artwork. Orbit to inspect depth. The line is a centerline preview; the rendered stroke changes on Apply.");
-        ui.horizontal(|ui| {
-            ui.label("Point (0-based)");
-            ui.add(
-                egui::DragValue::new(&mut draft.selected).range(0..=draft.preview.points.len() - 1),
-            );
+        let is_cleanup = draft.cleanup_stats.is_some();
+        ui.heading(if is_cleanup {
+            "Preview stroke cleanup"
+        } else {
+            "Edit stroke points"
         });
-        let mut coordinates = draft.preview.points[draft.selected].position.to_array();
-        let mut changed = false;
-        for (axis, label) in ["X", "Y", "Z"].into_iter().enumerate() {
-            changed |= super::ui_style::numeric_row(
-                ui,
-                label,
-                ("canvas-point", axis),
-                &mut coordinates[axis],
-                Some(-10000.0..=10000.0),
-                "wu",
-            )
-            .changed();
-        }
-        if changed {
-            if let Err(error) = draft.move_selected(Vec3::from_array(coordinates)) {
-                self.status = error;
+        if let Some(stats) = draft.cleanup_stats {
+            ui.small(format!(
+                "{} → {} samples · max path deviation {:.4} wu · path length {:.3} → {:.3} wu · {} μs local CPU. Timed Airbrush strokes are preserved unchanged.",
+                stats.input_points,
+                stats.output_points,
+                stats.maximum_deviation,
+                stats.source_length,
+                stats.result_length,
+                stats.elapsed_micros
+            ));
+            ui.small(
+                "The highlighted centerline is a detached preview; Apply creates one undo step.",
+            );
+        } else {
+            ui.small("Click a point, then drag in the view plane. Handles include points behind artwork. Orbit to inspect depth. The line is a centerline preview; the rendered stroke changes on Apply.");
+            ui.horizontal(|ui| {
+                ui.label("Point (0-based)");
+                ui.add(
+                    egui::DragValue::new(&mut draft.selected)
+                        .range(0..=draft.preview.points.len() - 1),
+                );
+            });
+            let mut coordinates = draft.preview.points[draft.selected].position.to_array();
+            let mut changed = false;
+            for (axis, label) in ["X", "Y", "Z"].into_iter().enumerate() {
+                changed |= super::ui_style::numeric_row(
+                    ui,
+                    label,
+                    ("canvas-point", axis),
+                    &mut coordinates[axis],
+                    Some(-10000.0..=10000.0),
+                    "wu",
+                )
+                .changed();
             }
-        }
-        if ui
-            .add_enabled(
-                draft.preview.points.len() > 2,
-                egui::Button::new("Delete selected point"),
-            )
-            .clicked()
-        {
-            self.point_drag = None;
-            if let Err(error) = draft.delete_selected() {
-                self.status = error;
+            if changed {
+                if let Err(error) = draft.move_selected(Vec3::from_array(coordinates)) {
+                    self.status = error;
+                }
+            }
+            if ui
+                .add_enabled(
+                    draft.preview.points.len() > 2,
+                    egui::Button::new("Delete selected point"),
+                )
+                .clicked()
+            {
+                self.point_drag = None;
+                if let Err(error) = draft.delete_selected() {
+                    self.status = error;
+                }
             }
         }
         let mut apply = false;
@@ -370,10 +513,20 @@ impl SketchApp {
             apply = ui
                 .add_enabled(
                     draft.preview != draft.original,
-                    egui::Button::new("Apply point edits"),
+                    egui::Button::new(if is_cleanup {
+                        "Apply cleanup"
+                    } else {
+                        "Apply point edits"
+                    }),
                 )
                 .clicked();
-            cancel = ui.button("Cancel point edits").clicked();
+            cancel = ui
+                .button(if is_cleanup {
+                    "Cancel cleanup"
+                } else {
+                    "Cancel point edits"
+                })
+                .clicked();
         });
         if apply || cancel {
             self.finish_canvas_point_edit(apply);

@@ -534,6 +534,10 @@ pub fn selection_bounds(
         .iter()
         .filter(|stroke| selection.stroke_ids.contains(&stroke.id))
     {
+        let Ok(evaluated) = crate::stroke_modifiers::evaluated_stroke(stroke) else {
+            continue;
+        };
+        let stroke = evaluated.as_ref();
         let extent = Vec3::splat(crate::geometry::stroke_extent(stroke));
         for point in &stroke.points {
             let position = point.position
@@ -778,6 +782,8 @@ mod tests {
         document.strokes.push(Stroke {
             gradient: None,
             curve: None,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             material: Default::default(),
             group_id: None,
@@ -841,6 +847,10 @@ mod tests {
             obj_reference_ids: HashSet::from([31]),
             guide_ids: HashSet::from([41]),
         }
+    }
+
+    fn document_json(document: &Document) -> serde_json::Value {
+        serde_json::to_value(document).unwrap()
     }
 
     #[test]
@@ -1036,16 +1046,23 @@ mod tests {
     #[test]
     fn native_and_recovery_roundtrips_preserve_moved_resource_records() {
         let mut document = fixture();
-        let movement = MoveSnapshot::capture(
+        let selection = all_resources();
+        let rotation = MoveSnapshot::capture_transform(
             &document,
-            all_resources(),
-            TransformMode::Translate,
-            Vec3::new(-0.25, 0.75, 0.5),
+            selection.clone(),
+            TransformSpec::rotate(Vec3::new(0.2, -0.3, 0.4), Quat::from_rotation_y(0.37)),
         )
         .unwrap();
-        movement
+        rotation
             .apply(&mut document, MoveDirection::Forward)
             .unwrap();
+        let scale = MoveSnapshot::capture_transform(
+            &document,
+            selection.clone(),
+            TransformSpec::uniform_scale(Vec3::new(-0.1, 0.4, 0.2), 1.6, true),
+        )
+        .unwrap();
+        scale.apply(&mut document, MoveDirection::Forward).unwrap();
         let expected = capture_state(&document, &all_resources()).unwrap();
 
         let native_json = serde_json::to_string(&document).unwrap();
@@ -1087,12 +1104,187 @@ mod tests {
     }
 
     #[test]
-    fn rotation_and_scale_return_explicit_unsupported_errors() {
-        for mode in [TransformMode::Rotate, TransformMode::Scale] {
-            assert_eq!(
-                MoveSnapshot::capture(&fixture(), all_resources(), mode, Vec3::ZERO),
-                Err(MoveError::UnsupportedTransform(mode))
-            );
+    fn rotation_and_uniform_scale_transform_every_selected_resource_about_each_pivot() {
+        let document = fixture();
+        let selection = all_resources();
+        let selection_center = selection_bounds(&document, &selection, &HashMap::new())
+            .map(|(min, max)| (min + max) * 0.5)
+            .unwrap();
+        let custom_pivot = Vec3::new(-0.5, 0.75, 0.25);
+        let source = capture_state(&document, &selection).unwrap();
+        let cases = [
+            (selection_center, "selection center"),
+            (Vec3::ZERO, "world origin"),
+            (custom_pivot, "custom pivot"),
+        ];
+        let rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        for (pivot, label) in cases {
+            for (transform, scale) in [
+                (TransformSpec::rotate(pivot, rotation), 1.0),
+                (TransformSpec::uniform_scale(pivot, 1.4, true), 1.4),
+            ] {
+                let snapshot =
+                    MoveSnapshot::capture_transform(&document, selection.clone(), transform)
+                        .unwrap_or_else(|error| {
+                            panic!("{label} transform should validate: {error}")
+                        });
+                assert_eq!(snapshot.before, source, "preview source stays immutable");
+                assert_eq!(
+                    document_json(&document),
+                    document_json(&fixture()),
+                    "capture must not mutate any resource"
+                );
+
+                let orient = if transform.mode == TransformMode::Rotate {
+                    rotation
+                } else {
+                    Quat::IDENTITY
+                };
+                let point = |position: Vec3| pivot + orient * (position - pivot) * scale;
+                assert!(
+                    snapshot.after.strokes[0].points[0]
+                        .position
+                        .distance(point(source.strokes[0].points[0].position))
+                        < 1.0e-5
+                );
+                assert!(
+                    snapshot.after.image_planes[0]
+                        .origin
+                        .distance(point(source.image_planes[0].origin))
+                        < 1.0e-5
+                );
+                assert!(
+                    snapshot.after.obj_references[0]
+                        .center
+                        .distance(point(source.obj_references[0].center))
+                        < 1.0e-5
+                );
+                let (
+                    GuideGeometry::Plane {
+                        origin,
+                        rotation: guide_rotation,
+                    },
+                    GuideGeometry::Plane {
+                        rotation: original_guide_rotation,
+                        ..
+                    },
+                ) = (
+                    &snapshot.after.guides[0].geometry,
+                    &source.guides[0].geometry,
+                )
+                else {
+                    panic!("fixture guide is a plane")
+                };
+                assert!(origin.distance(point(Vec3::Z)) < 1.0e-5);
+                assert!(guide_rotation
+                    .abs_diff_eq((orient * *original_guide_rotation).normalize(), 1.0e-5));
+                assert!(snapshot.after.image_planes[0]
+                    .size
+                    .abs_diff_eq(source.image_planes[0].size * scale, 1.0e-5));
+                assert!(
+                    (snapshot.after.obj_references[0].scale
+                        - source.obj_references[0].scale * scale)
+                        .abs()
+                        < 1.0e-5
+                );
+                assert!(
+                    (snapshot.after.strokes[0].radius - source.strokes[0].radius * scale).abs()
+                        < 1.0e-5
+                );
+                assert_eq!(document.active_image_plane, Some(21));
+            }
         }
+    }
+
+    #[test]
+    fn mixed_transform_preview_rebuild_cancel_and_apply_are_atomic() {
+        let mut document = fixture();
+        let original = document.clone();
+        let selection = all_resources();
+        let transform =
+            TransformSpec::rotate(Vec3::new(0.2, 0.4, -0.5), Quat::from_rotation_x(0.6));
+        let first_preview =
+            MoveSnapshot::capture_transform(&document, selection.clone(), transform).unwrap();
+        first_preview
+            .apply(&mut document, MoveDirection::Forward)
+            .unwrap();
+        assert_ne!(document_json(&document), document_json(&original));
+        first_preview
+            .apply(&mut document, MoveDirection::Restore)
+            .unwrap();
+        assert_eq!(document_json(&document), document_json(&original));
+
+        let second_preview = MoveSnapshot::capture_transform(
+            &document,
+            selection.clone(),
+            TransformSpec::uniform_scale(Vec3::new(-0.2, 0.1, 0.4), 1.5, true),
+        )
+        .unwrap();
+        second_preview
+            .apply(&mut document, MoveDirection::Forward)
+            .unwrap();
+        let after = document.clone();
+        let edit = crate::editing::Edit::MixedResources {
+            before: second_preview.before.clone(),
+            after: second_preview.after.clone(),
+        };
+        edit.apply(&mut document, false);
+        assert_eq!(
+            document_json(&document),
+            document_json(&original),
+            "one-step undo restores all record types"
+        );
+        edit.apply(&mut document, true);
+        assert_eq!(
+            document_json(&document),
+            document_json(&after),
+            "one-step redo reapplies all record types"
+        );
+        assert_eq!(document.active_image_plane, Some(21));
+    }
+
+    #[test]
+    fn invalid_mixed_member_or_uniform_scale_is_rejected_without_mutation() {
+        let document = fixture();
+        let original = document.clone();
+        let mut missing_member = all_resources();
+        missing_member.obj_reference_ids.insert(999);
+        assert!(matches!(
+            MoveSnapshot::capture_transform(
+                &document,
+                missing_member,
+                TransformSpec::uniform_scale(Vec3::ZERO, 2.0, true),
+            ),
+            Err(MoveError::MissingResource {
+                kind: "OBJ reference",
+                id: 999
+            })
+        ));
+        assert!(matches!(
+            MoveSnapshot::capture_transform(
+                &document,
+                all_resources(),
+                TransformSpec::uniform_scale(Vec3::ZERO, 0.0, true),
+            ),
+            Err(MoveError::InvalidTransform)
+        ));
+        assert_eq!(document_json(&document), document_json(&original));
+
+        let mut near_boundary = fixture();
+        near_boundary.strokes[0].points[0].position.x = 6_000.0;
+        let before = near_boundary.clone();
+        assert!(matches!(
+            MoveSnapshot::capture_transform(
+                &near_boundary,
+                all_resources(),
+                TransformSpec::uniform_scale(Vec3::ZERO, 2.0, true),
+            ),
+            Err(MoveError::InvalidTransformDetail(_))
+        ));
+        assert_eq!(
+            document_json(&near_boundary),
+            document_json(&before),
+            "candidate rejection must be atomic"
+        );
     }
 }

@@ -47,6 +47,8 @@ fn block_on<F: Future>(future: F) -> F::Output {
 fn stroke() -> Stroke {
     Stroke {
         curve: None,
+        point_thickness: None,
+        modifiers: None,
         fill: None,
         material: StrokeMaterial::Unlit,
         group_id: None,

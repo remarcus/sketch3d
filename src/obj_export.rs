@@ -52,6 +52,8 @@ fn material_stroke(id: u64, material: StrokeMaterial) -> Stroke {
     Stroke {
         curve: None,
         material,
+        point_thickness: None,
+        modifiers: None,
         fill: None,
         group_id: None,
         layer_id: 1,
@@ -351,6 +353,16 @@ pub fn write_obj_bundle(
                 doc.layer_blend_mode(stroke.layer_id).label()
             )
             .map_err(|error| error.to_string())?;
+            if let Some(stack) = &stroke.modifiers {
+                writeln!(
+                    writer,
+                    "# stroke {} modifier stack v{} ({} entries) is evaluated in the exported mesh; editable records are native-only",
+                    stroke.id,
+                    stack.version,
+                    stack.modifiers.len()
+                )
+                .map_err(|error| error.to_string())?;
+            }
             writeln!(writer, "\ng stroke_{}", stroke.id).map_err(|error| error.to_string())?;
             writeln!(writer, "usemtl material_{material:05}").map_err(|error| error.to_string())?;
             for vertex in &mesh.vertices {

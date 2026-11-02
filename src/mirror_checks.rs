@@ -378,6 +378,228 @@ impl SketchApp {
             "redo restores the exact line pair"
         );
 
+        self.configure_radial_verification(plane_origin, 3, 17.0);
+        let radial_history_before = self.undo.len();
+        replay_mouse(self, ctx, rect, line_start, line_end, false);
+        assert!(
+            self.line.draft.is_some(),
+            "radial line drag previews its source"
+        );
+        assert_eq!(
+            self.doc.strokes, line_committed,
+            "radial preview leaves ink untouched"
+        );
+        let radial_source = self.line.draft.as_ref().unwrap().mark.clone();
+        let radial_preview = self
+            .symmetry_copies_for(&radial_source)
+            .expect("radial copies build on the rotated active guide");
+        assert_eq!(
+            radial_preview.len(),
+            3,
+            "radial preview contains three additional marks"
+        );
+        assert!(radial_preview.iter().all(|copy| {
+            let mut copy_brush = copy.brush;
+            let mut source_brush = radial_source.brush;
+            copy_brush.normal = source_brush.normal;
+            copy_brush.tangent = source_brush.tangent;
+            copy_brush.angle_degrees = source_brush.angle_degrees;
+            source_brush.normal = copy_brush.normal;
+            source_brush.tangent = copy_brush.tangent;
+            source_brush.angle_degrees = copy_brush.angle_degrees;
+            copy.points.len() == radial_source.points.len()
+                && copy.color == radial_source.color
+                && copy.radius == radial_source.radius
+                && copy_brush == source_brush
+                && (copy.brush.normal.length() - 1.0).abs() < 1.0e-4
+                && (copy.brush.tangent.length() - 1.0).abs() < 1.0e-4
+                && copy
+                    .points
+                    .iter()
+                    .all(|point| (point.position - plane_origin).dot(normal).abs() < 0.0001)
+        }));
+
+        ctx.input_mut(|input| {
+            input.events = vec![egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }]
+        });
+        self.line_shortcuts(ctx);
+        ctx.input_mut(|input| input.events.clear());
+        assert!(
+            self.line.draft.is_none(),
+            "Escape cancels the radial preview"
+        );
+        assert_eq!(
+            self.doc.strokes, line_committed,
+            "radial cancel leaves no copies"
+        );
+        assert_eq!(
+            self.undo.len(),
+            radial_history_before,
+            "radial cancel adds no history"
+        );
+
+        replay_mouse(self, ctx, rect, line_start, line_end, true);
+        assert!(
+            self.line.draft.is_none(),
+            "mouse release commits the radial fan"
+        );
+        assert_eq!(self.doc.strokes.len(), line_committed.len() + 4);
+        assert_eq!(
+            self.undo.len(),
+            radial_history_before + 1,
+            "fan is one undo edit"
+        );
+        let mut committed_radial_source = self.doc.strokes[line_committed.len()].clone();
+        committed_radial_source.id = radial_source.id;
+        assert_eq!(committed_radial_source, radial_source);
+        let mut committed_radial_copies = self.doc.strokes[line_committed.len() + 1..].to_vec();
+        for (committed, preview) in committed_radial_copies.iter_mut().zip(&radial_preview) {
+            committed.id = preview.id;
+        }
+        assert_eq!(
+            committed_radial_copies, radial_preview,
+            "committed copies exactly match preview geometry"
+        );
+        let radial_committed = self.doc.clone();
+        let radial_glb = crate::export::encode(&self.doc, None).expect("radial GLB export");
+        assert_eq!(radial_glb.summary.strokes, radial_committed.strokes.len());
+        let radial_dir = tempfile::tempdir_in(std::env::current_dir().unwrap())
+            .expect("workspace-local radial verification directory");
+        let recovery_dir = radial_dir.path().join("recovery");
+        let snapshot = crate::recovery_store::RecoverySnapshot::new(
+            "radial-verification".into(),
+            None,
+            radial_committed.clone(),
+        );
+        crate::recovery_store::write(&recovery_dir, &snapshot)
+            .expect("radial recovery snapshot writes");
+        let recovered = crate::recovery_store::scan(&recovery_dir, "verifier-reader")
+            .expect("radial recovery snapshot scans");
+        assert_eq!(recovered.candidates.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&recovered.candidates[0].snapshot.document).unwrap(),
+            serde_json::to_value(&radial_committed).unwrap(),
+            "recovery preserves the complete radial drawing"
+        );
+        let obj_path = radial_dir.path().join("radial.obj");
+        crate::obj_export::write_obj_bundle(&self.doc, None, &obj_path, false)
+            .expect("radial OBJ export");
+        let obj = std::fs::read_to_string(obj_path).expect("radial OBJ reads");
+        assert_eq!(obj.matches("\ng stroke_").count(), self.doc.strokes.len());
+
+        // Generated copies are ordinary strokes after commit: use the normal
+        // canvas picker to select one copy, then change only its appearance.
+        let pick_doc = &self.doc;
+        let pick_camera = self.camera;
+        let pick_candidates: Vec<_> = radial_committed
+            .strokes
+            .iter()
+            .skip(line_committed.len() + 1)
+            .take(radial_preview.len())
+            .flat_map(|copy| {
+                copy.points
+                    .windows(2)
+                    .flat_map(|pair| {
+                        (1..10).map(move |step| {
+                            pair[0].position.lerp(pair[1].position, step as f32 / 10.0)
+                        })
+                    })
+                    .filter_map(move |world| {
+                        let (screen, _) = crate::gizmo::project(&pick_camera, rect, world)?;
+                        Some((
+                            copy.id,
+                            screen,
+                            crate::gizmo::pick(pick_doc, &pick_camera, rect, screen),
+                        ))
+                    })
+            })
+            .collect();
+        let (edited_copy_id, pick_screen) = pick_candidates
+            .iter()
+            .find_map(|(id, screen, picked)| (*picked == Some(*id)).then_some((*id, *screen)))
+            .unwrap_or_else(|| {
+                panic!("no generated copy was independently picked: {pick_candidates:?}")
+            });
+        self.line.enabled = false;
+        self.select_mode = true;
+        self.individual_selection = true;
+        replay_mouse(self, ctx, rect, pick_screen, pick_screen, true);
+        assert_eq!(
+            self.selected,
+            HashSet::from([edited_copy_id]),
+            "canvas picking selects one radial copy independently"
+        );
+        let before_edit = crate::editing::snapshot(&self.doc, &self.selected);
+        assert_eq!(before_edit.len(), 1);
+        let changed_color = [0.91, 0.17, 0.33];
+        let after_edit = crate::editing::appearance_preview(
+            &before_edit,
+            crate::editing::AppearancePatch {
+                color: Some(changed_color),
+                ..Default::default()
+            },
+        )
+        .expect("selected radial copy accepts normal appearance editing");
+        let appearance_edit = crate::editing::Edit::Change {
+            before: before_edit,
+            after: after_edit,
+        };
+        appearance_edit.apply(&mut self.doc, true);
+        self.undo.push(appearance_edit);
+        self.redo.clear();
+        assert_eq!(
+            self.doc
+                .strokes
+                .iter()
+                .find(|stroke| stroke.id == edited_copy_id)
+                .unwrap()
+                .color,
+            changed_color,
+            "individual radial copy appearance edit applies"
+        );
+        assert!(radial_committed
+            .strokes
+            .iter()
+            .filter(|stroke| stroke.id != edited_copy_id)
+            .all(|expected| self
+                .doc
+                .strokes
+                .iter()
+                .find(|actual| actual.id == expected.id)
+                == Some(expected)));
+        self.undo();
+        assert_eq!(
+            serde_json::to_value(&self.doc).unwrap(),
+            serde_json::to_value(&radial_committed).unwrap(),
+            "undo restores the radial drawing after an individual copy edit"
+        );
+        self.redo();
+        self.undo();
+        assert_eq!(
+            serde_json::to_value(&self.doc).unwrap(),
+            serde_json::to_value(&radial_committed).unwrap(),
+            "individual edit redo and undo preserve the original radial fan"
+        );
+        self.select_mode = false;
+
+        self.undo();
+        assert_eq!(
+            self.doc.strokes, line_committed,
+            "one undo removes the entire fan"
+        );
+        self.redo();
+        assert_eq!(
+            serde_json::to_value(&self.doc).unwrap(),
+            serde_json::to_value(&radial_committed).unwrap(),
+            "redo restores all radial copies"
+        );
+
         // Keep the curved-guide replay focused on the saved-cylinder workflow
         // after the verifier has also exercised the rotated-plane line path.
         self.doc.strokes = committed;
@@ -392,7 +614,8 @@ impl SketchApp {
         self.camera.distance = 4.0;
 
         self.status =
-            "Saved-guide brush and rotated-plane line mirror pointer checks passed.".into();
+            "Saved-guide mirror, rotated-plane line, and radial symmetry pointer checks passed."
+                .into();
         self.dirty = false;
         self.renderer.invalidate();
         self.mirror_verification_frame = Some(1);

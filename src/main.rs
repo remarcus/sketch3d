@@ -1,5 +1,7 @@
 #![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]
 
+mod animation;
+mod animation_check;
 mod app;
 mod atomic_file;
 mod brush_selection;
@@ -26,6 +28,7 @@ mod liquify;
 mod material_render_check;
 mod mirror;
 mod mixed_resources;
+mod model_line_art;
 mod obj_export;
 mod obj_mesh_index;
 #[allow(dead_code)]
@@ -51,6 +54,8 @@ mod scenes;
 mod shape_geometry;
 mod stabilizer;
 mod still_export_check;
+mod stroke_modifiers;
+mod stroke_sculpt;
 mod surface;
 mod texture;
 mod texture_check;
@@ -58,6 +63,35 @@ mod tutorial;
 
 fn main() -> eframe::Result {
     let args: Vec<_> = std::env::args().collect();
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--verify-artwork-animation")
+    {
+        let Some(report) = args.get(index + 1) else {
+            eprintln!("Usage: sketch3d --verify-artwork-animation <report-path>");
+            std::process::exit(2);
+        };
+        if let Err(error) = animation_check::run(std::path::Path::new(report)) {
+            eprintln!("Artwork animation verification failed: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--benchmark-stroke-modifiers")
+    {
+        let Some(output) = args.get(index + 1) else {
+            eprintln!("Usage: sketch3d --benchmark-stroke-modifiers <report-path>");
+            std::process::exit(2);
+        };
+        if let Err(error) = stroke_modifiers::benchmark(std::path::Path::new(output)) {
+            eprintln!("Stroke modifier benchmark failed: {error}");
+            std::process::exit(1);
+        }
+        println!("Stroke modifier benchmark report: {output}");
+        return Ok(());
+    }
     if args
         .iter()
         .any(|argument| argument == "--verify-camera-bookmarks-seed")
@@ -314,6 +348,7 @@ fn main() -> eframe::Result {
                 | "--verify-liquify-brush"
                 | "--verify-obj-references"
                 | "--verify-camera-bookmarks"
+                | "--verify-artwork-animation"
                 | "--verify-appearance-layout"
                 | "--record-capability-demo"
         )

@@ -28,6 +28,12 @@ pub type ModelReferenceState = (
     Option<u64>,
 );
 
+#[derive(Clone)]
+pub struct ArtworkAnimationState {
+    pub animation: crate::animation::ArtworkAnimation,
+    pub strokes: Vec<Stroke>,
+}
+
 /// Content introduced by one native-drawing insertion. Undo removes document
 /// references while deliberately leaving copied managed assets in place; a
 /// later merge may share those files and must not lose them on undo.
@@ -168,6 +174,8 @@ pub fn appearance_edit(
 #[derive(Clone)]
 pub enum Edit {
     Add(Stroke),
+    /// One undoable insertion containing several ordinary independent strokes.
+    AddBatch(Vec<Stroke>),
     Remove(usize, Stroke),
     Change {
         before: Snapshot,
@@ -199,6 +207,12 @@ pub enum Edit {
         /// Strokes retained as ordinary artwork when a linked instance is made unique.
         detached: Vec<Stroke>,
     },
+    /// One reversible keyframe operation or frame-pose update. Seeking itself
+    /// changes no history; the UI clears frame-local undo on seek.
+    ArtworkAnimation {
+        before: ArtworkAnimationState,
+        after: ArtworkAnimationState,
+    },
     Merge(MergeEdit),
 }
 impl Edit {
@@ -209,6 +223,14 @@ impl Edit {
                     doc.strokes.push(s.clone());
                 } else {
                     doc.strokes.retain(|x| x.id != s.id);
+                }
+            }
+            Self::AddBatch(strokes) => {
+                if forward {
+                    doc.strokes.extend(strokes.iter().cloned());
+                } else {
+                    let ids: HashSet<_> = strokes.iter().map(|stroke| stroke.id).collect();
+                    doc.strokes.retain(|stroke| !ids.contains(&stroke.id));
                 }
             }
             Self::Remove(index, s) => {
@@ -229,6 +251,13 @@ impl Edit {
                 for stroke in &mut doc.strokes {
                     if let Some(layer) = assignments.get(&stroke.id) {
                         stroke.layer_id = *layer;
+                    }
+                }
+                for keyframe in &mut doc.animation.keyframes {
+                    for stroke in &mut keyframe.strokes {
+                        if let Some(layer) = assignments.get(&stroke.id) {
+                            stroke.layer_id = *layer;
+                        }
                     }
                 }
             }
@@ -288,10 +317,19 @@ impl Edit {
                         }
                     }
                 } else {
-                    doc.strokes
-                        .retain(|stroke| !detached_ids.contains(&stroke.id));
+                    let previous_ids = doc.linked_generated_ids();
+                    doc.strokes.retain(|stroke| {
+                        !detached_ids.contains(&stroke.id)
+                            && (!previous_ids.contains(&stroke.id)
+                                || target_ids.contains(&stroke.id))
+                    });
                     doc.linked_stroke_groups = before.clone();
                 }
+            }
+            Self::ArtworkAnimation { before, after } => {
+                let state = if forward { after } else { before };
+                doc.animation = state.animation.clone();
+                doc.strokes = state.strokes.clone();
             }
             Self::Merge(merge) => {
                 if forward {
@@ -592,6 +630,8 @@ mod tests {
     fn stroke(id: u64, x: f32) -> Stroke {
         Stroke {
             gradient: None,
+            point_thickness: None,
+            modifiers: None,
             curve: None,
             material: Default::default(),
             fill: None,
@@ -609,6 +649,32 @@ mod tests {
                 time_ms: 0,
             }],
         }
+    }
+    #[test]
+    fn add_batch_is_one_undoable_independent_stroke_edit() {
+        let mut doc = Document::default();
+        let edit = Edit::AddBatch(vec![stroke(31, 0.0), stroke(32, 1.0)]);
+        edit.apply(&mut doc, true);
+        assert_eq!(
+            doc.strokes
+                .iter()
+                .map(|stroke| stroke.id)
+                .collect::<Vec<_>>(),
+            vec![31, 32]
+        );
+        // Model-reference removal operates on its own collection and leaves
+        // baked line-art strokes as ordinary editable artwork.
+        doc.model_references.clear();
+        edit.apply(&mut doc, false);
+        assert!(doc.strokes.is_empty());
+        edit.apply(&mut doc, true);
+        assert_eq!(
+            doc.strokes
+                .iter()
+                .map(|stroke| stroke.id)
+                .collect::<Vec<_>>(),
+            vec![31, 32]
+        );
     }
     #[test]
     fn image_plane_import_edit_and_removal_undo_redo_restore_exact_state() {
@@ -1238,6 +1304,17 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
             if doc.strokes.iter().any(|s| s.layer_id == id) {
                 return Err("Move or delete this layer's strokes before deleting the layer".into());
             }
+            if doc
+                .animation
+                .keyframes
+                .iter()
+                .flat_map(|keyframe| &keyframe.strokes)
+                .any(|stroke| stroke.layer_id == id)
+            {
+                return Err(
+                    "Move or delete this layer's animated strokes before deleting the layer".into(),
+                );
+            }
             after.layers.retain(|l| l.id != id);
             if after.active_layer == id {
                 after.active_layer = after.layers[0].id;
@@ -1268,6 +1345,8 @@ mod layer_tests {
             linked_stroke_groups: Default::default(),
             strokes: vec![Stroke {
                 gradient: None,
+                point_thickness: None,
+                modifiers: None,
                 curve: None,
                 material: Default::default(),
                 id: 1,
@@ -1342,6 +1421,29 @@ mod layer_tests {
             .unwrap()
             .apply(&mut doc, true);
         assert_eq!(doc.active_layer, 1);
+    }
+
+    #[test]
+    fn layer_changes_keep_animation_snapshot_references_valid() {
+        let mut doc = sample();
+        doc.animation = doc.animation.set_keyframe(0, &doc.strokes).unwrap();
+        let add = layer_edit(&doc, LayerAction::Add("Animated".into())).unwrap();
+        add.apply(&mut doc, true);
+        let target = doc.active_layer;
+        let move_edit =
+            layer_edit(&doc, LayerAction::MoveSelection(HashSet::from([1]), target)).unwrap();
+        move_edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes[0].layer_id, target);
+        assert_eq!(doc.animation.keyframes[0].strokes[0].layer_id, target);
+        doc.animation
+            .validate(
+                &doc.layers.iter().map(|layer| layer.id).collect(),
+                &doc.brush_tip_assets.iter().map(|asset| asset.id).collect(),
+            )
+            .unwrap();
+        move_edit.apply(&mut doc, false);
+        assert_eq!(doc.animation.keyframes[0].strokes[0].layer_id, 1);
+        assert!(layer_edit(&doc, LayerAction::Delete(1)).is_err());
     }
 }
 
@@ -1710,6 +1812,8 @@ mod group_tests {
             strokes: (1..=3)
                 .map(|id| Stroke {
                     gradient: None,
+                    point_thickness: None,
+                    modifiers: None,
                     curve: None,
                     material: Default::default(),
                     id,
@@ -1818,6 +1922,8 @@ mod large_group_tests {
             strokes: (1..=10000)
                 .map(|id| Stroke {
                     gradient: None,
+                    point_thickness: None,
+                    modifiers: None,
                     curve: None,
                     material: Default::default(),
                     id,
@@ -1870,6 +1976,8 @@ mod appearance_tests {
     fn sample_document() -> Document {
         let first = Stroke {
             gradient: None,
+            point_thickness: None,
+            modifiers: None,
             curve: None,
             material: StrokeMaterial::Shaded,
             id: 1,

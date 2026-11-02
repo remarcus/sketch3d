@@ -122,6 +122,8 @@ impl SketchApp {
             mark: Stroke {
                 curve: None,
                 material: Default::default(),
+                point_thickness: None,
+                modifiers: None,
                 fill: Some(PlanarFill {
                     offset: self.fills.offset,
                 }),

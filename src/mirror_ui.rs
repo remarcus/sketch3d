@@ -65,6 +65,19 @@ impl Default for MirrorUi {
 }
 
 impl SketchApp {
+    pub(super) fn configure_radial_verification(
+        &mut self,
+        center: Vec3,
+        copy_count: usize,
+        angular_offset_degrees: f32,
+    ) {
+        self.mirror_ui.mode = SymmetryMode::Radial;
+        self.mirror_ui.radial_center = Some(center);
+        self.mirror_ui.radial_copy_count = copy_count;
+        self.mirror_ui.radial_offset_degrees = angular_offset_degrees;
+        self.mirror_ui.enabled = true;
+    }
+
     fn mirror_plane(&self) -> Result<crate::mirror::MirrorPlane, String> {
         let (origin, rotation) = if let Some(plane) = self.planar_drawing_target() {
             (plane.plane.origin(), plane.plane.rotation())

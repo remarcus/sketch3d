@@ -281,6 +281,26 @@ impl SketchApp {
         }
     }
 
+    pub(super) fn set_mixed_resource_rotation_degrees(&mut self, rotation_degrees: Vec3) {
+        if let Some(draft) = self.mixed_resources_ui.draft.as_mut() {
+            draft.mode = TransformMode::Rotate;
+            draft.translation = Vec3::ZERO;
+            draft.rotation_degrees = rotation_degrees;
+            draft.scale = 1.0;
+            self.refresh_mixed_resource_move();
+        }
+    }
+
+    pub(super) fn set_mixed_resource_uniform_scale(&mut self, scale: f32) {
+        if let Some(draft) = self.mixed_resources_ui.draft.as_mut() {
+            draft.mode = TransformMode::Scale;
+            draft.translation = Vec3::ZERO;
+            draft.rotation_degrees = Vec3::ZERO;
+            draft.scale = scale;
+            self.refresh_mixed_resource_move();
+        }
+    }
+
     fn refresh_mixed_resource_move(&mut self) {
         let Some(mut draft) = self.mixed_resources_ui.draft.take() else {
             return;

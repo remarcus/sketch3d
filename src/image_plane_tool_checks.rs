@@ -37,6 +37,8 @@ impl SketchApp {
         ctx: &egui::Context,
         rect: Rect,
     ) -> Vec<&'static str> {
+        let previous_snap_options = self.snapping.options;
+        self.snapping.options.enabled = false;
         fn assert_stroke_inside(stroke: &Stroke, image: &crate::image_planes::ImagePlane) {
             let inverse = image.rotation.inverse();
             for point in &stroke.points {
@@ -317,6 +319,7 @@ impl SketchApp {
         assert_eq!(self.doc.strokes.last(), Some(&curve));
         self.cancel_curve_tool();
         checks.push("image-plane curve anchor clicks, insertion, tangent drag, Backspace removal, Enter commit, clipping, and undo/redo");
+        checks.extend(self.verify_curve_edit_persistence(ctx, rect));
 
         // Tool previews cancel without creating document edits.
         let before = self.doc.strokes.len();
@@ -424,6 +427,8 @@ impl SketchApp {
         self.cancel_fill_tool();
         checks.push("hidden and locked image planes reject all planar tools");
         self.camera = camera_before;
+        checks.extend(self.verify_planar_snapping(ctx, rect, &line));
+        self.snapping.options = previous_snap_options;
         self.renderer.invalidate();
         checks
     }

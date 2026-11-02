@@ -198,6 +198,8 @@ mod tests {
             curve: None,
             material: Default::default(),
             id,
+            point_thickness: None,
+            modifiers: None,
             fill: Some(PlanarFill { offset: 0.0 }),
             group_id: None,
             layer_id: 1,

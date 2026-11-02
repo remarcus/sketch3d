@@ -17,7 +17,7 @@
   ],
   "fps": 8,
   "frame_count": 8,
-  "frame_delay_ms": 120,
+  "frame_delay_ms": 130,
   "mp4": {
     "backend": "Blender H.264 fallback",
     "encoded_dimensions": [

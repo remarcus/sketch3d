@@ -36,6 +36,8 @@ impl Artist {
             material: Default::default(),
             brush: Default::default(),
             id: self.doc.strokes.len() as u64 + 1,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,

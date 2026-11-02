@@ -1456,6 +1456,12 @@ impl SketchApp {
         let mut delete_point = false;
         let mut split_after_point = false;
         let mut canvas_edit = false;
+        let cleanup_state_id = ui.make_persistent_id(("stroke-cleanup", id));
+        let mut cleanup = ui
+            .ctx()
+            .data_mut(|data| data.get_temp::<(f32, f32)>(cleanup_state_id))
+            .unwrap_or((0.2, 0.02));
+        let mut preview_cleanup = false;
         ui.collapsing("Stroke points", |ui| {
             canvas_edit = ui.button("Edit points in canvas…").clicked();
             ui.small("Choose a sampled point (0-based). Coordinates are world units. Apply is one undo step.");
@@ -1479,7 +1485,36 @@ impl SketchApp {
                 .add_enabled(points.len() >= 4, egui::Button::new("Split after selected point"))
                 .clicked();
         });
+        ui.collapsing("Resample and simplify", |ui| {
+            ui.small("Uniform world-space spacing and a maximum path error. Sharp corners and significant pressure/tilt changes are retained. Timed Airbrush marks stay unchanged because their timestamps drive deposited coverage.");
+            ui.horizontal(|ui| {
+                ui.label("Spacing");
+                ui.add(
+                    egui::DragValue::new(&mut cleanup.0)
+                        .range(0.001..=1000.0)
+                        .speed(0.01)
+                        .suffix(" wu"),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("Max error");
+                ui.add(
+                    egui::DragValue::new(&mut cleanup.1)
+                        .range(0.0..=100.0)
+                        .speed(0.005)
+                        .suffix(" wu"),
+                );
+            });
+            ui.small("Gradient strokes are rejected if cleanup changes arc length by more than 1%. Dab seeds and settings are retained.");
+            preview_cleanup = ui.button("Preview cleanup…").clicked();
+        });
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(cleanup_state_id, cleanup));
         ui.ctx().data_mut(|data| data.insert_temp(state_id, state));
+        if preview_cleanup {
+            self.preview_selected_cleanup(cleanup.0, cleanup.1);
+            return;
+        }
         if canvas_edit {
             self.begin_canvas_point_edit();
             return;
@@ -1525,6 +1560,7 @@ impl SketchApp {
         }
         if self.appearance_draft.is_none() {
             self.point_edit_controls(ui);
+            self.stroke_modifier_controls(ui);
             self.stroke_join_controls(ui);
             if ui
                 .add_enabled(
@@ -2025,6 +2061,8 @@ impl SketchApp {
             let source = Stroke {
                 curve: None,
                 material: Default::default(),
+                point_thickness: None,
+                modifiers: None,
                 fill: None,
                 group_id: None,
                 layer_id: 1,
@@ -2176,6 +2214,8 @@ impl SketchApp {
             let make_stroke = |id, y| Stroke {
                 curve: None,
                 material: Default::default(),
+                point_thickness: None,
+                modifiers: None,
                 fill: None,
                 group_id: None,
                 layer_id: 1,

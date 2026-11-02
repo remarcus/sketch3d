@@ -1,0 +1,9 @@
+# Non-destructive stroke modifiers
+
+Stroke modifier stacks are optional native data. Strokes without a stack keep the legacy path. Stack version 1 supports up to 16 ordered records: Thickness multiplies per-sample width, Taper applies start/end ramps to that profile, and Smooth moves interior sampled centerline points while retaining endpoints and other sample attributes. Evaluation starts from the stored source and produces a detached derived stroke; no modifier stores baked point changes.
+
+The inspector supports enable/disable, reorder, remove, parameter adjustment, Cancel, Apply, and Bake. Apply stores the stack as one undoable/recoverable edit. Cancel restores the exact source. Bake writes the evaluated centerline and thickness profile and removes the stack in one undoable edit. Generated GLB/OBJ geometry uses the evaluated result; GLB retains the versioned modifier metadata, while OBJ documents that it exports the evaluated mesh and leaves editable records in the native file.
+
+Bounds are finite: at most 16 records, 65,536 samples, thickness factors in 0.05–20, taper fractions in 0–1, and up to 8 smoothing passes with amount in 0–1. These operations do not expand sample or mesh topology budgets. Fills are not supported. Smooth rejects semantic curves; Thickness and Taper can run on their sampled representation. Linked sources and generated instance strokes are not directly editable; make a regular copy first. Linked regeneration carries modifier stacks on source copies.
+
+Use `sketch3d --benchmark-stroke-modifiers verification/stroke-modifiers/modifier-performance.json` for a deterministic 4,096-point, three-modifier CPU and structural-memory study. The report labels local wall-clock results and estimated buffer sizes; it does not claim GPU upload or allocator-resident memory measurements.

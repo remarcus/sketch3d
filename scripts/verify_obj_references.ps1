@@ -52,7 +52,12 @@ try {
         'the imported drawing-local bundle reloads',
         'imported model is registered with the scene renderer',
         'synthetic viewport selection picks the imported model',
-        'selected-model bounds match the normalized OBJ bounds'
+        'selected-model bounds match the normalized OBJ bounds',
+        'production Preview button creates detached line art',
+        'Update button recomputes line art for the current camera',
+        'Bake button creates ordinary strokes in one undo edit',
+        'undo and redo remove and restore the baked batch',
+        'removing the source model leaves baked strokes intact'
     )
     foreach ($check in $requiredChecks) {
         if ($report.checks -notcontains $check) {
@@ -63,7 +68,8 @@ try {
         $report.native_file_picker_tested -ne $false -or
         $report.physical_tablet_tested -ne $false -or
         $report.model_count -ne 1 -or
-        $report.triangle_count -ne 1) {
+        $report.triangle_count -ne 1 -or
+        $report.stroke_count -le 0) {
         throw 'OBJ reference report has an invalid result or overstates native picker/tablet coverage.'
     }
     Write-Output 'OBJ reference window click and production import verification passed.'

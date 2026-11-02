@@ -380,6 +380,8 @@ mod tests {
     fn prototype() -> Stroke {
         Stroke {
             gradient: None,
+            point_thickness: None,
+            modifiers: None,
             curve: None,
             id: 42,
             color: [0.15, 0.45, 0.8],

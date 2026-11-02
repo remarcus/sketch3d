@@ -6,6 +6,7 @@ license = "GPL-3.0-or-later"
 description = "Sketch3D: an open-source, tablet-first 3D sketching app"
 
 [dependencies]
+lyon_tessellation = { version = "=1.0.23", optional = true }
 eframe = { version = "0.31.1", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland", "accesskit"] }
 glam = { version = "0.30", features = ["serde", "bytemuck"] }
 bytemuck = { version = "1", features = ["derive"] }
@@ -15,6 +16,13 @@ rfd = "0.15"
 raw-window-handle = "0.6"
 tempfile = "3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+
+[features]
+lyon-evaluation = ["dep:lyon_tessellation"]
+
+[[example]]
+name = "lyon_evaluation"
+required-features = ["lyon-evaluation"]
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_Pointer", "Win32_UI_Input", "Win32_System_Threading", "Win32_Storage_FileSystem"] }

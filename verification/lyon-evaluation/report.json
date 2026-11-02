@@ -1,0 +1,226 @@
+{
+  "crate_version": "1.0.23",
+  "build_profile": "debug",
+  "timing_repetitions": 25,
+  "allocation_repetitions": 25,
+  "allocation_method": "median global alloc/realloc calls and cumulative requested sizes, scoped to a single-threaded invocation; includes adapter output conversion and excludes frees",
+  "limits": {
+    "max_input_points": 256,
+    "max_output_vertices": 65535,
+    "max_output_indices": 196605,
+    "tolerance": 0.1
+  },
+  "fill_cases": [
+    {
+      "name": "convex/nonzero",
+      "vertices": 4,
+      "triangles": 2,
+      "median_us": 6.2,
+      "allocation_calls_per_invocation": 26,
+      "requested_bytes_per_invocation": 8107,
+      "baseline_triangles": 2,
+      "baseline_median_us": 0.7999999999999999,
+      "baseline_allocation_calls": 4,
+      "baseline_requested_bytes": 112,
+      "error_pixels": [
+        0,
+        0,
+        0
+      ],
+      "alternate_fill_rule_error_pixels": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "convex/evenodd",
+      "vertices": 4,
+      "triangles": 2,
+      "median_us": 6.0,
+      "allocation_calls_per_invocation": 26,
+      "requested_bytes_per_invocation": 8107,
+      "baseline_triangles": 2,
+      "baseline_median_us": 0.7999999999999999,
+      "baseline_allocation_calls": 4,
+      "baseline_requested_bytes": 112,
+      "error_pixels": [
+        0,
+        0,
+        0
+      ],
+      "alternate_fill_rule_error_pixels": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "concave/nonzero",
+      "vertices": 6,
+      "triangles": 4,
+      "median_us": 7.700000000000001,
+      "allocation_calls_per_invocation": 31,
+      "requested_bytes_per_invocation": 8989,
+      "baseline_triangles": 4,
+      "baseline_median_us": 1.7,
+      "baseline_allocation_calls": 5,
+      "baseline_requested_bytes": 208,
+      "error_pixels": [
+        0,
+        0,
+        0
+      ],
+      "alternate_fill_rule_error_pixels": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "concave/evenodd",
+      "vertices": 6,
+      "triangles": 4,
+      "median_us": 7.8,
+      "allocation_calls_per_invocation": 31,
+      "requested_bytes_per_invocation": 8989,
+      "baseline_triangles": 4,
+      "baseline_median_us": 1.7,
+      "baseline_allocation_calls": 5,
+      "baseline_requested_bytes": 208,
+      "error_pixels": [
+        0,
+        0,
+        0
+      ],
+      "alternate_fill_rule_error_pixels": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "bow_tie/nonzero",
+      "vertices": 5,
+      "triangles": 2,
+      "median_us": 6.5,
+      "allocation_calls_per_invocation": 26,
+      "requested_bytes_per_invocation": 8115,
+      "baseline_triangles": null,
+      "baseline_median_us": null,
+      "baseline_allocation_calls": null,
+      "baseline_requested_bytes": null,
+      "error_pixels": [],
+      "alternate_fill_rule_error_pixels": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "bow_tie/evenodd",
+      "vertices": 5,
+      "triangles": 2,
+      "median_us": 6.7,
+      "allocation_calls_per_invocation": 26,
+      "requested_bytes_per_invocation": 8115,
+      "baseline_triangles": null,
+      "baseline_median_us": null,
+      "baseline_allocation_calls": null,
+      "baseline_requested_bytes": null,
+      "error_pixels": [],
+      "alternate_fill_rule_error_pixels": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "double_wound/nonzero",
+      "vertices": 4,
+      "triangles": 2,
+      "median_us": 7.4,
+      "allocation_calls_per_invocation": 30,
+      "requested_bytes_per_invocation": 9071,
+      "baseline_triangles": null,
+      "baseline_median_us": null,
+      "baseline_allocation_calls": null,
+      "baseline_requested_bytes": null,
+      "error_pixels": [],
+      "alternate_fill_rule_error_pixels": [
+        11664,
+        184900,
+        2958400
+      ]
+    },
+    {
+      "name": "double_wound/evenodd",
+      "vertices": 4,
+      "triangles": 0,
+      "median_us": 6.3,
+      "allocation_calls_per_invocation": 20,
+      "requested_bytes_per_invocation": 8159,
+      "baseline_triangles": null,
+      "baseline_median_us": null,
+      "baseline_allocation_calls": null,
+      "baseline_requested_bytes": null,
+      "error_pixels": [],
+      "alternate_fill_rule_error_pixels": [
+        11664,
+        184900,
+        2958400
+      ]
+    }
+  ],
+  "stroke_cases": [
+    {
+      "name": "sharp_miter",
+      "vertices": 6,
+      "triangles": 4,
+      "median_us": 3.5999999999999996,
+      "allocation_calls_per_invocation": 8,
+      "requested_bytes_per_invocation": 6308,
+      "baseline_triangles": null,
+      "baseline_median_us": null,
+      "baseline_allocation_calls": null,
+      "baseline_requested_bytes": null,
+      "error_pixels": [],
+      "alternate_fill_rule_error_pixels": []
+    },
+    {
+      "name": "sharp_bevel",
+      "vertices": 7,
+      "triangles": 5,
+      "median_us": 3.7,
+      "allocation_calls_per_invocation": 8,
+      "requested_bytes_per_invocation": 6328,
+      "baseline_triangles": null,
+      "baseline_median_us": null,
+      "baseline_allocation_calls": null,
+      "baseline_requested_bytes": null,
+      "error_pixels": [],
+      "alternate_fill_rule_error_pixels": []
+    },
+    {
+      "name": "variable_width",
+      "vertices": 11,
+      "triangles": 9,
+      "median_us": 5.3,
+      "allocation_calls_per_invocation": 11,
+      "requested_bytes_per_invocation": 6516,
+      "baseline_triangles": null,
+      "baseline_median_us": null,
+      "baseline_allocation_calls": null,
+      "baseline_requested_bytes": null,
+      "error_pixels": [],
+      "alternate_fill_rule_error_pixels": []
+    }
+  ],
+  "plane_max_error": 1.3411045e-7,
+  "import_obj": "rotated_concave.obj",
+  "scale_pixels": [
+    128,
+    512,
+    2048
+  ]
+}

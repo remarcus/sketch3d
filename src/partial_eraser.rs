@@ -492,6 +492,8 @@ fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> 
                     .map(|pair| pair[0].position.distance(pair[1].position))
                     .sum::<f32>();
                 let mut fragment = stroke.clone();
+                fragment.point_thickness =
+                    crate::stroke_sculpt::remap_thickness_profile(stroke, &points);
                 fragment.points = points;
                 fragment.curve = None;
                 if let Some(gradient) = stroke.gradient.filter(|_| original_length > 1.0e-8) {
@@ -645,6 +647,8 @@ mod tests {
             radius: 0.025,
             brush,
             points,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             material: StrokeMaterial::Emissive,
             group_id: Some(13),
@@ -752,6 +756,94 @@ mod tests {
     }
 
     #[test]
+    fn rake_and_bristle_partial_erase_keeps_one_strand_mesh_per_retained_fragment() {
+        let camera = front_camera();
+        let canvas = canvas();
+        for name in ["Rake", "Bristle Fan"] {
+            let preset = crate::presets::Library::default()
+                .presets
+                .into_iter()
+                .find(|preset| preset.name == name)
+                .unwrap_or_else(|| panic!("missing built-in {name} preset"));
+            let mut source = line([Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)]);
+            source.brush = preset.brush;
+            source.radius = preset.radius;
+            source.color = preset.color;
+            for point in &mut source.points {
+                point.tilt = None;
+            }
+
+            let original_mesh = crate::geometry::stroke_mesh(&source);
+            let extent = crate::geometry::stroke_extent(&source);
+            assert!(extent > source.radius, "{name} extent includes its fan");
+            for vertex in &original_mesh {
+                let position = Vec3::from(vertex.position);
+                let nearest = Vec3::new(position.x.clamp(-1.0, 1.0), 0.0, 0.0);
+                assert!(
+                    position.distance(nearest) <= extent + 1.0e-5,
+                    "{name} fan geometry stays within its reported stroke extent"
+                );
+            }
+
+            let erase_path = [
+                point(&camera, canvas, Vec3::new(0.0, -0.5, 0.0)),
+                point(&camera, canvas, Vec3::new(0.0, 0.5, 0.0)),
+            ];
+            assert!(
+                point_segment_distance(
+                    point(&camera, canvas, Vec3::ZERO),
+                    erase_path[0],
+                    erase_path[1],
+                )
+                .0 < 1.0e-4,
+                "{name} eraser path crosses the source fan"
+            );
+            let document = crate::document::Document {
+                linked_stroke_groups: Default::default(),
+                strokes: vec![source.clone()],
+                ..Default::default()
+            };
+            let plan = plan_partial_erase(&document, &camera, canvas, &erase_path, 2.0, 100)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{name} fan can be partially erased"));
+            assert_eq!(plan.split, 1);
+            assert_eq!(plan.removed, 0);
+
+            let mut erased = document;
+            plan.edit.apply(&mut erased, true);
+            assert_eq!(
+                erased.strokes.len(),
+                2,
+                "{name} keeps two logical fragments"
+            );
+            assert_eq!(erased.strokes[0].id, source.id);
+            assert_eq!(erased.strokes[0].brush.strands, source.brush.strands);
+            assert_eq!(erased.strokes[1].brush.strands, source.brush.strands);
+            for fragment in &erased.strokes {
+                assert!(fragment.brush.strands.enabled);
+                assert!(!fragment.brush.dabs.enabled);
+                let mesh = crate::geometry::stroke_mesh(fragment);
+                assert_eq!(
+                    mesh.len(),
+                    fragment
+                        .brush
+                        .strands
+                        .vertex_estimate(fragment.points.len()),
+                    "{name} fragment remains one complete multi-strand mesh"
+                );
+                for vertex in &mesh {
+                    let (screen, _) =
+                        gizmo::project(&camera, canvas, Vec3::from(vertex.position)).unwrap();
+                    assert!(
+                        point_segment_distance(screen, erase_path[0], erase_path[1]).0 > 2.0,
+                        "{name} generated fragment geometry remains outside the erased corridor"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn split_fragments_keep_interpolated_contacts_and_stroke_metadata_through_history() {
         let camera = front_camera();
         let canvas = canvas();
@@ -760,6 +852,7 @@ mod tests {
         source.brush.dabs.size_variation = 0.4;
         source.brush.dabs.angle_variation_degrees = 45.0;
         source.brush.dab_seed = crate::dab_placement::seed_for_stroke(source.id);
+        source.point_thickness = Some(vec![0.7, 1.4]);
         let original_dabs = crate::dab_placement::sample(&source).unwrap();
         let mut doc = crate::document::Document {
             linked_stroke_groups: Default::default(),
@@ -785,6 +878,16 @@ mod tests {
         assert_eq!(doc.strokes[1].id, 100);
         let mut retained_dab_count = 0;
         for fragment in &doc.strokes {
+            assert_eq!(
+                fragment.point_thickness.as_ref().unwrap().len(),
+                fragment.points.len()
+            );
+            assert!(fragment
+                .point_thickness
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|value| (0.7..=1.4).contains(value)));
             assert_eq!(fragment.color, source.color);
             assert_eq!(fragment.radius, source.radius);
             let mut fragment_brush = fragment.brush;

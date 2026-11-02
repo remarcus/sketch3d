@@ -110,6 +110,7 @@ fn build_export_document_snapshot(
         },
         active_model_reference: None,
         brush_tip_assets: Vec::new(),
+        animation: Default::default(),
         strokes: document
             .strokes
             .iter()
@@ -349,6 +350,8 @@ mod tests {
         Stroke {
             gradient: None,
             curve: None,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             material: StrokeMaterial::default(),
             group_id: None,

@@ -6,13 +6,19 @@
     "the clicked control invokes the production import handler with an injected file-picker result",
     "the imported drawing-local bundle reloads",
     "imported model is registered with the scene renderer",
-    "synthetic viewport selection picks the imported model",
-    "selected-model bounds match the normalized OBJ bounds"
+    "synthetic viewport selection picks the imported OBJ",
+    "selected-model bounds match the normalized OBJ bounds",
+    "production Preview button creates detached line art",
+    "Update button recomputes line art for the current camera",
+    "Bake button creates ordinary strokes in one undo edit",
+    "undo and redo remove and restore the baked batch",
+    "removing the source model leaves baked strokes intact"
   ],
   "gpu": "test GPU / Vulkan",
   "model_count": 1,
   "native_file_picker_tested": false,
   "passed": true,
   "physical_tablet_tested": false,
+  "stroke_count": 3,
   "triangle_count": 1
 }

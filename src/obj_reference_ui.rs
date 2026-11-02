@@ -2,7 +2,203 @@ use super::*;
 use crate::document::model_references::ObjReferenceResource;
 use std::path::Path;
 
+fn line_art_point_visible(
+    camera: &crate::geometry::Camera,
+    canvas: egui::Rect,
+    point: glam::Vec3,
+    resources: &[ObjReferenceResource],
+    models: &std::collections::HashMap<u64, crate::obj_reference::ObjModel>,
+    indices: &mut std::collections::HashMap<u64, crate::obj_mesh_index::ObjMeshIndex>,
+) -> bool {
+    let Some((screen, _)) = crate::gizmo::project(camera, canvas, point) else {
+        return false;
+    };
+    let (origin, direction) = crate::gizmo::ray(camera, canvas, screen);
+    let expected = (point - origin).dot(direction);
+    nearest_obj_reference_depth(origin, direction, resources, models, indices)
+        .is_none_or(|depth| depth + 0.002_f32.max(expected.abs() * 1.0e-4) >= expected)
+}
+
 impl SketchApp {
+    pub(super) fn process_line_art_command(&mut self, canvas: egui::Rect) {
+        let Some(command) = self.line_art_command.take() else {
+            return;
+        };
+        match command {
+            LineArtCommand::Cancel => {
+                self.line_art_draft = None;
+                self.status = "Line-art preview canceled".into();
+            }
+            LineArtCommand::Create | LineArtCommand::Update => {
+                let source_id = if matches!(command, LineArtCommand::Update) {
+                    self.line_art_draft.as_ref().map(|draft| draft.source_id)
+                } else {
+                    self.selected_model_reference
+                };
+                let Some(source_id) = source_id else {
+                    self.status = "Select an OBJ reference to preview line art".into();
+                    return;
+                };
+                let Some(resource) = self
+                    .doc
+                    .model_references
+                    .iter()
+                    .find(|item| item.id == source_id && item.visible)
+                    .cloned()
+                else {
+                    self.line_art_draft = None;
+                    self.status = "The source model is hidden or unavailable".into();
+                    return;
+                };
+                let Some(model) = self.obj_reference_models.get(&source_id) else {
+                    self.status = "The source OBJ model is not loaded".into();
+                    return;
+                };
+                let settings = crate::model_line_art::Settings {
+                    crease_angle_degrees: self.line_art_crease_angle,
+                    boundaries: self.line_art_boundaries,
+                    creases: self.line_art_creases,
+                    silhouettes: self.line_art_silhouettes,
+                };
+                match crate::model_line_art::extract(
+                    model,
+                    &self.camera,
+                    resource.center,
+                    resource.rotation,
+                    resource.scale,
+                    settings,
+                ) {
+                    Ok(extraction) => {
+                        let extraction_truncated = extraction.truncated;
+                        let local_segments = extraction.segments;
+                        let world_segments = local_segments
+                            .into_iter()
+                            .map(|line| {
+                                let world = line.map(|point| {
+                                    resource.center + resource.rotation * (point * resource.scale)
+                                });
+                                world
+                            })
+                            .collect::<Vec<_>>();
+                        let mut indices = std::mem::take(&mut self.obj_surface_indices);
+                        let visible =
+                            crate::model_line_art::filter_visible(world_segments, |sample| {
+                                line_art_point_visible(
+                                    &self.camera,
+                                    canvas,
+                                    sample,
+                                    &self.doc.model_references,
+                                    &self.obj_reference_models,
+                                    &mut indices,
+                                )
+                            });
+                        self.obj_surface_indices = indices;
+                        let truncated = extraction_truncated || visible.truncated;
+                        let visible_count = visible.segments.len();
+                        self.line_art_draft = Some(crate::model_line_art::Draft {
+                            source_id,
+                            segments: visible.segments,
+                            truncated,
+                        });
+                        self.status = if truncated {
+                            format!("Preview truncated at the 20,000-stroke limit ({visible_count} visible strokes)")
+                        } else {
+                            format!("Previewed {visible_count} visible line-art strokes")
+                        };
+                    }
+                    Err(error) => self.status = format!("Line-art preview failed: {error}"),
+                }
+            }
+            LineArtCommand::Bake => {
+                let Some(draft) = self.line_art_draft.take() else {
+                    return;
+                };
+                if draft.segments.is_empty() {
+                    self.status = "There is no line art to bake".into();
+                    return;
+                }
+                if self
+                    .next_id
+                    .checked_add(draft.segments.len() as u64)
+                    .is_none_or(|end| end >= u64::MAX)
+                {
+                    self.status = "No more stroke IDs are available".into();
+                    self.line_art_draft = Some(draft);
+                    return;
+                }
+                let mut id = self.next_id;
+                let strokes = draft
+                    .segments
+                    .into_iter()
+                    .map(|line| {
+                        let stroke = crate::document::Stroke {
+                            fill: None,
+                            material: crate::document::StrokeMaterial::Unlit,
+                            group_id: None,
+                            layer_id: self.doc.active_layer,
+                            id,
+                            color: [0.035, 0.035, 0.04],
+                            gradient: None,
+                            radius: 0.006,
+                            brush: crate::document::Brush::default(),
+                            points: line
+                                .into_iter()
+                                .map(|position| crate::document::Point {
+                                    position,
+                                    pressure: 1.0,
+                                    tilt: None,
+                                    time_ms: 0,
+                                })
+                                .collect(),
+                            point_thickness: None,
+                            modifiers: None,
+                            curve: None,
+                        };
+                        id += 1;
+                        stroke
+                    })
+                    .collect::<Vec<_>>();
+                let edit = Edit::AddBatch(strokes);
+                edit.apply(&mut self.doc, true);
+                self.undo.push(edit);
+                self.redo.clear();
+                self.next_id = id;
+                self.dirty = true;
+                self.record_recovery_edit_labeled("Bake model line art");
+                self.renderer.invalidate();
+                self.status = "Baked line art as independent strokes (one undo step)".into();
+            }
+        }
+    }
+
+    pub(super) fn paint_line_art_preview(&self, painter: &egui::Painter, canvas: egui::Rect) {
+        let Some(draft) = &self.line_art_draft else {
+            return;
+        };
+        if !self
+            .doc
+            .model_references
+            .iter()
+            .any(|resource| resource.id == draft.source_id && resource.visible)
+        {
+            return;
+        }
+        for line in &draft.segments {
+            if let (Some((a, _)), Some((b, _))) = (
+                crate::gizmo::project(&self.camera, canvas, line[0]),
+                crate::gizmo::project(&self.camera, canvas, line[1]),
+            ) {
+                painter.line_segment(
+                    [a, b],
+                    egui::Stroke::new(
+                        1.5_f32,
+                        egui::Color32::from_rgba_unmultiplied(255, 185, 55, 210),
+                    ),
+                );
+            }
+        }
+    }
+
     pub(super) fn show_obj_reference_window(&mut self, ctx: &egui::Context) {
         if !self.obj_reference_window_open {
             return;
@@ -76,6 +272,52 @@ impl SketchApp {
             }
             ui.small("OBJ models are read-only references. Whole-scene GLB includes visible models; selected-stroke export remains ink-only. Supported MTL properties: Kd diffuse color and d/Tr opacity. Texture maps and other MTL properties are ignored and listed in the GLB metadata.");
 
+            ui.separator();
+            ui.strong("Model line art");
+            ui.horizontal(|ui| {
+                ui.label("Crease angle");
+                ui.add(egui::Slider::new(&mut self.line_art_crease_angle, 0.0..=180.0).suffix("°"));
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.line_art_boundaries, "Boundaries");
+                ui.checkbox(&mut self.line_art_creases, "Creases");
+                ui.checkbox(&mut self.line_art_silhouettes, "Silhouettes");
+            });
+            ui.horizontal(|ui| {
+                let preview = ui.button("Preview line art");
+                if self.obj_reference_verification_frame.is_some() {
+                    self.line_art_verification_preview_rect = Some(preview.rect);
+                }
+                if preview.clicked() {
+                    self.line_art_command = Some(LineArtCommand::Create);
+                }
+                if self.line_art_draft.is_some() {
+                    let update = ui.button("Update preview");
+                    let bake = ui.button("Bake");
+                    if self.obj_reference_verification_frame.is_some() {
+                        self.line_art_verification_update_rect = Some(update.rect);
+                        self.line_art_verification_bake_rect = Some(bake.rect);
+                    }
+                    if update.clicked() {
+                        self.line_art_command = Some(LineArtCommand::Update);
+                    }
+                    if bake.clicked() {
+                        self.line_art_command = Some(LineArtCommand::Bake);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.line_art_command = Some(LineArtCommand::Cancel);
+                    }
+                }
+            });
+            if self.line_art_draft.is_some() {
+                ui.small("Preview is detached. Update recomputes from the source model and current camera. Bake creates independent strokes in one undo step; removing the model keeps baked strokes.");
+                if self.line_art_draft.as_ref().is_some_and(|draft| draft.truncated) {
+                    ui.colored_label(ui_style::colors(ui.ctx()).warning, "This preview reached the 20,000-stroke cap and is incomplete.");
+                }
+            } else {
+                ui.small("Visible models only; extraction is capped at 250,000 triangles, 750,000 candidate edges, and 20,000 output strokes.");
+            }
+
             let before = self.model_reference_edit_state();
             let mut remove = None;
             let mut changed = false;
@@ -113,6 +355,9 @@ impl SketchApp {
             }
             if let Some(index) = remove {
                 let resource = self.doc.model_references.remove(index);
+                if self.line_art_draft.as_ref().is_some_and(|draft| draft.source_id == resource.id) {
+                    self.line_art_draft = None;
+                }
                 if self.selected_model_reference == Some(resource.id) {
                     self.selected_model_reference = None;
                 }
@@ -514,6 +759,61 @@ fn same_asset_root(first: &Path, second: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scene_depth_hides_back_model_and_ignores_hidden_occluder() {
+        let mut camera = crate::geometry::Camera::default();
+        camera.yaw = 0.0;
+        camera.pitch = 0.0;
+        camera.target = glam::Vec3::ZERO;
+        camera.distance = 5.0;
+        let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 200.0));
+        let plane = |z: f32| {
+            let obj = format!("v -1 -1 {z}\nv 1 -1 {z}\nv 1 1 {z}\nv -1 1 {z}\nf 1 2 3\nf 1 3 4\n");
+            crate::obj_reference::parse(obj.as_bytes(), Path::new("plane.obj")).unwrap()
+        };
+        let models = [(1, plane(2.0)), (2, plane(0.0))].into_iter().collect();
+        let resource = |id, visible| ObjReferenceResource {
+            id,
+            name: format!("model {id}"),
+            visible,
+            locked: false,
+            center: glam::Vec3::ZERO,
+            rotation: glam::Quat::IDENTITY,
+            scale: 1.0,
+            asset: crate::obj_reference_storage::ObjReferenceAsset {
+                id,
+                bundle_dir: format!("models/{id}"),
+            },
+        };
+        let mut resources = vec![resource(1, true), resource(2, true)];
+        let mut indices = std::collections::HashMap::new();
+        assert!(!line_art_point_visible(
+            &camera,
+            canvas,
+            glam::vec3(0.0, 0.0, 0.0),
+            &resources,
+            &models,
+            &mut indices
+        ));
+        assert!(line_art_point_visible(
+            &camera,
+            canvas,
+            glam::vec3(0.0, 0.0, 2.0),
+            &resources,
+            &models,
+            &mut indices
+        ));
+        resources[0].visible = false;
+        assert!(line_art_point_visible(
+            &camera,
+            canvas,
+            glam::vec3(0.0, 0.0, 0.0),
+            &resources,
+            &models,
+            &mut indices
+        ));
+    }
 
     fn model() -> crate::obj_reference::ObjModel {
         crate::obj_reference::parse(

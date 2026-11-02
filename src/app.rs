@@ -16,6 +16,8 @@ type LoadedDrawing = (
     HashMap<u64, crate::image_planes::ImageAsset>,
     HashMap<u64, crate::obj_reference::ObjModel>,
 );
+#[path = "animation_ui.rs"]
+mod animation_ui;
 #[path = "brush_dynamics.rs"]
 mod brush_dynamics;
 #[path = "brush_textures.rs"]
@@ -40,6 +42,8 @@ mod fills_checks;
 mod fills_ui;
 #[path = "groups_ui.rs"]
 mod groups_ui;
+#[path = "guide_bend_checks.rs"]
+mod guide_bend_checks;
 #[path = "guide_resource_ui.rs"]
 mod guide_resource_ui;
 #[path = "image_plane_tool_checks.rs"]
@@ -74,6 +78,13 @@ mod obj_export_ui;
 mod obj_reference_checks;
 #[path = "obj_reference_ui.rs"]
 mod obj_reference_ui;
+#[derive(Clone, Copy)]
+enum LineArtCommand {
+    Create,
+    Update,
+    Bake,
+    Cancel,
+}
 #[path = "palette_ui.rs"]
 mod palette_ui;
 #[path = "partial_eraser_ui.rs"]
@@ -112,6 +123,8 @@ mod shape_tool;
 mod snapping;
 #[path = "starter.rs"]
 mod starter;
+#[path = "stroke_modifiers_ui.rs"]
+mod stroke_modifiers_ui;
 #[path = "tutorial_ui.rs"]
 mod tutorial_ui;
 #[path = "ui_style.rs"]
@@ -189,6 +202,7 @@ pub struct SketchApp {
     camera_bookmark_restart_report: Option<PathBuf>,
     camera_ui: camera_ui::CameraBookmarkUi,
     camera_playback: Option<camera_ui::CameraPlayback>,
+    animation_ui: animation_ui::AnimationUi,
     liquify_ui: liquify_ui::LiquifyUi,
     mixed_resources_ui: mixed_resources_ui::MixedResourcesUi,
     image_plane_assets: std::collections::HashMap<u64, crate::image_planes::ImageAsset>,
@@ -202,11 +216,22 @@ pub struct SketchApp {
     obj_reference_verification_button_clicked: bool,
     obj_reference_verification_source: Option<Option<PathBuf>>,
     obj_reference_verification_source_root: Option<tempfile::TempDir>,
+    line_art_draft: Option<crate::model_line_art::Draft>,
+    line_art_crease_angle: f32,
+    line_art_boundaries: bool,
+    line_art_creases: bool,
+    line_art_silhouettes: bool,
+    line_art_command: Option<LineArtCommand>,
+    line_art_verification_preview_rect: Option<Rect>,
+    line_art_verification_update_rect: Option<Rect>,
+    line_art_verification_bake_rect: Option<Rect>,
     obj_reference_verification_asset_root: Option<tempfile::TempDir>,
     appearance_layout_verification: Option<AppearanceLayoutVerification>,
     image_asset_root: PathBuf,
     guide_name: String,
     loft_preview: Option<crate::document::guide_resources::LoftSurface>,
+    guide_bend_draft: Option<guide_resource_ui::GuideBendDraft>,
+    guide_bend_verification: bool,
     palette_ui: palette_ui::PaletteUi,
     reference_board: reference_board::ReferenceBoard,
     sampling_contact: bool,
@@ -1295,6 +1320,7 @@ impl SketchApp {
                 .map(PathBuf::from),
             camera_ui: Default::default(),
             camera_playback: None,
+            animation_ui: Default::default(),
             liquify_ui: Default::default(),
             mixed_resources_ui: Default::default(),
             image_plane_assets: std::collections::HashMap::new(),
@@ -1307,12 +1333,23 @@ impl SketchApp {
             obj_reference_verification_import_rect: None,
             obj_reference_verification_button_clicked: false,
             obj_reference_verification_source: None,
+            line_art_draft: None,
+            line_art_crease_angle: 35.0,
+            line_art_boundaries: true,
+            line_art_creases: true,
+            line_art_silhouettes: true,
+            line_art_command: None,
+            line_art_verification_preview_rect: None,
+            line_art_verification_update_rect: None,
+            line_art_verification_bake_rect: None,
             obj_reference_verification_source_root: None,
             obj_reference_verification_asset_root: None,
             appearance_layout_verification: None,
             image_asset_root,
             guide_name: String::new(),
             loft_preview: None,
+            guide_bend_draft: None,
+            guide_bend_verification: false,
             palette_ui: palette_ui::PaletteUi::new(),
             reference_board: reference_board::ReferenceBoard::new(&cc.egui_ctx),
             sampling_contact: false,
@@ -1813,6 +1850,9 @@ impl SketchApp {
                 guide_ids: HashSet::from([9301]),
             };
             app.camera.align(crate::geometry::Plane::Front);
+        } else if std::env::args().any(|a| a == "--verify-guide-bend") {
+            app.verification_frame = None;
+            app.guide_bend_verification = true;
         } else if std::env::args().any(|a| a == "--verify-mirror") {
             app.verification_frame = None;
             app.mirror_verification_frame = Some(0);
@@ -2291,6 +2331,8 @@ impl SketchApp {
             self.doc.strokes.push(Stroke {
                 curve: None,
                 material: Default::default(),
+                point_thickness: None,
+                modifiers: None,
                 fill: None,
                 group_id: None,
                 layer_id: self.doc.active_layer,
@@ -2489,6 +2531,8 @@ impl SketchApp {
             self.doc.strokes.push(Stroke {
                 curve: None,
                 material: Default::default(),
+                point_thickness: None,
+                modifiers: None,
                 fill: None,
                 group_id: None,
                 layer_id: self.doc.active_layer,
@@ -2654,6 +2698,12 @@ impl SketchApp {
         }
     }
     fn save(&mut self, save_as: bool) -> bool {
+        if !self.doc.animation.is_empty()
+            && !self.doc.animation.current_pose_matches(&self.doc.strokes)
+        {
+            self.status = "Set or update the current artwork keyframe before saving.".into();
+            return false;
+        }
         if self.point_draft.is_some() {
             self.status = "Apply or cancel point editing before saving.".into();
             return false;
@@ -2871,16 +2921,21 @@ impl SketchApp {
                     match result {
                         Ok((doc, assets, models)) => {
                             self.reset_recovery_document();
-                            self.next_id = doc
-                                .strokes
-                                .iter()
-                                .map(|s| s.id)
-                                .chain(doc.image_planes.iter().map(|plane| plane.id))
-                                .chain(doc.guide_resources.iter().map(|guide| guide.id))
-                                .chain(doc.model_references.iter().map(|model| model.id))
-                                .max()
-                                .unwrap_or(0)
-                                .saturating_add(1);
+                            self.next_id =
+                                doc.strokes
+                                    .iter()
+                                    .map(|s| s.id)
+                                    .chain(
+                                        doc.animation.keyframes.iter().flat_map(|keyframe| {
+                                            keyframe.strokes.iter().map(|s| s.id)
+                                        }),
+                                    )
+                                    .chain(doc.image_planes.iter().map(|plane| plane.id))
+                                    .chain(doc.guide_resources.iter().map(|guide| guide.id))
+                                    .chain(doc.model_references.iter().map(|model| model.id))
+                                    .max()
+                                    .unwrap_or(0)
+                                    .saturating_add(1);
                             self.doc = doc;
                             self.loft_preview = None;
                             self.image_plane_assets = assets;
@@ -2937,6 +2992,8 @@ impl SketchApp {
             self.doc.strokes.push(Stroke {
                 curve: None,
                 material: Default::default(),
+                point_thickness: None,
+                modifiers: None,
                 fill: None,
                 group_id: None,
                 layer_id: self.doc.active_layer,
@@ -4402,6 +4459,10 @@ impl SketchApp {
                 i.smooth_scroll_delta.y,
             )
         });
+        if self.guide_bend_draft.is_some() {
+            self.guide_bend_canvas_input(ctx, rect, &events, &pen);
+            return;
+        }
         self.snapping.options.bypass = alt;
         if alt {
             self.snapping.cue = None;
@@ -4795,6 +4856,7 @@ impl eframe::App for SketchApp {
             self.recovery_prompt = true;
         }
         self.ensure_workspace();
+        self.tick_artwork_animation(ctx);
         if let Some(report_path) = self.camera_bookmark_restart_report.take() {
             if let Err(error) = crate::camera_bookmark_restart_check::verify_loaded(
                 &self.camera_bookmarks,
@@ -5035,6 +5097,7 @@ impl eframe::App for SketchApp {
                     self.contextual_options(ui)
                 });
             });
+            self.artwork_animation_timeline(ctx);
             egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui
@@ -5182,6 +5245,7 @@ impl eframe::App for SketchApp {
                 self.verify_recovery(ctx, rect);
                 self.verify_presets(ctx, rect);
                 self.verify_image_planes(ctx, rect);
+                self.verify_guide_bend(ctx, rect);
                 self.verify_mirror(ctx, rect);
                 if let Some(replay) = self
                     .capability_replay
@@ -5309,6 +5373,7 @@ impl eframe::App for SketchApp {
                     .as_mut()
                     .and_then(|replay| replay.next_sample(rect));
                 self.canvas_input(ctx, rect, replay_pen.map_or(pen, |sample| vec![sample]));
+                self.process_line_art_command(rect);
                 self.verify_canvas_point_workflow(ctx, rect);
                 let scale = ctx.pixels_per_point();
                 if self.select_mode && !self.presentation.artwork {
@@ -5338,6 +5403,8 @@ impl eframe::App for SketchApp {
                     Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
+                self.paint_line_art_preview(ui.painter(), rect);
+                self.paint_animation_onion_skins(ui.painter(), rect);
                 let cursor_pointer = if matches!(
                     appearance_state.as_deref(),
                     Some("scene-liquify-cursor-light" | "scene-liquify-cursor-image")
@@ -5572,6 +5639,7 @@ impl eframe::App for SketchApp {
             || self.mirror_verification_frame.is_some()
             || self.ring_verification_frame.is_some()
             || self.model_surface_verification_frame.is_some()
+            || self.guide_bend_verification
             || self.obj_reference_verification_frame.is_some()
             || self.vase_verification_frame.is_some()
             || self.group_verification_frame.is_some()
@@ -6084,6 +6152,7 @@ impl SketchApp {
                 assert_eq!(self.doc.strokes, navigation_baseline);
                 assert_eq!(self.undo.len(), navigation_history_len);
                 self.camera = camera_before;
+                self.verify_stroke_sculpt_workflow(rect);
                 self.dirty = false;
                 self.renderer.invalidate();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
@@ -6111,73 +6180,195 @@ impl SketchApp {
             ));
             let mut selection = self.mixed_resources_ui.selection.clone();
             selection.stroke_ids = self.selected.clone();
-            let original = crate::mixed_resources::MoveSnapshot::capture(
+            let original_document = self.doc.clone();
+            let document_json = |document: &Document| serde_json::to_value(document).unwrap();
+            let original = crate::mixed_resources::MoveSnapshot::capture_transform(
                 &self.doc,
                 selection.clone(),
-                crate::mixed_resources::TransformMode::Translate,
-                Vec3::ZERO,
+                crate::mixed_resources::TransformSpec::translate(Vec3::ZERO),
             )
             .unwrap()
             .before;
             let active_plane = self.doc.active_image_plane;
+            let selection_center = crate::mixed_resources::selection_bounds(
+                &self.doc,
+                &selection,
+                &self.obj_reference_models,
+            )
+            .map_or(Vec3::ZERO, |(min, max)| (min + max) * 0.5);
 
             self.begin_mixed_resource_move();
             assert!(self.mixed_resource_preview_active());
             self.set_mixed_resource_translation(Vec3::new(0.3, -0.2, 0.15));
-            let preview = crate::mixed_resources::MoveSnapshot::capture(
+            let preview = crate::mixed_resources::MoveSnapshot::capture_transform(
                 &self.doc,
                 selection.clone(),
-                crate::mixed_resources::TransformMode::Translate,
-                Vec3::ZERO,
+                crate::mixed_resources::TransformSpec::translate(Vec3::ZERO),
             )
             .unwrap()
             .before;
             assert_ne!(preview, original, "All selected resources preview together");
             assert!(self.undo.is_empty(), "Preview does not enter history");
             self.finish_mixed_resource_move(false);
-            let cancelled = crate::mixed_resources::MoveSnapshot::capture(
-                &self.doc,
-                selection.clone(),
-                crate::mixed_resources::TransformMode::Translate,
-                Vec3::ZERO,
-            )
-            .unwrap()
-            .before;
-            assert_eq!(cancelled, original, "Cancel restores all source records");
+            assert_eq!(
+                document_json(&self.doc),
+                document_json(&original_document),
+                "Translation cancel is exact"
+            );
 
+            let custom_pivot = Vec3::new(-0.4, 0.25, 0.6);
+            for (pivot_mode, pivot) in [
+                (selection::PivotMode::SelectionCenter, selection_center),
+                (selection::PivotMode::WorldOrigin, Vec3::ZERO),
+                (selection::PivotMode::Custom, custom_pivot),
+            ] {
+                self.transform_pivot = pivot_mode;
+                self.custom_pivot = custom_pivot;
+                self.begin_mixed_resource_move();
+                self.set_mixed_resource_rotation_degrees(Vec3::new(0.0, 0.0, 45.0));
+                let first_expected = crate::mixed_resources::MoveSnapshot::capture_transform(
+                    &original_document,
+                    selection.clone(),
+                    crate::mixed_resources::TransformSpec::rotate(
+                        pivot,
+                        glam::Quat::from_rotation_z(45.0_f32.to_radians()),
+                    ),
+                )
+                .unwrap()
+                .after;
+                let first_preview = crate::mixed_resources::MoveSnapshot::capture_transform(
+                    &self.doc,
+                    selection.clone(),
+                    crate::mixed_resources::TransformSpec::translate(Vec3::ZERO),
+                )
+                .unwrap()
+                .before;
+                assert_eq!(
+                    first_preview, first_expected,
+                    "rotation preview uses {pivot_mode:?}"
+                );
+
+                self.set_mixed_resource_rotation_degrees(Vec3::new(20.0, -10.0, 35.0));
+                let expected = crate::mixed_resources::MoveSnapshot::capture_transform(
+                    &original_document,
+                    selection.clone(),
+                    crate::mixed_resources::TransformSpec::rotate(
+                        pivot,
+                        glam::Quat::from_euler(
+                            glam::EulerRot::ZYX,
+                            35.0_f32.to_radians(),
+                            -10.0_f32.to_radians(),
+                            20.0_f32.to_radians(),
+                        ),
+                    ),
+                )
+                .unwrap()
+                .after;
+                let rebuilt = crate::mixed_resources::MoveSnapshot::capture_transform(
+                    &self.doc,
+                    selection.clone(),
+                    crate::mixed_resources::TransformSpec::translate(Vec3::ZERO),
+                )
+                .unwrap()
+                .before;
+                assert_eq!(rebuilt, expected, "repeated rotation previews do not drift");
+                assert!(
+                    self.undo.is_empty(),
+                    "Rotation preview does not enter history"
+                );
+                self.finish_mixed_resource_move(false);
+                assert_eq!(
+                    document_json(&self.doc),
+                    document_json(&original_document),
+                    "Rotation cancel restores all data"
+                );
+
+                self.begin_mixed_resource_move();
+                self.set_mixed_resource_uniform_scale(1.25);
+                let expected_scale = crate::mixed_resources::MoveSnapshot::capture_transform(
+                    &original_document,
+                    selection.clone(),
+                    crate::mixed_resources::TransformSpec::uniform_scale(pivot, 1.25, true),
+                )
+                .unwrap()
+                .after;
+                let scale_preview = crate::mixed_resources::MoveSnapshot::capture_transform(
+                    &self.doc,
+                    selection.clone(),
+                    crate::mixed_resources::TransformSpec::translate(Vec3::ZERO),
+                )
+                .unwrap()
+                .before;
+                assert_eq!(
+                    scale_preview, expected_scale,
+                    "scale preview uses {pivot_mode:?}"
+                );
+                self.finish_mixed_resource_move(false);
+                assert_eq!(
+                    document_json(&self.doc),
+                    document_json(&original_document),
+                    "Scale cancel restores all data"
+                );
+            }
+
+            self.transform_pivot = selection::PivotMode::Custom;
+            self.custom_pivot = custom_pivot;
             self.begin_mixed_resource_move();
-            self.set_mixed_resource_translation(Vec3::new(0.3, -0.2, 0.15));
-            let applied = crate::mixed_resources::MoveSnapshot::capture(
-                &self.doc,
-                selection.clone(),
-                crate::mixed_resources::TransformMode::Translate,
-                Vec3::ZERO,
-            )
-            .unwrap()
-            .before;
+            self.set_mixed_resource_rotation_degrees(Vec3::new(0.0, 30.0, 0.0));
+            let applied_rotation = self.doc.clone();
             self.finish_mixed_resource_move(true);
-            assert_eq!(self.undo.len(), 1, "Mixed movement is one history edit");
-            assert_eq!(self.doc.active_image_plane, active_plane);
+            assert_eq!(self.undo.len(), 1, "Mixed rotation is one history edit");
             self.undo();
-            let undone = crate::mixed_resources::MoveSnapshot::capture(
-                &self.doc,
-                selection.clone(),
-                crate::mixed_resources::TransformMode::Translate,
-                Vec3::ZERO,
-            )
-            .unwrap()
-            .before;
-            assert_eq!(undone, original, "Undo restores every selected resource");
+            assert_eq!(
+                document_json(&self.doc),
+                document_json(&original_document),
+                "Rotation undo restores every resource"
+            );
             self.redo();
-            let redone = crate::mixed_resources::MoveSnapshot::capture(
+            assert_eq!(
+                document_json(&self.doc),
+                document_json(&applied_rotation),
+                "Rotation redo restores the preview"
+            );
+
+            self.transform_pivot = selection::PivotMode::WorldOrigin;
+            self.begin_mixed_resource_move();
+            self.set_mixed_resource_uniform_scale(1.1);
+            let applied_scale = self.doc.clone();
+            self.finish_mixed_resource_move(true);
+            assert_eq!(
+                self.undo.len(),
+                2,
+                "Mixed scale is one additional history edit"
+            );
+            self.undo();
+            assert_eq!(
+                document_json(&self.doc),
+                document_json(&applied_rotation),
+                "Scale undo preserves prior rotation"
+            );
+            self.redo();
+            assert_eq!(
+                document_json(&self.doc),
+                document_json(&applied_scale),
+                "Scale redo reapplies every resource"
+            );
+            assert_eq!(self.doc.active_image_plane, active_plane);
+
+            let before_rejection = self.doc.clone();
+            let mut invalid_selection = selection.clone();
+            invalid_selection.obj_reference_ids.insert(u64::MAX - 10);
+            assert!(crate::mixed_resources::MoveSnapshot::capture_transform(
                 &self.doc,
-                selection,
-                crate::mixed_resources::TransformMode::Translate,
-                Vec3::ZERO,
+                invalid_selection,
+                crate::mixed_resources::TransformSpec::uniform_scale(Vec3::ZERO, 2.0, true),
             )
-            .unwrap()
-            .before;
-            assert_eq!(redone, applied, "Redo reapplies every selected resource");
+            .is_err());
+            assert_eq!(
+                document_json(&self.doc),
+                document_json(&before_rejection),
+                "invalid selection is atomic"
+            );
             self.dirty = false;
             self.renderer.invalidate();
             self.refresh_obj_reference_meshes();
@@ -6474,19 +6665,19 @@ impl SketchApp {
             let report = if self.group_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["house component grouping","group and individual selection","duplicate independent group","shared pivot transforms","ungroup undo and native persistence","layer protection","GPU groups"],"gpu":self.renderer.adapter})
             } else if self.image_plane_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["generated asymmetric image texture uploaded to GPU","transformed image plane brush input handler commits a stroke","stroke points remain within transformed plane bounds","captured brush frame follows plane rotation","one-step stroke undo and exact redo","out-of-bounds image-plane contact rejected","inactive image plane does not intercept brush input","transformed finite image-plane line drag and undo/redo","image-plane fill click-to-close, clipping, and undo/redo","rotated image-plane circle drag, clipping, and undo/redo","rotated image-plane ellipse drag, camera orbit, clipping, and undo/redo","image-plane curve anchor clicks, insertion, tangent drag, Backspace removal, Enter commit, clipping, and undo/redo","line, fill, circle, and curve Escape cancel without document edits","shape Escape cancels after camera orbit without document edits","hidden and locked image planes reject all planar tools","artwork PNG includes image-plane pixels"],"image_plane_count":self.doc.image_planes.len(),"stroke_count":self.doc.strokes.len(),"png_changed_pixels_vs_no_plane":self.image_plane_verification_changed_pixels,"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["generated asymmetric image texture uploaded to GPU","transformed image plane brush input handler commits a stroke","stroke points remain within transformed plane bounds","captured brush frame follows plane rotation","one-step stroke undo and exact redo","out-of-bounds image-plane contact rejected","inactive image plane does not intercept brush input","transformed finite image-plane line drag and undo/redo","image-plane fill click-to-close, clipping, and undo/redo","rotated image-plane circle drag, clipping, and undo/redo","rotated image-plane ellipse drag, camera orbit, clipping, and undo/redo","image-plane curve anchor clicks, insertion, tangent drag, Backspace removal, Enter commit, clipping, and undo/redo","older sampled strokes do not receive fabricated semantic curve controls","curve anchors and tangent controls survive native save/reopen exactly","reopened curve edit preview preserves source; Apply is one undo/redo change","Escape and focus loss cancel curve edit previews without document changes","curve edits survive native merge and fresh recovery scan","selection transforms preserve semantic curve anchors and captured frame","image-plane line preview displays endpoint snap cue and commits the snapped target","snapped image-plane endpoint survives undo/redo","Alt bypasses endpoint snapping and Escape cancels without an edit","line, fill, circle, and curve Escape cancel without document edits","shape Escape cancels after camera orbit without document edits","hidden and locked image planes reject all planar tools","artwork PNG includes image-plane pixels"],"image_plane_count":self.doc.image_planes.len(),"stroke_count":self.doc.strokes.len(),"png_changed_pixels_vs_no_plane":self.image_plane_verification_changed_pixels,"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.mirror_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic pointer-handler samples draw on an active saved cylinder guide","curved-guide brush points remain on the guide surface","mirror preview geometry does not mutate the document","committed mirrored geometry matches its preview exactly","source and mirrored run commit as one undo edit","undo/redo preserve the exact mirrored pair","cancel discards an in-progress source without history","whole-drawing GLB includes the mirrored pair","mouse canvas events preview, cancel, and commit a straight line on a rotated active guide","active guide horizontal constraint and mirrored points remain on the rotated plane","line source and mirror commit as one undo edit and survive undo/redo"],"stroke_count":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic pointer-handler samples draw on an active saved cylinder guide","curved-guide brush points remain on the guide surface","mirror preview geometry does not mutate the document","committed mirrored geometry matches its preview exactly","source and mirrored run commit as one undo edit","undo/redo preserve the exact mirrored pair","cancel discards an in-progress source without history","whole-drawing GLB includes the mirrored pair","mouse canvas events preview, cancel, and commit a straight line on a rotated active guide","active guide horizontal constraint and mirrored points remain on the rotated plane","line source and mirror commit as one undo edit and survive undo/redo","radial line preview on a rotated planar guide leaves the document unchanged","Escape cancels a radial preview without history","one radial gesture commits its source and copies in a single undo edit","radial copies preserve the preview's geometry and brush settings","radial strokes survive recovery scan and whole-document GLB/OBJ export","canvas picking selects one radial copy independently","one radial copy accepts an isolated appearance edit; undo and redo preserve other copies","one undo/redo removes/restores the complete radial fan"],"stroke_count":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.ring_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["Add ring action creates and activates a saved torus at the camera target","active ring camera alignment faces the torus hole","synthetic pointer samples draw on the saved ring surface","a center-hole miss splits the drawing into two surface strokes","ring strokes remain on the torus instead of cutting through its hole","cancel removes an in-progress ring stroke without history","undo and redo preserve split ring strokes","ring strokes export to GLB"],"guide_count":self.doc.guide_resources.len(),"stroke_count":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.model_surface_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["synthetic pointer samples cross a shared manifold triangle edge in one model-surface stroke","world-space samples remain on the OBJ surface","model-surface commit creates one ordinary undo edit","undo and redo preserve exact model-surface samples","a pointer miss commits the first surface run","recontact after a miss starts a second surface run without bridging the gap","split model-surface runs undo and redo independently"],"stroke_count":self.doc.strokes.len(),"point_count":self.doc.strokes.iter().map(|stroke|stroke.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.obj_reference_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["OBJ References window displays its import control","synthetic pointer move, press, and release clicks the window's import control","canceling the picker leaves the document, history, and dirty state unchanged and keeps the source fixture available","the clicked control invokes the production import handler with an injected file-picker result","the imported drawing-local bundle reloads","imported model is registered with the scene renderer","synthetic viewport selection picks the imported model","selected-model bounds match the normalized OBJ bounds"],"native_file_picker_tested":false,"model_count":self.doc.model_references.len(),"triangle_count":self.obj_reference_models.values().map(|model|model.triangles.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["OBJ References window displays its import control","synthetic pointer move, press, and release clicks the window's import control","canceling the picker leaves the document, history, and dirty state unchanged and keeps the source fixture available","the clicked control invokes the production import handler with an injected file-picker result","the imported drawing-local bundle reloads","imported model is registered with the scene renderer","synthetic viewport selection picks the imported OBJ","selected-model bounds match the normalized OBJ bounds","production Preview button creates detached line art","Update button recomputes line art for the current camera","Bake button creates ordinary strokes in one undo edit","undo and redo remove and restore the baked batch","removing the source model leaves baked strokes intact"],"native_file_picker_tested":false,"model_count":self.doc.model_references.len(),"triangle_count":self.obj_reference_models.values().map(|model|model.triangles.len()).sum::<usize>(),"stroke_count":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.liquify_brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic canvas drag creates a non-destructive preview","front, side, and ground camera views preserve the working-plane depth","unselected and occluding strokes remain unchanged","cancel restores exact source strokes","navigation interruption cancels brush preview without history","apply commits preview as one history edit","undo restores source geometry","redo restores committed deformation","updated stroke remains pickable at the deformed position and is no longer picked at its original position","native serialization and recovery scan preserve the deformed geometry","whole-scene and selected-stroke GLB encode the committed result","brush cursor indicates radius and working-plane depth"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic canvas drag creates a non-destructive Liquify preview","Liquify front, side, and ground camera views preserve working-plane depth","Liquify leaves unselected and occluding strokes unchanged","Liquify cancel restores exact source strokes","navigation interruption cancels Liquify preview without history","Liquify Apply commits one history edit; undo and redo restore geometry","updated Liquify stroke remains pickable at its deformed position","Liquify native serialization and recovery scan preserve geometry","Liquify whole-scene and selected-stroke GLB contain committed geometry","Liquify cursor indicates radius and working-plane depth","synthetic mouse Smooth preview preserves endpoints and Cancel restores the source","synthetic mouse Thickness preview changes a dedicated per-point profile while pressure and centerline stay exact","Sculpt Apply is one undo edit; undo/redo and updated-geometry picking pass","textured sculpt profile survives native reload, fresh recovery scan, GLB, and OBJ export"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.mixed_resources_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["mixed stroke, image plane, OBJ reference, and guide translation preview","preview does not enter history","cancel restores all exact source records","apply commits one mixed-resource history edit","undo restores every selected record","redo reapplies every selected record","active image-plane drawable binding is preserved","mixed-resource UI enables translation, rotation, and uniform scale"],"resource_counts":{"strokes":self.doc.strokes.len(),"image_planes":self.doc.image_planes.len(),"obj_references":self.doc.model_references.len(),"guides":self.doc.guide_resources.len()},"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["mixed stroke, image plane, OBJ reference, and guide previews use the production transform path","translation, XYZ rotation, and positive uniform scale preview from immutable source records","rotation and scale pivot modes: selection center, world origin, and custom point","repeated rotation previews rebuild without cumulative drift","translation, rotation, and scale cancellation restores exact document records","rotation and scale previews do not enter history","rotation and scale Apply each create one undo edit","mixed-resource undo and redo restore all selected records exactly","invalid selected member is rejected before document mutation","active image-plane drawable binding survives preview, Apply, undo, and redo","OBJ reference renderer cache refreshes after preview and history transitions","non-uniform mixed scaling remains disabled"],"resource_counts":{"strokes":self.doc.strokes.len(),"image_planes":self.doc.image_planes.len(),"obj_references":self.doc.model_references.len(),"guides":self.doc.guide_resources.len()},"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.vase_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["revolved profile drawing","captured guide and surface release tail","pressure tilt brush frames","guide editing preserves ink","selection duplicate undo","native persistence","GPU painted vase"],"gpu":self.renderer.adapter})
             } else if self.layer_verification_frame.is_some() {
@@ -6496,11 +6687,11 @@ impl SketchApp {
             } else if self.preset_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["preset application captures resolved settings","create duplicate rename update delete and defaults","restart persistence","live GPU previews","library edits preserve existing ink and export","corrupt library fallback and explicit repair backup"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.texture_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","Chalk/Graphite/Charcoal sampler includes pressure and width variation","Graphite and Charcoal world-grain scale and UVs remain stable under uniform transform","Graphite and Charcoal visible coverage is pickable and erases as one undoable stroke","front and orbit renders at 640x360, 1280x720, and 2560x1440","stroke duplication and undo","textured drawing and erasing at an alpha-covered point","version 24 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","Chalk/Graphite/Charcoal sampler includes pressure and width variation","Graphite and Charcoal world-grain scale and UVs remain stable under uniform transform","Graphite and Charcoal visible coverage is pickable and erases as one undoable stroke","front and orbit renders at 640x360, 1280x720, and 2560x1440","stroke duplication and undo","textured drawing and erasing at an alpha-covered point","version 25 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.dynamics_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 24 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 25 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 24 save/reload","GPU brush sampler","Stipple spacing and Spray density/spread sampler","scattered dab picking and partial erase","dab placement, render geometry, and GLB budgets","front/orbit Stipple and Spray renders at three output sizes"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 25 save/reload","GPU brush sampler","Stipple spacing and Spray density/spread sampler","scattered dab picking and partial erase","dab placement, render geometry, and GLB budgets","front/orbit Stipple and Spray renders at three output sizes","Leaf/Grass/Star image-tip taps and drags","transparent-edge image-tip picking and misses","image-tip native roundtrip","GLB original tip images, UVs, tint and alpha","OBJ diffuse and alpha companions","image-tip export sizes and CPU timings","front/orbit image-stamp renders at three output sizes","Rake and Bristle Fan strand geometry against Dry Brush","strand-aware picking and partial-erase fragments","native strand settings roundtrip","GLB and OBJ strand meshes parsed and budgeted","front/orbit strand renders at three output sizes","Square, Triangular, and Star Tube pressure/taper profiles","profiled mesh picking and native roundtrip","GLB and OBJ profile normals and faces parsed and budgeted","front/orbit profile renders at three output sizes"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {
@@ -6804,6 +6995,8 @@ mod native_merge_apply_tests {
         Stroke {
             gradient: None,
             curve: None,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             material: Default::default(),
             group_id: None,

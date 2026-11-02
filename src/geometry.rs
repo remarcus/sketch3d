@@ -269,6 +269,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
         previous_axis = Some(a);
         let b = tangent.cross(a).normalize();
         let radius = stroke.radius
+            * stroke.point_thickness_scale(i)
             * crate::dynamics::pressure_scale(stroke.brush.dynamics.width, p.pressure)
             * crate::dynamics::shading_width_scale(
                 stroke.brush.dynamics,
@@ -314,6 +315,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
     if rings.len() == 1 {
         let p = stroke.points[0];
         let r = stroke.radius
+            * stroke.point_thickness_scale(0)
             * crate::dynamics::pressure_scale(stroke.brush.dynamics.width, p.pressure)
             * crate::dynamics::shading_width_scale(
                 stroke.brush.dynamics,
@@ -569,6 +571,11 @@ fn profile_tube_mesh(stroke: &Stroke) -> Vec<Vertex> {
 }
 /// Conservative brush radius, shared by selection and geometry bounds.
 pub fn stroke_extent(stroke: &Stroke) -> f32 {
+    let evaluated = match crate::stroke_modifiers::evaluated_stroke(stroke) {
+        Ok(stroke) => stroke,
+        Err(_) => return 0.0,
+    };
+    let stroke = evaluated.as_ref();
     if stroke.fill.is_some() {
         return 0.0;
     }
@@ -577,7 +584,12 @@ pub fn stroke_extent(stroke: &Stroke) -> f32 {
             .points
             .windows(2)
             .all(|pair| pair[0].position.distance_squared(pair[1].position) <= 1e-12);
-    let mut shape_extent = if stroke.brush.flow.enabled {
+    let point_scale = stroke
+        .point_thickness
+        .as_ref()
+        .and_then(|values| values.iter().copied().reduce(f32::max))
+        .unwrap_or(1.0);
+    let mut shape_extent = (if stroke.brush.flow.enabled {
         stroke.radius
             * if stroke.brush.dynamics.tilt_shading {
                 stroke
@@ -621,7 +633,7 @@ pub fn stroke_extent(stroke: &Stroke) -> f32 {
             BrushKind::Ribbon if dot => stroke.radius * std::f32::consts::SQRT_2,
             BrushKind::Round | BrushKind::Ribbon => stroke.radius,
         }
-    };
+    }) * point_scale;
     if stroke.brush.dynamics.tilt_shading && stroke.brush.texture.kind.uses_continuous_alpha() {
         shape_extent *= stroke
             .brush
@@ -631,7 +643,7 @@ pub fn stroke_extent(stroke: &Stroke) -> f32 {
     }
     if stroke.brush.dabs.enabled {
         shape_extent * (1.0 + stroke.brush.dabs.size_variation)
-            + stroke.radius * stroke.brush.dabs.scatter
+            + stroke.radius * point_scale * stroke.brush.dabs.scatter
     } else {
         shape_extent
     }
@@ -679,6 +691,11 @@ fn taper_points(stroke: &Stroke) -> Vec<crate::document::Point> {
 }
 /// All ink is built in document space. Camera changes cannot rotate a brush mark.
 pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
+    let evaluated = match crate::stroke_modifiers::evaluated_stroke(stroke) {
+        Ok(stroke) => stroke,
+        Err(_) => return Vec::new(),
+    };
+    let stroke = evaluated.as_ref();
     let material = match stroke.material {
         StrokeMaterial::Shaded => 0.0,
         StrokeMaterial::Unlit => 1.0,
@@ -926,15 +943,20 @@ fn ribbon_edge_coverage(across: f32, softness: f32) -> f32 {
 
 fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
     let mut points: Vec<crate::document::Point> = Vec::with_capacity(stroke.points.len());
-    for point in &stroke.points {
+    let mut point_scales: Vec<f32> = Vec::with_capacity(stroke.points.len());
+    for (source_index, point) in stroke.points.iter().enumerate() {
         if let Some(last) = points.last_mut() {
             if last.position.distance_squared(point.position) <= 1e-12 {
                 // Repeated pressure samples do not create zero-length mesh strips.
                 *last = *point;
+                if let Some(scale) = point_scales.last_mut() {
+                    *scale = stroke.point_thickness_scale(source_index);
+                }
                 continue;
             }
         }
         points.push(*point);
+        point_scales.push(stroke.point_thickness_scale(source_index));
     }
     let closed = is_closed_stroke(stroke)
         && points.len() >= 4
@@ -944,6 +966,7 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
             .is_some_and(|(first, last)| first.position.distance_squared(last.position) <= 1e-12);
     if closed {
         points.pop();
+        point_scales.pop();
     }
     let distances = crate::dynamics::arc_lengths(&points);
     let closing_length = if closed {
@@ -1043,6 +1066,7 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
             normal: tangent.cross(width).normalize(),
             tangent,
             radius: stroke.radius
+                * point_scales[i]
                 * crate::dynamics::pressure_scale(stroke.brush.dynamics.width, point.pressure)
                 * crate::dynamics::shading_width_scale(
                     stroke.brush.dynamics,
@@ -1051,6 +1075,7 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
                 )
                 * taper,
             half_thickness: stroke.radius
+                * point_scales[i]
                 * stroke.brush.thickness
                 * crate::dynamics::pressure_scale(stroke.brush.dynamics.thickness, point.pressure)
                 * taper,
@@ -1061,7 +1086,7 @@ fn brush_frames(stroke: &Stroke) -> Vec<BrushFrame> {
             thickness_scale: crate::dynamics::pressure_scale(
                 stroke.brush.dynamics.thickness,
                 point.pressure,
-            ),
+            ) * point_scales[i],
         });
     }
     if closed && !frames.is_empty() {
@@ -1444,6 +1469,7 @@ fn airbrush_mesh(stroke: &Stroke) -> Vec<Vertex> {
                 stroke.brush.dynamics.taper_end,
             );
             let radius = stroke.radius
+                * point_thickness_at_time(stroke, point.time_ms)
                 * crate::dynamics::pressure_scale(stroke.brush.dynamics.width, point.pressure)
                 * crate::dynamics::shading_width_scale(
                     stroke.brush.dynamics,
@@ -1476,6 +1502,34 @@ fn airbrush_mesh(stroke: &Stroke) -> Vec<Vertex> {
         },
     );
     out
+}
+
+fn point_thickness_at_time(stroke: &Stroke, time_ms: u32) -> f32 {
+    let Some(values) = stroke.point_thickness.as_ref() else {
+        return 1.0;
+    };
+    if values.len() != stroke.points.len() || values.is_empty() {
+        return 1.0;
+    }
+    if values.len() == 1 || time_ms <= stroke.points[0].time_ms {
+        return values[0];
+    }
+    let last = stroke.points.len() - 1;
+    if time_ms >= stroke.points[last].time_ms {
+        return values[last];
+    }
+    let upper = stroke
+        .points
+        .partition_point(|point| point.time_ms < time_ms);
+    let segment = upper.saturating_sub(1).min(last - 1);
+    let start = stroke.points[segment].time_ms;
+    let end = stroke.points[segment + 1].time_ms;
+    let t = if end > start {
+        (time_ms - start) as f32 / (end - start) as f32
+    } else {
+        0.0
+    };
+    values[segment] + (values[segment + 1] - values[segment]) * t
 }
 
 struct AirbrushDiscParameters {
@@ -1903,6 +1957,8 @@ mod tests {
             curve: None,
             material: Default::default(),
             id: 1,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -1957,6 +2013,8 @@ mod curve_regression {
             curve: None,
             material: Default::default(),
             id: 1,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -2049,6 +2107,8 @@ mod brush_tests {
             curve: None,
             material: Default::default(),
             id: 7,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -2086,6 +2146,72 @@ mod brush_tests {
                 face.dot(mean_normal) > -1e-7,
                 "triangle winding must face along its mean shading normal"
             );
+        }
+    }
+
+    fn strand_mark(name: &str, positions: &[Vec3]) -> Stroke {
+        let preset = crate::presets::Library::default()
+            .presets
+            .into_iter()
+            .find(|preset| preset.name == name)
+            .unwrap_or_else(|| panic!("missing built-in {name} preset"));
+        let mut stroke = mark(BrushKind::Ribbon, positions);
+        stroke.radius = preset.radius;
+        stroke.brush = preset.brush;
+        stroke
+    }
+
+    fn profiled_mark(profile: crate::document::TubeProfile, positions: &[Vec3]) -> Stroke {
+        let mut stroke = mark(BrushKind::Round, positions);
+        stroke.brush.tube_profile = profile;
+        stroke
+    }
+
+    fn profile_corners(mesh: &[Vertex], sides: usize) -> Vec<Vec2> {
+        let mut corners = Vec::new();
+        for vertex in &mesh[..sides * 6] {
+            let position = Vec3::from(vertex.position);
+            if position.x.abs() <= 1.0e-6 {
+                let corner = Vec2::new(position.y, position.z);
+                if corners
+                    .iter()
+                    .all(|existing: &Vec2| existing.distance(corner) > 1.0e-5)
+                {
+                    corners.push(corner);
+                }
+            }
+        }
+        corners
+    }
+
+    fn profile_radius_at(mesh: &[Vertex], x: f32) -> f32 {
+        mesh.iter()
+            .filter_map(|vertex| {
+                let position = Vec3::from(vertex.position);
+                ((position.x - x).abs() <= 1.0e-5)
+                    .then(|| Vec2::new(position.y, position.z).length())
+            })
+            .fold(0.0, f32::max)
+    }
+
+    fn strand_centroid(vertices: &[Vertex]) -> Vec3 {
+        vertices
+            .iter()
+            .map(|vertex| Vec3::from(vertex.position))
+            .sum::<Vec3>()
+            / vertices.len() as f32
+    }
+
+    fn assert_same_mesh(left: &[Vertex], right: &[Vertex], context: &str) {
+        assert_eq!(left.len(), right.len(), "{context} vertex count");
+        for (left, right) in left.iter().zip(right) {
+            assert_eq!(left.position, right.position, "{context} positions");
+            assert_eq!(left.normal, right.normal, "{context} normals");
+            assert_eq!(left.color, right.color, "{context} colors");
+            assert_eq!(left.uv, right.uv, "{context} UVs");
+            assert_eq!(left.opacity, right.opacity, "{context} opacity");
+            assert_eq!(left.material, right.material, "{context} materials");
+            assert_eq!(left.gradient_t, right.gradient_t, "{context} gradients");
         }
     }
 
@@ -2192,6 +2318,357 @@ mod brush_tests {
         }
         valid(&new);
     }
+
+    #[test]
+    fn square_triangle_and_star_profiles_have_distinct_silhouettes_and_side_counts() {
+        for (profile, sides) in [
+            (crate::document::TubeProfile::Square, 4),
+            (crate::document::TubeProfile::Triangle, 3),
+            (crate::document::TubeProfile::Star, 10),
+        ] {
+            let stroke = profiled_mark(profile, &[Vec3::ZERO, Vec3::X]);
+            let mesh = stroke_mesh(&stroke);
+            assert_eq!(mesh.len(), 12 * sides);
+            assert_eq!(profile_tube_vertex_estimate(&stroke), mesh.len());
+            valid(&mesh);
+
+            let corners = profile_corners(&mesh, sides);
+            assert_eq!(corners.len(), sides, "{profile:?} cross-section corners");
+            let mut radii: Vec<_> = corners.iter().map(|corner| corner.length()).collect();
+            radii.sort_by(f32::total_cmp);
+            if profile == crate::document::TubeProfile::Star {
+                assert!(radii[..5]
+                    .iter()
+                    .all(|radius| (radius - 0.42 * stroke.radius).abs() < 1e-5));
+                assert!(radii[5..]
+                    .iter()
+                    .all(|radius| (radius - stroke.radius).abs() < 1e-5));
+            } else {
+                assert!(radii
+                    .iter()
+                    .all(|radius| (radius - stroke.radius).abs() < 1e-5));
+            }
+            if profile == crate::document::TubeProfile::Square {
+                assert!(corners
+                    .iter()
+                    .all(|corner| (corner.x.abs() - corner.y.abs()).abs() < 1e-5));
+            }
+        }
+    }
+
+    #[test]
+    fn profiled_tubes_have_finite_wound_faces_and_oriented_caps_for_degenerate_paths() {
+        let paths = [
+            vec![Vec3::ZERO],
+            vec![Vec3::ZERO, Vec3::ZERO, Vec3::ZERO],
+            vec![Vec3::ZERO, Vec3::X * 1.0e-8, Vec3::X],
+            vec![Vec3::ZERO, Vec3::X, Vec3::ZERO, Vec3::new(-1.0, 0.2, 0.0)],
+        ];
+        for profile in [
+            crate::document::TubeProfile::Square,
+            crate::document::TubeProfile::Triangle,
+            crate::document::TubeProfile::Star,
+        ] {
+            let sides = profile_sides(profile);
+            for path in &paths {
+                let stroke = profiled_mark(profile, path);
+                let mesh = stroke_mesh(&stroke);
+                valid(&mesh);
+
+                let frames = brush_frames(&stroke);
+                assert!(!frames.is_empty());
+                let side_segments = frames.len().saturating_sub(1).max(1);
+                let side_vertices = side_segments * sides * 6;
+                let cap_vertices_per_end = sides * 3;
+                assert_eq!(
+                    mesh.len(),
+                    side_vertices + cap_vertices_per_end * 2,
+                    "{profile:?} capped path geometry"
+                );
+                let start_cap = &mesh[side_vertices..side_vertices + cap_vertices_per_end];
+                let end_cap = &mesh[side_vertices + cap_vertices_per_end..];
+                let start_normal = -frames[0].tangent;
+                let end_normal = frames.last().unwrap().tangent;
+                assert!(start_cap
+                    .iter()
+                    .all(|vertex| { Vec3::from(vertex.normal).dot(start_normal) > 0.9999 }));
+                assert!(end_cap
+                    .iter()
+                    .all(|vertex| Vec3::from(vertex.normal).dot(end_normal) > 0.9999));
+            }
+        }
+    }
+
+    #[test]
+    fn profiled_tubes_apply_pressure_and_taper_to_the_cross_section() {
+        for profile in [
+            crate::document::TubeProfile::Square,
+            crate::document::TubeProfile::Triangle,
+            crate::document::TubeProfile::Star,
+        ] {
+            let positions = [Vec3::ZERO, Vec3::X, Vec3::X * 2.0];
+            let mut low_pressure = profiled_mark(profile, &positions);
+            low_pressure.brush.dynamics.width = crate::document::PressureMapping {
+                enabled: true,
+                minimum: 0.3,
+                curve: 1.0,
+            };
+            for point in &mut low_pressure.points {
+                point.pressure = 0.0;
+            }
+            let mut high_pressure = low_pressure.clone();
+            for point in &mut high_pressure.points {
+                point.pressure = 1.0;
+            }
+            let low_mesh = stroke_mesh(&low_pressure);
+            let high_mesh = stroke_mesh(&high_pressure);
+            let low_radius = profile_radius_at(&low_mesh, 1.0);
+            let high_radius = profile_radius_at(&high_mesh, 1.0);
+            assert!(low_radius > 0.0 && high_radius > low_radius);
+            assert!((low_radius / high_radius - 0.3).abs() < 1.0e-5);
+
+            let mut tapered = high_pressure;
+            tapered.brush.dynamics.taper_end = 0.5;
+            let tapered_mesh = stroke_mesh(&tapered);
+            let middle_radius = profile_radius_at(&tapered_mesh, 1.0);
+            let end_radius = profile_radius_at(&tapered_mesh, 2.0);
+            assert!(
+                end_radius < middle_radius * 0.02,
+                "{profile:?} taper reaches its end"
+            );
+        }
+    }
+
+    #[test]
+    fn transformed_profile_mesh_stays_within_pick_extent_and_vertex_budget() {
+        let mut source = profiled_mark(
+            crate::document::TubeProfile::Square,
+            &[Vec3::new(-0.5, 0.0, 0.0), Vec3::new(0.5, 0.0, 0.0)],
+        );
+        source.id = 713;
+        source.radius = 0.7;
+        let rotation = Quat::from_rotation_z(0.6);
+        let translation = Vec3::new(0.1, -0.2, 0.0);
+        let scale = 1.2;
+        let before_mesh = stroke_mesh(&source);
+        let before_extent = stroke_extent(&source);
+        let before = vec![(0, source.clone())];
+        let transformed =
+            crate::editing::transformed(&before, Vec3::ZERO, translation, rotation, scale)
+                .unwrap()
+                .remove(0)
+                .1;
+        let transformed_mesh = stroke_mesh(&transformed);
+        assert_eq!(before_mesh.len(), transformed_mesh.len());
+        assert!(transformed_mesh.len() <= MAX_PROFILE_TUBE_VERTICES);
+        assert!(
+            (stroke_extent(&transformed) - before_extent * scale).abs() < 1.0e-5,
+            "profile extent scales with the transformed cross-section"
+        );
+        for (before, after) in before_mesh.iter().zip(&transformed_mesh) {
+            assert!(
+                (rotation * Vec3::from(before.position) * scale + translation)
+                    .distance(Vec3::from(after.position))
+                    < 1.0e-5
+            );
+            assert!(
+                (rotation * Vec3::from(before.normal)).distance(Vec3::from(after.normal)) < 1.0e-3
+            );
+        }
+
+        let mut camera = Camera::default();
+        camera.distance = 3.0;
+        let canvas = eframe::egui::Rect::from_min_size(
+            eframe::egui::Pos2::ZERO,
+            eframe::egui::vec2(640.0, 480.0),
+        );
+        let midpoint = transformed.points[0]
+            .position
+            .lerp(transformed.points[1].position, 0.5);
+        let width = transformed
+            .brush
+            .normal
+            .cross(transformed.brush.tangent)
+            .normalize();
+        let pick_world = midpoint + width * stroke_extent(&transformed) * 0.9;
+        let pick_screen = crate::gizmo::project(&camera, canvas, pick_world)
+            .unwrap()
+            .0;
+        let document = crate::document::Document {
+            linked_stroke_groups: Default::default(),
+            strokes: vec![transformed.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            crate::gizmo::pick(&document, &camera, canvas, pick_screen),
+            Some(transformed.id),
+            "profile-aware extent keeps the transformed stroke pickable near its outer bound"
+        );
+    }
+
+    #[test]
+    fn profiled_tube_vertex_limit_rejects_before_large_mesh_allocation() {
+        let mut stroke = profiled_mark(crate::document::TubeProfile::Star, &[Vec3::ZERO, Vec3::X]);
+        stroke.points = (0..16_667)
+            .map(|index| Point {
+                tilt: None,
+                position: Vec3::X * (index as f32 * 0.001),
+                pressure: 1.0,
+                time_ms: 0,
+            })
+            .collect();
+        assert!(profile_tube_vertex_estimate(&stroke) > MAX_PROFILE_TUBE_VERTICES);
+        assert!(profile_tube_mesh(&stroke).is_empty());
+        assert!(stroke_mesh(&stroke).is_empty());
+    }
+
+    #[test]
+    fn rake_and_bristle_fan_strands_stay_finite_for_dots_bends_and_reversals() {
+        let paths = [
+            vec![Vec3::ZERO],
+            vec![Vec3::ZERO, Vec3::ZERO, Vec3::ZERO],
+            vec![
+                Vec3::ZERO,
+                Vec3::X,
+                Vec3::X + Vec3::Y * 0.15,
+                Vec3::X * 1.8 + Vec3::Y * 0.15,
+            ],
+            vec![
+                Vec3::ZERO,
+                Vec3::X,
+                Vec3::X,
+                Vec3::ZERO,
+                -Vec3::X + Vec3::Y * 0.2,
+            ],
+        ];
+
+        for name in ["Rake", "Bristle Fan"] {
+            for path in &paths {
+                let stroke = strand_mark(name, path);
+                assert!(stroke.brush.strands.enabled, "{name} uses strands");
+                assert!(!stroke.brush.dabs.enabled, "{name} is one strand stroke");
+                assert!(
+                    crate::dab_placement::sample(&stroke).unwrap().is_empty(),
+                    "{name} does not emit separate dab records"
+                );
+
+                let frame_count = brush_frames(&stroke).len();
+                let expected_vertices = stroke.brush.strands.vertex_estimate(frame_count);
+                let mesh = strand_mesh(&stroke);
+                assert_eq!(mesh.len(), expected_vertices, "{name} lane mesh size");
+                assert_same_mesh(&stroke_mesh(&stroke), &mesh, name);
+                valid(&mesh);
+            }
+        }
+    }
+
+    #[test]
+    fn strand_presets_emit_their_expected_number_of_distinct_lanes() {
+        for (name, expected_count) in [("Rake", 14), ("Bristle Fan", 6)] {
+            let stroke = strand_mark(name, &[Vec3::ZERO, Vec3::X]);
+            let count = usize::from(stroke.brush.strands.count);
+            assert_eq!(count, expected_count, "{name} strand count");
+            let mesh = stroke_mesh(&stroke);
+            let per_strand = mesh.len() / count;
+            assert_eq!(mesh.len() % count, 0);
+
+            let centers: Vec<_> = mesh.chunks_exact(per_strand).map(strand_centroid).collect();
+            assert_eq!(centers.len(), expected_count);
+            for (index, center) in centers.iter().enumerate() {
+                for other in &centers[index + 1..] {
+                    assert!(
+                        center.distance(*other) > 0.01,
+                        "{name} lanes should occupy distinct positions"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn strand_mesh_uses_manual_frames_when_tilt_is_missing() {
+        let positions = [
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::X + Vec3::Y * 0.12,
+            Vec3::new(0.45, 0.12, 0.0),
+        ];
+        for name in ["Rake", "Bristle Fan"] {
+            let tilted_preset = strand_mark(name, &positions);
+            assert!(tilted_preset.brush.dynamics.tilt_orientation);
+            assert!(tilted_preset
+                .points
+                .iter()
+                .all(|point| point.tilt.is_none()));
+
+            let mut manual = tilted_preset.clone();
+            manual.brush.dynamics.tilt_orientation = false;
+            assert_same_mesh(
+                &strand_mesh(&tilted_preset),
+                &strand_mesh(&manual),
+                &format!("missing tilt for {name}"),
+            );
+        }
+    }
+
+    #[test]
+    fn strand_mesh_transforms_with_its_captured_frame() {
+        let rotation = Quat::from_euler(glam::EulerRot::XYZ, 0.35, -0.7, 1.1);
+        let translation = Vec3::ZERO;
+        let positions = [
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::X + Vec3::Y * 0.15,
+            Vec3::new(1.8, 0.35, 0.0),
+        ];
+
+        for name in ["Rake", "Bristle Fan"] {
+            let mut stroke = strand_mark(name, &positions);
+            let before = strand_mesh(&stroke);
+            for point in &mut stroke.points {
+                point.position = rotation * point.position + translation;
+            }
+            stroke.brush.normal = rotation * stroke.brush.normal;
+            stroke.brush.tangent = rotation * stroke.brush.tangent;
+            let after = strand_mesh(&stroke);
+            assert_eq!(before.len(), after.len(), "{name} transformed mesh size");
+            for (source, transformed) in before.iter().zip(&after) {
+                assert!(
+                    (rotation * Vec3::from(source.position) + translation)
+                        .distance(Vec3::from(transformed.position))
+                        < 1e-5,
+                    "{name} position follows its captured frame"
+                );
+                assert!(
+                    (rotation * Vec3::from(source.normal))
+                        .distance(Vec3::from(transformed.normal))
+                        < 1e-3,
+                    "{name} normal follows its captured frame: source={:?}, expected={:?}, actual={:?}",
+                    Vec3::from(source.normal),
+                    rotation * Vec3::from(source.normal),
+                    Vec3::from(transformed.normal),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn over_budget_strand_stroke_is_rejected_before_mesh_allocation() {
+        let mut stroke = strand_mark("Rake", &[Vec3::ZERO, Vec3::X]);
+        stroke.brush.strands.count = 16;
+        stroke.points = (0..695)
+            .map(|index| Point {
+                tilt: None,
+                position: Vec3::X * (index as f32 * 0.01),
+                pressure: 1.0,
+                time_ms: 0,
+            })
+            .collect();
+        let estimate = stroke.brush.strands.vertex_estimate(stroke.points.len());
+        assert!(estimate > MAX_STRAND_VERTICES);
+        assert!(strand_mesh(&stroke).is_empty());
+        assert!(stroke_mesh(&stroke).is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -2205,6 +2682,8 @@ mod dynamics_tests {
             curve: None,
             material: Default::default(),
             id: 100,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -2341,6 +2820,8 @@ mod dynamics_boundary_tests {
                 curve: None,
                 material: Default::default(),
                 id: 101,
+                point_thickness: None,
+                modifiers: None,
                 fill: None,
                 group_id: None,
                 layer_id: 1,
@@ -2435,6 +2916,8 @@ mod seam_dynamics_tests {
                 curve: None,
                 material: Default::default(),
                 id: 1,
+                point_thickness: None,
+                modifiers: None,
                 fill: None,
                 group_id: None,
                 layer_id: 1,
@@ -2488,6 +2971,8 @@ mod texture_uv_tests {
             curve: None,
             material: Default::default(),
             id: 1,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,

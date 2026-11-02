@@ -852,6 +852,8 @@ mod ring_tests {
             linked_stroke_groups: Default::default(),
             strokes: vec![crate::document::Stroke {
                 gradient: None,
+                point_thickness: None,
+                modifiers: None,
                 curve: None,
                 material: Default::default(),
                 fill: None,

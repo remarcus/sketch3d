@@ -3,4 +3,6 @@
 
 
 /*.log
-/verification/
+/verification/*
+!/verification/lyon-evaluation/
+!/verification/lyon-evaluation/**

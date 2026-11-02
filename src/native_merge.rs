@@ -505,7 +505,7 @@ impl Ids {
 mod tests {
     use super::*;
     use crate::{
-        document::{model_references::ObjReferenceResource, Brush, Point, Stroke},
+        document::{model_references::ObjReferenceResource, Brush, Point, Stroke, StrokeGradient},
         image_planes::ImagePlane,
     };
     use glam::Quat;
@@ -526,10 +526,15 @@ mod tests {
     }
 
     fn image_tip_stroke(id: u64, asset: &crate::brush_tip::BrushTipAsset) -> Stroke {
-        let mut brush = Brush::default();
-        brush.tip_asset_id = asset.id;
-        brush.tip_aspect = asset.size[0] as f32 / asset.size[1] as f32;
-        brush.dabs.enabled = true;
+        let brush = Brush {
+            tip_asset_id: asset.id,
+            tip_aspect: asset.size[0] as f32 / asset.size[1] as f32,
+            dabs: crate::dynamics::DabSettings {
+                enabled: true,
+                ..Default::default()
+            },
+            ..Brush::default()
+        };
         Stroke {
             gradient: None,
             curve: None,
@@ -537,6 +542,8 @@ mod tests {
             layer_id: 1,
             group_id: None,
             material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             color: [0.4, 0.5, 0.6],
             radius: 0.02,
@@ -564,6 +571,8 @@ mod tests {
             layer_id: 1,
             group_id: None,
             material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             color: [0.4, 0.5, 0.6],
             radius: 0.02,
@@ -674,7 +683,10 @@ mod tests {
             &HashMap::new(),
         )
         .unwrap();
-        assert_eq!(inserted.brush_tip_assets, [asset.clone()]);
+        assert_eq!(
+            inserted.brush_tip_assets.as_slice(),
+            std::slice::from_ref(&asset)
+        );
 
         let edit = crate::editing::Edit::Merge(inserted.edit.clone());
         let mut merged = destination;
@@ -682,10 +694,16 @@ mod tests {
         for tip in inserted.brush_tip_assets {
             merged.add_brush_tip_asset(tip).unwrap();
         }
-        assert_eq!(merged.brush_tip_assets, [asset.clone()]);
+        assert_eq!(
+            merged.brush_tip_assets.as_slice(),
+            std::slice::from_ref(&asset)
+        );
         assert_eq!(merged.strokes[0].brush.tip_asset_id, asset.id);
         let reloaded = Document::from_json(&serde_json::to_string(&merged).unwrap()).unwrap();
-        assert_eq!(reloaded.brush_tip_assets, [asset.clone()]);
+        assert_eq!(
+            reloaded.brush_tip_assets.as_slice(),
+            std::slice::from_ref(&asset)
+        );
         assert_eq!(reloaded.brush_tip_assets[0].decoded().unwrap().pixels[3], 0);
         assert_eq!(
             reloaded.brush_tip_assets[0].decoded().unwrap().pixels[7],
@@ -698,7 +716,10 @@ mod tests {
 
         edit.apply(&mut merged, false);
         assert!(merged.strokes.is_empty());
-        assert_eq!(merged.brush_tip_assets, [asset]);
+        assert_eq!(
+            merged.brush_tip_assets.as_slice(),
+            std::slice::from_ref(&asset)
+        );
     }
 
     #[test]
@@ -967,5 +988,130 @@ mod tests {
         edit.apply(&mut merged, true);
         assert_eq!(merged.image_planes, reloaded.image_planes);
         assert_eq!(merged.model_references, reloaded.model_references);
+    }
+
+    #[test]
+    fn prepared_insert_preserves_stroke_gradient_stops() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source_path = root.path().join("gradient-source.sketch.json");
+        let gradient = StrokeGradient {
+            start: [0.1, 0.2, 0.8],
+            end: [0.6, 1.0, 0.0],
+        };
+        let source_stroke = Stroke {
+            gradient: Some(gradient),
+            curve: None,
+            id: 7,
+            layer_id: 1,
+            group_id: None,
+            material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
+            fill: None,
+            color: [0.4, 0.3, 0.2],
+            radius: 0.02,
+            brush: Brush::default(),
+            points: vec![
+                Point {
+                    position: Vec3::ZERO,
+                    pressure: 0.4,
+                    tilt: None,
+                    time_ms: 0,
+                },
+                Point {
+                    position: Vec3::Y,
+                    pressure: 0.8,
+                    tilt: None,
+                    time_ms: 10,
+                },
+            ],
+        };
+        let source = Document {
+            strokes: vec![source_stroke],
+            ..Document::default()
+        };
+        fs::write(&source_path, serde_json::to_vec(&source).unwrap()).unwrap();
+        let assets = root.path().join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        let mut destination = Document::default();
+        let inserted = prepare_insert(
+            &destination,
+            &source_path,
+            &assets,
+            100,
+            10,
+            200,
+            Vec3::ZERO,
+            false,
+            &HashMap::new(),
+        )
+        .unwrap();
+        crate::editing::Edit::Merge(inserted.edit).apply(&mut destination, true);
+        assert_eq!(destination.strokes.len(), 1);
+        assert_eq!(destination.strokes[0].gradient, Some(gradient));
+    }
+
+    #[test]
+    fn prepared_insert_preserves_versioned_stroke_modifiers() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source_path = root.path().join("modifier-source.sketch.json");
+        let stack = crate::stroke_modifiers::StrokeModifierStack {
+            version: crate::stroke_modifiers::CURRENT_VERSION,
+            modifiers: vec![crate::stroke_modifiers::StrokeModifier {
+                enabled: true,
+                kind: crate::stroke_modifiers::ModifierKind::Thickness { factor: 1.4 },
+            }],
+        };
+        let source = Document {
+            strokes: vec![Stroke {
+                fill: None,
+                material: Default::default(),
+                group_id: None,
+                layer_id: 1,
+                id: 7,
+                color: [0.2, 0.4, 0.6],
+                gradient: None,
+                radius: 0.03,
+                brush: Brush::default(),
+                points: vec![
+                    Point {
+                        position: Vec3::ZERO,
+                        pressure: 0.5,
+                        tilt: None,
+                        time_ms: 0,
+                    },
+                    Point {
+                        position: Vec3::Y,
+                        pressure: 0.8,
+                        tilt: None,
+                        time_ms: 10,
+                    },
+                ],
+                point_thickness: None,
+                modifiers: Some(stack.clone()),
+                curve: None,
+            }],
+            ..Document::default()
+        };
+        fs::write(&source_path, serde_json::to_vec(&source).unwrap()).unwrap();
+        let assets = root.path().join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        let destination = Document::default();
+        let inserted = prepare_insert(
+            &destination,
+            &source_path,
+            &assets,
+            100,
+            10,
+            200,
+            Vec3::ZERO,
+            false,
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(inserted.edit.strokes[0].modifiers, Some(stack));
+        let mut merged = destination;
+        crate::editing::Edit::Merge(inserted.edit).apply(&mut merged, true);
+        assert_eq!(merged.strokes[0].modifiers, source.strokes[0].modifiers);
     }
 }

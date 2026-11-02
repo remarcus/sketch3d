@@ -59,6 +59,8 @@ fn stroke_segment(
 ) -> Stroke {
     Stroke {
         curve: None,
+        point_thickness: None,
+        modifiers: None,
         fill: None,
         material,
         group_id: None,

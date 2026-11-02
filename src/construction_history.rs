@@ -1282,6 +1282,8 @@ mod tests {
         thread::sleep(std::time::Duration::from_millis(80));
         let stroke = Stroke {
             gradient: None,
+            point_thickness: None,
+            modifiers: None,
             curve: None,
             fill: None,
             material: Default::default(),

@@ -464,6 +464,8 @@ fn append_storefront_details(doc: &mut Document) {
         doc.strokes.push(Stroke {
             curve: None,
             material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: Some(crate::document::PlanarFill { offset: 0.004 }),
             group_id: None,
             layer_id: doc.active_layer,
@@ -479,6 +481,8 @@ fn append_storefront_details(doc: &mut Document) {
         doc.strokes.push(Stroke {
             curve: None,
             material: Default::default(),
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: doc.active_layer,

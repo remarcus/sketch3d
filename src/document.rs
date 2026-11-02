@@ -197,6 +197,24 @@ impl Point {
             && self.time_ms <= MAX_FLOW_DURATION_MS
     }
 }
+
+impl Stroke {
+    pub fn point_thickness_scale(&self, index: usize) -> f32 {
+        self.point_thickness
+            .as_ref()
+            .and_then(|values| values.get(index).copied())
+            .unwrap_or(1.0)
+    }
+
+    pub fn point_thickness_is_valid(&self) -> bool {
+        self.point_thickness.as_ref().is_none_or(|values| {
+            values.len() == self.points.len()
+                && values
+                    .iter()
+                    .all(|value| value.is_finite() && (0.05..=20.0).contains(value))
+        })
+    }
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerBlendMode {
@@ -259,6 +277,14 @@ pub struct Stroke {
     #[serde(default)]
     pub brush: Brush,
     pub points: Vec<Point>,
+    /// Optional per-sample multiplier for brush thickness. `None` is the
+    /// legacy identity profile and preserves pre-profile documents exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point_thickness: Option<Vec<f32>>,
+    /// Optional ordered, versioned modifiers evaluated without rewriting the
+    /// stored centerline. `None` preserves the legacy rendering path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modifiers: Option<crate::stroke_modifiers::StrokeModifierStack>,
     /// Exact control points for curves created by the smooth curve tool.
     /// The sampled points remain authoritative for rendering and export.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -405,13 +431,16 @@ pub struct Document {
     pub brush_tip_assets: Vec<crate::brush_tip::BrushTipAsset>,
     #[serde(default)]
     pub linked_stroke_groups: LinkedStrokeGroups,
+    /// Editable artwork keyframes. This is separate from construction history.
+    #[serde(default)]
+    pub animation: crate::animation::ArtworkAnimation,
 }
 impl Default for Document {
     fn default() -> Self {
         Self {
             layers: layers_default(),
             active_layer: 1,
-            version: 24,
+            version: 25,
             strokes: Vec::new(),
             image_planes: Vec::new(),
             active_image_plane: None,
@@ -421,6 +450,7 @@ impl Default for Document {
             active_model_reference: None,
             brush_tip_assets: Vec::new(),
             linked_stroke_groups: LinkedStrokeGroups::default(),
+            animation: crate::animation::ArtworkAnimation::default(),
         }
     }
 }
@@ -739,7 +769,7 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=24)) {
+        if !matches!(version, Some(1..=25)) {
             return Err("Unsupported document version".into());
         }
         if matches!(version, Some(1..=6)) {
@@ -823,7 +853,7 @@ impl Document {
                 }
             }
         }
-        doc.version = 24;
+        doc.version = 25;
         doc.refresh_linked_instances()?;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
@@ -858,6 +888,8 @@ impl Document {
             .iter()
             .map(|asset| (asset.id, asset))
             .collect();
+        doc.animation
+            .validate(&layer_ids, &tip_assets.keys().copied().collect())?;
         if doc.active_image_plane.is_some_and(|id| {
             !doc.image_planes
                 .iter()
@@ -957,6 +989,10 @@ impl Document {
                     .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
                 || stroke.gradient.is_some_and(|gradient| !gradient.is_valid())
                 || stroke.points.iter().any(|p| !p.is_valid())
+                || !stroke.point_thickness_is_valid()
+                || stroke.modifiers.as_ref().is_some_and(|stack| {
+                    !stack.is_valid(stroke.points.len()) || !stack.is_compatible(stroke)
+                })
                 || stroke.curve.as_ref().is_some_and(|curve| {
                     !curve.is_valid()
                         || stroke.points.len() > crate::curve_geometry::MAX_CURVE_POINTS
@@ -981,6 +1017,8 @@ mod tests {
     fn stroke() -> Stroke {
         Stroke {
             gradient: None,
+            point_thickness: None,
+            modifiers: None,
             curve: None,
             material: Default::default(),
             fill: None,
@@ -1040,9 +1078,10 @@ mod tests {
                 model_references: Vec::new(),
                 active_model_reference: None,
                 brush_tip_assets: Vec::new(),
+                animation: Default::default(),
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-            assert_eq!(loaded.version, 24);
+            assert_eq!(loaded.version, 25);
             assert_eq!(loaded.strokes, doc.strokes);
         }
     }
@@ -1062,13 +1101,14 @@ mod tests {
             model_references: Vec::new(),
             active_model_reference: None,
             brush_tip_assets: Vec::new(),
+            animation: Default::default(),
         })
         .unwrap();
         // Even an unrecognized extension must not opt a version-1 stroke into
         // a new shape, or prevent an otherwise valid legacy file from opening.
         old["strokes"][0]["brush"] = serde_json::json!({"kind": "future_brush"});
         let loaded = Document::from_json(&old.to_string()).unwrap();
-        assert_eq!(loaded.version, 24);
+        assert_eq!(loaded.version, 25);
         assert_eq!(loaded.strokes, vec![original]);
         old["strokes"][0].as_object_mut().unwrap().remove("brush");
         let without_extension = Document::from_json(&old.to_string()).unwrap();
@@ -1097,7 +1137,7 @@ mod tests {
             .remove("opacity");
 
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 24);
+        assert_eq!(loaded.version, 25);
         assert_eq!(loaded.strokes[0].brush.opacity, 1.0);
         assert_eq!(loaded.strokes[0].brush.softness, 0.0);
         assert_eq!(
@@ -1107,7 +1147,7 @@ mod tests {
 
         let saved = serde_json::to_string(&loaded).unwrap();
         let reopened = Document::from_json(&saved).unwrap();
-        assert_eq!(reopened.version, 24);
+        assert_eq!(reopened.version, 25);
         assert_eq!(reopened.strokes, loaded.strokes);
     }
     #[test]
@@ -1181,6 +1221,7 @@ mod tests {
                 model_references: Vec::new(),
                 active_model_reference: None,
                 brush_tip_assets: Vec::new(),
+                animation: Default::default(),
             };
             assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
         }
@@ -1216,6 +1257,7 @@ mod tests {
             model_references: Vec::new(),
             active_model_reference: None,
             brush_tip_assets: Vec::new(),
+            animation: Default::default(),
         };
         assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
         doc.strokes.pop();
@@ -1241,12 +1283,13 @@ mod tests {
             model_references: Vec::new(),
             active_model_reference: None,
             brush_tip_assets: Vec::new(),
+            animation: Default::default(),
         })
         .unwrap();
         value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
         value["strokes"][0]["points"][0]["tilt"] = serde_json::json!("unknown extension");
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 24);
+        assert_eq!(loaded.version, 25);
         assert_eq!(loaded.strokes, vec![original]);
     }
     #[test]
@@ -1264,6 +1307,7 @@ mod tests {
             model_references: Vec::new(),
             active_model_reference: None,
             brush_tip_assets: Vec::new(),
+            animation: Default::default(),
         };
         for dynamics in [
             Dynamics {
@@ -1338,6 +1382,7 @@ mod tests {
             model_references: Vec::new(),
             active_model_reference: None,
             brush_tip_assets: Vec::new(),
+            animation: Default::default(),
         };
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
         assert_eq!(loaded.strokes, doc.strokes);
@@ -1346,7 +1391,7 @@ mod tests {
         legacy["strokes"][0]["brush"]["texture"] = serde_json::json!({"kind":"future_pattern"});
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
         mark.brush.texture = TextureSettings::default();
-        assert_eq!(loaded.version, 24);
+        assert_eq!(loaded.version, 25);
         assert_eq!(loaded.strokes, vec![mark]);
     }
     #[test]
@@ -1370,6 +1415,7 @@ mod tests {
                 model_references: Vec::new(),
                 active_model_reference: None,
                 brush_tip_assets: Vec::new(),
+                animation: Default::default(),
             })
             .unwrap();
             doc["strokes"][0]["brush"]["texture"][field] = serde_json::json!(value);
@@ -1385,6 +1431,8 @@ mod layer_tests {
     fn version_four_migration_preserves_all_resolved_ink() {
         let mut stroke = Stroke {
             gradient: None,
+            point_thickness: None,
+            modifiers: None,
             curve: None,
             material: Default::default(),
             fill: None,
@@ -1418,7 +1466,7 @@ mod layer_tests {
         value["active_layer"] = serde_json::json!(99);
         value["strokes"][0]["layer_id"] = serde_json::json!("unknown");
         let migrated = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(migrated.version, 24);
+        assert_eq!(migrated.version, 25);
         assert_eq!(migrated.strokes, vec![original]);
         assert_eq!(migrated.layers, layers_default());
         assert_eq!(migrated.active_layer, 1);
@@ -1437,6 +1485,8 @@ mod layer_tests {
         doc.active_layer = 2;
         let stroke = Stroke {
             gradient: None,
+            point_thickness: None,
+            modifiers: None,
             curve: None,
             material: Default::default(),
             fill: None,
@@ -1491,6 +1541,8 @@ mod layer_tests {
                 "active_missing" => doc.active_layer = 2,
                 "orphan" => doc.strokes.push(Stroke {
                     gradient: None,
+                    point_thickness: None,
+                    modifiers: None,
                     curve: None,
                     material: Default::default(),
                     fill: None,
@@ -1531,6 +1583,8 @@ mod saved_guide_document_tests {
     fn sample_stroke() -> Stroke {
         Stroke {
             gradient: None,
+            point_thickness: None,
+            modifiers: None,
             curve: None,
             material: Default::default(),
             fill: None,
@@ -1781,7 +1835,7 @@ mod saved_guide_document_tests {
         legacy.as_object_mut().unwrap().remove("guide_resources");
         legacy.as_object_mut().unwrap().remove("active_guide");
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
-        assert_eq!(loaded.version, 24);
+        assert_eq!(loaded.version, 25);
         assert!(loaded.guide_resources.is_empty());
         assert_eq!(loaded.active_guide, None);
         assert_eq!(loaded.strokes, doc.strokes);
@@ -1794,6 +1848,8 @@ mod group_tests {
     fn mark(id: u64) -> Stroke {
         Stroke {
             gradient: None,
+            point_thickness: None,
+            modifiers: None,
             curve: None,
             material: Default::default(),
             id,
@@ -1840,7 +1896,7 @@ mod group_tests {
             s.group_id = None;
         }
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 24);
+        assert_eq!(loaded.version, 25);
         assert_eq!(loaded.strokes, doc.strokes);
         assert_eq!(loaded.layers, doc.layers);
     }

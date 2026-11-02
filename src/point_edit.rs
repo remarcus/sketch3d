@@ -6,14 +6,30 @@ use std::collections::HashSet;
 
 pub const MAX_CANVAS_POINTS: usize = 4096;
 pub const MAX_JOIN_TOLERANCE: f32 = 100.0;
+pub const MAX_CLEANUP_POINTS: usize = 65_536;
+pub const MAX_CLEANUP_WORK: usize = 16_000_000;
+const MAX_CLEANUP_ERROR: f32 = 100.0;
+const MAX_CLEANUP_SPACING: f32 = 1000.0;
+const GRADIENT_LENGTH_ERROR: f32 = 0.01;
 const JOIN_COLOR_EPSILON: f32 = 1.0e-4;
 const JOIN_DISTANCE_EPSILON: f32 = 1.0e-5;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CleanupStats {
+    pub input_points: usize,
+    pub output_points: usize,
+    pub maximum_deviation: f32,
+    pub source_length: f32,
+    pub result_length: f32,
+    pub elapsed_micros: u128,
+}
 
 /// A detached preview. Saving, picking and history see committed geometry until Apply.
 pub struct Draft {
     pub original: Stroke,
     pub preview: Stroke,
     pub selected: usize,
+    pub cleanup_stats: Option<CleanupStats>,
 }
 
 pub struct SplitPlan {
@@ -42,6 +58,37 @@ impl Draft {
             original: source.clone(),
             preview: source.clone(),
             selected: 0,
+            cleanup_stats: None,
+        })
+    }
+
+    pub fn cleanup(doc: &Document, id: u64, spacing: f32, max_error: f32) -> Result<Self, String> {
+        let selected = HashSet::from([id]);
+        let before = snapshot(doc, &selected);
+        let source = before
+            .first()
+            .map(|(_, stroke)| stroke)
+            .ok_or("Select one editable ordinary stroke.")?;
+        if before.len() != 1
+            || source.fill.is_some()
+            || source.curve.is_some()
+            || doc.has_linked_source(id)
+            || doc.linked_instance_for_stroke(id).is_some()
+        {
+            return Err(
+                "Cleanup supports one editable ordinary stroke; use its existing editor otherwise."
+                    .into(),
+            );
+        }
+        let (preview, cleanup_stats) = cleanup_stroke(source, spacing, max_error)?;
+        if preview == *source {
+            return Err("Cleanup produced no changes for these settings.".into());
+        }
+        Ok(Self {
+            original: source.clone(),
+            preview,
+            selected: 0,
+            cleanup_stats: Some(cleanup_stats),
         })
     }
 
@@ -96,6 +143,278 @@ impl Draft {
     }
 }
 
+/// Rebuild a bounded sampled stroke from an immutable source. The simplifier
+/// preserves sharp turns and meaningful pressure/tilt extrema; resampling then
+/// interpolates the retained path at a uniform world-space spacing.
+pub fn cleanup_stroke(
+    source: &Stroke,
+    spacing: f32,
+    max_error: f32,
+) -> Result<(Stroke, CleanupStats), String> {
+    let started = std::time::Instant::now();
+    if !spacing.is_finite() || !(0.001..=MAX_CLEANUP_SPACING).contains(&spacing) {
+        return Err(format!(
+            "Resample spacing must be 0.001–{MAX_CLEANUP_SPACING} world units."
+        ));
+    }
+    if !max_error.is_finite() || !(0.0..=MAX_CLEANUP_ERROR).contains(&max_error) {
+        return Err(format!(
+            "Maximum error must be 0–{MAX_CLEANUP_ERROR} world units."
+        ));
+    }
+    if source.fill.is_some() || source.curve.is_some() {
+        return Err("Fills and semantic curves use their existing editors.".into());
+    }
+    if source.brush.flow.enabled {
+        return Err("Timed Airbrush samples are preserved exactly because timestamps drive deposited coverage.".into());
+    }
+    if !(2..=MAX_CLEANUP_POINTS).contains(&source.points.len()) {
+        return Err(format!(
+            "Cleanup supports 2–{MAX_CLEANUP_POINTS} samples per stroke."
+        ));
+    }
+    if !source.points.iter().all(|point| point.is_valid()) {
+        return Err("The source stroke contains invalid point data.".into());
+    }
+
+    let source_length = points_length(&source.points);
+    let anchors = protected_cleanup_indices(&source.points);
+    let retained = simplify_indices(&source.points, &anchors, max_error)?;
+    let reduced: Vec<_> = retained.iter().map(|index| source.points[*index]).collect();
+    let points = resample_points(&reduced, spacing)?;
+    if points.len() > MAX_CLEANUP_POINTS {
+        return Err(format!(
+            "Cleanup would exceed the {MAX_CLEANUP_POINTS}-point limit."
+        ));
+    }
+    let mut preview = source.clone();
+    preview.point_thickness = crate::stroke_sculpt::remap_thickness_profile(source, &points);
+    preview.points = points;
+    validate_geometry(&preview)?;
+    let result_length = points_length(&preview.points);
+    if source.gradient.is_some()
+        && source_length > 1.0e-5
+        && ((result_length - source_length).abs() / source_length) > GRADIENT_LENGTH_ERROR
+    {
+        return Err("Cleanup would shift the gradient's arc-length ramp by more than 1%; lower the maximum error.".into());
+    }
+    let maximum_deviation = maximum_polyline_deviation(&source.points, &preview.points)?;
+    if maximum_deviation > max_error + 1.0e-4 {
+        return Err("Cleanup exceeded the requested geometric error bound.".into());
+    }
+    let output_points = preview.points.len();
+    Ok((
+        preview,
+        CleanupStats {
+            input_points: source.points.len(),
+            output_points,
+            maximum_deviation,
+            source_length,
+            result_length,
+            elapsed_micros: started.elapsed().as_micros(),
+        },
+    ))
+}
+
+fn points_length(points: &[crate::document::Point]) -> f32 {
+    points
+        .windows(2)
+        .map(|pair| pair[0].position.distance(pair[1].position))
+        .sum()
+}
+
+fn protected_cleanup_indices(points: &[crate::document::Point]) -> Vec<usize> {
+    let mut protected = Vec::with_capacity(points.len().min(1024));
+    protected.push(0);
+    for index in 1..points.len().saturating_sub(1) {
+        let previous = points[index - 1];
+        let current = points[index];
+        let next = points[index + 1];
+        let incoming = current.position - previous.position;
+        let outgoing = next.position - current.position;
+        let corner = if incoming.length_squared() <= 1.0e-12 || outgoing.length_squared() <= 1.0e-12
+        {
+            true
+        } else {
+            let cosine = incoming
+                .normalize()
+                .dot(outgoing.normalize())
+                .clamp(-1.0, 1.0);
+            cosine.acos() >= 30.0_f32.to_radians()
+        };
+        let pressure_extremum =
+            (current.pressure - (previous.pressure + next.pressure) * 0.5).abs() >= 0.08;
+        let tilt_extremum = match (previous.tilt, current.tilt, next.tilt) {
+            (Some(before), Some(now), Some(after)) => {
+                before.normalize().dot(now.normalize()) < 0.965_925_8
+                    || now.normalize().dot(after.normalize()) < 0.965_925_8
+            }
+            (None, Some(_), Some(_)) | (Some(_), None, Some(_)) | (Some(_), Some(_), None) => true,
+            _ => false,
+        };
+        if corner || pressure_extremum || tilt_extremum {
+            protected.push(index);
+        }
+    }
+    protected.push(points.len() - 1);
+    protected
+}
+
+fn simplify_indices(
+    points: &[crate::document::Point],
+    anchors: &[usize],
+    max_error: f32,
+) -> Result<Vec<usize>, String> {
+    let mut retained = vec![false; points.len()];
+    for &index in anchors {
+        retained[index] = true;
+    }
+    if max_error > 0.0 {
+        let mut work = Vec::new();
+        let mut operations = 0usize;
+        for pair in anchors.windows(2) {
+            work.push((pair[0], pair[1]));
+        }
+        while let Some((start, end)) = work.pop() {
+            if end <= start + 1 {
+                continue;
+            }
+            let origin = points[start].position;
+            let segment = points[end].position - origin;
+            let segment_length_sq = segment.length_squared();
+            let mut farthest = None;
+            let mut farthest_distance_sq = max_error * max_error;
+            for index in start + 1..end {
+                operations = operations.saturating_add(1);
+                if operations > MAX_CLEANUP_WORK {
+                    return Err(format!(
+                        "Simplification reached its bounded {MAX_CLEANUP_WORK}-operation limit."
+                    ));
+                }
+                let offset = points[index].position - origin;
+                let t = if segment_length_sq > 1.0e-12 {
+                    (offset.dot(segment) / segment_length_sq).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let distance_sq = points[index]
+                    .position
+                    .distance_squared(origin + segment * t);
+                if distance_sq > farthest_distance_sq {
+                    farthest_distance_sq = distance_sq;
+                    farthest = Some(index);
+                }
+            }
+            if let Some(index) = farthest {
+                retained[index] = true;
+                work.push((start, index));
+                work.push((index, end));
+            }
+        }
+    }
+    Ok(retained
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, keep)| keep.then_some(index))
+        .collect())
+}
+
+fn resample_points(
+    anchors: &[crate::document::Point],
+    spacing: f32,
+) -> Result<Vec<crate::document::Point>, String> {
+    let mut output = Vec::with_capacity(anchors.len());
+    output.push(anchors[0]);
+    let mut work = 0usize;
+    for pair in anchors.windows(2) {
+        let start = pair[0];
+        let end = pair[1];
+        let distance = start.position.distance(end.position);
+        if !distance.is_finite() {
+            return Err("Cleanup encountered a non-finite segment length.".into());
+        }
+        if distance <= 1.0e-6 {
+            // Coincident samples can carry pressure/time changes; keep both.
+            output.push(end);
+            continue;
+        }
+        let steps = (distance / spacing).ceil().max(1.0) as usize;
+        work = work.saturating_add(steps);
+        if work > MAX_CLEANUP_POINTS || output.len().saturating_add(steps) > MAX_CLEANUP_POINTS {
+            return Err(format!(
+                "Resampling would exceed the {MAX_CLEANUP_POINTS}-point limit."
+            ));
+        }
+        for step in 1..=steps {
+            output.push(interpolate_point(start, end, step as f32 / steps as f32));
+        }
+    }
+    Ok(output)
+}
+
+fn interpolate_point(
+    start: crate::document::Point,
+    end: crate::document::Point,
+    t: f32,
+) -> crate::document::Point {
+    let tilt = match (start.tilt, end.tilt) {
+        (Some(a), Some(b)) => {
+            let interpolated = a.lerp(b, t);
+            (interpolated.length_squared() > 1.0e-8).then(|| interpolated.normalize())
+        }
+        (Some(a), None) => (t < 0.5).then_some(a),
+        (None, Some(b)) => (t >= 0.5).then_some(b),
+        (None, None) => None,
+    };
+    crate::document::Point {
+        position: start.position.lerp(end.position, t),
+        pressure: (start.pressure + (end.pressure - start.pressure) * t).clamp(0.0, 1.0),
+        tilt,
+        time_ms: (start.time_ms as f32 + (end.time_ms as f32 - start.time_ms as f32) * t)
+            .round()
+            .clamp(0.0, crate::document::MAX_FLOW_DURATION_MS as f32) as u32,
+    }
+}
+
+fn maximum_polyline_deviation(
+    source: &[crate::document::Point],
+    result: &[crate::document::Point],
+) -> Result<f32, String> {
+    let mut operations = 0usize;
+    let source_to_result = directed_polyline_deviation(source, result, &mut operations)?;
+    let result_to_source = directed_polyline_deviation(result, source, &mut operations)?;
+    Ok(source_to_result.max(result_to_source))
+}
+
+fn directed_polyline_deviation(
+    source: &[crate::document::Point],
+    target: &[crate::document::Point],
+    operations: &mut usize,
+) -> Result<f32, String> {
+    let mut maximum = 0.0_f32;
+    for point in source {
+        let mut nearest = f32::INFINITY;
+        for pair in target.windows(2) {
+            *operations = operations.saturating_add(1);
+            if *operations > MAX_CLEANUP_WORK {
+                return Err(format!(
+                    "Geometric error measurement reached its bounded {MAX_CLEANUP_WORK}-comparison limit."
+                ));
+            }
+            let edge = pair[1].position - pair[0].position;
+            let length_sq = edge.length_squared();
+            let t = if length_sq > 1.0e-12 {
+                ((point.position - pair[0].position).dot(edge) / length_sq).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            nearest = nearest.min(point.position.distance(pair[0].position + edge * t));
+        }
+        maximum = maximum.max(nearest);
+    }
+    Ok(maximum)
+}
+
 fn validate_geometry(stroke: &Stroke) -> Result<(), String> {
     crate::dab_placement::point_count(stroke)?;
     if stroke.brush.flow.enabled
@@ -142,6 +461,10 @@ pub fn split_stroke(
     let mut second = source.clone();
     first.points = source.points[..=point_index].to_vec();
     second.points = source.points[point_index..].to_vec();
+    if let Some(profile) = &source.point_thickness {
+        first.point_thickness = Some(profile[..=point_index].to_vec());
+        second.point_thickness = Some(profile[point_index..].to_vec());
+    }
     second.id = next_id;
     if let Some(gradient) = source.gradient {
         let t = if total_length > 1.0e-8 {
@@ -286,6 +609,26 @@ pub fn join_strokes(
 
     let mut joined = first.clone();
     joined.gradient = combined_gradient;
+    if first.point_thickness.is_some() || second.point_thickness.is_some() {
+        let first_profile = first
+            .point_thickness
+            .clone()
+            .unwrap_or_else(|| vec![1.0; first.points.len()]);
+        let second_profile = second
+            .point_thickness
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| vec![1.0; second.points.len()]);
+        joined.point_thickness = Some(first_profile);
+        if let Some(joined_profile) = joined.point_thickness.as_mut() {
+            joined_profile.extend(
+                second_profile
+                    .iter()
+                    .skip(usize::from(duplicate_seam_sample))
+                    .copied(),
+            );
+        }
+    }
     joined.points.extend(
         second
             .points
@@ -412,6 +755,8 @@ mod tests {
             id: 1,
             layer_id: 1,
             group_id: None,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             curve: None,
             material: StrokeMaterial::Shaded,
@@ -445,6 +790,7 @@ mod tests {
     #[test]
     fn split_and_join_roundtrip_preserves_samples_gradient_dabs_and_history() {
         let mut doc = four_point_sample();
+        doc.strokes[0].point_thickness = Some(vec![0.5, 0.75, 1.25, 1.5]);
         doc.strokes[0].gradient = Some(crate::document::StrokeGradient {
             start: [0.0, 0.1, 0.2],
             end: [0.8, 0.7, 0.6],
@@ -469,6 +815,8 @@ mod tests {
         assert_eq!(doc.strokes[0].points, original.points[..=1]);
         assert_eq!(doc.strokes[1].points, original.points[1..]);
         assert_eq!(doc.strokes[0].points[1], doc.strokes[1].points[0]);
+        assert_eq!(doc.strokes[0].point_thickness, Some(vec![0.5, 0.75]));
+        assert_eq!(doc.strokes[1].point_thickness, Some(vec![0.75, 1.25, 1.5]));
         let first_dabs = crate::dab_placement::sample(&doc.strokes[0]).unwrap();
         let second_dabs = crate::dab_placement::sample(&doc.strokes[1]).unwrap();
         let split_dabs: Vec<_> = first_dabs.iter().chain(&second_dabs).collect();
@@ -502,7 +850,8 @@ mod tests {
             &HashSet::from([1]),
         )
         .unwrap();
-        assert_eq!(split_bounds, original_bounds);
+        assert!(split_bounds.0.x > original_bounds.0.x);
+        assert_eq!(split_bounds.1, original_bounds.1);
 
         let recovery_dir = tempfile::tempdir().unwrap();
         let recovery = crate::recovery_store::RecoverySnapshot::new(
@@ -527,6 +876,7 @@ mod tests {
         let join = join_strokes(&doc, 1, 2, 0.0).unwrap();
         join.apply(&mut doc, true);
         assert_eq!(doc.strokes, vec![original.clone()]);
+        assert_eq!(doc.strokes[0].point_thickness, original.point_thickness);
         assert_eq!(crate::dab_placement::sample(&doc.strokes[0]).unwrap(), dabs);
         assert_eq!(
             crate::export::encode(&doc, None).unwrap().bytes,
@@ -768,5 +1118,205 @@ mod tests {
         assert!(draft.move_selected(Vec3::X * 9999.0).is_err());
         assert_eq!(draft.preview, previous);
         assert!(edit_point(&doc, 1, 1, Some(Vec3::X * 9999.0)).is_err());
+    }
+
+    #[test]
+    fn cleanup_preserves_endpoints_corners_pressure_and_tilt_within_error() {
+        let mut stroke = sample().strokes.remove(0);
+        stroke.points = (0..401)
+            .map(|index| {
+                let t = index as f32 / 400.0;
+                let (x, y) = if t < 0.5 {
+                    (t * 10.0, (t * 20.0).sin() * 0.01)
+                } else {
+                    (5.0, (1.0 - t) * -8.0)
+                };
+                crate::document::Point {
+                    position: Vec3::new(x, y, 0.0),
+                    pressure: if (index as i32 - 210).abs() < 2 {
+                        0.95
+                    } else {
+                        0.4 + 0.1 * t
+                    },
+                    tilt: Some(Vec3::new((t * 0.4).sin(), 0.0, 1.0).normalize()),
+                    time_ms: index as u32,
+                }
+            })
+            .collect();
+        stroke.point_thickness = Some(
+            (0..stroke.points.len())
+                .map(|index| 0.5 + index as f32 / stroke.points.len() as f32)
+                .collect(),
+        );
+        stroke.points[0].position = Vec3::new(0.0, 0.0, 0.0);
+        stroke.points[200].position = Vec3::new(5.0, 0.0, 0.0);
+        stroke.points[201].position = Vec3::new(5.0, -0.02, 0.0);
+        stroke.points[400].position = Vec3::new(5.0, -4.0, 0.0);
+        let source = stroke.clone();
+        let (cleaned, stats) = cleanup_stroke(&stroke, 0.25, 0.06).unwrap();
+        assert_eq!(cleaned.points.first(), source.points.first());
+        assert_eq!(cleaned.points.last(), source.points.last());
+        let cleaned_profile = cleaned.point_thickness.as_ref().unwrap();
+        assert_eq!(cleaned_profile.len(), cleaned.points.len());
+        assert!((cleaned_profile[0] - 0.5).abs() < 1.0e-5);
+        assert!(
+            (cleaned_profile.last().unwrap()
+                - source.point_thickness.as_ref().unwrap().last().unwrap())
+            .abs()
+                < 1.0e-4
+        );
+        assert!(stats.output_points < stats.input_points);
+        assert!(stats.maximum_deviation <= 0.0601, "{stats:?}");
+        assert!(cleaned.points.windows(2).all(|pair| {
+            pair[0].position.distance(pair[1].position) <= 0.2501
+                || pair[0].position.distance(pair[1].position) <= 1.0e-6
+        }));
+        assert!(cleaned.points.iter().any(|point| point.pressure > 0.9));
+        assert!(cleaned.points.iter().all(|point| point
+            .tilt
+            .is_none_or(|tilt| (tilt.length() - 1.0).abs() < 1.0e-4)));
+        assert!(cleaned
+            .points
+            .iter()
+            .any(|point| point.position.distance(Vec3::X * 5.0) < 1.0e-5));
+    }
+
+    #[test]
+    fn cleanup_is_reversible_and_keeps_gradient_dabs_native_recovery_and_exports() {
+        let mut doc = sample();
+        let source = &mut doc.strokes[0];
+        source.points = (0..41)
+            .map(|index| crate::document::Point {
+                position: Vec3::new(index as f32 * 0.05, 0.0, 0.0),
+                pressure: 0.2 + index as f32 / 80.0,
+                tilt: Some(Vec3::Y),
+                time_ms: index * 7,
+            })
+            .collect();
+        source.gradient = Some(crate::document::StrokeGradient {
+            start: [0.1, 0.2, 0.3],
+            end: [0.8, 0.7, 0.6],
+        });
+        source.point_thickness = Some(
+            (0..source.points.len())
+                .map(|index| 0.6 + index as f32 * 0.02)
+                .collect(),
+        );
+        source.brush.dabs.enabled = true;
+        source.brush.dabs.spacing = 0.125;
+        source.brush.dab_seed = 777;
+        let original = doc.strokes.clone();
+        let original_dabs = crate::dab_placement::sample(&doc.strokes[0]).unwrap();
+        let draft = Draft::cleanup(&doc, 1, 0.2, 0.01).unwrap();
+        let preview = draft.preview.clone();
+        let stats = draft.cleanup_stats.unwrap();
+        assert!(stats.maximum_deviation <= 0.01);
+        assert_eq!(doc.strokes, original, "preview reads an immutable source");
+        let edit = draft.edit(&doc).unwrap();
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes[0].gradient, original[0].gradient);
+        assert_eq!(
+            doc.strokes[0].point_thickness.as_ref().unwrap().len(),
+            doc.strokes[0].points.len()
+        );
+        assert_eq!(doc.strokes[0].brush.dab_seed, original[0].brush.dab_seed);
+        let cleaned_dabs = crate::dab_placement::sample(&doc.strokes[0]).unwrap();
+        assert_eq!(cleaned_dabs.len(), original_dabs.len());
+        assert!(cleaned_dabs
+            .iter()
+            .zip(&original_dabs)
+            .all(|(a, b)| a.position.distance(b.position) <= 0.01));
+        let recovery = crate::recovery_store::RecoverySnapshot::new(
+            "stroke-cleanup-test".into(),
+            None,
+            doc.clone(),
+        );
+        let recovered: crate::recovery_store::RecoverySnapshot =
+            serde_json::from_slice(&serde_json::to_vec(&recovery).unwrap()).unwrap();
+        assert_eq!(recovered.document.strokes, doc.strokes);
+        let native = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(native.strokes, doc.strokes);
+        let glb = crate::export::encode(&doc, None).unwrap().bytes;
+        assert_eq!(crate::export::encode(&native, None).unwrap().bytes, glb);
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes, original, "cancel/undo restores exact samples");
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes[0], preview);
+    }
+
+    #[test]
+    fn cleanup_bounds_expansion_rejects_airbrush_and_handles_tiny_strokes() {
+        let mut stroke = sample().strokes.remove(0);
+        stroke.points = vec![
+            crate::document::Point {
+                position: Vec3::ZERO,
+                pressure: 0.4,
+                tilt: None,
+                time_ms: 0,
+            },
+            crate::document::Point {
+                position: Vec3::X * 0.002,
+                pressure: 0.8,
+                tilt: None,
+                time_ms: 1,
+            },
+        ];
+        let (tiny, stats) = cleanup_stroke(&stroke, 1.0, 0.0).unwrap();
+        assert_eq!(tiny.points, stroke.points);
+        assert_eq!(stats.maximum_deviation, 0.0);
+        assert!(cleanup_stroke(&stroke, f32::NAN, 0.0).is_err());
+        assert!(cleanup_stroke(&stroke, 0.01, f32::INFINITY).is_err());
+        stroke.brush.flow.enabled = true;
+        assert!(cleanup_stroke(&stroke, 0.1, 0.1)
+            .unwrap_err()
+            .contains("timestamps drive deposited coverage"));
+
+        let mut long = sample().strokes.remove(0);
+        long.points = vec![
+            long.points[0],
+            crate::document::Point {
+                position: Vec3::X * 1000.0,
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 1,
+            },
+        ];
+        assert!(cleanup_stroke(&long, 0.001, 0.0)
+            .unwrap_err()
+            .contains("point limit"));
+    }
+
+    #[test]
+    fn cleanup_large_fixture_reports_error_and_cpu_cost() {
+        let mut stroke = sample().strokes.remove(0);
+        stroke.points = (0..20_000)
+            .map(|index| {
+                let t = index as f32 / 19_999.0;
+                crate::document::Point {
+                    position: Vec3::new(
+                        10.0 * t,
+                        0.05 * (t * 8.0 * std::f32::consts::PI).sin(),
+                        0.0,
+                    ),
+                    pressure: 0.5,
+                    tilt: None,
+                    time_ms: index as u32,
+                }
+            })
+            .collect();
+        let (cleaned, stats) = cleanup_stroke(&stroke, 0.05, 0.015).unwrap();
+        assert!(stats.output_points < stats.input_points);
+        assert!(stats.maximum_deviation <= 0.0151, "{stats:?}");
+        assert_eq!(cleaned.points.first(), stroke.points.first());
+        assert_eq!(cleaned.points.last(), stroke.points.last());
+        eprintln!(
+            "CLEANUP_FIXTURE input={} output={} max_deviation={:.6} source_length={:.6} result_length={:.6} elapsed_us={}",
+            stats.input_points,
+            stats.output_points,
+            stats.maximum_deviation,
+            stats.source_length,
+            stats.result_length,
+            stats.elapsed_micros
+        );
     }
 }

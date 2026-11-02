@@ -53,6 +53,7 @@ struct Mesh {
     capacity: usize,
     count: u32,
     points: usize,
+    modifier_key: crate::stroke_modifiers::GeometryCacheKey,
     brush_kind: BrushKind,
     material: StrokeMaterial,
     layer_opacity: f32,
@@ -1508,6 +1509,7 @@ impl SceneRenderer {
             capacity,
             count: vertices.len() as u32,
             points,
+            modifier_key: crate::stroke_modifiers::GeometryCacheKey::identity(points),
             brush_kind,
             material,
             layer_opacity: 1.0,
@@ -1816,6 +1818,8 @@ impl SceneRenderer {
             let layer_opacity = doc.layer_opacity(stroke.layer_id);
             if self.meshes.get(&stroke.id).is_some_and(|m| {
                 m.points == stroke.points.len()
+                    && m.modifier_key
+                        == crate::stroke_modifiers::GeometryCacheKey::for_stroke(stroke)
                     && m.brush_kind == stroke.brush.kind
                     && m.material == stroke.material
                     && (m.layer_opacity - layer_opacity).abs() < 0.000_001
@@ -1852,6 +1856,7 @@ impl SceneRenderer {
                 }
                 mesh.count = vertices.len() as u32;
                 mesh.points = stroke.points.len();
+                mesh.modifier_key = crate::stroke_modifiers::GeometryCacheKey::for_stroke(stroke);
                 mesh.material = stroke.material;
                 mesh.layer_opacity = layer_opacity;
                 mesh.bounds = vertex_bounds(&vertices);
@@ -1863,6 +1868,7 @@ impl SceneRenderer {
                     stroke.material,
                 );
                 mesh.layer_opacity = layer_opacity;
+                mesh.modifier_key = crate::stroke_modifiers::GeometryCacheKey::for_stroke(stroke);
                 self.meshes.insert(stroke.id, mesh);
             }
         }

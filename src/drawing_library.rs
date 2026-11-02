@@ -1582,10 +1582,15 @@ mod tests {
             Some("portable backup transparent edge fixture".into()),
         )
         .unwrap();
-        let mut brush = crate::document::Brush::default();
-        brush.tip_asset_id = tip.id;
-        brush.tip_aspect = 3.0;
-        brush.dabs.enabled = true;
+        let brush = crate::document::Brush {
+            tip_asset_id: tip.id,
+            tip_aspect: 3.0,
+            dabs: crate::dynamics::DabSettings {
+                enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let document = crate::document::Document {
             brush_tip_assets: vec![tip.clone()],
             strokes: vec![crate::document::Stroke {
@@ -1595,6 +1600,8 @@ mod tests {
                 layer_id: 1,
                 group_id: None,
                 material: Default::default(),
+                point_thickness: None,
+                modifiers: None,
                 fill: None,
                 color: [0.3, 0.6, 0.9],
                 radius: 0.05,
@@ -1617,7 +1624,10 @@ mod tests {
 
         let reopened =
             crate::document::Document::from_json(&fs::read_to_string(&restored).unwrap()).unwrap();
-        assert_eq!(reopened.brush_tip_assets, [tip.clone()]);
+        assert_eq!(
+            reopened.brush_tip_assets.as_slice(),
+            std::slice::from_ref(&tip)
+        );
         assert_eq!(reopened.strokes[0].brush.tip_asset_id, tip.id);
         let pixels = reopened.brush_tip_assets[0].decoded().unwrap().pixels;
         assert_eq!([pixels[3], pixels[7], pixels[11]], [0, 128, 255]);

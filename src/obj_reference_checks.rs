@@ -2,6 +2,60 @@ use super::*;
 use crate::geometry::Plane;
 
 impl SketchApp {
+    fn verify_line_art_button_click(&mut self, canvas: Rect, action: super::LineArtCommand) {
+        let ui_context = egui::Context::default();
+        let screen_rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(1440.0, 940.0));
+        let raw_input = |events| egui::RawInput {
+            screen_rect: Some(screen_rect),
+            focused: true,
+            events,
+            ..Default::default()
+        };
+        let _ = ui_context.run(raw_input(Vec::new()), |ctx| {
+            self.show_obj_reference_window(ctx)
+        });
+        let position = match action {
+            super::LineArtCommand::Create => self.line_art_verification_preview_rect,
+            super::LineArtCommand::Update => self.line_art_verification_update_rect,
+            super::LineArtCommand::Bake => self.line_art_verification_bake_rect,
+            super::LineArtCommand::Cancel => unreachable!(),
+        }
+        .expect("line-art action button is laid out in the production OBJ panel")
+        .center();
+        for events in [
+            vec![egui::Event::PointerMoved(position)],
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        ] {
+            let _ = ui_context.run(raw_input(events), |ctx| self.show_obj_reference_window(ctx));
+        }
+        let command = self
+            .line_art_command
+            .take()
+            .expect("synthetic pointer click reaches the line-art action");
+        assert!(
+            matches!(
+                (action, command),
+                (super::LineArtCommand::Create, super::LineArtCommand::Create)
+                    | (super::LineArtCommand::Update, super::LineArtCommand::Update)
+                    | (super::LineArtCommand::Bake, super::LineArtCommand::Bake)
+            ),
+            "the clicked line-art button dispatches the requested action"
+        );
+        self.line_art_command = Some(command);
+        self.process_line_art_command(canvas);
+    }
+
     fn verify_obj_reference_window_import_click(&mut self, screen_rect: Rect) {
         let ui_context = egui::Context::default();
         let raw_input = |events| egui::RawInput {
@@ -170,8 +224,42 @@ impl SketchApp {
                 assert!(actual_min.abs_diff_eq(expected_min.min(expected_max), 1.0e-5));
                 assert!(actual_max.abs_diff_eq(expected_min.max(expected_max), 1.0e-5));
 
+                let history_len = self.undo.len();
+                self.verify_line_art_button_click(rect, super::LineArtCommand::Create);
+                let preview_count = self
+                    .line_art_draft
+                    .as_ref()
+                    .expect("Preview button creates a draft")
+                    .segments
+                    .len();
+                assert!(preview_count > 0);
+                assert!(
+                    self.doc.strokes.is_empty(),
+                    "preview remains detached from the document"
+                );
+                self.camera.yaw += 0.15;
+                self.verify_line_art_button_click(rect, super::LineArtCommand::Update);
+                assert_eq!(self.line_art_draft.as_ref().unwrap().source_id, resource.id);
+                self.verify_line_art_button_click(rect, super::LineArtCommand::Bake);
+                assert_eq!(self.doc.strokes.len(), preview_count);
+                assert_eq!(self.undo.len(), history_len + 1, "Bake is one undo edit");
+                let baked_strokes = self.doc.strokes.clone();
+                self.undo();
+                assert!(
+                    self.doc.strokes.is_empty(),
+                    "one undo removes the complete baked batch"
+                );
+                self.redo();
+                assert_eq!(self.doc.strokes, baked_strokes);
+                let remaining_models = std::mem::take(&mut self.doc.model_references);
+                assert_eq!(
+                    self.doc.strokes, baked_strokes,
+                    "removing the source leaves baked strokes intact"
+                );
+                self.doc.model_references = remaining_models;
+
                 self.status =
-                    "OBJ button import, viewport picking, and bundle checks passed.".into();
+                    "OBJ import and production line-art preview, update, bake, undo, and source-removal checks passed.".into();
                 self.dirty = false;
                 self.renderer.invalidate();
                 self.obj_reference_verification_frame = Some(4);

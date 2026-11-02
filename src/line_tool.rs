@@ -159,6 +159,8 @@ impl SketchApp {
                 mark: Stroke {
                     curve: None,
                     material: Default::default(),
+                    point_thickness: None,
+                    modifiers: None,
                     fill: None,
                     group_id: None,
                     layer_id: self.doc.active_layer,

@@ -217,6 +217,8 @@ pub fn create_ellipse(
     Ok(Stroke {
         curve: None,
         material: Default::default(),
+        point_thickness: None,
+        modifiers: None,
         fill: None,
         group_id: None,
         layer_id,

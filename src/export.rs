@@ -72,6 +72,10 @@ pub(crate) fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
             .iter()
             .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
         || stroke.gradient.is_some_and(|gradient| !gradient.is_valid())
+        || !stroke.point_thickness_is_valid()
+        || stroke.modifiers.as_ref().is_some_and(|stack| {
+            !stack.is_valid(stroke.points.len()) || !stack.is_compatible(stroke)
+        })
         || (stroke.fill.is_some() && stroke.gradient.is_some())
         || stroke.points.iter().any(|p| {
             !p.position.is_finite()
@@ -218,7 +222,7 @@ pub fn encode_with_images(
     selected: Option<&HashSet<u64>>,
     image_root: Option<&Path>,
 ) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=24) {
+    if !matches!(doc.version, 1..=25) {
         return Err("Unsupported source document version".into());
     }
     crate::brush_tip::validate_catalog(&doc.brush_tip_assets)?;
@@ -493,6 +497,10 @@ pub fn encode_with_images(
         }
         if let Some(group) = stroke.group_id {
             node["extras"]["spatialSketchGroupId"] = json!(group.to_string());
+        }
+        if let Some(modifiers) = &stroke.modifiers {
+            node["extras"]["spatialSketchModifiers"] = json!(modifiers);
+            node["extras"]["spatialSketchModifierGeometry"] = json!("evaluated_stack_ordered_mesh");
         }
         nodes.push(node);
         summary.strokes += 1;
@@ -866,13 +874,15 @@ fn write_encoded_glb(encoded: EncodedGlb, path: &Path) -> Result<ExportSummary, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{Point, StrokeMaterial};
+    use crate::document::{Point, StrokeGradient, StrokeMaterial};
     fn stroke(id: u64, color: [f32; 3]) -> Stroke {
         Stroke {
             gradient: None,
             curve: None,
             material: Default::default(),
             id,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             group_id: None,
             layer_id: 1,
@@ -897,6 +907,84 @@ mod tests {
             ],
         }
     }
+
+    #[test]
+    fn gradient_stops_survive_native_recovery_merge_and_export_fallbacks() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let mut gradient_stroke = stroke(701, [0.4, 0.3, 0.2]);
+        gradient_stroke.gradient = Some(StrokeGradient {
+            start: [0.1, 0.2, 0.8],
+            end: [0.6, 1.0, 0.0],
+        });
+        let mut midpoint = gradient_stroke.points[0];
+        midpoint.position =
+            (gradient_stroke.points[0].position + gradient_stroke.points[1].position) * 0.5;
+        midpoint.pressure =
+            (gradient_stroke.points[0].pressure + gradient_stroke.points[1].pressure) * 0.5;
+        gradient_stroke.points.insert(1, midpoint);
+        let document = Document {
+            strokes: vec![gradient_stroke.clone()],
+            ..Document::default()
+        };
+
+        let native_bytes = serde_json::to_vec(&document).unwrap();
+        let native = Document::from_json(std::str::from_utf8(&native_bytes).unwrap()).unwrap();
+        assert_eq!(native.strokes[0].gradient, gradient_stroke.gradient);
+
+        let snapshot = crate::recovery_store::RecoverySnapshot::new(
+            "gradient-acceptance".into(),
+            None,
+            native.clone(),
+        );
+        let recovery_dir = root.path().join("recovery");
+        crate::recovery_store::write(&recovery_dir, &snapshot).unwrap();
+        let recovered = crate::recovery_store::scan(&recovery_dir, "gradient-reader").unwrap();
+        assert_eq!(recovered.candidates.len(), 1);
+        assert_eq!(
+            recovered.candidates[0].snapshot.document.strokes[0].gradient,
+            gradient_stroke.gradient
+        );
+
+        let encoded = encode(&native, None).unwrap();
+        let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
+        let primitive = parsed.meshes().next().unwrap().primitives().next().unwrap();
+        let colors: Vec<_> = primitive
+            .reader(|_| parsed.blob.as_deref())
+            .read_colors(0)
+            .expect("GLB COLOR_0 accessor")
+            .into_rgba_f32()
+            .collect();
+        let near_color = |expected: [f32; 3]| {
+            colors.iter().any(|rgba| {
+                (0..3).all(|channel| (rgba[channel] - expected[channel]).abs() <= 1.5 / 255.0)
+            })
+        };
+        assert!(
+            near_color([0.1, 0.2, 0.8]),
+            "GLB contains the gradient start stop"
+        );
+        assert!(
+            near_color([0.6, 1.0, 0.0]),
+            "GLB contains the gradient end stop"
+        );
+        assert!(
+            near_color([0.35, 0.6, 0.4]),
+            "GLB interpolates stops in linear RGB"
+        );
+
+        let obj_path = root.path().join("gradient.obj");
+        crate::obj_export::write_obj_bundle(&native, None, &obj_path, false).unwrap();
+        let obj = std::fs::read_to_string(&obj_path).unwrap();
+        let mtl_name = obj
+            .lines()
+            .find_map(|line| line.strip_prefix("mtllib "))
+            .unwrap();
+        let mtl = std::fs::read_to_string(root.path().join(mtl_name)).unwrap();
+        assert!(mtl.contains("gradient strokes use their midpoint color"));
+        assert!(mtl.contains("Two-stop gradient approximated by its linear RGB midpoint"));
+        assert!(mtl.contains("Kd 0.350000 0.600000 0.400000"));
+    }
+
     #[test]
     fn binary_roundtrip_preserves_pressure_geometry_material_and_outward_normals() {
         let doc = Document {
@@ -1299,7 +1387,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 24);
+        assert_eq!(loaded.version, 25);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -1614,7 +1702,7 @@ mod group_export_tests {
     fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
         let doc = crate::export_check::grouped_fixture();
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-        assert_eq!(loaded.version, 24);
+        assert_eq!(loaded.version, 25);
         assert_eq!(loaded.strokes, doc.strokes);
         let encoded = encode(&doc, None).unwrap();
         let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
@@ -1851,6 +1939,8 @@ mod obj_reference_export_tests {
         Stroke {
             gradient: None,
             curve: None,
+            point_thickness: None,
+            modifiers: None,
             fill: None,
             material: Default::default(),
             group_id: None,

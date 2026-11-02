@@ -102,6 +102,8 @@ fn make_stroke(id: u64, point_count: usize, x_offset: f32) -> Stroke {
         curve: None,
         material: Default::default(),
         id,
+        point_thickness: None,
+        modifiers: None,
         fill: None,
         group_id: None,
         layer_id: 1,

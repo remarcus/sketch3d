@@ -256,6 +256,8 @@ impl SketchApp {
                 let stroke = Stroke {
                     curve: None,
                     material: Default::default(),
+                    point_thickness: None,
+                    modifiers: None,
                     fill: None,
                     group_id: None,
                     layer_id: self.doc.active_layer,
@@ -715,6 +717,275 @@ impl SketchApp {
         });
         self.curve_refresh(Rect::from_min_size(Pos2::ZERO, Vec2::new(1.0, 900.0)));
         self.status = "Curve edit preview ready. Apply to commit once or Escape to cancel.".into();
+    }
+
+    pub(super) fn verify_curve_edit_persistence(
+        &mut self,
+        ctx: &egui::Context,
+        rect: Rect,
+    ) -> Vec<&'static str> {
+        let source = self
+            .doc
+            .strokes
+            .iter()
+            .find(|stroke| stroke.curve.as_ref().is_some_and(CurveData::is_valid))
+            .cloned()
+            .expect("curve verifier has a committed semantic curve");
+        let source_curve = source.curve.as_ref().unwrap().clone();
+
+        let output = std::env::current_dir()
+            .unwrap()
+            .join("verification/sketch-079");
+        std::fs::create_dir_all(&output).unwrap();
+        let native_path = output.join("curve-edit.sketch.json");
+        self.file = Some(native_path.clone());
+        assert!(self.save(false), "semantic curve native save succeeds");
+        let reloaded = Document::from_json(&std::fs::read_to_string(&native_path).unwrap())
+            .expect("native curve reload validates");
+        let reloaded_source = reloaded
+            .strokes
+            .iter()
+            .find(|stroke| stroke.id == source.id)
+            .expect("native reload retains the source curve");
+        assert_eq!(reloaded_source.curve.as_ref(), Some(&source_curve));
+        assert_eq!(reloaded_source.points, source.points);
+        self.doc = reloaded;
+        self.renderer.invalidate();
+        self.undo.clear();
+        self.redo.clear();
+        self.selected = HashSet::from([source.id]);
+        let saved_document = self.doc.clone();
+
+        let sampled_stroke = self
+            .doc
+            .strokes
+            .iter()
+            .find(|stroke| stroke.curve.is_none())
+            .expect("older sampled strokes remain available without semantic controls");
+        self.selected = HashSet::from([sampled_stroke.id]);
+        self.start_curve_tool();
+        self.open_selected_curve();
+        assert!(!self.curve_draft_active());
+        assert!(self.status.contains("no editable curve anchors"));
+        assert_eq!(
+            serde_json::to_value(&self.doc).unwrap(),
+            serde_json::to_value(&saved_document).unwrap(),
+            "opening an older sampled stroke does not fabricate curve handles"
+        );
+
+        self.selected = HashSet::from([source.id]);
+        self.start_curve_tool();
+        self.open_selected_curve();
+        let draft = self
+            .curve_tool
+            .draft
+            .as_ref()
+            .expect("selected curve reopens for editing");
+        assert_eq!(draft.editing_stroke_id, Some(source.id));
+        assert_eq!(draft.anchors.len(), source_curve.anchors.len());
+        assert_eq!(self.curve_tool.tension, source_curve.tension);
+        for (draft_anchor, saved_anchor) in draft.anchors.iter().zip(&source_curve.anchors) {
+            assert_eq!(draft_anchor.position, saved_anchor.position);
+            assert_eq!(draft_anchor.pressure, saved_anchor.pressure);
+            assert_eq!(draft_anchor.incoming, saved_anchor.incoming);
+            assert_eq!(draft_anchor.outgoing, saved_anchor.outgoing);
+            assert_eq!(draft_anchor.manual, saved_anchor.manual);
+        }
+        assert_eq!(
+            serde_json::to_value(&self.doc).unwrap(),
+            serde_json::to_value(&saved_document).unwrap(),
+            "opening the edit is non-mutating"
+        );
+
+        let drag_anchor = |app: &mut SketchApp, original: &CurveData| {
+            let anchor = original.anchors[1].position;
+            let destination = anchor + original.frame_tangent * 0.08;
+            let start = crate::gizmo::project(&app.camera, rect, anchor)
+                .expect("curve anchor projects to the canvas")
+                .0;
+            let end = crate::gizmo::project(&app.camera, rect, destination)
+                .expect("edited anchor remains inside the canvas")
+                .0;
+            app.curve_input(start, original.anchors[1].pressure, rect, true);
+            app.curve_input(end, original.anchors[1].pressure, rect, false);
+            app.curve_pointer_up();
+            destination
+        };
+
+        let expected_anchor = drag_anchor(self, &source_curve);
+        let escaped = self.curve_draft_preview().unwrap();
+        assert_ne!(escaped.curve.as_ref().unwrap(), &source_curve);
+        assert_eq!(
+            serde_json::to_value(&self.doc).unwrap(),
+            serde_json::to_value(&saved_document).unwrap(),
+            "edit preview leaves the drawing intact"
+        );
+        assert_eq!(self.undo.len(), 0, "preview adds no history entry");
+        ctx.input_mut(|input| {
+            input.events = vec![egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }]
+        });
+        self.curve_shortcuts(ctx);
+        ctx.input_mut(|input| input.events.clear());
+        assert!(!self.curve_draft_active(), "Escape cancels an edit preview");
+        assert_eq!(
+            serde_json::to_value(&self.doc).unwrap(),
+            serde_json::to_value(&saved_document).unwrap()
+        );
+        assert_eq!(self.undo.len(), 0);
+
+        self.open_selected_curve();
+        let _ = drag_anchor(self, &source_curve);
+        assert!(self.curve_draft_active());
+        let old_frame = self.image_plane_verification_frame;
+        self.image_plane_verification_frame = None;
+        let was_focused = ctx.input(|input| input.focused);
+        ctx.input_mut(|input| input.focused = false);
+        self.canvas_input(ctx, rect, Vec::new());
+        ctx.input_mut(|input| input.focused = was_focused);
+        self.image_plane_verification_frame = old_frame;
+        assert!(
+            !self.curve_draft_active(),
+            "focus loss cancels the edit preview"
+        );
+        assert_eq!(
+            serde_json::to_value(&self.doc).unwrap(),
+            serde_json::to_value(&saved_document).unwrap()
+        );
+        assert_eq!(self.undo.len(), 0);
+
+        self.open_selected_curve();
+        let _ = drag_anchor(self, &source_curve);
+        let preview = self.curve_draft_preview().unwrap().clone();
+        assert!(
+            preview.curve.as_ref().unwrap().anchors[1]
+                .position
+                .distance(expected_anchor)
+                < 1.0e-4,
+            "the re-opened preview uses the exact expected world anchor"
+        );
+        self.commit_curve();
+        let edited = self
+            .doc
+            .strokes
+            .iter()
+            .find(|stroke| stroke.id == source.id)
+            .unwrap()
+            .clone();
+        assert_ne!(edited, source);
+        assert_eq!(self.undo.len(), 1, "Apply commits one edit");
+        assert_eq!(self.redo.len(), 0);
+        assert_eq!(edited.brush, source.brush);
+        assert_eq!(edited.radius, source.radius);
+        assert_eq!(edited.color, source.color);
+        assert_eq!(
+            edited.curve.as_ref().unwrap().anchors.len(),
+            source_curve.anchors.len()
+        );
+        self.undo();
+        assert_eq!(
+            serde_json::to_value(&self.doc).unwrap(),
+            serde_json::to_value(&saved_document).unwrap(),
+            "undo restores the exact original curve"
+        );
+        self.redo();
+        assert_eq!(
+            self.doc
+                .strokes
+                .iter()
+                .find(|stroke| stroke.id == source.id),
+            Some(&edited),
+            "redo restores the applied edit exactly"
+        );
+
+        assert!(self.save(false), "edited semantic curve saves natively");
+        let edited_reload = Document::from_json(&std::fs::read_to_string(&native_path).unwrap())
+            .expect("edited curve native reload validates");
+        let edited_reloaded_stroke = edited_reload
+            .strokes
+            .iter()
+            .find(|stroke| stroke.id == source.id)
+            .unwrap();
+        assert_eq!(edited_reloaded_stroke, &edited);
+
+        let only_curve = Document {
+            strokes: vec![edited.clone()],
+            ..Document::default()
+        };
+        let source_for_merge = output.join("curve-merge-source.sketch.json");
+        std::fs::write(&source_for_merge, serde_json::to_vec(&only_curve).unwrap()).unwrap();
+        let merge_assets = output.join("merge-assets");
+        std::fs::create_dir_all(&merge_assets).unwrap();
+        let merged = super::native_merge::prepare_insert(
+            &Document::default(),
+            &source_for_merge,
+            &merge_assets,
+            100,
+            10,
+            200,
+            Vec3::ZERO,
+            false,
+            &HashMap::new(),
+        )
+        .expect("semantic curve native insert succeeds");
+        assert_eq!(merged.edit.strokes.len(), 1);
+        assert_eq!(merged.edit.strokes[0].curve.as_ref(), edited.curve.as_ref());
+        let mut recovered_doc = Document {
+            strokes: vec![edited.clone()],
+            ..Document::default()
+        };
+        recovered_doc.refresh_linked_instances().unwrap();
+        let recovery_root = output.join("recovery");
+        let snapshot = crate::recovery_store::RecoverySnapshot::new(
+            "curve-edit-verification".into(),
+            None,
+            recovered_doc,
+        );
+        crate::recovery_store::write(&recovery_root, &snapshot).unwrap();
+        let recovered = crate::recovery_store::scan(&recovery_root, "curve-edit-reader").unwrap();
+        assert_eq!(recovered.candidates.len(), 1);
+        assert_eq!(
+            recovered.candidates[0].snapshot.document.strokes[0].curve, edited.curve,
+            "recovery retains curve anchors and frame"
+        );
+
+        let before = crate::editing::snapshot(&self.doc, &self.selected);
+        let rotation = glam::Quat::from_rotation_y(0.25);
+        let transformed =
+            crate::editing::transformed(&before, Vec3::ZERO, Vec3::ZERO, rotation, 1.2)
+                .expect("valid curve transforms keep semantic data");
+        let transformed_curve = transformed[0].1.curve.as_ref().unwrap();
+        let edited_curve = edited.curve.as_ref().unwrap();
+        assert_eq!(transformed_curve.anchors.len(), edited_curve.anchors.len());
+        assert!(
+            (transformed_curve.frame_normal - rotation * edited_curve.frame_normal).length()
+                < 1.0e-5
+        );
+        assert!(
+            (transformed_curve.frame_tangent - rotation * edited_curve.frame_tangent).length()
+                < 1.0e-5
+        );
+        for (before_anchor, after_anchor) in
+            edited_curve.anchors.iter().zip(&transformed_curve.anchors)
+        {
+            let expected = rotation * before_anchor.position * 1.2;
+            assert!((expected - after_anchor.position).length() < 1.0e-5);
+        }
+        self.cancel_curve_tool();
+
+        vec![
+            "older sampled strokes do not receive fabricated semantic curve controls",
+            "curve anchors and tangent controls survive native save/reopen exactly",
+            "curve edit preview preserves the source and applies as one undo/redo edit",
+            "Escape and focus loss cancel committed-curve editing without document changes",
+            "curve edits survive native merge and fresh recovery scan",
+            "selection transforms preserve semantic curve anchors and captured frame",
+        ]
     }
 
     pub(super) fn commit_curve(&mut self) {
