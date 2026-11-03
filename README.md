@@ -2,6 +2,8 @@
 
 Sketch3D is an open-source, tablet-first 3D sketching app written in Rust. Draw editable strokes in space, work on flat or curved guides, and export artwork for other tools.
 
+Sketch3D is independently developed and inspired by Feather 3D and Blender's Grease Pencil.
+
 ![Sketch3D's dark workspace showing an editable Japanese garden house, drawing tools, and brush properties](docs/capability-demos/media/draw-orbit.png)
 
 *The editable garden-house starter scene, shown in an earlier-build demo capture.*

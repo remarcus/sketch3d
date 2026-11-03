@@ -4,6 +4,7 @@ version = "0.1.2"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Sketch3D: an open-source, tablet-first 3D sketching app"
+keywords = ["3d", "sketching", "tablet", "feather-3d", "grease-pencil"]
 
 [dependencies]
 lyon_tessellation = { version = "=1.0.23", optional = true }
