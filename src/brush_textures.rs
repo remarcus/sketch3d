@@ -522,7 +522,7 @@ impl SketchApp {
                             }
                             ui.small("Pressure and speed affect grain only; width, opacity, and Airbrush flow remain independent. Missing input uses the manual fallback values.");
                             if dynamics.is_enabled() && self.brush.tip_asset_id == 0 {
-                                ui.small("GLB/OBJ export currently blocks dynamic grain on ordinary brush geometry; image-tip strokes bake it into the atlas.");
+                                ui.small("GLB/OBJ export bakes dynamic grain on ordinary brush geometry into a bounded per-triangle atlas; very dense strokes may use a lower atlas resolution.");
                             }
                         });
                 }

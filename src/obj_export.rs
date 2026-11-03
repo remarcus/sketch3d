@@ -195,7 +195,10 @@ pub fn write_obj_bundle(
         let key = material_key(stroke, layer_opacity);
         let has_tip = stroke.brush.tip_asset_id != 0;
         let image_settings = stroke.brush.texture.image;
-        let textured = !has_tip && image_settings.is_none() && key.texture.0 != TextureKind::Solid;
+        let textured = !has_tip
+            && image_settings.is_none()
+            && key.texture.0 != TextureKind::Solid
+            && !export::has_dynamic_grain(stroke);
         if let std::collections::hash_map::Entry::Vacant(entry) = material_ids.entry(key) {
             if materials.len() >= 65_536 {
                 return Err("OBJ export exceeds the 65,536 material limit".into());
@@ -267,6 +270,12 @@ pub fn write_obj_bundle(
             let composite_texture_file = composite_texture_png.as_ref().map(|png| {
                 if tip_atlas.is_some() {
                     format!("tip-atlas-{:016x}.png", crate::brush_tip::content_id(png))
+                } else if stroke.brush.tip_asset_id == 0 {
+                    format!(
+                        "dynamic-grain-{:016x}-{:016x}.png",
+                        stroke.id,
+                        crate::brush_tip::content_id(png)
+                    )
                 } else {
                     format!(
                         "tip-grain-{:016x}-{:016x}.png",
@@ -281,6 +290,12 @@ pub fn write_obj_bundle(
                         "tip-atlas-alpha-{:016x}.png",
                         crate::brush_tip::content_id(png)
                     )
+                } else if stroke.brush.tip_asset_id == 0 {
+                    format!(
+                        "dynamic-grain-alpha-{:016x}-{:016x}.png",
+                        stroke.id,
+                        crate::brush_tip::content_id(png)
+                    )
                 } else {
                     format!(
                         "tip-grain-alpha-{:016x}-{:016x}.png",
@@ -289,7 +304,8 @@ pub fn write_obj_bundle(
                     )
                 }
             });
-            let image_uses_source_color = composite_image.is_none()
+            let image_uses_source_color = (composite_image.is_none()
+                || stroke.brush.tip_asset_id == 0)
                 && image_settings.is_some_and(|settings| {
                     settings.mode == crate::texture::ImageTextureMode::RgbaWithAlpha
                         && !settings.tint_with_brush
@@ -418,7 +434,13 @@ pub fn write_obj_bundle(
         .iter()
         .any(|stroke| export::has_dynamic_grain(stroke))
     {
-        mtl.push_str("# Pressure/speed grain response is baked into the image-tip atlas using stored pressure and world-distance/time samples; missing inputs use saved manual fallbacks.\n");
+        mtl.push_str("# Pressure/speed grain response is baked into bounded per-stroke texture atlases using stored pressure and world-distance/time samples; missing inputs use saved manual fallbacks.\n");
+    }
+    if strokes
+        .iter()
+        .any(|stroke| export::has_dynamic_grain(stroke) && stroke.brush.tip_asset_id == 0)
+    {
+        mtl.push_str("# Ordinary brush texture dynamics are baked per triangle; atlas resolution is reduced to stay within the per-stroke pixel budget.\n");
     }
     for material in &materials {
         writeln!(mtl, "newmtl {}", material.name).unwrap();
@@ -790,7 +812,9 @@ fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
         material: stroke.material,
         primary_tip: stroke.brush.tip_asset_id,
         tip_variants: stroke.brush.tip_variant_ids(),
-        grain_stroke: if export::has_independent_tip_grain(stroke) {
+        grain_stroke: if export::has_independent_tip_grain(stroke)
+            || export::has_dynamic_grain(stroke)
+        {
             stroke.id
         } else {
             0

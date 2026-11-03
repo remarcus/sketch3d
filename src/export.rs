@@ -144,12 +144,6 @@ fn stroke_mesh_internal(
     if stroke.fill.is_some() {
         crate::polygon::triangulate(stroke)?;
     }
-    if compose_grain && has_dynamic_grain(stroke) && stroke.brush.tip_asset_id == 0 {
-        return Err(format!(
-            "Stroke {} uses pressure/speed grain dynamics on non-tip geometry, which GLB/OBJ export cannot bake yet",
-            stroke.id
-        ));
-    }
     let expected_tip_ids = stroke.brush.tip_variant_ids();
     let tip_atlas = if stroke.brush.uses_tip_atlas() {
         if expected_tip_ids.len() != tip_assets.len()
@@ -177,30 +171,33 @@ fn stroke_mesh_internal(
             stroke.id
         ));
     }
-    let composite_image = if compose_grain && has_independent_tip_grain(stroke) {
-        let tip = tip_assets.first().copied();
-        if tip.is_none_or(|tip| tip.id != stroke.brush.tip_asset_id) {
-            return Err("Combined texture export received the wrong image-tip asset".into());
-        }
-        if let Some(atlas) = &tip_atlas {
-            Some(compose_tip_variant_grain(
-                stroke,
-                tip_assets,
-                atlas,
-                grain_asset,
-                &mut source,
-            )?)
+    let composite_image =
+        if compose_grain && has_dynamic_grain(stroke) && stroke.brush.tip_asset_id == 0 {
+            Some(compose_dynamic_grain(stroke, grain_asset, &mut source)?)
+        } else if compose_grain && has_independent_tip_grain(stroke) {
+            let tip = tip_assets.first().copied();
+            if tip.is_none_or(|tip| tip.id != stroke.brush.tip_asset_id) {
+                return Err("Combined texture export received the wrong image-tip asset".into());
+            }
+            if let Some(atlas) = &tip_atlas {
+                Some(compose_tip_variant_grain(
+                    stroke,
+                    tip_assets,
+                    atlas,
+                    grain_asset,
+                    &mut source,
+                )?)
+            } else {
+                Some(compose_tip_grain(
+                    stroke,
+                    tip.unwrap(),
+                    grain_asset,
+                    &mut source,
+                )?)
+            }
         } else {
-            Some(compose_tip_grain(
-                stroke,
-                tip.unwrap(),
-                grain_asset,
-                &mut source,
-            )?)
-        }
-    } else {
-        None
-    };
+            None
+        };
     let mut mesh = Mesh {
         vertices: Vec::new(),
         indices: Vec::new(),
@@ -325,6 +322,203 @@ pub(crate) fn has_dynamic_grain(stroke: &Stroke) -> bool {
             .is_some_and(|settings| settings.strength > 0.0)
             || (stroke.brush.texture.kind != TextureKind::Solid
                 && stroke.brush.texture.strength > 0.0))
+}
+
+fn compose_dynamic_grain(
+    stroke: &Stroke,
+    grain_asset: Option<&crate::brush_tip::BrushTipAsset>,
+    vertices: &mut [geometry::Vertex],
+) -> Result<crate::image_planes::ImageAsset, String> {
+    if !vertices.len().is_multiple_of(3) {
+        return Err("Dynamic grain export requires complete triangles".into());
+    }
+    let triangle_count = vertices.len() / 3;
+    if triangle_count == 0 {
+        return Ok(crate::image_planes::ImageAsset {
+            size: [1, 1],
+            pixels: vec![0; 4],
+        });
+    }
+    let image_settings = stroke.brush.texture.image;
+    let repeating_image = if let Some(settings) = image_settings {
+        let asset = grain_asset.ok_or("Missing repeating image for dynamic grain export")?;
+        if settings.asset_id != asset.id {
+            return Err("Dynamic grain export received the wrong repeating image".into());
+        }
+        Some(asset.repeating_texture_pixels(settings)?)
+    } else {
+        None
+    };
+    let procedural_pixels = repeating_image
+        .is_none()
+        .then(|| crate::texture::rgba(stroke.brush.texture));
+    let source_size = repeating_image
+        .as_ref()
+        .map_or([crate::texture::SIZE; 2], |image| image.size);
+
+    let mut selected = None;
+    for long_side in [128_u32, 64, 32, 16, 8, 4, 2, 1] {
+        let cell_side = long_side + 2;
+        let ideal_columns = (triangle_count as f64).sqrt().ceil() as u64;
+        let max_columns = MAX_COMPOSITE_TEXTURE_DIMENSION / cell_side;
+        if max_columns == 0 {
+            continue;
+        }
+        let columns = ideal_columns.clamp(1, u64::from(max_columns)) as u32;
+        let rows = triangle_count.div_ceil(columns as usize) as u32;
+        let width = columns * cell_side;
+        let height = rows * cell_side;
+        let pixels = u64::from(width) * u64::from(height);
+        if width <= MAX_COMPOSITE_TEXTURE_DIMENSION
+            && height <= MAX_COMPOSITE_TEXTURE_DIMENSION
+            && pixels <= MAX_COMPOSITE_TEXTURE_PIXELS
+        {
+            selected = Some((long_side, cell_side, columns, width, height));
+            break;
+        }
+    }
+    let Some((long_side, cell_side, columns, width, height)) = selected else {
+        return Err(format!(
+            "Dynamic grain export exceeds the {} MiB atlas budget",
+            MAX_COMPOSITE_TEXTURE_PIXELS * 4 / (1024 * 1024)
+        ));
+    };
+    let mut atlas_pixels = vec![0; (u64::from(width) * u64::from(height) * 4) as usize];
+    let mut tile = vec![0; (long_side * long_side * 4) as usize];
+
+    for (triangle_index, triangle) in vertices.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+        let u_min = triangle
+            .iter()
+            .map(|vertex| vertex.uv[0])
+            .reduce(f32::min)
+            .unwrap();
+        let u_max = triangle
+            .iter()
+            .map(|vertex| vertex.uv[0])
+            .reduce(f32::max)
+            .unwrap();
+        let v_min = triangle
+            .iter()
+            .map(|vertex| vertex.uv[1])
+            .reduce(f32::min)
+            .unwrap();
+        let v_max = triangle
+            .iter()
+            .map(|vertex| vertex.uv[1])
+            .reduce(f32::max)
+            .unwrap();
+        let span_u = (u_max - u_min).abs() * source_size[0] as f32;
+        let span_v = (v_max - v_min).abs() * source_size[1] as f32;
+        let longest_span = span_u.max(span_v);
+        if !longest_span.is_finite() {
+            return Err("Dynamic grain export found invalid texture coordinates".into());
+        }
+        let (tile_width, tile_height) = if longest_span <= 1.0e-8 {
+            (1, 1)
+        } else {
+            (
+                ((long_side as f32 * span_u / longest_span).round() as u32).clamp(1, long_side),
+                ((long_side as f32 * span_v / longest_span).round() as u32).clamp(1, long_side),
+            )
+        };
+        for y in 0..tile_height {
+            for x in 0..tile_width {
+                let local_uv = [
+                    (x as f32 + 0.5) / tile_width as f32,
+                    (y as f32 + 0.5) / tile_height as f32,
+                ];
+                let source_uv = [
+                    u_min + local_uv[0] * (u_max - u_min),
+                    v_min + local_uv[1] * (v_max - v_min),
+                ];
+                let sampled = if let Some(image) = &repeating_image {
+                    sample_rgba_linear(image, source_uv, true)
+                } else {
+                    [
+                        1.0,
+                        1.0,
+                        1.0,
+                        sample_procedural_alpha(
+                            procedural_pixels.as_deref().unwrap(),
+                            crate::texture::SIZE,
+                            source_uv,
+                        ),
+                    ]
+                };
+                let dynamics = triangle_grain_dynamics(triangle, source_uv);
+                let alpha = crate::texture::apply_dynamic_coverage(sampled[3], dynamics);
+                let pixel_index = ((y * long_side + x) * 4) as usize;
+                for channel in 0..3 {
+                    tile[pixel_index + channel] =
+                        (crate::presentation::linear_to_srgb(sampled[channel]) * 255.0).round()
+                            as u8;
+                }
+                tile[pixel_index + 3] = (alpha * 255.0).round() as u8;
+            }
+        }
+
+        let cell_x = triangle_index as u32 % columns * cell_side;
+        let cell_y = triangle_index as u32 / columns * cell_side;
+        let tile_x = cell_x + 1;
+        let tile_y = cell_y + 1;
+        for y in 0..cell_side {
+            let source_y = (y as i64 - 1).clamp(0, i64::from(tile_height - 1)) as u32;
+            for x in 0..cell_side {
+                let source_x = (x as i64 - 1).clamp(0, i64::from(tile_width - 1)) as u32;
+                let source_index = ((source_y * long_side + source_x) * 4) as usize;
+                let target_index = (((cell_y + y) * width + cell_x + x) * 4) as usize;
+                atlas_pixels[target_index..target_index + 4]
+                    .copy_from_slice(&tile[source_index..source_index + 4]);
+            }
+        }
+        for vertex in triangle {
+            let local_u = if u_max - u_min > 1.0e-8 {
+                ((vertex.uv[0] - u_min) / (u_max - u_min)).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let local_v = if v_max - v_min > 1.0e-8 {
+                ((vertex.uv[1] - v_min) / (v_max - v_min)).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            vertex.uv = [
+                (tile_x as f32 + 0.5 + local_u * (tile_width - 1) as f32) / width as f32,
+                (tile_y as f32 + 0.5 + local_v * (tile_height - 1) as f32) / height as f32,
+            ];
+        }
+    }
+    Ok(crate::image_planes::ImageAsset {
+        size: [width, height],
+        pixels: atlas_pixels,
+    })
+}
+
+fn triangle_grain_dynamics(triangle: &[geometry::Vertex; 3], uv: [f32; 2]) -> [f32; 2] {
+    let a = glam::Vec2::from_array(triangle[0].uv);
+    let b = glam::Vec2::from_array(triangle[1].uv);
+    let c = glam::Vec2::from_array(triangle[2].uv);
+    let point = glam::Vec2::from_array(uv);
+    let area = (b - a).perp_dot(c - a);
+    let weights = if area.abs() > 1.0e-8 {
+        let wb = (point - a).perp_dot(c - a) / area;
+        let wc = (b - a).perp_dot(point - a) / area;
+        let wa = 1.0 - wb - wc;
+        let weights = [wa.max(0.0), wb.max(0.0), wc.max(0.0)];
+        let total = weights.iter().sum::<f32>();
+        if total > 1.0e-8 {
+            weights.map(|weight| weight / total)
+        } else {
+            [1.0 / 3.0; 3]
+        }
+    } else {
+        [1.0 / 3.0; 3]
+    };
+    std::array::from_fn(|axis| {
+        triangle[0].grain_dynamics[axis] * weights[0]
+            + triangle[1].grain_dynamics[axis] * weights[1]
+            + triangle[2].grain_dynamics[axis] * weights[2]
+    })
 }
 
 fn compose_tip_grain(
@@ -1006,6 +1200,7 @@ pub fn encode_with_images(
         let alpha_blended = layer_opacity < 1.0
             || stroke.brush.opacity < 1.0
             || stroke.brush.flow.enabled
+            || has_dynamic_grain(stroke)
             || tip_key.is_some()
             || fill_texture_key.is_some()
             || image_texture_key.is_some()
@@ -1041,7 +1236,8 @@ pub fn encode_with_images(
             } else {
                 1.0
             };
-            let image_uses_source_color = composite_image.is_none()
+            let image_uses_source_color = (composite_image.is_none()
+                || stroke.brush.tip_asset_id == 0)
                 && image_settings.is_some_and(|settings| {
                     settings.mode == crate::texture::ImageTextureMode::RgbaWithAlpha
                         && !settings.tint_with_brush
@@ -1120,7 +1316,7 @@ pub fn encode_with_images(
                         binary.push(0);
                     }
                     let index = images.len();
-                    images.push(json!({"name":format!("Combined tip/grain stroke {}",stroke.id),"bufferView":view,"mimeType":"image/png"}));
+                    images.push(json!({"name":if stroke.brush.tip_asset_id == 0 { format!("Dynamic grain stroke {}",stroke.id) } else { format!("Combined tip/grain stroke {}",stroke.id) },"bufferView":view,"mimeType":"image/png"}));
                     textures.push(json!({"sampler":3,"source":index}));
                     composite_image_keys.insert(stroke.id, index);
                     image_samplers = true;
@@ -1258,7 +1454,7 @@ pub fn encode_with_images(
                 "sampler": "linear_repeat",
             });
         }
-        if composite_image.is_some() {
+        if composite_image.is_some() && has_independent_tip_grain(stroke) {
             node["extras"]["spatialSketchTipGrainComposite"] = json!({
                 "coverage": "tip_alpha_times_grain_alpha",
                 "tipRgb": "preserved",
@@ -1290,6 +1486,22 @@ pub fn encode_with_images(
                 node["extras"]["spatialSketchEmissiveTipGrainFallback"] =
                     json!("baseColorTexture_and_COLOR_0_preserve_tip_and_composite_alpha; emissiveFactor_remains_uniform");
             }
+        }
+        if composite_image.is_some() && has_dynamic_grain(stroke) && stroke.brush.tip_asset_id == 0
+        {
+            node["extras"]["spatialSketchTextureDynamics"] = json!({
+                "pressureSamplesAvailable": settings.pressure_samples_available,
+                "manualPressureFallback": settings.dynamics.manual_pressure,
+                "manualSpeedFallback": settings.dynamics.manual_speed,
+                "speedRangeWorldUnitsPerSecond": [settings.dynamics.speed_minimum, settings.dynamics.speed_maximum],
+                "pressureStrength": settings.dynamics.pressure_strength,
+                "pressureContrast": settings.dynamics.pressure_contrast,
+                "speedStrength": settings.dynamics.speed_strength,
+                "speedContrast": settings.dynamics.speed_contrast,
+                "combination": "pressure_and_speed_multipliers_multiply",
+                "bake": "per_triangle_dynamic_grain_atlas",
+                "atlasSize": composite_image.as_ref().map(|image| image.size),
+            });
         }
         if let Some(fill) = stroke.fill {
             node["extras"]["spatialSketchGeometry"] = json!("planar_fill");
