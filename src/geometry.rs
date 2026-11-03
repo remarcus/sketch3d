@@ -571,11 +571,17 @@ fn profile_tube_mesh(stroke: &Stroke) -> Vec<Vertex> {
 }
 /// Conservative brush radius, shared by selection and geometry bounds.
 pub fn stroke_extent(stroke: &Stroke) -> f32 {
-    let evaluated = match crate::stroke_modifiers::evaluated_stroke(stroke) {
-        Ok(stroke) => stroke,
+    let evaluated = match crate::stroke_modifiers::evaluated_strokes(stroke) {
+        Ok(strokes) => strokes,
         Err(_) => return 0.0,
     };
-    let stroke = evaluated.as_ref();
+    evaluated
+        .iter()
+        .map(|stroke| stroke_extent_evaluated(stroke.as_ref()))
+        .fold(0.0, f32::max)
+}
+
+fn stroke_extent_evaluated(stroke: &Stroke) -> f32 {
     if stroke.fill.is_some() {
         return 0.0;
     }
@@ -691,21 +697,34 @@ fn taper_points(stroke: &Stroke) -> Vec<crate::document::Point> {
 }
 /// All ink is built in document space. Camera changes cannot rotate a brush mark.
 pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
-    let mut vertices = stroke_mesh_unmapped(stroke);
-    if stroke.fill.is_none() && stroke.brush.tip_asset_id == 0 {
-        for vertex in &mut vertices {
-            vertex.uv = stroke.brush.texture.mapping.map(vertex.uv);
+    let evaluated = match crate::stroke_modifiers::evaluated_strokes(stroke) {
+        Ok(strokes) => strokes,
+        Err(_) => return Vec::new(),
+    };
+    let is_array = evaluated.len() > 1;
+    let mut vertices = Vec::new();
+    for evaluated_stroke in evaluated {
+        let evaluated_stroke = evaluated_stroke.as_ref();
+        let mut generated = stroke_mesh_unmapped_evaluated(evaluated_stroke);
+        if evaluated_stroke.fill.is_none() && evaluated_stroke.brush.tip_asset_id == 0 {
+            for vertex in &mut generated {
+                vertex.uv = evaluated_stroke.brush.texture.mapping.map(vertex.uv);
+            }
         }
+        if is_array
+            && vertices
+                .len()
+                .checked_add(generated.len())
+                .is_none_or(|count| count > crate::stroke_modifiers::MAX_ARRAY_EXPANDED_VERTICES)
+        {
+            return Vec::new();
+        }
+        vertices.extend(generated);
     }
     vertices
 }
 
-fn stroke_mesh_unmapped(stroke: &Stroke) -> Vec<Vertex> {
-    let evaluated = match crate::stroke_modifiers::evaluated_stroke(stroke) {
-        Ok(stroke) => stroke,
-        Err(_) => return Vec::new(),
-    };
-    let stroke = evaluated.as_ref();
+fn stroke_mesh_unmapped_evaluated(stroke: &Stroke) -> Vec<Vertex> {
     let material = match stroke.material {
         StrokeMaterial::Shaded => 0.0,
         StrokeMaterial::Unlit => 1.0,

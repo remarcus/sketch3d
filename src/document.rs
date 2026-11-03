@@ -1074,6 +1074,16 @@ impl Document {
                 let source = source_map
                     .get(id)
                     .ok_or("Linked group source stroke is missing")?;
+                if source
+                    .modifiers
+                    .as_ref()
+                    .is_some_and(|stack| stack.has_enabled_array())
+                {
+                    return Err(
+                        "Array modifier strokes must be baked before they can enter a linked group"
+                            .into(),
+                    );
+                }
                 if layer_id.is_some_and(|layer| layer != source.layer_id) {
                     return Err("Linked group sources must remain on one layer".into());
                 }

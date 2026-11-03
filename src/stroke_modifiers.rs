@@ -16,6 +16,9 @@ pub const MAX_SMOOTH_ITERATIONS: u8 = 8;
 pub const MAX_NOISE_AMPLITUDE: f32 = 100.0;
 pub const MIN_NOISE_FREQUENCY: f32 = 0.01;
 pub const MAX_NOISE_FREQUENCY: f32 = 100.0;
+pub const MAX_ARRAY_COPIES: u16 = 100;
+pub const MAX_ARRAY_EXPANDED_POINTS: usize = 250_000;
+pub const MAX_ARRAY_EXPANDED_VERTICES: usize = 1_000_000;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeometryCacheKey {
@@ -78,6 +81,19 @@ pub enum ModifierKind {
         thickness: f32,
         /// Fade centerline and thickness changes to zero at both endpoints.
         preserve_endpoints: bool,
+    },
+    /// Terminal repeated copies. Every copy applies positive XYZ scale around
+    /// the evaluated centerline bounds center, XYZ Euler rotation, then world
+    /// translation; each step is applied to the previous copy.
+    Array {
+        /// Number of additional copies after the evaluated source.
+        copies: u16,
+        /// Per-copy world-space translation.
+        translation: [f32; 3],
+        /// Per-copy XYZ Euler rotation in degrees.
+        rotation_degrees: [f32; 3],
+        /// Per-copy positive scale along world X, Y and Z.
+        scale: [f32; 3],
     },
 }
 
@@ -144,6 +160,27 @@ impl StrokeModifierStack {
                         && thickness.is_finite()
                         && (0.0..=1.0).contains(&thickness)
                 }
+                ModifierKind::Array {
+                    copies,
+                    translation,
+                    rotation_degrees,
+                    scale,
+                } => {
+                    (1..=MAX_ARRAY_COPIES).contains(&copies)
+                        && translation
+                            .iter()
+                            .all(|value| value.is_finite() && value.abs() <= 1_000.0)
+                        && rotation_degrees
+                            .iter()
+                            .all(|value| value.is_finite() && value.abs() <= 360.0)
+                        && scale
+                            .iter()
+                            .all(|value| value.is_finite() && (0.1..=10.0).contains(value))
+                }
+            })
+            && self.modifiers.iter().enumerate().all(|(index, modifier)| {
+                !matches!(modifier.kind, ModifierKind::Array { .. })
+                    || index + 1 == self.modifiers.len()
             })
     }
 
@@ -151,17 +188,201 @@ impl StrokeModifierStack {
         if stroke.fill.is_some() {
             return false;
         }
-        !stroke.curve.is_some()
-            || !self.modifiers.iter().any(|modifier| {
+        let unsupported_semantic = stroke.curve.is_some()
+            && self.modifiers.iter().any(|modifier| {
                 modifier.enabled
                     && matches!(
                         modifier.kind,
-                        ModifierKind::Smooth { .. } | ModifierKind::Noise { .. }
+                        ModifierKind::Smooth { .. }
+                            | ModifierKind::Noise { .. }
+                            | ModifierKind::Array { .. }
                     )
-            })
+            });
+        !unsupported_semantic && (!self.has_enabled_array() || Self::supports_array(stroke))
     }
 
-    /// Evaluate modifiers in list order without changing the saved source.
+    pub fn has_array(&self) -> bool {
+        self.modifiers
+            .iter()
+            .any(|modifier| matches!(modifier.kind, ModifierKind::Array { .. }))
+    }
+
+    pub fn has_enabled_array(&self) -> bool {
+        self.modifiers
+            .iter()
+            .any(|modifier| modifier.enabled && matches!(modifier.kind, ModifierKind::Array { .. }))
+    }
+
+    /// Arrays operate on ordinary round strokes whose mesh has a known bounded
+    /// topology estimate. Specialized dab, stamp, strand and surface strokes
+    /// must be baked or converted before they can be repeated non-destructively.
+    pub fn supports_array(stroke: &Stroke) -> bool {
+        stroke.fill.is_none()
+            && stroke.curve.is_none()
+            && stroke.model_surface.is_none()
+            && stroke.brush.kind == crate::document::BrushKind::Round
+            && stroke.brush.tube_profile == crate::document::TubeProfile::Round
+            && !stroke.brush.flow.enabled
+            && !stroke.brush.dabs.enabled
+            && !stroke.brush.strands.enabled
+            && stroke.brush.tip_asset_id == 0
+    }
+
+    /// Validate the expanded work estimate without cloning any generated copies.
+    pub fn validate_expansion(&self, source: &Stroke) -> Result<(), String> {
+        if !self.is_valid(source.points.len()) || !self.is_compatible(source) {
+            return Err("Stroke modifier stack is invalid or incompatible".into());
+        }
+        let base = self.evaluate(source)?;
+        self.validate_array_budget(&base)
+    }
+
+    fn validate_array_budget(&self, base: &Stroke) -> Result<(), String> {
+        let Some(StrokeModifier {
+            enabled: true,
+            kind:
+                ModifierKind::Array {
+                    copies,
+                    translation,
+                    rotation_degrees,
+                    scale,
+                },
+        }) = self.modifiers.last()
+        else {
+            return Ok(());
+        };
+        if !Self::supports_array(base) || base.points.is_empty() {
+            return Err("Array requires a non-empty ordinary round stroke".into());
+        }
+        let instance_count = usize::from(*copies)
+            .checked_add(1)
+            .ok_or("Array copy count overflow")?;
+        let expanded_points = base
+            .points
+            .len()
+            .checked_mul(instance_count)
+            .ok_or("Array point estimate overflow")?;
+        if expanded_points > MAX_ARRAY_EXPANDED_POINTS {
+            return Err(format!(
+                "Array exceeds the {MAX_ARRAY_EXPANDED_POINTS}-point expanded limit"
+            ));
+        }
+        let taper_landmarks = usize::from(
+            base.brush.dynamics.taper_start > 0.0 || base.brush.dynamics.taper_end > 0.0,
+        ) * 3;
+        let estimated_mesh_points = base
+            .points
+            .len()
+            .checked_add(taper_landmarks)
+            .ok_or("Array mesh estimate overflow")?;
+        let one_mesh = if estimated_mesh_points <= 1 {
+            36
+        } else {
+            (estimated_mesh_points - 1)
+                .checked_mul(48)
+                .and_then(|vertices| vertices.checked_add(48))
+                .ok_or("Array mesh estimate overflow")?
+        };
+        let expanded_vertices = one_mesh
+            .checked_mul(instance_count)
+            .ok_or("Array mesh estimate overflow")?;
+        if expanded_vertices > MAX_ARRAY_EXPANDED_VERTICES {
+            return Err(format!(
+                "Array exceeds the {MAX_ARRAY_EXPANDED_VERTICES}-vertex expanded limit"
+            ));
+        }
+        // Build the pivot and transforms during preflight so invalid step
+        // sequences fail before allocating the repeated geometry.
+        let pivot = stroke_bounds_center(base)?;
+        let rotation = glam::Quat::from_euler(
+            glam::EulerRot::XYZ,
+            rotation_degrees[0].to_radians(),
+            rotation_degrees[1].to_radians(),
+            rotation_degrees[2].to_radians(),
+        );
+        let translation = glam::Vec3::from(*translation);
+        let scale = glam::Vec3::from(*scale);
+        if !rotation.is_finite() || !translation.is_finite() || !scale.is_finite() {
+            return Err("Array transform is invalid".into());
+        }
+        let mut previous = base.clone();
+        for _ in 0..*copies {
+            let before = vec![(0, previous)];
+            let mut transformed = crate::editing::transformed_with_scale(
+                &before,
+                pivot,
+                translation,
+                rotation,
+                scale,
+                glam::Quat::IDENTITY,
+                true,
+            )
+            .map_err(|error| error.to_string())?;
+            previous = transformed
+                .pop()
+                .ok_or("Array transform produced no stroke")?
+                .1;
+        }
+        Ok(())
+    }
+
+    /// Evaluate a stack into one or more renderable strokes. Array copies share
+    /// the source ID while live, so picking and editing continue to target the
+    /// source record.
+    pub fn evaluate_expanded(&self, source: &Stroke) -> Result<Vec<Stroke>, String> {
+        let base = self.evaluate(source)?;
+        self.validate_array_budget(&base)?;
+        let Some(StrokeModifier {
+            enabled: true,
+            kind:
+                ModifierKind::Array {
+                    copies,
+                    translation,
+                    rotation_degrees,
+                    scale,
+                },
+        }) = self.modifiers.last()
+        else {
+            return Ok(vec![base]);
+        };
+        let pivot = stroke_bounds_center(&base)?;
+        let rotation = glam::Quat::from_euler(
+            glam::EulerRot::XYZ,
+            rotation_degrees[0].to_radians(),
+            rotation_degrees[1].to_radians(),
+            rotation_degrees[2].to_radians(),
+        );
+        let translation = glam::Vec3::from(*translation);
+        let scale = glam::Vec3::from(*scale);
+        let mut expanded = Vec::with_capacity(usize::from(*copies) + 1);
+        expanded.push(base);
+        for _ in 0..*copies {
+            let previous = expanded.last().ok_or("Array source is missing")?;
+            let before = vec![(0, previous.clone())];
+            let mut transformed = crate::editing::transformed_with_scale(
+                &before,
+                pivot,
+                translation,
+                rotation,
+                scale,
+                glam::Quat::IDENTITY,
+                true,
+            )
+            .map_err(|error| error.to_string())?;
+            let mut copy = transformed
+                .pop()
+                .ok_or("Array transform produced no stroke")?
+                .1;
+            copy.id = source.id;
+            copy.modifiers = None;
+            expanded.push(copy);
+        }
+        Ok(expanded)
+    }
+
+    /// Evaluate single-stroke modifiers in list order without changing the
+    /// saved source. A terminal Array is expanded separately by
+    /// [`evaluate_expanded`].
     pub fn evaluate(&self, source: &Stroke) -> Result<Stroke, String> {
         if !self.is_valid(source.points.len()) || !self.is_compatible(source) {
             return Err("Stroke modifier stack is invalid or over budget".into());
@@ -291,6 +512,10 @@ impl StrokeModifierStack {
                         }
                     }
                 }
+                ModifierKind::Array { .. } => {
+                    // Array is terminal and is expanded by evaluate_expanded
+                    // after the single-source stack has been evaluated.
+                }
             }
         }
         if result.point_thickness.as_ref().is_some_and(|profile| {
@@ -333,18 +558,76 @@ fn lattice_value(seed: u32, cell: i64, channel: u64) -> f32 {
     unit * 2.0 - 1.0
 }
 
+fn stroke_bounds_center(stroke: &Stroke) -> Result<glam::Vec3, String> {
+    let Some(first) = stroke.points.first() else {
+        return Err("Array requires a non-empty stroke".into());
+    };
+    let (min, max) = stroke
+        .points
+        .iter()
+        .skip(1)
+        .fold((first.position, first.position), |(min, max), point| {
+            (min.min(point.position), max.max(point.position))
+        });
+    let center = (min + max) * 0.5;
+    if !center.is_finite() || center.abs().max_element() > 10_000.0 {
+        return Err("Array pivot exceeds document bounds".into());
+    }
+    Ok(center)
+}
+
 /// Bake the derived result while retaining source identity, style and layer.
 pub fn bake(source: &Stroke) -> Result<Stroke, String> {
     let Some(stack) = source.modifiers.as_ref() else {
         return Ok(source.clone());
     };
+    if stack.has_enabled_array() {
+        return Err("Array modifiers produce several strokes; use bake_expanded".into());
+    }
     stack.evaluate(source)
+}
+
+/// Bake a stack into independent strokes. The original source ID stays with
+/// the first result; generated copies receive consecutive IDs from `next_id`.
+pub fn bake_expanded(source: &Stroke, next_id: u64) -> Result<Vec<Stroke>, String> {
+    let expanded = match source.modifiers.as_ref() {
+        Some(stack) => stack.evaluate_expanded(source)?,
+        None => vec![source.clone()],
+    };
+    let additional = expanded.len().saturating_sub(1);
+    let end_id = next_id
+        .checked_add(u64::try_from(additional).map_err(|_| "No more stroke IDs available")?)
+        .ok_or("No more stroke IDs available")?;
+    if end_id == u64::MAX {
+        return Err("No more stroke IDs available".into());
+    }
+    let mut baked = expanded;
+    for (index, stroke) in baked.iter_mut().enumerate() {
+        if index > 0 {
+            stroke.id = next_id + (index as u64 - 1);
+            stroke.group_id = None;
+        }
+        stroke.modifiers = None;
+    }
+    Ok(baked)
 }
 
 pub fn evaluated_stroke(source: &Stroke) -> Result<Cow<'_, Stroke>, String> {
     match source.modifiers.as_ref() {
         Some(stack) => Ok(Cow::Owned(stack.evaluate(source)?)),
         None => Ok(Cow::Borrowed(source)),
+    }
+}
+
+/// Return all live geometry branches for viewport, export, and picking.
+pub fn evaluated_strokes(source: &Stroke) -> Result<Vec<Cow<'_, Stroke>>, String> {
+    match source.modifiers.as_ref() {
+        Some(stack) if stack.has_enabled_array() => Ok(stack
+            .evaluate_expanded(source)?
+            .into_iter()
+            .map(Cow::Owned)
+            .collect()),
+        _ => Ok(vec![evaluated_stroke(source)?]),
     }
 }
 
@@ -414,6 +697,15 @@ pub fn benchmark(output: &Path) -> Result<(), String> {
                     preserve_endpoints: true,
                 },
             },
+            StrokeModifier {
+                enabled: true,
+                kind: ModifierKind::Array {
+                    copies: 3,
+                    translation: [0.35, 0.0, 0.0],
+                    rotation_degrees: [0.0, 0.0, 8.0],
+                    scale: [1.0, 1.0, 1.0],
+                },
+            },
         ],
     });
     let stack = source.modifiers.as_ref().unwrap();
@@ -455,6 +747,7 @@ pub fn benchmark(output: &Path) -> Result<(), String> {
             "modifier_count": stack.modifiers.len(),
             "noise_seed": 17,
             "noise_frequency_cycles_per_world_unit": 4.0,
+            "array_additional_copies": 3,
             "iterations": 2
         },
         "timings": {

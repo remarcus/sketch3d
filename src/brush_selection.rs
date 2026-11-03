@@ -49,130 +49,140 @@ pub fn region_hit_ids(
     }
     let mut hits = HashSet::new();
     let mut work = 0usize;
-    for stroke in doc.strokes.iter().filter(|stroke| doc.editable(stroke)) {
-        if stroke.points.is_empty() {
-            continue;
-        }
-        work = work.saturating_add(stroke.points.len());
-        if work > MAX_WORK {
-            return Err("Selection query exceeded its 5,000,000 geometry budget");
-        }
-        let projected: Option<Vec<_>> = stroke
-            .points
-            .iter()
-            .map(|point| {
-                gizmo::project(camera, canvas, point.position)
-                    .map(|(screen, _)| (screen, point.position))
-            })
-            .collect();
-        let Some(projected) = projected else {
+    for source in doc.strokes.iter().filter(|stroke| doc.editable(stroke)) {
+        let Ok(evaluated_copies) = crate::stroke_modifiers::evaluated_strokes(source) else {
             continue;
         };
-        let contour: Vec<_> = projected.iter().map(|entry| entry.0).collect();
-        let extent = crate::geometry::stroke_extent(stroke);
-        let mut witnesses = Vec::new();
+        for evaluated in evaluated_copies {
+            let stroke = evaluated.as_ref();
+            if stroke.points.is_empty() {
+                continue;
+            }
+            work = work.saturating_add(stroke.points.len());
+            if work > MAX_WORK {
+                return Err("Selection query exceeded its 5,000,000 geometry budget");
+            }
+            let projected: Option<Vec<_>> = stroke
+                .points
+                .iter()
+                .map(|point| {
+                    gizmo::project(camera, canvas, point.position)
+                        .map(|(screen, _)| (screen, point.position))
+                })
+                .collect();
+            let Some(projected) = projected else {
+                continue;
+            };
+            let contour: Vec<_> = projected.iter().map(|entry| entry.0).collect();
+            let extent = crate::geometry::stroke_extent(stroke);
+            let mut witnesses = Vec::new();
 
-        if stroke.fill.is_some() {
-            let contained = contour.iter().all(|p| point_in_polygon(*p, region));
-            if fully_contained {
-                if contained {
+            if stroke.fill.is_some() {
+                let contained = contour.iter().all(|p| point_in_polygon(*p, region));
+                if fully_contained {
+                    if contained {
+                        witnesses.extend(contour.iter().copied());
+                    }
+                } else {
+                    witnesses.extend(
+                        contour
+                            .iter()
+                            .copied()
+                            .filter(|p| point_in_polygon(*p, region)),
+                    );
+                    witnesses.extend(
+                        region
+                            .iter()
+                            .copied()
+                            .filter(|p| point_in_polygon(*p, &contour)),
+                    );
+                    for i in 0..contour.len() {
+                        for j in 0..region.len() {
+                            work += 1;
+                            if work > MAX_WORK {
+                                return Err(
+                                    "Selection query exceeded its 5,000,000 intersection budget",
+                                );
+                            }
+                            let hit = closest_segments(
+                                contour[i],
+                                contour[(i + 1) % contour.len()],
+                                region[j],
+                                region[(j + 1) % region.len()],
+                            );
+                            if hit.0 <= 0.01 {
+                                witnesses.push(hit.1);
+                            }
+                        }
+                    }
+                }
+            } else if fully_contained {
+                let all_inside = contour.iter().all(|p| point_in_polygon(*p, region));
+                if all_inside {
                     witnesses.extend(contour.iter().copied());
                 }
             } else {
-                witnesses.extend(
-                    contour
-                        .iter()
-                        .copied()
-                        .filter(|p| point_in_polygon(*p, region)),
-                );
-                witnesses.extend(
-                    region
-                        .iter()
-                        .copied()
-                        .filter(|p| point_in_polygon(*p, &contour)),
-                );
-                for i in 0..contour.len() {
-                    for j in 0..region.len() {
-                        work += 1;
-                        if work > MAX_WORK {
-                            return Err(
-                                "Selection query exceeded its 5,000,000 intersection budget",
+                let edge_count = region.len();
+                if projected.len() == 1 {
+                    let radius_px = extent
+                        / camera
+                            .world_per_pixel(projected[0].1, canvas.height())
+                            .max(1e-6);
+                    if point_in_polygon(contour[0], region)
+                        || (0..region.len()).any(|edge| {
+                            closest_point(
+                                region[edge],
+                                region[(edge + 1) % region.len()],
+                                contour[0],
+                            )
+                            .0 <= radius_px
+                        })
+                    {
+                        witnesses.push(contour[0]);
+                    }
+                } else {
+                    for pair in projected.windows(2) {
+                        let world_per_pixel =
+                            camera.world_per_pixel(pair[0].1, canvas.height()).max(1e-6);
+                        let radius_px = extent / world_per_pixel;
+                        if point_in_polygon(pair[0].0, region) {
+                            witnesses.push(pair[0].0);
+                        }
+                        for edge in 0..edge_count {
+                            work += 1;
+                            if work > MAX_WORK {
+                                return Err(
+                                    "Selection query exceeded its 5,000,000 intersection budget",
+                                );
+                            }
+                            let closest = closest_segments(
+                                pair[0].0,
+                                pair[1].0,
+                                region[edge],
+                                region[(edge + 1) % edge_count],
                             );
+                            if closest.0 <= radius_px {
+                                witnesses.push(closest.1);
+                            }
                         }
-                        let hit = closest_segments(
-                            contour[i],
-                            contour[(i + 1) % contour.len()],
-                            region[j],
-                            region[(j + 1) % region.len()],
-                        );
-                        if hit.0 <= 0.01 {
-                            witnesses.push(hit.1);
-                        }
+                    }
+                    if point_in_polygon(*contour.last().unwrap(), region) {
+                        witnesses.push(*contour.last().unwrap());
                     }
                 }
             }
-        } else if fully_contained {
-            let all_inside = contour.iter().all(|p| point_in_polygon(*p, region));
-            if all_inside {
-                witnesses.extend(contour.iter().copied());
-            }
-        } else {
-            let edge_count = region.len();
-            if projected.len() == 1 {
-                let radius_px = extent
-                    / camera
-                        .world_per_pixel(projected[0].1, canvas.height())
-                        .max(1e-6);
-                if point_in_polygon(contour[0], region)
-                    || (0..region.len()).any(|edge| {
-                        closest_point(region[edge], region[(edge + 1) % region.len()], contour[0]).0
-                            <= radius_px
-                    })
-                {
-                    witnesses.push(contour[0]);
-                }
+            let witness = witnesses.into_iter().find(|point| {
+                through_selection || gizmo::pick(doc, camera, canvas, *point) == Some(stroke.id)
+            });
+            let Some(witness) = witness else {
+                continue;
+            };
+            let _ = witness;
+            if individual {
+                hits.insert(stroke.id);
             } else {
-                for pair in projected.windows(2) {
-                    let world_per_pixel =
-                        camera.world_per_pixel(pair[0].1, canvas.height()).max(1e-6);
-                    let radius_px = extent / world_per_pixel;
-                    if point_in_polygon(pair[0].0, region) {
-                        witnesses.push(pair[0].0);
-                    }
-                    for edge in 0..edge_count {
-                        work += 1;
-                        if work > MAX_WORK {
-                            return Err(
-                                "Selection query exceeded its 5,000,000 intersection budget",
-                            );
-                        }
-                        let closest = closest_segments(
-                            pair[0].0,
-                            pair[1].0,
-                            region[edge],
-                            region[(edge + 1) % edge_count],
-                        );
-                        if closest.0 <= radius_px {
-                            witnesses.push(closest.1);
-                        }
-                    }
-                }
-                if point_in_polygon(*contour.last().unwrap(), region) {
-                    witnesses.push(*contour.last().unwrap());
-                }
+                hits.extend(doc.selection_for_stroke(stroke.id, false));
             }
-        }
-        let witness = witnesses.into_iter().find(|point| {
-            through_selection || gizmo::pick(doc, camera, canvas, *point) == Some(stroke.id)
-        });
-        let Some(witness) = witness else {
-            continue;
-        };
-        let _ = witness;
-        if individual {
-            hits.insert(stroke.id);
-        } else {
-            hits.extend(doc.selection_for_stroke(stroke.id, false));
         }
     }
     Ok(hits)
@@ -226,71 +236,77 @@ pub fn hit_ids(
     }
 
     let mut hits = HashSet::new();
-    for stroke in doc.strokes.iter().filter(|stroke| doc.editable(stroke)) {
-        if stroke.points.is_empty() {
+    for source in doc.strokes.iter().filter(|stroke| doc.editable(stroke)) {
+        let Ok(evaluated_copies) = crate::stroke_modifiers::evaluated_strokes(source) else {
             continue;
-        }
-        let extent = crate::geometry::stroke_extent(stroke);
-        let projected: Option<Vec<_>> = stroke
-            .points
-            .iter()
-            .map(|point| {
-                gizmo::project(camera, canvas, point.position)
-                    .map(|(screen, _)| (screen, point.position))
-            })
-            .collect();
-        // Skipping a partly clipped stroke is preferable to connecting points
-        // across a camera-plane or clip-plane gap and selecting empty space.
-        let Some(projected) = projected else { continue };
-        if projected.is_empty() {
-            continue;
-        }
+        };
+        for evaluated in evaluated_copies {
+            let stroke = evaluated.as_ref();
+            if stroke.points.is_empty() {
+                continue;
+            }
+            let extent = crate::geometry::stroke_extent(stroke);
+            let projected: Option<Vec<_>> = stroke
+                .points
+                .iter()
+                .map(|point| {
+                    gizmo::project(camera, canvas, point.position)
+                        .map(|(screen, _)| (screen, point.position))
+                })
+                .collect();
+            // Skipping a partly clipped stroke is preferable to connecting points
+            // across a camera-plane or clip-plane gap and selecting empty space.
+            let Some(projected) = projected else { continue };
+            if projected.is_empty() {
+                continue;
+            }
 
-        let mut witness = None;
-        if stroke.fill.is_some() {
-            // A filled mark is treated as a selectable closed outline. The
-            // interior also counts, using the candidate's ray hit as witness.
-            let contour: Vec<_> = projected.iter().map(|(screen, _)| *screen).collect();
-            for segment in path_segments(path) {
-                if point_in_polygon(segment.0, &contour) {
-                    witness = Some(segment.0);
-                    break;
+            let mut witness = None;
+            if stroke.fill.is_some() {
+                // A filled mark is treated as a selectable closed outline. The
+                // interior also counts, using the candidate's ray hit as witness.
+                let contour: Vec<_> = projected.iter().map(|(screen, _)| *screen).collect();
+                for segment in path_segments(path) {
+                    if point_in_polygon(segment.0, &contour) {
+                        witness = Some(segment.0);
+                        break;
+                    }
+                    if let Some(candidate) = closest_path_to_polyline(segment, &projected, true) {
+                        if candidate.distance <= radius_px {
+                            witness = Some(candidate.stroke_screen);
+                            break;
+                        }
+                    }
                 }
-                if let Some(candidate) = closest_path_to_polyline(segment, &projected, true) {
-                    if candidate.distance <= radius_px {
-                        witness = Some(candidate.stroke_screen);
+            } else if projected.len() == 1 {
+                for (start, end) in path_segments(path) {
+                    let (distance, _) = closest_point(start, end, projected[0].0);
+                    let width = extent / camera.world_per_pixel(projected[0].1, canvas.height());
+                    if distance <= radius_px + width {
+                        witness = Some(projected[0].0);
                         break;
                     }
                 }
-            }
-        } else if projected.len() == 1 {
-            for (start, end) in path_segments(path) {
-                let (distance, _) = closest_point(start, end, projected[0].0);
-                let width = extent / camera.world_per_pixel(projected[0].1, canvas.height());
-                if distance <= radius_px + width {
-                    witness = Some(projected[0].0);
-                    break;
-                }
-            }
-        } else {
-            'path: for segment in path_segments(path) {
-                if let Some(candidate) = closest_path_to_polyline(segment, &projected, false) {
-                    let world = candidate.stroke_world;
-                    let width = extent / camera.world_per_pixel(world, canvas.height());
-                    if candidate.distance <= radius_px + width {
-                        witness = Some(candidate.stroke_screen);
-                        break 'path;
+            } else {
+                'path: for segment in path_segments(path) {
+                    if let Some(candidate) = closest_path_to_polyline(segment, &projected, false) {
+                        let world = candidate.stroke_world;
+                        let width = extent / camera.world_per_pixel(world, canvas.height());
+                        if candidate.distance <= radius_px + width {
+                            witness = Some(candidate.stroke_screen);
+                            break 'path;
+                        }
                     }
                 }
             }
-        }
 
-        let Some(witness) = witness else { continue };
-        if through_selection || gizmo::pick(doc, camera, canvas, witness) == Some(stroke.id) {
-            if individual {
-                hits.insert(stroke.id);
-            } else {
-                hits.extend(doc.selection_for_stroke(stroke.id, false));
+            let Some(witness) = witness else { continue };
+            if through_selection || gizmo::pick(doc, camera, canvas, witness) == Some(stroke.id) {
+                if individual {
+                    hits.insert(stroke.id);
+                } else {
+                    hits.extend(doc.selection_for_stroke(stroke.id, false));
+                }
             }
         }
     }

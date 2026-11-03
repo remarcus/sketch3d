@@ -159,8 +159,8 @@ pub(super) struct RepeatState {
 }
 
 const MAX_REPEAT_COPIES: usize = 100;
-const MAX_DOCUMENT_STROKES: usize = 100_000;
-const MAX_DOCUMENT_POINTS: usize = 2_000_000;
+pub(super) const MAX_DOCUMENT_STROKES: usize = 100_000;
+pub(super) const MAX_DOCUMENT_POINTS: usize = 2_000_000;
 
 fn region_polygon(drag: &RegionSelectionDrag) -> Vec<Pos2> {
     if drag.shape == RegionSelectionShape::Box {

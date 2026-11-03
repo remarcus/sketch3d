@@ -534,18 +534,20 @@ pub fn selection_bounds(
         .iter()
         .filter(|stroke| selection.stroke_ids.contains(&stroke.id))
     {
-        let Ok(evaluated) = crate::stroke_modifiers::evaluated_stroke(stroke) else {
+        let Ok(evaluated_copies) = crate::stroke_modifiers::evaluated_strokes(stroke) else {
             continue;
         };
-        let stroke = evaluated.as_ref();
-        let extent = Vec3::splat(crate::geometry::stroke_extent(stroke));
-        for point in &stroke.points {
-            let position = point.position
-                - stroke
-                    .fill
-                    .map_or(Vec3::ZERO, |fill| stroke.brush.normal * fill.offset);
-            include_point(&mut bounds, position - extent);
-            include_point(&mut bounds, position + extent);
+        for evaluated in evaluated_copies {
+            let stroke = evaluated.as_ref();
+            let extent = Vec3::splat(crate::geometry::stroke_extent(stroke));
+            for point in &stroke.points {
+                let position = point.position
+                    - stroke
+                        .fill
+                        .map_or(Vec3::ZERO, |fill| stroke.brush.normal * fill.offset);
+                include_point(&mut bounds, position - extent);
+                include_point(&mut bounds, position + extent);
+            }
         }
     }
     for plane in document

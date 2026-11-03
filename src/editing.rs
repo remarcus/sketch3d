@@ -433,14 +433,20 @@ pub fn bounds(doc: &Document, selected: &HashSet<u64>) -> Option<(Vec3, Vec3)> {
         .iter()
         .filter(|s| selected.contains(&s.id) && !generated.contains(&s.id) && doc.editable(s))
     {
-        let extent = Vec3::splat(crate::geometry::stroke_extent(stroke));
-        for point in &stroke.points {
-            let position = point.position
-                - stroke
-                    .fill
-                    .map_or(Vec3::ZERO, |fill| stroke.brush.normal * fill.offset);
-            min = min.min(position - extent);
-            max = max.max(position + extent);
+        let Ok(evaluated_copies) = crate::stroke_modifiers::evaluated_strokes(stroke) else {
+            continue;
+        };
+        for evaluated in evaluated_copies {
+            let stroke = evaluated.as_ref();
+            let extent = Vec3::splat(crate::geometry::stroke_extent(stroke));
+            for point in &stroke.points {
+                let position = point.position
+                    - stroke
+                        .fill
+                        .map_or(Vec3::ZERO, |fill| stroke.brush.normal * fill.offset);
+                min = min.min(position - extent);
+                max = max.max(position + extent);
+            }
         }
     }
     min.is_finite().then_some((min, max))

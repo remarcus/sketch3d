@@ -184,112 +184,116 @@ fn pick_filtered(
             doc.visible(stroke)
         }
     }) {
-        let Ok(evaluated) = crate::stroke_modifiers::evaluated_stroke(stroke) else {
+        let Ok(evaluated_copies) = crate::stroke_modifiers::evaluated_strokes(stroke) else {
             continue;
         };
-        let stroke = evaluated.as_ref();
-        let mesh_covered = stroke.fill.is_none()
-            && (stroke.brush.flow.enabled
-                || stroke.brush.strands.enabled
-                || stroke.brush.dabs.enabled
-                || stroke.brush.tip_asset_id != 0
-                || (stroke.brush.texture.kind != crate::texture::TextureKind::Solid
-                    && stroke.brush.texture.strength > 0.0));
-        if mesh_covered {
-            let extent = crate::geometry::stroke_extent(stroke);
-            let close = stroke.points.iter().any(|point| {
-                project(camera, rect, point.position).is_some_and(|(screen, _)| {
-                    let width = extent / camera.world_per_pixel(point.position, rect.height());
-                    screen.distance(pos) <= 8.0 + width
-                })
-            }) || stroke.points.windows(2).any(|pair| {
-                let (Some((a, _)), Some((b, _))) = (
-                    project(camera, rect, pair[0].position),
-                    project(camera, rect, pair[1].position),
-                ) else {
-                    return false;
-                };
-                let width = extent
-                    / camera
-                        .world_per_pixel(pair[0].position, rect.height())
-                        .min(camera.world_per_pixel(pair[1].position, rect.height()));
-                distance(pos, a, b).0 <= 8.0 + width
-            });
-            let tip_asset = doc
-                .brush_tip_assets
-                .iter()
-                .find(|asset| asset.id == stroke.brush.tip_asset_id);
-            if !close
-                || textured_surface_covered(stroke, tip_asset, origin, direction) == Some(false)
-            {
-                continue;
-            }
-        }
-        if stroke.fill.is_some() {
-            if let Some(hit) = crate::polygon::ray_hit(stroke, origin, direction) {
-                let texture_visible =
-                    stroke
-                        .fill
-                        .and_then(|fill| fill.texture)
-                        .is_none_or(|texture| {
-                            let Some(asset) = doc
-                                .brush_tip_assets
-                                .iter()
-                                .find(|asset| asset.id == texture.asset_id)
-                            else {
-                                return false;
-                            };
-                            let Some(mut uv) = crate::polygon::mapped_fill_uv(stroke, hit) else {
-                                return false;
-                            };
-                            if texture.repeat {
-                                uv = uv - uv.floor();
-                            } else {
-                                uv = uv.clamp(glam::Vec2::ZERO, glam::Vec2::ONE);
-                            }
-                            asset
-                                .alpha_at_uv(uv.to_array())
-                                .is_ok_and(|alpha| alpha > 0.01)
-                        });
-                if !texture_visible {
+        for evaluated in evaluated_copies {
+            let stroke = evaluated.as_ref();
+            let mesh_covered = stroke.fill.is_none()
+                && (stroke.brush.flow.enabled
+                    || stroke.brush.strands.enabled
+                    || stroke.brush.dabs.enabled
+                    || stroke.brush.tip_asset_id != 0
+                    || (stroke.brush.texture.kind != crate::texture::TextureKind::Solid
+                        && stroke.brush.texture.strength > 0.0));
+            if mesh_covered {
+                let extent = crate::geometry::stroke_extent(stroke);
+                let close = stroke.points.iter().any(|point| {
+                    project(camera, rect, point.position).is_some_and(|(screen, _)| {
+                        let width = extent / camera.world_per_pixel(point.position, rect.height());
+                        screen.distance(pos) <= 8.0 + width
+                    })
+                }) || stroke.points.windows(2).any(|pair| {
+                    let (Some((a, _)), Some((b, _))) = (
+                        project(camera, rect, pair[0].position),
+                        project(camera, rect, pair[1].position),
+                    ) else {
+                        return false;
+                    };
+                    let width = extent
+                        / camera
+                            .world_per_pixel(pair[0].position, rect.height())
+                            .min(camera.world_per_pixel(pair[1].position, rect.height()));
+                    distance(pos, a, b).0 <= 8.0 + width
+                });
+                let tip_asset = doc
+                    .brush_tip_assets
+                    .iter()
+                    .find(|asset| asset.id == stroke.brush.tip_asset_id);
+                if !close
+                    || textured_surface_covered(stroke, tip_asset, origin, direction) == Some(false)
+                {
                     continue;
                 }
-                if let Some((_, depth)) = project(camera, rect, hit) {
-                    if best.is_none_or(|old| depth < old.0) {
-                        best = Some((depth, 0.0, stroke.id));
+            }
+            if stroke.fill.is_some() {
+                if let Some(hit) = crate::polygon::ray_hit(stroke, origin, direction) {
+                    let texture_visible =
+                        stroke
+                            .fill
+                            .and_then(|fill| fill.texture)
+                            .is_none_or(|texture| {
+                                let Some(asset) = doc
+                                    .brush_tip_assets
+                                    .iter()
+                                    .find(|asset| asset.id == texture.asset_id)
+                                else {
+                                    return false;
+                                };
+                                let Some(mut uv) = crate::polygon::mapped_fill_uv(stroke, hit)
+                                else {
+                                    return false;
+                                };
+                                if texture.repeat {
+                                    uv = uv - uv.floor();
+                                } else {
+                                    uv = uv.clamp(glam::Vec2::ZERO, glam::Vec2::ONE);
+                                }
+                                asset
+                                    .alpha_at_uv(uv.to_array())
+                                    .is_ok_and(|alpha| alpha > 0.01)
+                            });
+                    if !texture_visible {
+                        continue;
+                    }
+                    if let Some((_, depth)) = project(camera, rect, hit) {
+                        if best.is_none_or(|old| depth < old.0) {
+                            best = Some((depth, 0.0, stroke.id));
+                        }
                     }
                 }
+                continue;
             }
-            continue;
-        }
-        let extent = crate::geometry::stroke_extent(stroke);
-        let consider = |point: Vec3| -> Option<(Pos2, f32, f32)> {
-            let (p, z) = project(camera, rect, point)?;
-            let width = extent / camera.world_per_pixel(point, rect.height());
-            Some((p, z, width))
-        };
-        let mut hit = |a: (Pos2, f32, f32), b: (Pos2, f32, f32)| {
-            let (dist, t) = distance(pos, a.0, b.0);
-            if dist > 8.0 + a.2.max(b.2) {
-                return;
+            let extent = crate::geometry::stroke_extent(stroke);
+            let consider = |point: Vec3| -> Option<(Pos2, f32, f32)> {
+                let (p, z) = project(camera, rect, point)?;
+                let width = extent / camera.world_per_pixel(point, rect.height());
+                Some((p, z, width))
+            };
+            let mut hit = |a: (Pos2, f32, f32), b: (Pos2, f32, f32)| {
+                let (dist, t) = distance(pos, a.0, b.0);
+                if dist > 8.0 + a.2.max(b.2) {
+                    return;
+                }
+                let depth = a.1 + (b.1 - a.1) * t;
+                let candidate = (depth, dist, stroke.id);
+                if best.is_none_or(|old| {
+                    candidate.0 < old.0 - 0.000001
+                        || ((candidate.0 - old.0).abs() < 0.000001 && candidate.1 < old.1)
+                }) {
+                    best = Some(candidate);
+                }
+            };
+            if stroke.points.len() == 1 {
+                if let Some(a) = consider(stroke.points[0].position) {
+                    hit(a, a);
+                }
             }
-            let depth = a.1 + (b.1 - a.1) * t;
-            let candidate = (depth, dist, stroke.id);
-            if best.is_none_or(|old| {
-                candidate.0 < old.0 - 0.000001
-                    || ((candidate.0 - old.0).abs() < 0.000001 && candidate.1 < old.1)
-            }) {
-                best = Some(candidate);
-            }
-        };
-        if stroke.points.len() == 1 {
-            if let Some(a) = consider(stroke.points[0].position) {
-                hit(a, a);
-            }
-        }
-        for pair in stroke.points.windows(2) {
-            if let (Some(a), Some(b)) = (consider(pair[0].position), consider(pair[1].position)) {
-                hit(a, b);
+            for pair in stroke.points.windows(2) {
+                if let (Some(a), Some(b)) = (consider(pair[0].position), consider(pair[1].position))
+                {
+                    hit(a, b);
+                }
             }
         }
     }

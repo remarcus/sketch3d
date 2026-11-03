@@ -73,11 +73,22 @@ impl SketchApp {
                 let mut move_up = false;
                 let mut move_down = false;
                 let mut remove = false;
+                let is_array = matches!(modifier.kind, crate::stroke_modifiers::ModifierKind::Array { .. });
+                let array_is_next = working
+                    .modifiers
+                    .get(index + 1)
+                    .is_some_and(|next| matches!(next.kind, crate::stroke_modifiers::ModifierKind::Array { .. }));
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut modifier.enabled, modifier_name(modifier.kind).to_string());
-                        move_up = ui.button("↑").on_hover_text("Move modifier earlier").clicked();
-                        move_down = ui.button("↓").on_hover_text("Move modifier later").clicked();
+                        move_up = ui
+                            .add_enabled(index > 0 && !is_array, egui::Button::new("↑"))
+                            .on_hover_text("Move modifier earlier")
+                            .clicked();
+                        move_down = ui
+                            .add_enabled(index + 1 < working.modifiers.len() && !array_is_next, egui::Button::new("↓"))
+                            .on_hover_text("Move modifier later")
+                            .clicked();
                         remove = ui.button("Remove").clicked();
                     });
                     match &mut modifier.kind {
@@ -162,6 +173,61 @@ impl SketchApp {
                                 .checkbox(preserve_endpoints, "Preserve endpoints")
                                 .changed();
                         }
+                        crate::stroke_modifiers::ModifierKind::Array {
+                            copies,
+                            translation,
+                            rotation_degrees,
+                            scale,
+                        } => {
+                            ui.small("Terminal operation. Copies use the evaluated centerline bounds center as pivot. Each step applies XYZ scale, XYZ rotation in degrees, then world-space translation to the preceding copy.");
+                            stack_changed |= ui
+                                .add(
+                                    egui::DragValue::new(copies)
+                                        .range(1..=crate::stroke_modifiers::MAX_ARRAY_COPIES)
+                                        .prefix("Additional copies: "),
+                                )
+                                .changed();
+                            ui.horizontal(|ui| {
+                                ui.label("Translation / copy (wu)");
+                                for (label, value) in ["X", "Y", "Z"].into_iter().zip(translation) {
+                                    stack_changed |= ui
+                                        .add(
+                                            egui::DragValue::new(value)
+                                                .range(-1_000.0..=1_000.0)
+                                                .speed(0.01)
+                                                .prefix(format!("{label} ")),
+                                        )
+                                        .changed();
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Rotation / copy (degrees)");
+                                for (label, value) in ["X", "Y", "Z"].into_iter().zip(rotation_degrees) {
+                                    stack_changed |= ui
+                                        .add(
+                                            egui::DragValue::new(value)
+                                                .range(-360.0..=360.0)
+                                                .speed(1.0)
+                                                .prefix(format!("{label} ")),
+                                        )
+                                        .changed();
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Scale / copy");
+                                for (label, value) in ["X", "Y", "Z"].into_iter().zip(scale) {
+                                    stack_changed |= ui
+                                        .add(
+                                            egui::DragValue::new(value)
+                                                .range(0.1..=10.0)
+                                                .speed(0.01)
+                                                .prefix(format!("{label} ")),
+                                        )
+                                        .changed();
+                                }
+                            });
+                            ui.small("Live copies share the source selection ID. Bake creates independent stroke IDs.");
+                        }
                     }
                 });
                 if modifier != working.modifiers[index] {
@@ -184,12 +250,12 @@ impl SketchApp {
                     break;
                 }
             }
+            let can_add_regular = working.modifiers.len()
+                < crate::stroke_modifiers::MAX_MODIFIERS
+                && !working.has_array();
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(
-                        working.modifiers.len() < crate::stroke_modifiers::MAX_MODIFIERS,
-                        egui::Button::new("+ Thickness"),
-                    )
+                    .add_enabled(can_add_regular, egui::Button::new("+ Thickness"))
                     .clicked()
                 {
                     working.modifiers.push(crate::stroke_modifiers::StrokeModifier {
@@ -200,7 +266,7 @@ impl SketchApp {
                 }
                 if ui
                     .add_enabled(
-                        working.modifiers.len() < crate::stroke_modifiers::MAX_MODIFIERS
+                        can_add_regular
                             && state.before[0].1.curve.is_none(),
                         egui::Button::new("+ Noise"),
                     )
@@ -222,7 +288,7 @@ impl SketchApp {
                 }
                 if ui
                     .add_enabled(
-                        working.modifiers.len() < crate::stroke_modifiers::MAX_MODIFIERS,
+                        can_add_regular,
                         egui::Button::new("+ Taper"),
                     )
                     .clicked()
@@ -238,7 +304,7 @@ impl SketchApp {
                 }
                 if ui
                     .add_enabled(
-                        working.modifiers.len() < crate::stroke_modifiers::MAX_MODIFIERS,
+                        can_add_regular,
                         egui::Button::new("+ Smooth"),
                     )
                     .clicked()
@@ -248,6 +314,29 @@ impl SketchApp {
                         kind: crate::stroke_modifiers::ModifierKind::Smooth {
                             amount: 0.25,
                             iterations: 1,
+                        },
+                    });
+                    stack_changed = true;
+                }
+                if ui
+                    .add_enabled(
+                        working.modifiers.len() < crate::stroke_modifiers::MAX_MODIFIERS
+                            && !working.has_array()
+                            && crate::stroke_modifiers::StrokeModifierStack::supports_array(
+                                &state.before[0].1,
+                            ),
+                        egui::Button::new("+ Array"),
+                    )
+                    .on_hover_text("Repeat ordinary round strokes within point and mesh limits. Bake surface strokes, semantic curves, fills, and specialized brushes first.")
+                    .clicked()
+                {
+                    working.modifiers.push(crate::stroke_modifiers::StrokeModifier {
+                        enabled: true,
+                        kind: crate::stroke_modifiers::ModifierKind::Array {
+                            copies: 3,
+                            translation: [0.25, 0.0, 0.0],
+                            rotation_degrees: [0.0, 0.0, 0.0],
+                            scale: [1.0, 1.0, 1.0],
                         },
                     });
                     stack_changed = true;
@@ -265,7 +354,7 @@ impl SketchApp {
                 });
             }
             if stack_changed {
-                if !working.is_valid(state.before[0].1.points.len()) {
+                        if !working.is_valid(state.before[0].1.points.len()) {
                     self.status = "Modifier values exceed the supported limits.".into();
                 } else {
                     match make_after(&state.before, Some(working.clone())) {
@@ -281,24 +370,76 @@ impl SketchApp {
                 }
             }
             if bake {
-                match crate::stroke_modifiers::bake(&state.after[0].1) {
-                    Ok(mut baked) => {
-                        baked.modifiers = None;
-                        let after = vec![(state.after[0].0, baked)];
-                        crate::editing::replace(&mut self.doc, &state.after, &after, true);
-                        let edit = crate::editing::Edit::Change {
-                            before: state.before.clone(),
-                            after,
-                        };
-                        self.undo.push(edit);
-                        self.redo.clear();
-                        self.dirty = true;
-                        self.record_recovery_edit();
-                        ui.ctx()
-                            .data_mut(|data| data.remove::<ModifierDraft>(state_id));
-                        self.status = "Modifiers baked into the stroke as one undo edit.".into();
-                        close_draft = true;
-                        self.renderer.invalidate();
+                let baked_result = if state.after[0]
+                    .1
+                    .modifiers
+                    .as_ref()
+                    .is_some_and(|stack| stack.has_enabled_array())
+                {
+                    crate::stroke_modifiers::bake_expanded(&state.after[0].1, self.next_id)
+                } else {
+                    crate::stroke_modifiers::bake(&state.after[0].1).map(|stroke| vec![stroke])
+                };
+                match baked_result {
+                    Ok(baked) => {
+                        let additional = baked.len().saturating_sub(1);
+                        let current_points: usize = self
+                            .doc
+                            .strokes
+                            .iter()
+                            .map(|stroke| stroke.points.len())
+                            .sum();
+                        let baked_points: usize = baked
+                            .iter()
+                            .map(|stroke| stroke.points.len())
+                            .sum();
+                        if self.doc.strokes.len().saturating_add(additional)
+                            > super::selection::MAX_DOCUMENT_STROKES
+                            || current_points
+                                .saturating_sub(state.after[0].1.points.len())
+                                .saturating_add(baked_points)
+                                > super::selection::MAX_DOCUMENT_POINTS
+                        {
+                            self.status = "Baking the array would exceed the document stroke or point limit.".into();
+                        } else {
+                            let base_index = state.before[0].0;
+                            let after: crate::editing::Snapshot = baked
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, stroke)| (base_index + index, stroke))
+                                .collect();
+                            let added_ids = u64::try_from(additional)
+                                .ok()
+                                .and_then(|count| self.next_id.checked_add(count));
+                            if let Some(next_id) = added_ids.filter(|next_id| *next_id != u64::MAX) {
+                                crate::editing::replace(
+                                    &mut self.doc,
+                                    &state.after,
+                                    &after,
+                                    true,
+                                );
+                                self.next_id = next_id;
+                                let edit = crate::editing::Edit::Change {
+                                    before: state.before.clone(),
+                                    after,
+                                };
+                                self.undo.push(edit);
+                                self.redo.clear();
+                                self.dirty = true;
+                                self.record_recovery_edit();
+                                ui.ctx()
+                                    .data_mut(|data| data.remove::<ModifierDraft>(state_id));
+                                self.status = if additional > 0 {
+                                    format!("Array baked into {} independent strokes as one undo edit.", additional + 1)
+                                } else {
+                                    "Modifiers baked into the stroke as one undo edit.".into()
+                                };
+                                close_draft = true;
+                                self.renderer.invalidate();
+                            } else {
+                                self.status = "No more stroke IDs available for array copies.".into();
+                            }
+                        }
                     }
                     Err(error) => self.status = error,
                 }
@@ -361,6 +502,7 @@ fn modifier_name(kind: crate::stroke_modifiers::ModifierKind) -> &'static str {
         crate::stroke_modifiers::ModifierKind::Taper { .. } => "Taper",
         crate::stroke_modifiers::ModifierKind::Smooth { .. } => "Smooth",
         crate::stroke_modifiers::ModifierKind::Noise { .. } => "Noise",
+        crate::stroke_modifiers::ModifierKind::Array { .. } => "Array",
     }
 }
 
@@ -375,7 +517,7 @@ fn make_after(
     let stroke = &mut after[0].1;
     stroke.modifiers = stack.filter(|stack| !stack.modifiers.is_empty());
     if let Some(stack) = stroke.modifiers.as_ref() {
-        let _ = stack.evaluate(&before[0].1)?;
+        stack.validate_expansion(&before[0].1)?;
     }
     Ok(after)
 }
