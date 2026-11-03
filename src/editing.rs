@@ -555,6 +555,13 @@ pub fn transformed_with_scale(
         stroke.brush.dynamics.taper_end *= average_scale;
         stroke.brush.dab_distance_origin *= average_scale;
         stroke.brush.dab_total_length *= average_scale;
+        if let Some(target) = stroke.brush.dabs.surface_target {
+            stroke.brush.dabs.surface_target = Some(
+                target
+                    .transformed_uniform(pivot, linear, translation)
+                    .ok_or("Curved-guide stamps cannot use a non-uniform or reflected transform")?,
+            );
+        }
         stroke.brush.normal = next_normal;
         stroke.brush.tangent = next_tangent;
         if !stroke.brush.is_valid() {

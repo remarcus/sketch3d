@@ -113,6 +113,9 @@ pub fn mirror_stroke(
     if is_seam_coincident(source, plane, seam_tolerance)? {
         return Ok(None);
     }
+    if source.brush.dabs.surface_target.is_some() {
+        return Err("Mirroring strokes with captured curved-guide targets is not supported".into());
+    }
 
     let mut mirrored = source.clone();
     mirrored.id = fresh_id;
@@ -256,6 +259,13 @@ pub fn rotate_stroke(
     let mut repeated = source.clone();
     repeated.id = fresh_id;
     repeated.curve = None;
+    if let Some(target) = source.brush.dabs.surface_target {
+        repeated.brush.dabs.surface_target = Some(
+            target
+                .transformed_uniform(center, glam::Mat3::from_quat(rotation), Vec3::ZERO)
+                .ok_or_else(|| "Cannot rotate the captured curved-guide target".to_owned())?,
+        );
+    }
     for point in &mut repeated.points {
         point.position = center + rotation * (point.position - center);
         point.tilt = point.tilt.map(|tilt| rotation * tilt);

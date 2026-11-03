@@ -107,6 +107,111 @@ pub enum DabSurfaceTarget {
 }
 
 impl DabSurfaceTarget {
+    /// Apply a rigid or uniform-scale selection transform to the captured
+    /// guide. Non-uniform transforms would change its analytic surface type.
+    pub fn transformed_uniform(
+        self,
+        pivot: Vec3,
+        linear: glam::Mat3,
+        translation: Vec3,
+    ) -> Option<Self> {
+        let axes = [linear.x_axis, linear.y_axis, linear.z_axis];
+        let lengths = axes.map(Vec3::length);
+        let scale = lengths.into_iter().sum::<f32>() / 3.0;
+        if !scale.is_finite()
+            || scale <= 1.0e-8
+            || lengths
+                .iter()
+                .any(|length| (*length - scale).abs() > scale * 1.0e-4)
+            || axes[0].dot(axes[1]).abs() > scale * scale * 1.0e-4
+            || axes[0].dot(axes[2]).abs() > scale * scale * 1.0e-4
+            || axes[1].dot(axes[2]).abs() > scale * scale * 1.0e-4
+            || linear.determinant() <= 0.0
+        {
+            return None;
+        }
+        let rotation = glam::Quat::from_mat3(&(linear * scale.recip())).normalize();
+        let transform_point = |point: Vec3| pivot + linear * (point - pivot) + translation;
+        let transform_rotation = |old: glam::Quat| (rotation * old).normalize();
+        let transformed = match self {
+            Self::Cylinder {
+                center,
+                rotation,
+                radius,
+                height,
+            } => Self::Cylinder {
+                center: transform_point(center),
+                rotation: transform_rotation(rotation),
+                radius: radius * scale,
+                height: height * scale,
+            },
+            Self::Sphere {
+                center,
+                rotation,
+                radius,
+            } => Self::Sphere {
+                center: transform_point(center),
+                rotation: transform_rotation(rotation),
+                radius: radius * scale,
+            },
+            Self::Ring {
+                center,
+                rotation,
+                major_radius,
+                minor_radius,
+            } => Self::Ring {
+                center: transform_point(center),
+                rotation: transform_rotation(rotation),
+                major_radius: major_radius * scale,
+                minor_radius: minor_radius * scale,
+            },
+            Self::Cone {
+                center,
+                rotation,
+                radius,
+                height,
+            } => Self::Cone {
+                center: transform_point(center),
+                rotation: transform_rotation(rotation),
+                radius: radius * scale,
+                height: height * scale,
+            },
+            Self::Revolved { mut surface } => {
+                surface.center = transform_point(surface.center);
+                let (z, y, x) =
+                    transform_rotation(surface.rotation()).to_euler(glam::EulerRot::ZYX);
+                surface.rotation_degrees = Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI);
+                for point in &mut surface.profile[..surface.count] {
+                    point.height *= scale;
+                    point.radius *= scale;
+                }
+                Self::Revolved { surface }
+            }
+            Self::Freeform { mut surface } => {
+                surface.center = transform_point(surface.center);
+                surface.rotation = transform_rotation(surface.rotation);
+                surface
+                    .directrix
+                    .iter_mut()
+                    .for_each(|point| *point *= scale);
+                surface.depth *= scale;
+                Self::Freeform { surface }
+            }
+            Self::Loft { mut surface } => {
+                surface.center = transform_point(surface.center);
+                surface.rotation = transform_rotation(surface.rotation);
+                for section in &mut surface.sections[..surface.section_count as usize] {
+                    section
+                        .controls
+                        .iter_mut()
+                        .for_each(|point| *point *= scale);
+                }
+                Self::Loft { surface }
+            }
+        };
+        transformed.is_valid().then_some(transformed)
+    }
+
     pub fn is_valid(self) -> bool {
         let valid_transform = |center: Vec3, rotation: glam::Quat| {
             center.is_finite()

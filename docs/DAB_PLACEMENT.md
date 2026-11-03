@@ -51,7 +51,11 @@ space between dabs.
 - Saved cylinder, sphere, torus, cone, revolved, freeform, and loft guides are
   captured as validated surface snapshots in dab settings. Spacing remains
   measured along the saved world-space centerline; scatter and projection use
-  the surface-local metric. Planar output is unchanged. Mesh-target image tips
+  the surface-local metric. Translation, rotation, and uniform selection scale
+  transform both the stroke and its captured guide. Non-uniform/reflected
+  selection transforms are rejected for these marks, and mirror-copy is
+  unavailable, so the stored surface cannot silently detach from the stroke.
+  Planar output is unchanged. Mesh-target image tips
   and scatter remain disabled until strokes can retain per-contact triangle
   data and use it consistently for rendering, picking, edits, and export.
 - Size and angle variation, pressure response, and taper are resolved from the
