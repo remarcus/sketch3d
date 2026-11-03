@@ -373,13 +373,18 @@ pub struct TextureSettings {
     pub scale: f32,
     pub strength: f32,
     /// Raises or lowers the grain alpha cutoff before coverage is multiplied.
+    #[serde(default)]
     pub threshold: f32,
     /// Remaps grain alpha; 1.0 preserves the original texture.
+    #[serde(default = "default_texture_contrast")]
     pub contrast: f32,
     pub seed: u32,
 }
 fn scale_with_brush_default() -> bool {
     true
+}
+fn default_texture_contrast() -> f32 {
+    1.0
 }
 impl Default for TextureSettings {
     fn default() -> Self {

@@ -2056,7 +2056,7 @@ mod tests {
             .unwrap();
         let mtl = std::fs::read_to_string(root.path().join(mtl_name)).unwrap();
         assert!(mtl.contains("stroke and fill gradients use their evaluated midpoint color"));
-        assert!(mtl.contains("Two-stop gradient approximated by its linear RGB midpoint"));
+        assert!(mtl.contains("Two-stop gradients use their linear RGB midpoint"));
         assert!(mtl.contains("Kd 0.350000 0.600000 0.400000"));
     }
 
