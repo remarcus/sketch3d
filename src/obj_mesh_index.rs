@@ -129,6 +129,7 @@ pub struct ObjMeshIndex {
     nodes: Vec<Node>,
     triangle_order: Vec<u32>,
     adjacency: Vec<[u32; 3]>,
+    components: Vec<u32>,
 }
 
 impl ObjMeshIndex {
@@ -241,10 +242,34 @@ impl ObjMeshIndex {
             begin = end;
         }
 
+        let mut components = vec![NO_TRIANGLE; triangle_count];
+        let mut component_id = 0_u32;
+        let mut pending = Vec::new();
+        for seed in 0..triangle_count {
+            if components[seed] != NO_TRIANGLE {
+                continue;
+            }
+            pending.clear();
+            pending.push(seed as u32);
+            components[seed] = component_id;
+            while let Some(triangle) = pending.pop() {
+                for neighbor in adjacency[triangle as usize] {
+                    if neighbor != NO_TRIANGLE && components[neighbor as usize] == NO_TRIANGLE {
+                        components[neighbor as usize] = component_id;
+                        pending.push(neighbor);
+                    }
+                }
+            }
+            component_id = component_id
+                .checked_add(1)
+                .ok_or("OBJ component count overflow")?;
+        }
+
         let mut index = Self {
             nodes: Vec::with_capacity(triangle_count.div_ceil(LEAF_TRIANGLES) * 2),
             triangle_order: (0..triangle_count as u32).collect(),
             adjacency,
+            components,
         };
         index.build_node(model, &centroids, 0, triangle_count);
         Ok(index)
@@ -259,6 +284,15 @@ impl ObjMeshIndex {
         self.adjacency
             .get(first as usize)
             .is_some_and(|edges| edges.contains(&second))
+    }
+
+    /// True when a manifold-edge path connects the triangles, even if a
+    /// resampled stroke segment crossed several small triangles at once.
+    pub fn triangles_connected(&self, first: u32, second: u32) -> bool {
+        self.components
+            .get(first as usize)
+            .zip(self.components.get(second as usize))
+            .is_some_and(|(first, second)| first == second)
     }
 
     /// Return the triangle across each oriented local edge, when the edge is
@@ -502,7 +536,7 @@ impl ObjMeshIndex {
                         ambiguous = false;
                     } else if (distance - nearest_distance).abs() <= tie_tolerance
                         && nearest.is_some_and(|(previous, _, _)| {
-                            !self.triangles_adjacent(previous, triangle_index)
+                            !self.triangles_connected(previous, triangle_index)
                         })
                     {
                         ambiguous = true;

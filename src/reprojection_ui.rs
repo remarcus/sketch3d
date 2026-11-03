@@ -191,6 +191,19 @@ impl SketchApp {
                 "wu",
             )
             .changed();
+            if matches!(
+                draft.target,
+                TargetChoice::SavedCurvedGuide(_) | TargetChoice::ObjReference(_)
+            ) {
+                changed |= ui
+                    .add(
+                        egui::Slider::new(&mut draft.resample_spacing, 0.05..=2.0)
+                            .logarithmic(true)
+                            .text("Maximum sample spacing"),
+                    )
+                    .changed();
+                ui.small("Surface targets add samples along the original path before projection, preserving pressure, tilt, timing, local color, and thickness. The preview is capped at 65,536 samples.");
+            }
             changed |= ui
                 .checkbox(
                     &mut draft.keep_original,
@@ -226,10 +239,15 @@ impl SketchApp {
                 ui.colored_label(ui_style::colors(ui.ctx()).warning, error);
             }
             ui.small(format!(
-                "{} strokes · {} samples · target locked to this preview",
+                "{} strokes · {} source → {} preview samples · target locked to this preview",
                 draft.before.len(),
                 draft
                     .before
+                    .iter()
+                    .map(|stroke| stroke.points.len())
+                    .sum::<usize>(),
+                draft
+                    .preview
                     .iter()
                     .map(|stroke| stroke.points.len())
                     .sum::<usize>()

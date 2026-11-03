@@ -36,6 +36,7 @@ pub struct Draft {
     pub target: TargetChoice,
     pub mode: ProjectionMode,
     pub offset: f32,
+    pub resample_spacing: f32,
     pub keep_original: bool,
     pub convert_curves: bool,
     pub captured_camera: Camera,
@@ -74,7 +75,10 @@ impl Draft {
             return Err(format!("Reprojection is limited to {MAX_POINTS} samples."));
         }
         if before.iter().any(|stroke| {
-            !stroke.brush.is_valid() || !stroke.points.iter().all(|point| point.is_valid())
+            !stroke.brush.is_valid()
+                || !stroke.points.iter().all(|point| point.is_valid())
+                || !stroke.point_thickness_is_valid()
+                || !stroke.point_colors_are_valid()
         }) {
             return Err("Selected strokes contain invalid brush or point data.".into());
         }
@@ -84,6 +88,7 @@ impl Draft {
             target: TargetChoice::Front,
             mode: ProjectionMode::Orthogonal,
             offset: 0.0,
+            resample_spacing: 0.25,
             keep_original: false,
             convert_curves: false,
             captured_camera: camera,
@@ -277,20 +282,44 @@ impl Draft {
         if !self.offset.is_finite() || !(-100.0..=100.0).contains(&self.offset) {
             return Err("Normal offset must be between −100 and 100 world units".into());
         }
-        let mut preview = self.before.clone();
+        let conforming_target = matches!(
+            target,
+            ProjectionTarget::Curved(_) | ProjectionTarget::Obj(_)
+        );
+        if conforming_target
+            && (!self.resample_spacing.is_finite()
+                || !(0.05..=2.0).contains(&self.resample_spacing))
+        {
+            return Err("Maximum sample spacing must be between 0.05 and 2 world units".into());
+        }
         let mut total = 0usize;
+        for stroke in &self.before {
+            total = total
+                .checked_add(if conforming_target {
+                    resampled_sample_count(&stroke.points, self.resample_spacing)?
+                } else {
+                    stroke.points.len()
+                })
+                .ok_or("Reprojection sample count overflow")?;
+            if total > MAX_POINTS {
+                return Err(format!(
+                    "Surface reprojection would create more than {MAX_POINTS} samples; increase maximum sample spacing or select fewer strokes."
+                ));
+            }
+        }
+        let mut preview = Vec::with_capacity(self.before.len());
         let mut kept_original_samples = 0;
         let mut obj_triangle_tests = 0usize;
-        for stroke in &mut preview {
+        for source in &self.before {
+            let mut stroke = source.clone();
             if stroke.curve.is_some() && !self.convert_curves {
                 return Err("Selected semantic curves need the explicit Convert curves option before reprojection.".into());
             }
             if stroke.curve.is_some() {
                 stroke.curve = None;
             }
-            total = total.saturating_add(stroke.points.len());
-            if total > MAX_POINTS {
-                return Err("Reprojection exceeds its sample budget".into());
+            if conforming_target {
+                resample_stroke(&mut stroke, self.resample_spacing)?;
             }
             let mut first_surface_normal = None;
             let mut previous_mesh_triangle = None;
@@ -313,7 +342,7 @@ impl Draft {
                 if let (ProjectionTarget::Obj(target), Some(previous), Some(current)) =
                     (target, previous_mesh_triangle, mesh_triangle)
                 {
-                    if !target.index.triangles_adjacent(previous, current) {
+                    if !target.index.triangles_connected(previous, current) {
                         if self.keep_original {
                             kept_original_samples += 1;
                             previous_mesh_triangle = Some(current);
@@ -369,6 +398,7 @@ impl Draft {
             if !stroke.brush.is_valid() {
                 return Err("Projected brush frame is invalid".into());
             }
+            preview.push(stroke);
         }
         Ok((preview, kept_original_samples))
     }
@@ -605,4 +635,127 @@ fn guide_normal(guide: &GuideGeometry, point: Vec3) -> Option<Vec3> {
         }
         _ => None,
     }
+}
+
+fn resampled_sample_count(
+    points: &[crate::document::Point],
+    spacing: f32,
+) -> Result<usize, String> {
+    if points.is_empty() {
+        return Ok(0);
+    }
+    let mut count = 1usize;
+    for pair in points.windows(2) {
+        let length = pair[0].position.distance(pair[1].position);
+        let segments = (length / spacing).ceil().max(1.0);
+        if !segments.is_finite() || segments > MAX_POINTS as f32 {
+            return Err("Surface reprojection exceeds its sample budget".into());
+        }
+        count = count
+            .checked_add(segments as usize)
+            .ok_or("Reprojection sample count overflow")?;
+        if count > MAX_POINTS {
+            return Err(format!(
+                "Surface reprojection would create more than {MAX_POINTS} samples; increase maximum sample spacing or select fewer strokes."
+            ));
+        }
+    }
+    Ok(count)
+}
+
+fn resample_stroke(stroke: &mut Stroke, spacing: f32) -> Result<(), String> {
+    let output_count = resampled_sample_count(&stroke.points, spacing)?;
+    if output_count == stroke.points.len() || stroke.points.len() <= 1 {
+        return Ok(());
+    }
+    let source_points = stroke.points.clone();
+    let source_thickness = stroke.point_thickness.clone();
+    let source_colors = stroke.point_colors.clone();
+    let distances = crate::dynamics::arc_lengths(&source_points);
+    let total_length = distances.last().copied().unwrap_or(0.0);
+    let mut points = Vec::with_capacity(output_count);
+    let mut thickness = source_thickness
+        .as_ref()
+        .map(|_| Vec::with_capacity(output_count));
+    let mut colors = source_colors
+        .as_ref()
+        .map(|_| Vec::with_capacity(output_count));
+
+    for index in 0..source_points.len() - 1 {
+        points.push(source_points[index]);
+        if let Some(values) = &mut thickness {
+            values.push(source_thickness.as_ref().unwrap()[index]);
+        }
+        if let Some(values) = &mut colors {
+            values.push(source_colors.as_ref().unwrap()[index]);
+        }
+        let start = source_points[index];
+        let end = source_points[index + 1];
+        let length = start.position.distance(end.position);
+        let segment_count = ((length / spacing).ceil().max(1.0) as usize).min(MAX_POINTS);
+        for segment in 1..=segment_count {
+            let amount = segment as f32 / segment_count as f32;
+            if segment == segment_count {
+                points.push(end);
+                if let Some(values) = &mut thickness {
+                    values.push(source_thickness.as_ref().unwrap()[index + 1]);
+                }
+                if let Some(values) = &mut colors {
+                    values.push(source_colors.as_ref().unwrap()[index + 1]);
+                }
+                continue;
+            }
+            points.push(crate::document::Point {
+                position: start.position.lerp(end.position, amount),
+                pressure: start.pressure + (end.pressure - start.pressure) * amount,
+                tilt: crate::dynamics::interpolate_tilt(start.tilt, end.tilt, amount),
+                time_ms: (start.time_ms as f32
+                    + (end.time_ms as f32 - start.time_ms as f32) * amount)
+                    .round() as u32,
+            });
+            if let Some(values) = &mut thickness {
+                let start_scale = source_thickness.as_ref().unwrap()[index];
+                let end_scale = source_thickness.as_ref().unwrap()[index + 1];
+                values.push(start_scale + (end_scale - start_scale) * amount);
+            }
+            if let Some(values) = &mut colors {
+                let source_colors = source_colors.as_ref().unwrap();
+                let left = source_colors[index];
+                let right = source_colors[index + 1];
+                let color = match (left, right) {
+                    (None, None) => None,
+                    _ => {
+                        let start_t = if total_length > 1.0e-8 {
+                            distances[index] / total_length
+                        } else {
+                            0.0
+                        };
+                        let end_t = if total_length > 1.0e-8 {
+                            distances[index + 1] / total_length
+                        } else {
+                            0.0
+                        };
+                        let start_color = left.unwrap_or_else(|| stroke.base_color_at(start_t));
+                        let end_color = right.unwrap_or_else(|| stroke.base_color_at(end_t));
+                        let resolved = std::array::from_fn(|channel| {
+                            start_color[channel]
+                                + (end_color[channel] - start_color[channel]) * amount
+                        });
+                        let sample_t = start_t + (end_t - start_t) * amount;
+                        let base = stroke.base_color_at(sample_t);
+                        (!resolved
+                            .iter()
+                            .zip(base)
+                            .all(|(actual, expected)| (actual - expected).abs() <= 1.0e-5))
+                        .then_some(resolved)
+                    }
+                };
+                values.push(color);
+            }
+        }
+    }
+    stroke.points = points;
+    stroke.point_thickness = thickness;
+    stroke.point_colors = colors;
+    Ok(())
 }
