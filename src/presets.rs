@@ -35,7 +35,7 @@ pub struct Preset {
 /// textures; version 4 adds captured texture anchors and scale behavior;
 /// version 5 adds independent tip grain and threshold/contrast controls;
 /// version 6 adds deterministic per-dab color variation; version 7 carries
-/// multiple image-tip variants.
+/// multiple image-tip variants; version 8 adds custom procedural generators.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushPackage {
     pub format: String,
@@ -87,7 +87,9 @@ impl BrushPackage {
     ) -> Self {
         Self {
             format: PACKAGE_FORMAT.into(),
-            version: if preset.brush.uses_tip_atlas() {
+            version: if texture_needs_v8(preset.brush.texture) {
+                8
+            } else if preset.brush.uses_tip_atlas() {
                 7
             } else if preset.brush.dab_color_variation.is_enabled() {
                 6
@@ -185,14 +187,17 @@ impl BrushPackage {
         if self.format != PACKAGE_FORMAT {
             return Err("This is not a Sketch3D brush package".into());
         }
-        if !matches!(self.version, 1..=7) {
+        if !matches!(self.version, 1..=8) {
             return Err("Unsupported brush package version".into());
         }
-        if self.version != 7 && !self.tip_variant_assets.is_empty() {
+        if self.version < 7 && !self.tip_variant_assets.is_empty() {
             return Err("Tip variant assets require brush package v7".into());
         }
-        if self.version != 7 && self.preset.brush.uses_tip_atlas() {
+        if self.version < 7 && self.preset.brush.uses_tip_atlas() {
             return Err("Multiple tip variants require brush package v7".into());
+        }
+        if self.version < 8 && texture_needs_v8(self.preset.brush.texture) {
+            return Err("Custom procedural generator settings require brush package v8".into());
         }
         if self.tip_variant_assets.len() >= crate::document::MAX_BRUSH_TIP_VARIANTS {
             return Err("A brush package can carry at most 7 additional tip variants".into());
@@ -282,7 +287,7 @@ impl BrushPackage {
                     }
                 }
             }
-            5..=7 => {
+            5..=8 => {
                 match (&self.tip_asset, self.preset.brush.tip_asset_id) {
                     (None, 0) => {}
                     (Some(asset), id) if id == asset.id => {
@@ -318,10 +323,10 @@ impl BrushPackage {
                         )
                     }
                 }
-                if self.version == 7 {
-                    if !self.preset.brush.uses_tip_atlas() {
-                        return Err("Brush package v7 requires multiple tip variants".into());
-                    }
+                if self.version == 7 && !self.preset.brush.uses_tip_atlas() {
+                    return Err("Brush package v7 requires multiple tip variants".into());
+                }
+                if self.preset.brush.uses_tip_atlas() {
                     let expected = self
                         .preset
                         .brush
@@ -482,6 +487,10 @@ fn texture_needs_v5(texture: TextureSettings, has_tip: bool) -> bool {
     texture.threshold != 0.0
         || texture.contrast != 1.0
         || (has_tip && (texture.image.is_some() || texture.kind != TextureKind::Solid))
+}
+
+fn texture_needs_v8(texture: TextureSettings) -> bool {
+    texture.generator != crate::texture::TextureGeneratorSettings::default()
 }
 
 fn texture_needs_v4(texture: TextureSettings) -> bool {

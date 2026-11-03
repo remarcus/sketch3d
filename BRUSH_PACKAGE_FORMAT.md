@@ -3,15 +3,15 @@
 Sketch3D imports and exports one native brush definition per `.brush.json`
 file. Version 1 is a self-contained JSON package for brush settings. Version 2
 can embed one bounded PNG tip; version 7 can carry a weighted set of up to eight
-tips. Packages never contain scripts or external file references. Built-in
-brush shapes and procedural texture kinds are represented by the app's native
-brush model.
+tips; version 8 adds configurable procedural generator settings. Packages
+never contain scripts or external file references. Built-in brush shapes and
+procedural texture kinds are represented by the app's native brush model.
 
-Both versions preserve graphite and charcoal texture settings, continuous-alpha
-texture masks, Crosshatch, and optional stroke UV mapping (rotation in degrees,
-U/V tile scale, and offsets in tile units). Omitted mapping defaults to identity.
-Mapping changes UVs rather than the embedded mask image. Older readers may
-ignore mapping or reject unknown texture kinds.
+Texture-bearing versions preserve graphite and charcoal settings,
+continuous-alpha masks, Crosshatch, and optional stroke UV mapping (rotation in
+degrees, U/V tile scale, and offsets in tile units). Omitted mapping defaults
+to identity. Mapping changes UVs rather than the embedded mask image. Older
+readers may ignore mapping or reject unknown texture kinds.
 
 Both versions also preserve stipple and spray dab settings, pressure opacity, and tilt-shading
 controls. They also preserve the native parallel-strand settings used by rake
@@ -35,6 +35,13 @@ first variant must match the legacy `tip_asset_id` and `tip_aspect` fields.
 Seeded-random selection uses the stable dab index and brush seed; sequential
 selection cycles through weighted slots. Single-tip brushes keep the legacy
 fields and default behavior.
+
+Version 8 stores versioned procedural generator controls for frequency,
+coarseness, direction, and anisotropy. Crosshatch defaults retain the existing
+mask exactly; edited settings generate a deterministic, seamless repeating
+coverage mask. Texture contrast and strength remain in the shared texture
+settings. A coverage mask changes stroke gaps and does not simulate physical
+paint. Older readers may ignore these controls or reject version 8.
 
 The top-level object contains `format: "spatial-sketch-brush"`, `version`, and
 a `preset` object with `name`, `brush`, `radius`, `color`, and `stabilization`.

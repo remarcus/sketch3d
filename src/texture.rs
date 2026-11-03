@@ -230,6 +230,43 @@ impl TextureDynamics {
     }
 }
 
+/// Versioned controls for the app-generated repeating coverage masks.
+/// Existing procedural kinds retain their legacy pixels until they opt into
+/// their generator controls; Crosshatch uses all fields in version 1.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TextureGeneratorSettings {
+    pub version: u8,
+    pub frequency: u8,
+    pub coarseness: u8,
+    pub direction_degrees: f32,
+    pub anisotropy: f32,
+}
+
+impl Default for TextureGeneratorSettings {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            frequency: 4,
+            coarseness: 4,
+            direction_degrees: 45.0,
+            anisotropy: 1.0,
+        }
+    }
+}
+
+impl TextureGeneratorSettings {
+    pub fn is_valid(self) -> bool {
+        self.version == 1
+            && (1..=8).contains(&self.frequency)
+            && (1..=4).contains(&self.coarseness)
+            && self.direction_degrees.is_finite()
+            && (-180.0..=180.0).contains(&self.direction_degrees)
+            && self.anisotropy.is_finite()
+            && (0.5..=2.0).contains(&self.anisotropy)
+    }
+}
+
 /// Apply the resolved per-sample grain response to a sampled texture alpha.
 pub fn apply_dynamic_coverage(alpha: f32, factors: [f32; 2]) -> f32 {
     let alpha = if alpha.is_finite() {
@@ -326,6 +363,8 @@ pub struct TextureSettings {
     pub image: Option<ImageTextureSettings>,
     #[serde(default)]
     pub dynamics: TextureDynamics,
+    #[serde(default)]
+    pub generator: TextureGeneratorSettings,
     /// True only when this stroke captured a reported pressure axis. Older
     /// files and pointer input use the explicit manual-pressure fallback.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -351,6 +390,7 @@ impl Default for TextureSettings {
             scale_with_brush: true,
             image: None,
             dynamics: TextureDynamics::default(),
+            generator: TextureGeneratorSettings::default(),
             pressure_samples_available: false,
             kind: TextureKind::Solid,
             scale: 0.2,
@@ -367,6 +407,7 @@ impl TextureSettings {
             && self.frame.is_none_or(TextureFrame::is_valid)
             && self.image.is_none_or(ImageTextureSettings::is_valid)
             && self.dynamics.is_valid()
+            && self.generator.is_valid()
             && (self.image.is_none() || self.kind == TextureKind::Solid)
             && self.scale.is_finite()
             && (0.02..=10.0).contains(&self.scale)
@@ -429,12 +470,12 @@ impl TextureMapping {
     }
 }
 
-/// Scale affects UVs only and therefore does not create another mask image.
-pub type TextureCacheKey = (TextureKind, u32, u32, u32, u32);
+/// Scale and mapping affect UVs only and therefore do not create another mask.
+pub type TextureCacheKey = (TextureKind, u32, u32, u32, u32, u32, u32, u32, u32, u32);
 
 pub fn key(settings: TextureSettings) -> TextureCacheKey {
     if settings.image.is_some() || settings.kind == TextureKind::Solid || settings.strength == 0.0 {
-        (TextureKind::Solid, 0, 0, 0, 0)
+        (TextureKind::Solid, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     } else {
         (
             settings.kind,
@@ -442,6 +483,27 @@ pub fn key(settings: TextureSettings) -> TextureCacheKey {
             settings.seed,
             settings.threshold.to_bits(),
             settings.contrast.to_bits(),
+            settings.generator.version as u32,
+            if settings.kind == TextureKind::Crosshatch {
+                u32::from(settings.generator.frequency)
+            } else {
+                0
+            },
+            if settings.kind == TextureKind::Crosshatch {
+                u32::from(settings.generator.coarseness)
+            } else {
+                0
+            },
+            if settings.kind == TextureKind::Crosshatch {
+                settings.generator.direction_degrees.to_bits()
+            } else {
+                0
+            },
+            if settings.kind == TextureKind::Crosshatch {
+                settings.generator.anisotropy.to_bits()
+            } else {
+                0
+            },
         )
     }
 }
@@ -516,11 +578,30 @@ fn texel_alpha(settings: TextureSettings, x: u32, y: u32) -> u8 {
             }
         }
         TextureKind::Crosshatch => {
-            // Integer-period diagonals join exactly across the repeating tile.
-            let phase = settings.seed & 31;
-            let forward = (x + y + phase) % 32;
-            let backward = (x + SIZE - y + phase) % 32;
-            let ink = forward < 4 || backward < 4;
+            let generator = settings.generator;
+            let ink = if generator == TextureGeneratorSettings::default() {
+                // Preserve the original two-diagonal Crosshatch mask exactly.
+                let phase = settings.seed & 31;
+                let forward = (x + y + phase) % 32;
+                let backward = (x + SIZE - y + phase) % 32;
+                forward < 4 || backward < 4
+            } else {
+                let frequency = i32::from(generator.frequency);
+                let second_frequency = (frequency as f32 * generator.anisotropy)
+                    .round()
+                    .clamp(1.0, 16.0) as i32;
+                let first = hatch_vector(generator.direction_degrees, frequency);
+                let second = hatch_vector(generator.direction_degrees + 90.0, second_frequency);
+                let phase = (settings.seed % SIZE) as i32;
+                let band = |vector: [i32; 2]| {
+                    let value = (x as i32 * vector[0] + y as i32 * vector[1] + phase)
+                        .rem_euclid(SIZE as i32);
+                    let width =
+                        i32::from(generator.coarseness) * vector[0].abs().max(vector[1].abs());
+                    value < width
+                };
+                band(first) || band(second)
+            };
             if ink {
                 1.0
             } else {
@@ -546,6 +627,23 @@ fn texel_alpha(settings: TextureSettings, x: u32, y: u32) -> u8 {
     let alpha = ((alpha - settings.threshold) / (1.0 - settings.threshold)).clamp(0.0, 1.0);
     let alpha = ((alpha - 0.5) * settings.contrast + 0.5).clamp(0.0, 1.0);
     (alpha * 255.0).round() as u8
+}
+
+fn hatch_vector(direction_degrees: f32, frequency: i32) -> [i32; 2] {
+    let normal = (direction_degrees + 90.0).to_radians();
+    let scale = frequency as f32 * std::f32::consts::SQRT_2;
+    let mut vector = [
+        (normal.cos() * scale).round() as i32,
+        (normal.sin() * scale).round() as i32,
+    ];
+    if vector == [0, 0] {
+        vector[if normal.cos().abs() >= normal.sin().abs() {
+            0
+        } else {
+            1
+        }] = 1;
+    }
+    vector
 }
 
 fn periodic_value_noise(x: u32, y: u32, seed: u32, period: u32) -> f32 {
@@ -831,7 +929,7 @@ mod tests {
         assert_eq!(key(scaled), key(original));
         assert_eq!(
             key(settings(TextureKind::Solid)),
-            (TextureKind::Solid, 0, 0, 0, 0)
+            (TextureKind::Solid, 0, 0, 0, 0, 0, 0, 0, 0, 0,)
         );
     }
     #[test]

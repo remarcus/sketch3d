@@ -1,7 +1,7 @@
 use super::ui_style;
 use super::*;
 use crate::{
-    editing, export_check, geometry, gizmo,
+    editing, export_check, geometry, gizmo, texture,
     texture::{
         ImageMaskSource, ImageTextureMode, ImageTextureSettings, TextureKind, TextureSettings,
     },
@@ -205,6 +205,57 @@ impl SketchApp {
                         }
                     }
                 } else if self.brush.texture.kind != TextureKind::Solid {
+                    if self.brush.texture.kind == TextureKind::Crosshatch {
+                        let mut generator = self.brush.texture.generator;
+                        ui.separator();
+                        ui.strong("Crosshatch generator");
+                        ui.add(
+                            egui::Slider::new(&mut generator.frequency, 1..=8)
+                                .text("Frequency"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut generator.coarseness, 1..=4)
+                                .text("Line coarseness"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut generator.direction_degrees, -180.0..=180.0)
+                                .text("Direction"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut generator.anisotropy, 0.5..=2.0)
+                                .text("Hatch spacing ratio"),
+                        );
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Fine hatch").clicked() {
+                                generator = crate::texture::TextureGeneratorSettings {
+                                    frequency: 8,
+                                    coarseness: 1,
+                                    ..Default::default()
+                                };
+                            }
+                            if ui.button("Bold hatch").clicked() {
+                                generator = crate::texture::TextureGeneratorSettings {
+                                    frequency: 2,
+                                    coarseness: 4,
+                                    ..Default::default()
+                                };
+                            }
+                            if ui.button("Directional hatch").clicked() {
+                                generator = crate::texture::TextureGeneratorSettings {
+                                    frequency: 6,
+                                    coarseness: 2,
+                                    direction_degrees: 30.0,
+                                    anisotropy: 1.5,
+                                    ..Default::default()
+                                };
+                            }
+                            if ui.button("Reset generator").clicked() {
+                                generator = Default::default();
+                            }
+                        });
+                        ui.small("Procedural coverage mask; this changes stroke gaps and does not simulate physical paint.");
+                        self.brush.texture.generator = generator;
+                    }
                     ui.add(egui::Slider::new(&mut self.brush.texture.scale, 0.02..=10.0).logarithmic(true).text("Spacing"));
                     ui.add(egui::Slider::new(&mut self.brush.texture.strength, 0.0..=1.0).text("Strength"));
                     ui.add(egui::Slider::new(&mut self.brush.texture.threshold, 0.0..=0.95).text("Threshold"));
@@ -230,6 +281,32 @@ impl SketchApp {
                         }
                     }
                     ui.small("U/V scale and offsets use tile coordinates; repeat spacing uses document world units.");
+                }
+                if self.brush.texture.image.is_none()
+                    && self.brush.texture.kind != TextureKind::Solid
+                {
+                    let key = texture::key(self.brush.texture);
+                    if self
+                        .procedural_texture_preview
+                        .as_ref()
+                        .is_none_or(|(cached_key, _)| *cached_key != key)
+                    {
+                        let pixels = texture::rgba(self.brush.texture);
+                        let size = [texture::SIZE as usize, texture::SIZE as usize];
+                        let image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                        let preview = ui.ctx().load_texture(
+                            format!("procedural-mask-{key:?}"),
+                            image,
+                            egui::TextureOptions::NEAREST,
+                        );
+                        self.procedural_texture_preview = Some((key, preview));
+                    }
+                    ui.horizontal(|ui| {
+                        ui.small("Coverage preview · white keeps the mark, gaps remove it");
+                        if let Some((_, preview)) = &self.procedural_texture_preview {
+                            ui.image((preview.id(), egui::vec2(64.0, 64.0)));
+                        }
+                    });
                 }
                 if self.brush.texture.image.is_some()
                     || self.brush.texture.kind != TextureKind::Solid
