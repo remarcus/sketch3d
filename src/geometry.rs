@@ -847,7 +847,16 @@ fn dab_mesh(stroke: &Stroke) -> Vec<Vertex> {
         return Vec::new();
     };
     let mut vertices = Vec::with_capacity(dabs.len().saturating_mul(24));
+    let surface_target = stroke
+        .brush
+        .dabs
+        .surface_target
+        .map(|target| target.surface());
     for dab in dabs {
+        if let Some(surface) = surface_target {
+            surface_dab_mesh(stroke, dab, surface, &mut vertices);
+            continue;
+        }
         let tangent = dab.tangent.try_normalize().unwrap_or(Vec3::Y);
         let frame_side = dab.normal.cross(tangent).try_normalize().unwrap_or(Vec3::X);
         let angle = (stroke.brush.angle_degrees + dab.angle_degrees).to_radians();
@@ -905,6 +914,80 @@ fn dab_mesh(stroke: &Stroke) -> Vec<Vertex> {
         }
     }
     vertices
+}
+
+fn surface_dab_mesh(
+    stroke: &Stroke,
+    dab: crate::dab_placement::ResolvedDab,
+    surface: crate::surface::Surface,
+    out: &mut Vec<Vertex>,
+) {
+    const SECTORS: usize = 8;
+    let Some(normal) = surface.normal_at(dab.position) else {
+        return;
+    };
+    let tangent = (dab.tangent - normal * dab.tangent.dot(normal))
+        .try_normalize()
+        .unwrap_or_else(|| perpendicular(normal));
+    let side = normal.cross(tangent).normalize_or_zero();
+    if side.length_squared() < 0.5 {
+        return;
+    }
+    let angle = (stroke.brush.angle_degrees + dab.angle_degrees).to_radians();
+    let minor_axis = if stroke.brush.kind == BrushKind::Round {
+        stroke.radius * dab.size_scale
+    } else {
+        stroke.radius * dab.size_scale * stroke.brush.thickness
+    };
+    let width_radius =
+        (stroke.radius * dab.size_scale * angle.cos()).hypot(minor_axis * angle.sin());
+    let width_axis = (side * angle.cos() + tangent * angle.sin()).normalize_or_zero();
+    let length_axis = (tangent * angle.cos() - side * angle.sin()).normalize_or_zero();
+    let length_radius = stroke.radius * dab.size_scale;
+    let center = Vertex {
+        material: 0.0,
+        gradient_t: dab.gradient_t,
+        position: dab.position.to_array(),
+        normal: normal.to_array(),
+        uv: [0.5, 0.5],
+        color: stroke.color,
+        opacity: vertex_opacity(stroke, dab.pressure, normal, dab.normal),
+    };
+    let mut rim = [Vertex {
+        material: 0.0,
+        gradient_t: dab.gradient_t,
+        position: [0.0; 3],
+        normal: [0.0; 3],
+        uv: [0.0; 2],
+        color: stroke.color,
+        opacity: 0.0,
+    }; SECTORS + 1];
+    for (index, vertex) in rim.iter_mut().enumerate() {
+        let theta = index as f32 / SECTORS as f32 * std::f32::consts::TAU;
+        let offset =
+            width_axis * (width_radius * theta.cos()) + length_axis * (length_radius * theta.sin());
+        let Some(position) = surface.offset_tangent(dab.position, offset) else {
+            return;
+        };
+        let Some(normal) = surface.normal_at(position) else {
+            return;
+        };
+        *vertex = Vertex {
+            material: 0.0,
+            gradient_t: dab.gradient_t,
+            position: position.to_array(),
+            normal: normal.to_array(),
+            uv: [
+                0.5 + offset.dot(width_axis) / stroke.brush.texture.scale,
+                0.5 + offset.dot(length_axis) / stroke.brush.texture.scale,
+            ],
+            color: stroke.color,
+            opacity: vertex_opacity(stroke, dab.pressure, normal, dab.normal),
+        };
+    }
+    for sector in 0..SECTORS {
+        out.extend_from_slice(&[center, rim[sector], rim[sector + 1]]);
+    }
 }
 
 fn is_closed_stroke(stroke: &Stroke) -> bool {

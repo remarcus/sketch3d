@@ -48,6 +48,11 @@ space between dabs.
   60-degree normal-turn limit. Periodic parameterization carries placements
   across cylinder, sphere-longitude, and torus seams without a world-space
   seam jump.
+- Dab-based brushes on analytic guides use an eight-sector tangent decal. Its
+  center and perimeter are projected to the guide and its triangles follow the
+  local surface normals. It has no depth offset; the existing 24-vertex-per-dab
+  budget is unchanged. Marks are omitted if any perimeter point is outside the
+  finite guide domain, has a singular frame, or exceeds the normal-turn limit.
 - Saved cylinder, sphere, torus, cone, revolved, freeform, and loft guides are
   captured as validated surface snapshots in dab settings. Spacing remains
   measured along the saved world-space centerline; scatter and projection use

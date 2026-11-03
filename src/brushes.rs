@@ -201,6 +201,7 @@ impl SketchApp {
                 },
             );
             if self.brush.dabs.enabled {
+                ui.small("On saved curved guides, dab marks are projected surface decals with no depth offset.");
                 ui_style::slider_row(
                     ui,
                     "Spacing",
@@ -220,7 +221,7 @@ impl SketchApp {
                     100.0,
                     "× radius",
                 )
-                .on_hover_text("Scatter is available on planar targets. Curved and model surfaces keep dab centers on the surface path.");
+                .on_hover_text("Scatter is available on planes and saved curved guides. Model surfaces remain unsupported; curved placements are projected to the surface and omitted at edges or steep turns.");
                 ui_style::slider_row(
                     ui,
                     "Size variation",
