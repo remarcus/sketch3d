@@ -48,6 +48,11 @@ impl Bounds {
         self.max - self.min
     }
 
+    fn distance_squared(self, point: Vec3) -> f32 {
+        let delta = (self.min - point).max(Vec3::ZERO) + (point - self.max).max(Vec3::ZERO);
+        delta.length_squared()
+    }
+
     fn hit(self, origin: Vec3, direction: Vec3, max_t: f32) -> Option<f32> {
         let mut near = 0.0_f32;
         let mut far = max_t;
@@ -322,29 +327,60 @@ impl ObjMeshIndex {
     /// Find the nearest positive, double-sided triangle hit in local OBJ space.
     /// Direction need not be normalized; `ray_t` is its corresponding parameter.
     pub fn hit(&self, model: &ObjModel, origin: Vec3, direction: Vec3) -> Option<ObjMeshHit> {
+        self.hit_bounded(model, origin, direction, usize::MAX)
+            .ok()
+            .and_then(|(hit, _)| hit)
+    }
+
+    /// Ray hit variant with an explicit triangle-test budget. Returns the
+    /// number of triangles examined so a multi-sample operation can enforce a
+    /// shared work cap.
+    pub fn hit_bounded(
+        &self,
+        model: &ObjModel,
+        origin: Vec3,
+        direction: Vec3,
+        triangle_budget: usize,
+    ) -> Result<(Option<ObjMeshHit>, usize), String> {
         if !origin.is_finite()
             || !direction.is_finite()
             || direction.length_squared() <= 1e-16
             || model.triangles.len() != self.adjacency.len()
         {
-            return None;
+            return Ok((None, 0));
         }
         let mut stack = Vec::with_capacity(32);
         stack.push(0_u32);
         let mut nearest_t = f32::INFINITY;
         let mut nearest: Option<(u32, Vec3)> = None;
+        let mut tested = 0;
 
         while let Some(node_index) = stack.pop() {
-            let node = *self.nodes.get(node_index as usize)?;
+            let node = *self
+                .nodes
+                .get(node_index as usize)
+                .ok_or("OBJ surface index contains an invalid node")?;
             if node.bounds.hit(origin, direction, nearest_t).is_none() {
                 continue;
             }
             if node.is_leaf() {
                 let start = node.start as usize;
                 let end = start.saturating_add(node.count as usize);
-                for &triangle_index in self.triangle_order.get(start..end)? {
-                    let triangle = model.triangles.get(triangle_index as usize)?;
-                    let vertices = triangle_vertices(model, triangle)?;
+                for &triangle_index in self
+                    .triangle_order
+                    .get(start..end)
+                    .ok_or("OBJ surface index contains an invalid leaf range")?
+                {
+                    tested += 1;
+                    if tested > triangle_budget {
+                        return Err("OBJ projection exceeded its triangle-query work budget".into());
+                    }
+                    let triangle = model
+                        .triangles
+                        .get(triangle_index as usize)
+                        .ok_or("OBJ surface index refers to a missing triangle")?;
+                    let vertices = triangle_vertices(model, triangle)
+                        .ok_or("OBJ triangle refers to a missing position")?;
                     if let Some((t, barycentric)) =
                         ray_triangle(origin, direction, vertices[0], vertices[1], vertices[2])
                     {
@@ -359,12 +395,14 @@ impl ObjMeshIndex {
                 let right = node.right as usize;
                 let left_near = self
                     .nodes
-                    .get(left)?
+                    .get(left)
+                    .ok_or("OBJ surface index contains an invalid child")?
                     .bounds
                     .hit(origin, direction, nearest_t);
                 let right_near = self
                     .nodes
-                    .get(right)?
+                    .get(right)
+                    .ok_or("OBJ surface index contains an invalid child")?
                     .bounds
                     .hit(origin, direction, nearest_t);
                 match (left_near, right_near) {
@@ -383,22 +421,148 @@ impl ObjMeshIndex {
             }
         }
 
-        let (triangle_index, barycentric) = nearest?;
-        let triangle = model.triangles.get(triangle_index as usize)?;
-        let vertices = model.render_vertices(triangle).ok()?;
+        let Some((triangle_index, barycentric)) = nearest else {
+            return Ok((None, tested));
+        };
+        let triangle = model
+            .triangles
+            .get(triangle_index as usize)
+            .ok_or("OBJ surface hit refers to a missing triangle")?;
+        let vertices = model
+            .render_vertices(triangle)
+            .map_err(|_| "OBJ surface hit has invalid render vertices")?;
         let interpolated = vertices[0].normal * barycentric.x
             + vertices[1].normal * barycentric.y
             + vertices[2].normal * barycentric.z;
         let normal = interpolated
             .try_normalize()
             .unwrap_or_else(|| triangle.face_normal.normalize());
-        Some(ObjMeshHit {
-            triangle_index,
-            barycentric,
-            position: origin + direction * nearest_t,
-            normal,
-            ray_t: nearest_t,
-        })
+        Ok((
+            Some(ObjMeshHit {
+                triangle_index,
+                barycentric,
+                position: origin + direction * nearest_t,
+                normal,
+                ray_t: nearest_t,
+            }),
+            tested,
+        ))
+    }
+
+    /// Closest-point projection through the existing BVH. A tie between
+    /// disconnected triangles is rejected as ambiguous instead of selecting a
+    /// component based on tree traversal order.
+    pub fn closest_point_bounded(
+        &self,
+        model: &ObjModel,
+        point: Vec3,
+        triangle_budget: usize,
+    ) -> Result<(Option<ObjMeshHit>, usize), String> {
+        if !point.is_finite() || model.triangles.len() != self.adjacency.len() {
+            return Ok((None, 0));
+        }
+        let mut stack = Vec::with_capacity(32);
+        stack.push(0_u32);
+        let mut nearest_distance = f32::INFINITY;
+        let mut nearest: Option<(u32, Vec3, Vec3)> = None;
+        let mut ambiguous = false;
+        let mut tested = 0;
+        while let Some(node_index) = stack.pop() {
+            let node = *self
+                .nodes
+                .get(node_index as usize)
+                .ok_or("OBJ surface index contains an invalid node")?;
+            if node.bounds.distance_squared(point) > nearest_distance {
+                continue;
+            }
+            if node.is_leaf() {
+                let start = node.start as usize;
+                let end = start.saturating_add(node.count as usize);
+                for &triangle_index in self
+                    .triangle_order
+                    .get(start..end)
+                    .ok_or("OBJ surface index contains an invalid leaf range")?
+                {
+                    tested += 1;
+                    if tested > triangle_budget {
+                        return Err("OBJ projection exceeded its triangle-query work budget".into());
+                    }
+                    let triangle = model
+                        .triangles
+                        .get(triangle_index as usize)
+                        .ok_or("OBJ surface index refers to a missing triangle")?;
+                    let vertices = triangle_vertices(model, triangle)
+                        .ok_or("OBJ triangle refers to a missing position")?;
+                    let (candidate, barycentric) = closest_point_triangle(point, vertices);
+                    let distance = candidate.distance_squared(point);
+                    let tie_tolerance = 1.0e-8_f32.max(nearest_distance * 1.0e-6);
+                    if nearest.is_none() || distance + tie_tolerance < nearest_distance {
+                        nearest_distance = distance;
+                        nearest = Some((triangle_index, barycentric, candidate));
+                        ambiguous = false;
+                    } else if (distance - nearest_distance).abs() <= tie_tolerance
+                        && nearest.is_some_and(|(previous, _, _)| {
+                            !self.triangles_adjacent(previous, triangle_index)
+                        })
+                    {
+                        ambiguous = true;
+                    }
+                }
+            } else {
+                let left = node.left as usize;
+                let right = node.right as usize;
+                let left_distance = self
+                    .nodes
+                    .get(left)
+                    .ok_or("OBJ surface index contains an invalid child")?
+                    .bounds
+                    .distance_squared(point);
+                let right_distance = self
+                    .nodes
+                    .get(right)
+                    .ok_or("OBJ surface index contains an invalid child")?
+                    .bounds
+                    .distance_squared(point);
+                if left_distance <= right_distance {
+                    stack.push(node.right);
+                    stack.push(node.left);
+                } else {
+                    stack.push(node.left);
+                    stack.push(node.right);
+                }
+            }
+        }
+        if ambiguous {
+            return Err(
+                "Closest OBJ surface point is ambiguous across disconnected components".into(),
+            );
+        }
+        let Some((triangle_index, barycentric, position)) = nearest else {
+            return Ok((None, tested));
+        };
+        let triangle = model
+            .triangles
+            .get(triangle_index as usize)
+            .ok_or("OBJ surface hit refers to a missing triangle")?;
+        let vertices = model
+            .render_vertices(triangle)
+            .map_err(|_| "OBJ surface hit has invalid render vertices")?;
+        let interpolated = vertices[0].normal * barycentric.x
+            + vertices[1].normal * barycentric.y
+            + vertices[2].normal * barycentric.z;
+        let normal = interpolated
+            .try_normalize()
+            .unwrap_or_else(|| triangle.face_normal.normalize());
+        Ok((
+            Some(ObjMeshHit {
+                triangle_index,
+                barycentric,
+                position,
+                normal,
+                ray_t: nearest_distance.sqrt(),
+            }),
+            tested,
+        ))
     }
 
     fn build_node(
@@ -444,6 +608,49 @@ impl ObjMeshIndex {
         self.nodes[node_index] = Node::branch(bounds, left, right);
         node_index
     }
+}
+
+fn closest_point_triangle(point: Vec3, vertices: [Vec3; 3]) -> (Vec3, Vec3) {
+    let [a, b, c] = vertices;
+    let ab = b - a;
+    let ac = c - a;
+    let ap = point - a;
+    let d1 = ab.dot(ap);
+    let d2 = ac.dot(ap);
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return (a, Vec3::X);
+    }
+    let bp = point - b;
+    let d3 = ab.dot(bp);
+    let d4 = ac.dot(bp);
+    if d3 >= 0.0 && d4 <= d3 {
+        return (b, Vec3::Y);
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        let v = d1 / (d1 - d3);
+        return (a + ab * v, Vec3::new(1.0 - v, v, 0.0));
+    }
+    let cp = point - c;
+    let d5 = ab.dot(cp);
+    let d6 = ac.dot(cp);
+    if d6 >= 0.0 && d5 <= d6 {
+        return (c, Vec3::Z);
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        let w = d2 / (d2 - d6);
+        return (a + ac * w, Vec3::new(1.0 - w, 0.0, w));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return (b + (c - b) * w, Vec3::new(0.0, 1.0 - w, w));
+    }
+    let inverse = (va + vb + vc).recip();
+    let v = vb * inverse;
+    let w = vc * inverse;
+    (a + ab * v + ac * w, Vec3::new(1.0 - v - w, v, w))
 }
 
 fn triangle_vertices(

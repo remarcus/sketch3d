@@ -95,6 +95,14 @@ impl SketchApp {
                 .then_some((guide.id, guide.name.clone()))
             })
             .collect();
+        let obj_targets: Vec<_> = doc
+            .model_references
+            .iter()
+            .filter(|resource| {
+                resource.visible && self.obj_reference_models.contains_key(&resource.id)
+            })
+            .map(|resource| (resource.id, resource.name.clone()))
+            .collect();
         let mut changed = false;
         let mut apply = false;
         let mut cancel = false;
@@ -109,6 +117,7 @@ impl SketchApp {
                     draft.target,
                     &saved_planes,
                     &saved_curved_guides,
+                    &obj_targets,
                 ))
                 .show_ui(ui, |ui| {
                     for (target, label) in [
@@ -147,6 +156,19 @@ impl SketchApp {
                             )
                             .changed();
                     }
+                    if !obj_targets.is_empty() {
+                        ui.separator();
+                        ui.label("OBJ references");
+                    }
+                    for (id, name) in &obj_targets {
+                        changed |= ui
+                            .selectable_value(
+                                &mut draft.target,
+                                TargetChoice::ObjReference(*id),
+                                name,
+                            )
+                            .changed();
+                    }
                 });
             ui.horizontal(|ui| {
                 changed |= ui
@@ -177,6 +199,8 @@ impl SketchApp {
                 .changed();
             if matches!(draft.target, TargetChoice::SavedCurvedGuide(_)) {
                 ui.small("Cylinder and Sphere targets use the nearest surface point or the first forward hit along captured view rays. Samples through cylinder ends or ambiguous center points report a miss; keeping them can leave segments crossing the surface.");
+            } else if matches!(draft.target, TargetChoice::ObjReference(_)) {
+                ui.small("OBJ targets use the closest triangle or first forward ray hit. Projection rejects ambiguous nearest points and disconnected triangle transitions; tangent rays and mesh gaps count as misses.");
             } else if draft.mode == ProjectionMode::CapturedViewRay {
                 ui.small("Samples outside the captured view or without a forward target hit report a miss.");
             }
@@ -226,6 +250,45 @@ impl SketchApp {
                     TargetChoice::SavedCurvedGuide(id) => {
                         draft.rebuild_on_curved_guide(doc, id, rect)
                     }
+                    TargetChoice::ObjReference(id) => {
+                        let resource = doc
+                            .model_references
+                            .iter()
+                            .find(|resource| resource.id == id);
+                        let model = self.obj_reference_models.get(&id);
+                        let mut index_error = None;
+                        if let std::collections::hash_map::Entry::Vacant(entry) =
+                            self.obj_surface_indices.entry(id)
+                        {
+                            if let Some(model) = model {
+                                match crate::obj_mesh_index::ObjMeshIndex::new(model) {
+                                    Ok(index) => {
+                                        entry.insert(index);
+                                    }
+                                    Err(error) => index_error = Some(error),
+                                }
+                            }
+                        }
+                        let index = self.obj_surface_indices.get(&id);
+                        if let Some(error) = index_error {
+                            draft.reject_preview(&error);
+                            Err(error)
+                        } else if let (Some(resource), Some(model), Some(index)) =
+                            (resource, model, index)
+                        {
+                            draft.rebuild_on_obj_reference(resource, model, index, rect)
+                        } else {
+                            let error = if resource.is_none() {
+                                "Selected OBJ target no longer exists"
+                            } else if model.is_none() {
+                                "Selected OBJ target is not loaded"
+                            } else {
+                                "Selected OBJ target index is unavailable"
+                            };
+                            draft.reject_preview(error);
+                            Err(error.into())
+                        }
+                    }
                     _ => draft
                         .target_plane(doc, active_plane)
                         .and_then(|plane| draft.rebuild(plane, rect)),
@@ -262,7 +325,12 @@ impl SketchApp {
     }
 }
 
-fn target_label(target: TargetChoice, saved: &[(u64, String)], curved: &[(u64, String)]) -> String {
+fn target_label(
+    target: TargetChoice,
+    saved: &[(u64, String)],
+    curved: &[(u64, String)],
+    obj_targets: &[(u64, String)],
+) -> String {
     match target {
         TargetChoice::Front => "Front".into(),
         TargetChoice::Side => "Side".into(),
@@ -279,5 +347,10 @@ fn target_label(target: TargetChoice, saved: &[(u64, String)], curved: &[(u64, S
             .find(|entry| entry.0 == id)
             .map(|entry| entry.1.clone())
             .unwrap_or_else(|| "Missing curved guide".into()),
+        TargetChoice::ObjReference(id) => obj_targets
+            .iter()
+            .find(|entry| entry.0 == id)
+            .map(|entry| entry.1.clone())
+            .unwrap_or_else(|| "Missing OBJ reference".into()),
     }
 }

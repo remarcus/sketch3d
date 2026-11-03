@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 pub const MAX_STROKES: usize = 128;
 pub const MAX_POINTS: usize = 65_536;
+pub const MAX_OBJ_TRIANGLE_TESTS: usize = 5_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectionMode {
@@ -26,6 +27,7 @@ pub enum TargetChoice {
     CapturedView,
     SavedPlane(u64),
     SavedCurvedGuide(u64),
+    ObjReference(u64),
 }
 
 pub struct Draft {
@@ -40,6 +42,7 @@ pub struct Draft {
     pub error: Option<String>,
     pub kept_original_samples: usize,
     target_guide_snapshot: Option<(u64, GuideGeometry)>,
+    target_obj_snapshot: Option<crate::document::model_references::ObjReferenceResource>,
 }
 
 impl Draft {
@@ -87,6 +90,7 @@ impl Draft {
             error: None,
             kept_original_samples: 0,
             target_guide_snapshot: None,
+            target_obj_snapshot: None,
         })
     }
 
@@ -124,6 +128,9 @@ impl Draft {
                     "Choose a curved guide rebuild target instead of a planar target.".into(),
                 );
             }
+            TargetChoice::ObjReference(_) => {
+                return Err("Choose an OBJ rebuild target instead of a planar target.".into());
+            }
         })
     }
 
@@ -142,6 +149,7 @@ impl Draft {
             self.error = Some("Selected curved guide no longer exists".into());
             self.kept_original_samples = 0;
             self.target_guide_snapshot = None;
+            self.target_obj_snapshot = None;
             return Err("Selected curved guide no longer exists".into());
         };
         let geometry = guide.geometry.clone();
@@ -157,6 +165,7 @@ impl Draft {
                 self.error = None;
                 self.kept_original_samples = kept_original_samples;
                 self.target_guide_snapshot = Some((guide_id, geometry));
+                self.target_obj_snapshot = None;
                 Ok(())
             }
             Err(error) => {
@@ -164,6 +173,7 @@ impl Draft {
                 self.error = Some(error.clone());
                 self.kept_original_samples = 0;
                 self.target_guide_snapshot = None;
+                self.target_obj_snapshot = None;
                 Err(error)
             }
         }
@@ -177,6 +187,7 @@ impl Draft {
                 self.error = None;
                 self.kept_original_samples = kept_original_samples;
                 self.target_guide_snapshot = None;
+                self.target_obj_snapshot = None;
                 Ok(())
             }
             Err(error) => {
@@ -184,9 +195,62 @@ impl Draft {
                 self.error = Some(error.clone());
                 self.kept_original_samples = 0;
                 self.target_guide_snapshot = None;
+                self.target_obj_snapshot = None;
                 Err(error)
             }
         }
+    }
+
+    pub fn rebuild_on_obj_reference(
+        &mut self,
+        resource: &crate::document::model_references::ObjReferenceResource,
+        model: &crate::obj_reference::ObjModel,
+        index: &crate::obj_mesh_index::ObjMeshIndex,
+        rect: Rect,
+    ) -> Result<(), String> {
+        if let Err(error) = resource.validate() {
+            self.reset_failed_preview(&error);
+            return Err(error);
+        }
+        if !resource.visible {
+            let error = "The selected OBJ target is hidden.".to_owned();
+            self.reset_failed_preview(&error);
+            return Err(error);
+        }
+        let result = self.build_preview_with_target(
+            ProjectionTarget::Obj(ObjProjectionTarget {
+                resource,
+                model,
+                index,
+            }),
+            rect,
+        );
+        match result {
+            Ok((preview, kept_original_samples)) => {
+                self.preview = preview;
+                self.error = None;
+                self.kept_original_samples = kept_original_samples;
+                self.target_guide_snapshot = None;
+                self.target_obj_snapshot = Some(resource.clone());
+                Ok(())
+            }
+            Err(error) => {
+                self.reset_failed_preview(&error);
+                Err(error)
+            }
+        }
+    }
+
+    fn reset_failed_preview(&mut self, error: &str) {
+        self.preview = self.before.clone();
+        self.error = Some(error.to_owned());
+        self.kept_original_samples = 0;
+        self.target_guide_snapshot = None;
+        self.target_obj_snapshot = None;
+    }
+
+    pub fn reject_preview(&mut self, error: &str) {
+        self.reset_failed_preview(error);
     }
 
     fn build_preview(
@@ -216,6 +280,7 @@ impl Draft {
         let mut preview = self.before.clone();
         let mut total = 0usize;
         let mut kept_original_samples = 0;
+        let mut obj_triangle_tests = 0usize;
         for stroke in &mut preview {
             if stroke.curve.is_some() && !self.convert_curves {
                 return Err("Selected semantic curves need the explicit Convert curves option before reprojection.".into());
@@ -228,24 +293,42 @@ impl Draft {
                 return Err("Reprojection exceeds its sample budget".into());
             }
             let mut first_surface_normal = None;
+            let mut previous_mesh_triangle = None;
             for point in &mut stroke.points {
                 let original = point.position;
-                let Some((projected, normal)) = self.project_sample(target, original, rect)? else {
+                let Some((projected, normal, mesh_triangle)) =
+                    self.project_sample(target, original, rect, &mut obj_triangle_tests)?
+                else {
                     if self.keep_original {
                         kept_original_samples += 1;
+                        previous_mesh_triangle = None;
                         continue;
                     }
                     return Err(match target {
                         ProjectionTarget::Plane(_) => "A source sample could not be projected to the target plane.",
                         ProjectionTarget::Curved(_) => "A source sample misses the curved target or is ambiguous; enable Keep Original or choose another projection.",
+                        ProjectionTarget::Obj(_) => "A source sample misses the OBJ target; enable Keep Original or choose another projection.",
                     }.into());
                 };
+                if let (ProjectionTarget::Obj(target), Some(previous), Some(current)) =
+                    (target, previous_mesh_triangle, mesh_triangle)
+                {
+                    if !target.index.triangles_adjacent(previous, current) {
+                        if self.keep_original {
+                            kept_original_samples += 1;
+                            previous_mesh_triangle = Some(current);
+                            continue;
+                        }
+                        return Err("Projection crosses to a disconnected OBJ component or seam; enable Keep Original or select a continuous region.".into());
+                    }
+                }
                 let position = projected + normal * self.offset;
                 if !position.is_finite() || position.abs().max_element() > 10000.0 {
                     return Err("Reprojected point exceeds the ±10000 world-unit limit".into());
                 }
                 point.position = position;
                 first_surface_normal.get_or_insert(normal);
+                previous_mesh_triangle = mesh_triangle;
             }
             if stroke.points.len() >= 2 {
                 let length: f32 = stroke
@@ -263,7 +346,7 @@ impl Draft {
                     stroke.brush.normal = normal;
                     stroke.brush.tangent = tangent;
                 }
-                ProjectionTarget::Curved(_) => {
+                ProjectionTarget::Curved(_) | ProjectionTarget::Obj(_) => {
                     if let Some(normal) = first_surface_normal {
                         let tangent = stroke
                             .points
@@ -295,7 +378,8 @@ impl Draft {
         target: ProjectionTarget<'_>,
         original: Vec3,
         rect: Rect,
-    ) -> Result<Option<(Vec3, Vec3)>, String> {
+        obj_triangle_tests: &mut usize,
+    ) -> Result<Option<(Vec3, Vec3, Option<u32>)>, String> {
         match target {
             ProjectionTarget::Plane(plane) => {
                 let (_, _, normal) = plane.basis();
@@ -325,7 +409,7 @@ impl Draft {
                         ray_origin + ray_direction * distance
                     }
                 };
-                Ok(Some((projected, normal)))
+                Ok(Some((projected, normal, None)))
             }
             ProjectionTarget::Curved(guide) => {
                 let projected = match self.mode {
@@ -347,7 +431,62 @@ impl Draft {
                 let Some(normal) = guide_normal(guide, projected) else {
                     return Ok(None);
                 };
-                Ok(Some((projected, normal)))
+                Ok(Some((projected, normal, None)))
+            }
+            ProjectionTarget::Obj(target) => {
+                let inverse = target.resource.rotation.inverse();
+                let hit = match self.mode {
+                    ProjectionMode::Orthogonal => {
+                        let local_point =
+                            inverse * (original - target.resource.center) / target.resource.scale;
+                        let remaining = MAX_OBJ_TRIANGLE_TESTS.saturating_sub(*obj_triangle_tests);
+                        let (hit, tested) = target.index.closest_point_bounded(
+                            target.model,
+                            local_point,
+                            remaining,
+                        )?;
+                        *obj_triangle_tests = obj_triangle_tests
+                            .checked_add(tested)
+                            .ok_or("OBJ projection query count overflow")?;
+                        hit
+                    }
+                    ProjectionMode::CapturedViewRay => {
+                        let Some((screen, _)) =
+                            crate::gizmo::project(&self.captured_camera, rect, original)
+                        else {
+                            return Ok(None);
+                        };
+                        let (ray_origin, ray_direction) =
+                            crate::gizmo::ray(&self.captured_camera, rect, screen);
+                        let local_origin =
+                            inverse * (ray_origin - target.resource.center) / target.resource.scale;
+                        let local_direction = inverse * ray_direction / target.resource.scale;
+                        let remaining = MAX_OBJ_TRIANGLE_TESTS.saturating_sub(*obj_triangle_tests);
+                        let (hit, tested) = target.index.hit_bounded(
+                            target.model,
+                            local_origin,
+                            local_direction,
+                            remaining,
+                        )?;
+                        *obj_triangle_tests = obj_triangle_tests
+                            .checked_add(tested)
+                            .ok_or("OBJ projection query count overflow")?;
+                        hit
+                    }
+                };
+                let Some(hit) = hit else {
+                    return Ok(None);
+                };
+                let world_position = target.resource.center
+                    + target.resource.rotation * (hit.position * target.resource.scale);
+                let world_normal = (target.resource.rotation * hit.normal)
+                    .try_normalize()
+                    .ok_or("OBJ surface returned an invalid normal")?;
+                Ok(Some((
+                    world_position,
+                    world_normal,
+                    Some(hit.triangle_index),
+                )))
             }
         }
     }
@@ -366,6 +505,22 @@ impl Draft {
             if !target_is_unchanged {
                 return Err(
                     "The curved target changed or disappeared; reopen the reprojection preview."
+                        .into(),
+                );
+            }
+        }
+        if let Some(expected_resource) = &self.target_obj_snapshot {
+            let target_is_unchanged = matches!(
+                self.target,
+                TargetChoice::ObjReference(id) if id == expected_resource.id
+            ) && doc
+                .model_references
+                .iter()
+                .find(|resource| resource.id == expected_resource.id)
+                .is_some_and(|resource| resource == expected_resource);
+            if !target_is_unchanged {
+                return Err(
+                    "The OBJ target changed or disappeared; reopen the reprojection preview."
                         .into(),
                 );
             }
@@ -398,6 +553,14 @@ impl Draft {
 enum ProjectionTarget<'a> {
     Plane(DrawingPlane),
     Curved(&'a GuideGeometry),
+    Obj(ObjProjectionTarget<'a>),
+}
+
+#[derive(Clone, Copy)]
+struct ObjProjectionTarget<'a> {
+    resource: &'a crate::document::model_references::ObjReferenceResource,
+    model: &'a crate::obj_reference::ObjModel,
+    index: &'a crate::obj_mesh_index::ObjMeshIndex,
 }
 
 fn orthogonal_guide_projection(guide: &GuideGeometry, point: Vec3) -> Option<Vec3> {
