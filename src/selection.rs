@@ -302,7 +302,13 @@ impl SketchApp {
         let Some(drag) = self.region_select_drag.as_mut() else {
             return;
         };
-        if drag
+        if drag.shape == RegionSelectionShape::Box {
+            if drag.path.len() == 1 {
+                drag.path.push(pos);
+            } else if let Some(end) = drag.path.last_mut() {
+                *end = pos;
+            }
+        } else if drag
             .path
             .last()
             .is_none_or(|last| last.distance(pos) >= 2.0)
