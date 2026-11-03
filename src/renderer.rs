@@ -2269,6 +2269,8 @@ impl SceneRenderer {
             pass.set_bind_group(0, &self.bind, &[]);
             pass.set_bind_group(1, &self.textures[&texture::key(solid)], &[]);
             pass.set_bind_group(2, &self.shadow_bind, &[]);
+            // Ground, grid, and models share the stroke pipeline but have no grain.
+            pass.set_bind_group(3, &self.textures[&texture::key(solid)], &[]);
             if settings.ground {
                 pass.set_pipeline(triangles);
                 if let Some((_, mesh)) = &self.ground {
@@ -2821,6 +2823,8 @@ impl SceneRenderer {
             pass.set_bind_group(0, &self.bind, &[]);
             pass.set_bind_group(1, &self.textures[&texture::key(solid)], &[]);
             pass.set_bind_group(2, &self.shadow_bind, &[]);
+            // Offscreen ground draws also require the pipeline's grain binding.
+            pass.set_bind_group(3, &self.textures[&texture::key(solid)], &[]);
             if background.is_some() && settings.ground {
                 pass.set_pipeline(triangles);
                 if let Some((cached_settings, ground)) = &self.ground {

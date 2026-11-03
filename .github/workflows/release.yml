@@ -68,6 +68,29 @@ jobs:
           esac
           mkdir -p dist/package
           cp "target/release/sketch3d" README.md LICENSE dist/package/
+          if [[ "$PLATFORM" == "macos" ]]; then
+            app="dist/package/Sketch3D.app/Contents"
+            mkdir -p "$app/MacOS" "$app/Resources"
+            cp target/release/sketch3d "$app/MacOS/sketch3d"
+            cp assets/icons/sketch3d.icns "$app/Resources/sketch3d.icns"
+            cat > "$app/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>CFBundleName</key><string>Sketch3D</string>
+          <key>CFBundleDisplayName</key><string>Sketch3D</string>
+          <key>CFBundleIdentifier</key><string>io.github.remarcus.sketch3d</string>
+          <key>CFBundleExecutable</key><string>sketch3d</string>
+          <key>CFBundleIconFile</key><string>sketch3d.icns</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          <key>CFBundleShortVersionString</key><string>${GITHUB_REF_NAME#v}</string>
+          <key>CFBundleVersion</key><string>${GITHUB_REF_NAME#v}</string>
+          <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          EOF
+          else
+            cp assets/icons/sketch3d.png dist/package/sketch3d.png
+          fi
           archive="Sketch3D-${GITHUB_REF_NAME}-${PLATFORM}-${arch}.tar.gz"
           tar -czf "dist/$archive" -C dist/package .
         env:

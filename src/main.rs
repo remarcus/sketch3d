@@ -391,6 +391,10 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Sketch3D")
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/icons/sketch3d.png"))
+                    .expect("embedded application icon must be valid PNG"),
+            )
             .with_inner_size(viewport_size)
             .with_min_inner_size([960.0, 640.0])
             .with_visible(!hidden_verification),

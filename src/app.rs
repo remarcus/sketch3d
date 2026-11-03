@@ -4964,7 +4964,7 @@ impl SketchApp {
 
         ui.separator();
         ui.label(
-            RichText::new("SPATIAL / SKETCH")
+            RichText::new("Sketch3D")
                 .strong()
                 .color(ui_style::colors(ui.ctx()).accent),
         );
