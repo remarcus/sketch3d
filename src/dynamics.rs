@@ -61,6 +61,138 @@ pub struct DabSettings {
     pub pressure_size: PressureMapping,
     #[serde(default = "default_dab_algorithm")]
     pub algorithm_version: u8,
+    /// Captured analytic target used to resolve scatter and image marks on a
+    /// curved drawing guide. None preserves the legacy planar mapping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_target: Option<DabSurfaceTarget>,
+}
+
+/// Serializable snapshot of analytic guide geometry used by dab-based marks.
+/// Model meshes and freeform guides remain unsupported by this dab stage.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DabSurfaceTarget {
+    Cylinder {
+        center: Vec3,
+        rotation: glam::Quat,
+        radius: f32,
+        height: f32,
+    },
+    Sphere {
+        center: Vec3,
+        rotation: glam::Quat,
+        radius: f32,
+    },
+    Ring {
+        center: Vec3,
+        rotation: glam::Quat,
+        major_radius: f32,
+        minor_radius: f32,
+    },
+    Cone {
+        center: Vec3,
+        rotation: glam::Quat,
+        radius: f32,
+        height: f32,
+    },
+}
+
+impl DabSurfaceTarget {
+    pub fn is_valid(self) -> bool {
+        let valid_transform = |center: Vec3, rotation: glam::Quat| {
+            center.is_finite()
+                && rotation.is_finite()
+                && (rotation.length_squared() - 1.0).abs() <= 1.0e-3
+        };
+        match self {
+            Self::Cylinder {
+                center,
+                rotation,
+                radius,
+                height,
+            }
+            | Self::Cone {
+                center,
+                rotation,
+                radius,
+                height,
+            } => {
+                valid_transform(center, rotation)
+                    && radius.is_finite()
+                    && radius > 0.0
+                    && height.is_finite()
+                    && height > 0.0
+            }
+            Self::Sphere {
+                center,
+                rotation,
+                radius,
+            } => valid_transform(center, rotation) && radius.is_finite() && radius > 0.0,
+            Self::Ring {
+                center,
+                rotation,
+                major_radius,
+                minor_radius,
+            } => {
+                valid_transform(center, rotation)
+                    && major_radius.is_finite()
+                    && minor_radius.is_finite()
+                    && major_radius > minor_radius
+                    && minor_radius > 0.0
+            }
+        }
+    }
+
+    pub fn surface(self) -> crate::surface::Surface {
+        use crate::surface::{ConeSurface, Cylinder, RingSurface, SphereSurface, Surface};
+        match self {
+            Self::Cylinder {
+                center,
+                rotation,
+                radius,
+                height,
+            } => {
+                let (z, y, x) = rotation.to_euler(glam::EulerRot::ZYX);
+                Surface::Cylinder(Cylinder {
+                    center,
+                    rotation_degrees: Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI),
+                    radius,
+                    height,
+                })
+            }
+            Self::Sphere {
+                center,
+                rotation,
+                radius,
+            } => Surface::Sphere(SphereSurface {
+                center,
+                rotation,
+                radius,
+            }),
+            Self::Ring {
+                center,
+                rotation,
+                major_radius,
+                minor_radius,
+            } => Surface::Ring(RingSurface {
+                center,
+                rotation,
+                major_radius,
+                minor_radius,
+            }),
+            Self::Cone {
+                center,
+                rotation,
+                radius,
+                height,
+            } => Surface::Cone(ConeSurface {
+                center,
+                rotation,
+                radius,
+                height,
+            }),
+        }
+    }
 }
 
 /// Persisted layout and response of parallel bristle/rake ribbons.
@@ -165,6 +297,7 @@ impl Default for DabSettings {
             angle_variation_degrees: 0.0,
             pressure_size: default_dab_pressure_size(),
             algorithm_version: default_dab_algorithm(),
+            surface_target: None,
         }
     }
 }
@@ -180,6 +313,7 @@ impl DabSettings {
             && (0.0..=180.0).contains(&self.angle_variation_degrees)
             && self.pressure_size.is_valid()
             && self.algorithm_version == 1
+            && self.surface_target.is_none_or(DabSurfaceTarget::is_valid)
     }
 }
 

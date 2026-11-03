@@ -488,6 +488,115 @@ pub enum Surface {
     Loft(LoftSurface),
 }
 impl Surface {
+    pub fn normal_at(self, world: Vec3) -> Option<Vec3> {
+        let parameter = self.encode(world, None);
+        let epsilon = 1.0e-3;
+        let base = self
+            .decode(Point {
+                position: parameter,
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 0,
+            })
+            .position;
+        let du = self
+            .decode(Point {
+                position: parameter + Vec3::X * epsilon,
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 0,
+            })
+            .position
+            - base;
+        let dv = self
+            .decode(Point {
+                position: parameter + Vec3::Y * epsilon,
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 0,
+            })
+            .position
+            - base;
+        let mut normal = du.cross(dv).try_normalize()?;
+        if normal.dot(world - base) < 0.0 {
+            normal = -normal;
+        }
+        Some(normal)
+    }
+
+    /// Map a small tangent-plane offset to the same analytic surface using its
+    /// local metric. The returned point is rejected when it leaves a finite
+    /// cylinder or cone boundary.
+    pub fn offset_tangent(self, world: Vec3, tangent_offset: Vec3) -> Option<Vec3> {
+        if !world.is_finite() || !tangent_offset.is_finite() {
+            return None;
+        }
+        let parameter = self.encode(world, None);
+        let base = self
+            .decode(Point {
+                position: parameter,
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 0,
+            })
+            .position;
+        let epsilon = 1.0e-3;
+        let du = (self
+            .decode(Point {
+                position: parameter + Vec3::X * epsilon,
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 0,
+            })
+            .position
+            - base)
+            / epsilon;
+        let dv = (self
+            .decode(Point {
+                position: parameter + Vec3::Y * epsilon,
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 0,
+            })
+            .position
+            - base)
+            / epsilon;
+        let (a, b, c) = (du.dot(du), du.dot(dv), dv.dot(dv));
+        let determinant = a * c - b * b;
+        if determinant <= 1.0e-10 || !determinant.is_finite() {
+            return None;
+        }
+        let (x, y) = (du.dot(tangent_offset), dv.dot(tangent_offset));
+        let delta = Vec3::new(
+            (c * x - b * y) / determinant,
+            (a * y - b * x) / determinant,
+            0.0,
+        );
+        let projected = self
+            .decode(Point {
+                position: parameter + delta,
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 0,
+            })
+            .position;
+        if !projected.is_finite() {
+            return None;
+        }
+        match self {
+            Self::Cylinder(cylinder)
+                if cylinder.to_local(projected).y.abs() > cylinder.height * 0.5 =>
+            {
+                None
+            }
+            Self::Cone(cone) => {
+                let y = cone.rotation.inverse() * (projected - cone.center);
+                (y.y >= 0.0 && y.y <= cone.height).then_some(projected)
+            }
+            _ => Some(projected),
+        }
+    }
+
     fn encode(self, world: Vec3, previous: Option<Vec3>) -> Vec3 {
         match self {
             Self::Plane => world,

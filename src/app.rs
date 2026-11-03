@@ -1559,6 +1559,57 @@ fn show_insert_preview_window(
         .and_then(|response| response.inner)
 }
 
+fn dab_target_from_geometry(
+    geometry: &crate::document::guide_resources::GuideGeometry,
+) -> Option<crate::dynamics::DabSurfaceTarget> {
+    use crate::{document::guide_resources::GuideGeometry, dynamics::DabSurfaceTarget};
+    Some(match geometry {
+        GuideGeometry::Cylinder {
+            center,
+            rotation,
+            radius,
+            height,
+        } => DabSurfaceTarget::Cylinder {
+            center: *center,
+            rotation: *rotation,
+            radius: *radius,
+            height: *height,
+        },
+        GuideGeometry::Sphere {
+            center,
+            rotation,
+            radius,
+        } => DabSurfaceTarget::Sphere {
+            center: *center,
+            rotation: *rotation,
+            radius: *radius,
+        },
+        GuideGeometry::Ring {
+            center,
+            rotation,
+            major_radius,
+            minor_radius,
+        } => DabSurfaceTarget::Ring {
+            center: *center,
+            rotation: *rotation,
+            major_radius: *major_radius,
+            minor_radius: *minor_radius,
+        },
+        GuideGeometry::Cone {
+            center,
+            rotation,
+            radius,
+            height,
+        } => DabSurfaceTarget::Cone {
+            center: *center,
+            rotation: *rotation,
+            radius: *radius,
+            height: *height,
+        },
+        _ => return None,
+    })
+}
+
 impl SketchApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui_style::apply(&cc.egui_ctx, crate::presentation::UiTheme::Dark);
@@ -2495,11 +2546,29 @@ impl SketchApp {
 
     fn dab_scatter_supported(&self) -> bool {
         self.doc.active_model_reference.is_none()
-            && !self.use_cylinder
-            && !self.use_revolved
             && self
-                .saved_guide_surface()
-                .is_none_or(|surface| matches!(surface, Surface::Plane))
+                .saved_guide_geometry()
+                .map_or(!self.use_revolved, |geometry| {
+                    matches!(
+                        geometry,
+                        crate::document::guide_resources::GuideGeometry::Plane { .. }
+                    ) || dab_target_from_geometry(geometry).is_some()
+                })
+    }
+
+    fn captured_dab_surface(
+        &self,
+        geometry: Option<&crate::document::guide_resources::GuideGeometry>,
+    ) -> Option<crate::dynamics::DabSurfaceTarget> {
+        geometry.and_then(dab_target_from_geometry).or_else(|| {
+            self.use_cylinder
+                .then(|| crate::dynamics::DabSurfaceTarget::Cylinder {
+                    center: self.cylinder.center,
+                    rotation: self.cylinder.rotation(),
+                    radius: self.cylinder.radius,
+                    height: self.cylinder.height,
+                })
+        })
     }
 
     fn commit_model_surface_stroke(&mut self, stroke: Stroke, duration_ms: u64) {
@@ -2638,9 +2707,9 @@ impl SketchApp {
             self.finish();
             self.resume_ink = begin;
             self.status = if self.brush.tip_asset_id != 0 {
-                "Image stamps currently require a planar drawing target; curved guides and model surfaces are unsupported.".into()
+                "Image stamps support planes and projected marks on cylinder, sphere, torus, and cone guides; revolved, freeform, loft, and model surfaces are unsupported.".into()
             } else {
-                "Dab scatter currently requires a planar drawing target. Turn scatter off for curved guides and model surfaces.".into()
+                "Dab scatter supports planes and analytic cylinder, sphere, torus, and cone guides. Turn scatter off for revolved, freeform, loft, and model surfaces.".into()
             };
             return;
         }
@@ -2763,6 +2832,10 @@ impl SketchApp {
                     dab_seed: crate::dab_placement::seed_for_stroke(id),
                     dab_distance_origin: 0.0,
                     dab_total_length: 0.0,
+                    dabs: crate::dynamics::DabSettings {
+                        surface_target: self.captured_dab_surface(saved_geometry.as_ref()),
+                        ..self.brush.dabs
+                    },
                     ..self.brush
                 },
                 points: Vec::new(),

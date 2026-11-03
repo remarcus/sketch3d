@@ -800,12 +800,33 @@ fn tip_mesh(stroke: &Stroke) -> Vec<Vertex> {
             .unwrap_or(side);
         let half_width = stroke.radius * dab.size_scale;
         let half_height = half_width / stroke.brush.tip_aspect;
-        let positions = [
+        let mut positions = [
             dab.position - along * half_width + across * half_height,
             dab.position + along * half_width + across * half_height,
             dab.position + along * half_width - across * half_height,
             dab.position - along * half_width - across * half_height,
         ];
+        if let Some(target) = stroke
+            .brush
+            .dabs
+            .surface_target
+            .map(|target| target.surface())
+        {
+            let mut projected = [Vec3::ZERO; 4];
+            let mut valid = true;
+            for (index, position) in positions.iter().copied().enumerate() {
+                if let Some(point) = target.offset_tangent(dab.position, position - dab.position) {
+                    projected[index] = point;
+                } else {
+                    valid = false;
+                    break;
+                }
+            }
+            if !valid {
+                continue;
+            }
+            positions = projected;
+        }
         let opacity = vertex_opacity(stroke, dab.pressure, dab.normal, dab.normal);
         flat_quad_gradient(
             &mut vertices,

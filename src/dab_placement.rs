@@ -233,10 +233,20 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> ResolvedDab {
         point_thickness,
         index,
     } = parameters;
-    let normal = (stroke.brush.normal - tangent * stroke.brush.normal.dot(tangent))
-        .try_normalize()
+    let target = stroke
+        .brush
+        .dabs
+        .surface_target
+        .map(|target| target.surface());
+    let normal = target
+        .and_then(|surface| surface.normal_at(center))
         .or_else(|| {
-            (stroke.brush.tangent - tangent * stroke.brush.tangent.dot(tangent)).try_normalize()
+            (stroke.brush.normal - tangent * stroke.brush.normal.dot(tangent))
+                .try_normalize()
+                .or_else(|| {
+                    (stroke.brush.tangent - tangent * stroke.brush.tangent.dot(tangent))
+                        .try_normalize()
+                })
         })
         .unwrap_or(Vec3::Z);
     let tangent = (tangent - normal * tangent.dot(normal))
@@ -251,19 +261,26 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> ResolvedDab {
         * random01(stroke.brush.dab_seed, index, 2).sqrt();
     let scatter_angle = random01(stroke.brush.dab_seed, index, 3) * std::f32::consts::TAU;
     let scatter = if stroke.brush.dabs.scatter > 0.0 {
-        // The brush frame is fixed to the captured drawing plane. The input
-        // handler disables scatter on curved and model-surface targets.
         let plane_tangent = (stroke.brush.tangent
             - stroke.brush.normal * stroke.brush.tangent.dot(stroke.brush.normal))
-        .try_normalize()
-        .unwrap_or(tangent);
+            - normal
+                * ((stroke.brush.tangent
+                    - stroke.brush.normal * stroke.brush.tangent.dot(stroke.brush.normal))
+                .dot(normal));
+        let plane_tangent = plane_tangent.try_normalize().unwrap_or(tangent);
         let plane_side = stroke
             .brush
             .normal
             .cross(plane_tangent)
             .try_normalize()
             .unwrap_or(cross);
-        (plane_tangent * scatter_angle.cos() + plane_side * scatter_angle.sin()) * scatter_radius
+        let offset = (plane_tangent * scatter_angle.cos() + plane_side * scatter_angle.sin())
+            * scatter_radius;
+        if let Some(surface) = target {
+            surface.offset_tangent(center, offset).unwrap_or(center) - center
+        } else {
+            offset
+        }
     } else {
         Vec3::ZERO
     };
