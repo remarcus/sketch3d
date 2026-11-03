@@ -41,6 +41,7 @@ pub(super) enum RegionSelectionShape {
 pub(super) struct RegionSelectionDrag {
     starting_selection: HashSet<u64>,
     path: Vec<Pos2>,
+    truncated: bool,
     shape: RegionSelectionShape,
     operation: crate::brush_selection::RegionSelectionOperation,
     fully_contained: bool,
@@ -305,9 +306,15 @@ impl SketchApp {
             .path
             .last()
             .is_none_or(|last| last.distance(pos) >= 2.0)
-            && drag.path.len() < crate::brush_selection::MAX_REGION_VERTICES
         {
-            drag.path.push(pos);
+            if drag.path.len() < crate::brush_selection::MAX_REGION_VERTICES {
+                drag.path.push(pos);
+            } else if !drag.truncated {
+                drag.truncated = true;
+                self.status =
+                    "Lasso reached its 4,096-vertex limit; additional path points are ignored."
+                        .into();
+            }
         }
         let region = region_polygon(drag);
         if region.len() < 3 {
@@ -329,12 +336,22 @@ impl SketchApp {
                     drag.operation,
                 );
             }
-            Err(error) => self.status = error.into(),
+            Err(error) => {
+                self.selected = drag.starting_selection.clone();
+                self.status = error.into();
+            }
         }
     }
 
     pub(super) fn commit_region_selection(&mut self) {
-        if self.region_select_drag.take().is_some() {
+        if let Some(drag) = self.region_select_drag.take() {
+            if drag.truncated {
+                self.status = format!(
+                    "Lasso stopped at the 4,096-vertex limit: {} stroke(s) selected.",
+                    self.selected.len()
+                );
+                return;
+            }
             self.status = format!(
                 "Region selection finished: {} stroke(s) selected.",
                 self.selected.len()
@@ -463,6 +480,7 @@ impl SketchApp {
             self.region_select_drag = Some(RegionSelectionDrag {
                 starting_selection: self.selected.clone(),
                 path: vec![pos],
+                truncated: false,
                 shape: self.region_select_shape,
                 operation,
                 fully_contained: self.region_select_contained,
@@ -1901,7 +1919,7 @@ impl SketchApp {
             });
             ui.checkbox(&mut self.region_select_contained, "Fully contained strokes");
             ui.checkbox(&mut self.brush_select_through, "Select through occlusion");
-            ui.small("Stroke-only selection. Hidden and locked layers are excluded. Shift-drag adds. Escape cancels.");
+            ui.small("Hidden and locked strokes cannot be selected; visible artwork on locked layers still blocks hits. Shift-drag adds. Escape cancels.");
         }
         ui.checkbox(&mut self.brush_select_enabled, "Drag brush selection");
         if self.brush_select_enabled {

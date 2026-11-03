@@ -95,13 +95,27 @@ fn distance(pos: Pos2, a: Pos2, b: Pos2) -> (f32, f32) {
     (pos.distance(a + ab * t), t)
 }
 pub fn pick(doc: &Document, camera: &Camera, rect: Rect, pos: Pos2) -> Option<u64> {
-    pick_filtered(doc, camera, rect, pos, true)
+    pick_filtered(doc, camera, rect, pos, true, 8.0, false)
+        .ok()
+        .flatten()
 }
 
 /// Pick visible artwork without requiring its layer to be editable.
 /// Read-only tools such as color sampling can inspect locked layers.
 pub fn pick_visible(doc: &Document, camera: &Camera, rect: Rect, pos: Pos2) -> Option<u64> {
-    pick_filtered(doc, camera, rect, pos, false)
+    pick_filtered(doc, camera, rect, pos, false, 8.0, false)
+        .ok()
+        .flatten()
+}
+
+/// Resolve region witnesses without the cursor tolerance used for point picking.
+pub fn pick_region_visible(
+    doc: &Document,
+    camera: &Camera,
+    rect: Rect,
+    pos: Pos2,
+) -> Result<Option<u64>, &'static str> {
+    pick_filtered(doc, camera, rect, pos, false, 0.0, true)
 }
 
 fn textured_surface_covered(
@@ -174,18 +188,27 @@ fn pick_filtered(
     rect: Rect,
     pos: Pos2,
     editable_only: bool,
-) -> Option<u64> {
+    pick_slop_px: f32,
+    require_visible_coverage: bool,
+) -> Result<Option<u64>, &'static str> {
     let mut best: Option<(f32, f32, u64)> = None;
     let (origin, direction) = ray(camera, rect, pos);
     for stroke in doc.strokes.iter().filter(|stroke| {
-        if editable_only {
+        let selectable = if editable_only {
             doc.editable(stroke)
         } else {
             doc.visible(stroke)
-        }
+        };
+        selectable
+            && (!require_visible_coverage
+                || (stroke.brush.opacity > 0.001 && doc.layer_opacity(stroke.layer_id) > 0.001))
     }) {
-        let Ok(evaluated_copies) = crate::stroke_modifiers::evaluated_strokes(stroke) else {
-            continue;
+        let evaluated_copies = match crate::stroke_modifiers::evaluated_strokes(stroke) {
+            Ok(copies) => copies,
+            Err(_) if require_visible_coverage => {
+                return Err("Region selection cannot evaluate visible occlusion geometry")
+            }
+            Err(_) => continue,
         };
         for evaluated in evaluated_copies {
             let stroke = evaluated.as_ref();
@@ -201,7 +224,7 @@ fn pick_filtered(
                 let close = stroke.points.iter().any(|point| {
                     project(camera, rect, point.position).is_some_and(|(screen, _)| {
                         let width = extent / camera.world_per_pixel(point.position, rect.height());
-                        screen.distance(pos) <= 8.0 + width
+                        screen.distance(pos) <= pick_slop_px + width
                     })
                 }) || stroke.points.windows(2).any(|pair| {
                     let (Some((a, _)), Some((b, _))) = (
@@ -214,7 +237,7 @@ fn pick_filtered(
                         / camera
                             .world_per_pixel(pair[0].position, rect.height())
                             .min(camera.world_per_pixel(pair[1].position, rect.height()));
-                    distance(pos, a, b).0 <= 8.0 + width
+                    distance(pos, a, b).0 <= pick_slop_px + width
                 });
                 let tip_asset = doc
                     .brush_tip_assets
@@ -272,7 +295,7 @@ fn pick_filtered(
             };
             let mut hit = |a: (Pos2, f32, f32), b: (Pos2, f32, f32)| {
                 let (dist, t) = distance(pos, a.0, b.0);
-                if dist > 8.0 + a.2.max(b.2) {
+                if dist > pick_slop_px + a.2.max(b.2) {
                     return;
                 }
                 let depth = a.1 + (b.1 - a.1) * t;
@@ -297,7 +320,7 @@ fn pick_filtered(
             }
         }
     }
-    best.map(|(_, _, id)| id)
+    Ok(best.map(|(_, _, id)| id))
 }
 impl Layout {
     pub fn new(camera: &Camera, rect: Rect, pivot: Vec3, mode: Mode) -> Option<Self> {

@@ -50,9 +50,8 @@ pub fn region_hit_ids(
     let mut hits = HashSet::new();
     let mut work = 0usize;
     for source in doc.strokes.iter().filter(|stroke| doc.editable(stroke)) {
-        let Ok(evaluated_copies) = crate::stroke_modifiers::evaluated_strokes(source) else {
-            continue;
-        };
+        let evaluated_copies = crate::stroke_modifiers::evaluated_strokes(source)
+            .map_err(|_| "Region selection cannot evaluate a stroke's modifier stack")?;
         for evaluated in evaluated_copies {
             let stroke = evaluated.as_ref();
             if stroke.points.is_empty() {
@@ -78,8 +77,34 @@ pub fn region_hit_ids(
             let mut witnesses = Vec::new();
 
             if stroke.fill.is_some() {
-                let contained = contour.iter().all(|p| point_in_polygon(*p, region));
                 if fully_contained {
+                    let mut contained = contour.iter().all(|p| point_in_polygon(*p, region));
+                    if contained {
+                        for i in 0..contour.len() {
+                            for j in 0..region.len() {
+                                work = work.saturating_add(1);
+                                if work > MAX_WORK {
+                                    return Err(
+                                        "Selection query exceeded its 5,000,000 intersection budget",
+                                    );
+                                }
+                                if closest_segments(
+                                    contour[i],
+                                    contour[(i + 1) % contour.len()],
+                                    region[j],
+                                    region[(j + 1) % region.len()],
+                                )
+                                .0 <= 0.01
+                                {
+                                    contained = false;
+                                    break;
+                                }
+                            }
+                            if !contained {
+                                break;
+                            }
+                        }
+                    }
                     if contained {
                         witnesses.extend(contour.iter().copied());
                     }
@@ -117,8 +142,58 @@ pub fn region_hit_ids(
                     }
                 }
             } else if fully_contained {
-                let all_inside = contour.iter().all(|p| point_in_polygon(*p, region));
-                if all_inside {
+                let mut contained = true;
+                for (screen, world) in &projected {
+                    let radius_px =
+                        extent / camera.world_per_pixel(*world, canvas.height()).max(1e-6);
+                    if !point_in_polygon(*screen, region) {
+                        contained = false;
+                        break;
+                    }
+                    for edge in 0..region.len() {
+                        work = work.saturating_add(1);
+                        if work > MAX_WORK {
+                            return Err("Selection query exceeded its 5,000,000 geometry budget");
+                        }
+                        if closest_point(region[edge], region[(edge + 1) % region.len()], *screen).0
+                            <= radius_px
+                        {
+                            contained = false;
+                            break;
+                        }
+                    }
+                    if !contained {
+                        break;
+                    }
+                }
+                for pair in projected.windows(2) {
+                    if !contained {
+                        break;
+                    }
+                    let radius_px = extent
+                        / camera
+                            .world_per_pixel(pair[0].1, canvas.height())
+                            .min(camera.world_per_pixel(pair[1].1, canvas.height()))
+                            .max(1e-6);
+                    for edge in 0..region.len() {
+                        work = work.saturating_add(1);
+                        if work > MAX_WORK {
+                            return Err("Selection query exceeded its 5,000,000 geometry budget");
+                        }
+                        if closest_segments(
+                            pair[0].0,
+                            pair[1].0,
+                            region[edge],
+                            region[(edge + 1) % region.len()],
+                        )
+                        .0 <= radius_px
+                        {
+                            contained = false;
+                            break;
+                        }
+                    }
+                }
+                if contained {
                     witnesses.extend(contour.iter().copied());
                 }
             } else {
@@ -171,13 +246,22 @@ pub fn region_hit_ids(
                     }
                 }
             }
-            let witness = witnesses.into_iter().find(|point| {
-                through_selection || gizmo::pick(doc, camera, canvas, *point) == Some(stroke.id)
-            });
-            let Some(witness) = witness else {
+            let mut visible_hit = through_selection;
+            if !visible_hit {
+                for point in witnesses {
+                    work = work.saturating_add(1);
+                    if work > MAX_WORK {
+                        return Err("Selection query exceeded its 5,000,000 geometry budget");
+                    }
+                    if gizmo::pick_region_visible(doc, camera, canvas, point)? == Some(stroke.id) {
+                        visible_hit = true;
+                        break;
+                    }
+                }
+            }
+            if !visible_hit {
                 continue;
-            };
-            let _ = witness;
+            }
             if individual {
                 hits.insert(stroke.id);
             } else {
