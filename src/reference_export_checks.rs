@@ -171,6 +171,7 @@ impl SketchApp {
             center: model_center,
             rotation: model_rotation,
             scale,
+            live_line_art: None,
             asset: model_asset,
         });
         self.obj_reference_models.insert(model_id, model);

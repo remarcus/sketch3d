@@ -19,6 +19,9 @@ impl SketchApp {
             super::LineArtCommand::Update => self.line_art_verification_update_rect,
             super::LineArtCommand::Bake => self.line_art_verification_bake_rect,
             super::LineArtCommand::Cancel => unreachable!(),
+            super::LineArtCommand::SetLive(_, _) | super::LineArtCommand::BakeLive(_) => {
+                unreachable!()
+            }
         }
         .expect("line-art action button is laid out in the production OBJ panel")
         .center();
@@ -53,7 +56,7 @@ impl SketchApp {
             "the clicked line-art button dispatches the requested action"
         );
         self.line_art_command = Some(command);
-        self.process_line_art_command(canvas);
+        self.process_line_art_command(canvas, &ui_context);
     }
 
     pub(super) fn verify_obj_reference_window_import_click(&mut self, screen_rect: Rect) {

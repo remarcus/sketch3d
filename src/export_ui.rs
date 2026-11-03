@@ -220,8 +220,27 @@ impl SketchApp {
             return;
         }
         let selection = selected.then(|| self.selected.clone());
-        let snapshot =
-            build_export_document_snapshot(&self.doc, selection.as_ref(), include_images);
+        let mut document_with_live_lines = self.doc.clone();
+        if include_images
+            && self
+                .doc
+                .model_references
+                .iter()
+                .any(|resource| resource.visible && resource.live_line_art.is_some())
+        {
+            if let Err(error) =
+                self.append_live_line_art_to_export(&mut document_with_live_lines, ctx)
+            {
+                self.status = format!("Cannot snapshot live model line art: {error}");
+                self.last_export_result = Some(Err(error));
+                return;
+            }
+        }
+        let snapshot = build_export_document_snapshot(
+            &document_with_live_lines,
+            selection.as_ref(),
+            include_images,
+        );
         let (sender, receiver) = mpsc::channel();
         let context = ctx.clone();
         let destination = path.clone();
@@ -394,6 +413,7 @@ mod tests {
                 center: Vec3::ZERO,
                 rotation: Quat::IDENTITY,
                 scale: 1.0,
+                live_line_art: None,
                 asset: ObjReferenceAsset {
                     id: 9,
                     bundle_dir: "models/9".into(),

@@ -20,7 +20,16 @@ fn line_art_point_visible(
 }
 
 impl SketchApp {
-    pub(super) fn process_line_art_command(&mut self, canvas: egui::Rect) {
+    fn current_line_art_settings(&self) -> crate::model_line_art::Settings {
+        crate::model_line_art::Settings {
+            crease_angle_degrees: self.line_art_crease_angle,
+            boundaries: self.line_art_boundaries,
+            creases: self.line_art_creases,
+            silhouettes: self.line_art_silhouettes,
+        }
+    }
+
+    pub(super) fn process_line_art_command(&mut self, canvas: egui::Rect, ctx: &egui::Context) {
         let Some(command) = self.line_art_command.take() else {
             return;
         };
@@ -54,12 +63,7 @@ impl SketchApp {
                     self.status = "The source OBJ model is not loaded".into();
                     return;
                 };
-                let settings = crate::model_line_art::Settings {
-                    crease_angle_degrees: self.line_art_crease_angle,
-                    boundaries: self.line_art_boundaries,
-                    creases: self.line_art_creases,
-                    silhouettes: self.line_art_silhouettes,
-                };
+                let settings = self.current_line_art_settings();
                 match crate::model_line_art::extract(
                     model,
                     &self.camera,
@@ -112,89 +116,505 @@ impl SketchApp {
                 let Some(draft) = self.line_art_draft.take() else {
                     return;
                 };
-                if draft.segments.is_empty() {
-                    self.status = "There is no line art to bake".into();
+                match self.bake_line_art_segments(&draft.segments) {
+                    Ok(count) => {
+                        self.status = format!(
+                            "Baked {count} line-art strokes as independent strokes (one undo step)"
+                        )
+                    }
+                    Err(error) => {
+                        self.line_art_draft = Some(draft);
+                        self.status = error;
+                    }
+                }
+            }
+            LineArtCommand::SetLive(source_id, settings) => {
+                self.set_live_line_art_settings(source_id, settings);
+            }
+            LineArtCommand::BakeLive(source_id) => {
+                self.refresh_live_line_art(canvas, ctx, true);
+                let Some(cached) = self.live_line_art_cache.get(&source_id) else {
+                    self.status = "No live line-art output is available for this model".into();
+                    return;
+                };
+                if let Some(error) = &cached.error {
+                    self.status = format!("Cannot bake live line art: {error}");
                     return;
                 }
-                if self
-                    .next_id
-                    .checked_add(draft.segments.len() as u64)
-                    .is_none_or(|end| end == u64::MAX)
-                {
-                    self.status = "No more stroke IDs are available".into();
-                    self.line_art_draft = Some(draft);
-                    return;
+                let segments = cached.segments.clone();
+                match self.bake_live_line_art(source_id, &segments) {
+                    Ok(count) => self.status = format!(
+                        "Baked {count} live line-art strokes and detached the source (one undo step)"
+                    ),
+                    Err(error) => self.status = error,
                 }
-                let mut id = self.next_id;
-                let strokes = draft
-                    .segments
-                    .into_iter()
-                    .map(|line| {
-                        let stroke = crate::document::Stroke {
-                            model_surface: None,
-                            fill: None,
-                            material: crate::document::StrokeMaterial::Unlit,
-                            group_id: None,
-                            layer_id: self.doc.active_layer,
-                            id,
-                            color: [0.035, 0.035, 0.04],
-                            gradient: None,
-                            radius: 0.006,
-                            brush: crate::document::Brush::default(),
-                            points: line
-                                .into_iter()
-                                .map(|position| crate::document::Point {
-                                    position,
-                                    pressure: 1.0,
-                                    tilt: None,
-                                    time_ms: 0,
-                                })
-                                .collect(),
-                            point_thickness: None,
-                            point_colors: None,
-                            modifiers: None,
-                            curve: None,
-                        };
-                        id += 1;
-                        stroke
-                    })
-                    .collect::<Vec<_>>();
-                let edit = Edit::AddBatch(strokes);
-                edit.apply(&mut self.doc, true);
-                self.undo.push(edit);
-                self.redo.clear();
-                self.next_id = id;
-                self.dirty = true;
-                self.record_recovery_edit_labeled("Bake model line art");
-                self.renderer.invalidate();
-                self.status = "Baked line art as independent strokes (one undo step)".into();
             }
         }
     }
 
-    pub(super) fn paint_line_art_preview(&self, painter: &egui::Painter, canvas: egui::Rect) {
-        let Some(draft) = &self.line_art_draft else {
+    fn set_live_line_art_settings(
+        &mut self,
+        source_id: u64,
+        settings: Option<crate::model_line_art::Settings>,
+    ) {
+        if settings.is_some_and(|settings| settings.validate().is_err()) {
+            self.status = "Live line-art settings are invalid".into();
             return;
-        };
-        if !self
+        }
+        let Some(index) = self
             .doc
             .model_references
             .iter()
-            .any(|resource| resource.id == draft.source_id && resource.visible)
-        {
+            .position(|resource| resource.id == source_id)
+        else {
+            self.status = "The live line-art model no longer exists".into();
+            return;
+        };
+        let resource = &self.doc.model_references[index];
+        if resource.locked {
+            self.status =
+                "Unlock the OBJ reference before changing its live line-art source".into();
             return;
         }
-        for line in &draft.segments {
-            if let (Some((a, _)), Some((b, _))) = (
-                crate::gizmo::project(&self.camera, canvas, line[0]),
-                crate::gizmo::project(&self.camera, canvas, line[1]),
-            ) {
-                painter.line_segment(
-                    [a, b],
-                    egui::Stroke::new(
-                        1.5_f32,
-                        egui::Color32::from_rgba_unmultiplied(255, 185, 55, 210),
-                    ),
+        if settings.is_some() && !resource.visible {
+            self.status = "Show the OBJ reference before enabling or updating live line art".into();
+            return;
+        }
+        if resource.live_line_art == settings {
+            self.status = "Live line-art settings are unchanged".into();
+            return;
+        }
+        if settings.is_some()
+            && resource.live_line_art.is_none()
+            && self
+                .doc
+                .model_references
+                .iter()
+                .filter(|resource| resource.live_line_art.is_some())
+                .count()
+                >= crate::model_line_art::MAX_LIVE_SOURCES
+        {
+            self.status = format!(
+                "A drawing can contain at most {} live line-art sources",
+                crate::model_line_art::MAX_LIVE_SOURCES
+            );
+            return;
+        }
+        let before = self.model_reference_edit_state();
+        self.doc.model_references[index].live_line_art = settings;
+        if let Err(error) = crate::document::model_references::validate_catalog(
+            &self.doc.model_references,
+            self.doc.active_model_reference,
+        ) {
+            self.doc.model_references = before.0.clone();
+            self.status = error;
+            return;
+        }
+        let after = self.model_reference_edit_state();
+        self.undo.push(Edit::ModelReferences { before, after });
+        self.redo.clear();
+        self.dirty = true;
+        self.record_recovery_edit_labeled("Change live model line art");
+        self.live_line_art_cache.remove(&source_id);
+        self.live_line_art_pending.remove(&source_id);
+        self.renderer.invalidate();
+        self.status = if settings.is_some() {
+            "Live model line-art source enabled".into()
+        } else {
+            "Live model line-art source detached".into()
+        };
+    }
+
+    fn bake_line_art_segments(&mut self, segments: &[[glam::Vec3; 2]]) -> Result<usize, String> {
+        if segments.is_empty() {
+            return Err("There is no line art to bake".into());
+        }
+        if self
+            .doc
+            .layers
+            .iter()
+            .find(|layer| layer.id == self.doc.active_layer)
+            .is_none_or(|layer| !layer.visible || layer.locked)
+        {
+            return Err("Unlock and show the active layer before baking line art".into());
+        }
+        let count =
+            u64::try_from(segments.len()).map_err(|_| "No more stroke IDs are available")?;
+        let next_id = self
+            .next_id
+            .checked_add(count)
+            .filter(|end| *end != u64::MAX)
+            .ok_or("No more stroke IDs are available")?;
+        let strokes = self.make_line_art_strokes(segments, self.next_id)?;
+        let edit = Edit::AddBatch(strokes);
+        edit.apply(&mut self.doc, true);
+        self.undo.push(edit);
+        self.redo.clear();
+        self.next_id = next_id;
+        self.dirty = true;
+        self.record_recovery_edit_labeled("Bake model line art");
+        self.renderer.invalidate();
+        Ok(segments.len())
+    }
+
+    fn bake_live_line_art(
+        &mut self,
+        source_id: u64,
+        segments: &[[glam::Vec3; 2]],
+    ) -> Result<usize, String> {
+        if segments.is_empty() {
+            return Err("There is no live line art to bake".into());
+        }
+        let Some(index) = self
+            .doc
+            .model_references
+            .iter()
+            .position(|resource| resource.id == source_id && resource.live_line_art.is_some())
+        else {
+            return Err("The live line-art source no longer exists".into());
+        };
+        let resource = &self.doc.model_references[index];
+        if resource.locked || !resource.visible {
+            return Err("Unlock and show the OBJ reference before baking live line art".into());
+        }
+        if self
+            .doc
+            .layers
+            .iter()
+            .find(|layer| layer.id == self.doc.active_layer)
+            .is_none_or(|layer| !layer.visible || layer.locked)
+        {
+            return Err("Unlock and show the active layer before baking line art".into());
+        }
+        let count =
+            u64::try_from(segments.len()).map_err(|_| "No more stroke IDs are available")?;
+        let next_id = self
+            .next_id
+            .checked_add(count)
+            .filter(|end| *end != u64::MAX)
+            .ok_or("No more stroke IDs are available")?;
+        let strokes = self.make_line_art_strokes(segments, self.next_id)?;
+        let current_points: usize = self
+            .doc
+            .strokes
+            .iter()
+            .map(|stroke| stroke.points.len())
+            .sum();
+        if self.doc.strokes.len().saturating_add(strokes.len()) > 100_000
+            || current_points.saturating_add(strokes.len().saturating_mul(2)) > 2_000_000
+        {
+            return Err("Baked line art would exceed the document stroke or point limit".into());
+        }
+        let before = self.model_reference_edit_state();
+        self.doc.model_references[index].live_line_art = None;
+        if let Err(error) = crate::document::model_references::validate_catalog(
+            &self.doc.model_references,
+            self.doc.active_model_reference,
+        ) {
+            self.doc.model_references = before.0.clone();
+            return Err(error);
+        }
+        let after = self.model_reference_edit_state();
+        let edit = Edit::BakeLiveLineArt {
+            strokes,
+            before,
+            after,
+        };
+        edit.apply(&mut self.doc, true);
+        self.undo.push(edit);
+        self.redo.clear();
+        self.next_id = next_id;
+        self.dirty = true;
+        self.record_recovery_edit_labeled("Bake live model line art");
+        self.live_line_art_cache.remove(&source_id);
+        self.live_line_art_pending.remove(&source_id);
+        self.renderer.invalidate();
+        Ok(segments.len())
+    }
+
+    fn make_line_art_strokes(
+        &self,
+        segments: &[[glam::Vec3; 2]],
+        first_id: u64,
+    ) -> Result<Vec<crate::document::Stroke>, String> {
+        let count =
+            u64::try_from(segments.len()).map_err(|_| "No more stroke IDs are available")?;
+        let end_id = first_id
+            .checked_add(count)
+            .filter(|end| *end != u64::MAX)
+            .ok_or("No more stroke IDs are available")?;
+        let _ = end_id;
+        Ok(segments
+            .iter()
+            .enumerate()
+            .map(|(index, line)| crate::document::Stroke {
+                model_surface: None,
+                fill: None,
+                material: crate::document::StrokeMaterial::Unlit,
+                group_id: None,
+                layer_id: self.doc.active_layer,
+                id: first_id + index as u64,
+                color: [0.035, 0.035, 0.04],
+                gradient: None,
+                radius: 0.006,
+                brush: crate::document::Brush::default(),
+                points: line
+                    .iter()
+                    .copied()
+                    .map(|position| crate::document::Point {
+                        position,
+                        pressure: 1.0,
+                        tilt: None,
+                        time_ms: 0,
+                    })
+                    .collect(),
+                point_thickness: None,
+                point_colors: None,
+                modifiers: None,
+                curve: None,
+            })
+            .collect())
+    }
+
+    fn live_line_art_key(
+        &self,
+        resource: &ObjReferenceResource,
+        canvas: egui::Rect,
+    ) -> Option<crate::model_line_art::LiveLineArtKey> {
+        let settings = resource.live_line_art?;
+        Some(crate::model_line_art::LiveLineArtKey {
+            source_id: resource.id,
+            asset_bundle: resource.asset.bundle_dir.clone(),
+            settings,
+            camera_projection: self.camera.projection,
+            camera_angles: [self.camera.yaw, self.camera.pitch, self.camera.roll],
+            camera_distance: self.camera.distance,
+            camera_target: self.camera.target,
+            canvas_size: [canvas.width(), canvas.height()],
+            resource_transforms: self
+                .doc
+                .model_references
+                .iter()
+                .map(|item| {
+                    (
+                        item.id,
+                        item.visible,
+                        item.center,
+                        item.rotation,
+                        item.scale,
+                    )
+                })
+                .collect(),
+        })
+    }
+
+    pub(super) fn refresh_live_line_art(
+        &mut self,
+        canvas: egui::Rect,
+        ctx: &egui::Context,
+        force: bool,
+    ) {
+        if canvas.width() <= 0.0 || canvas.height() <= 0.0 {
+            return;
+        }
+        self.line_art_canvas_size = Some([canvas.width(), canvas.height()]);
+        let resources: Vec<_> = self
+            .doc
+            .model_references
+            .iter()
+            .filter(|resource| resource.visible && resource.live_line_art.is_some())
+            .cloned()
+            .collect();
+        let active_ids: HashSet<_> = resources.iter().map(|resource| resource.id).collect();
+        self.live_line_art_cache
+            .retain(|id, _| active_ids.contains(id));
+        self.live_line_art_pending
+            .retain(|id, _| active_ids.contains(id));
+        let now = Instant::now();
+        let mut repaint_for_debounce = false;
+        for resource in resources {
+            let Some(key) = self.live_line_art_key(&resource, canvas) else {
+                continue;
+            };
+            if self
+                .live_line_art_cache
+                .get(&resource.id)
+                .is_some_and(|entry| entry.key == key)
+            {
+                self.live_line_art_pending.remove(&resource.id);
+                continue;
+            }
+            if !force {
+                let pending = self
+                    .live_line_art_pending
+                    .entry(resource.id)
+                    .or_insert_with(|| crate::model_line_art::PendingLiveLineArt {
+                        key: key.clone(),
+                        started: now,
+                    });
+                if pending.key != key {
+                    pending.key = key.clone();
+                    pending.started = now;
+                }
+                if pending.started.elapsed()
+                    < Duration::from_millis(crate::model_line_art::LIVE_REGENERATION_DEBOUNCE_MS)
+                {
+                    repaint_for_debounce = true;
+                    continue;
+                }
+            }
+            let result = if let Some(model) = self.obj_reference_models.get(&resource.id) {
+                match crate::model_line_art::extract(
+                    model,
+                    &self.camera,
+                    resource.center,
+                    resource.rotation,
+                    resource.scale,
+                    resource.live_line_art.unwrap_or_default(),
+                ) {
+                    Ok(extraction) => {
+                        let world_segments = extraction
+                            .segments
+                            .into_iter()
+                            .map(|line| {
+                                line.map(|point| {
+                                    resource.center + resource.rotation * (point * resource.scale)
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        let mut indices = std::mem::take(&mut self.obj_surface_indices);
+                        let visible = crate::model_line_art::filter_visible_limited(
+                            world_segments,
+                            crate::model_line_art::MAX_LIVE_OUTPUT_PER_SOURCE,
+                            |sample| {
+                                line_art_point_visible(
+                                    &self.camera,
+                                    canvas,
+                                    sample,
+                                    &self.doc.model_references,
+                                    &self.obj_reference_models,
+                                    &mut indices,
+                                )
+                            },
+                        );
+                        self.obj_surface_indices = indices;
+                        Ok(crate::model_line_art::CachedLiveLineArt {
+                            key: key.clone(),
+                            segments: visible.segments,
+                            truncated: extraction.truncated || visible.truncated,
+                            error: None,
+                        })
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                Err("The model bundle is missing or not loaded".into())
+            };
+            let entry = match result {
+                Ok(entry) => entry,
+                Err(error) => crate::model_line_art::CachedLiveLineArt {
+                    key,
+                    segments: Vec::new(),
+                    truncated: false,
+                    error: Some(error),
+                },
+            };
+            self.live_line_art_cache.insert(resource.id, entry);
+            self.live_line_art_pending.remove(&resource.id);
+        }
+        if repaint_for_debounce {
+            ctx.request_repaint_after(Duration::from_millis(
+                crate::model_line_art::LIVE_REGENERATION_DEBOUNCE_MS,
+            ));
+        }
+    }
+
+    pub(super) fn clear_live_line_art_cache(&mut self) {
+        self.live_line_art_cache.clear();
+        self.live_line_art_pending.clear();
+    }
+
+    pub(super) fn append_live_line_art_to_export(
+        &mut self,
+        document: &mut crate::document::Document,
+        ctx: &egui::Context,
+    ) -> Result<usize, String> {
+        let [width, height] = self
+            .line_art_canvas_size
+            .ok_or("The drawing canvas has not been initialized for live line art")?;
+        let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+        self.refresh_live_line_art(canvas, ctx, true);
+        let mut segments = Vec::new();
+        for resource in self
+            .doc
+            .model_references
+            .iter()
+            .filter(|resource| resource.visible && resource.live_line_art.is_some())
+        {
+            let Some(entry) = self.live_line_art_cache.get(&resource.id) else {
+                continue;
+            };
+            if let Some(error) = &entry.error {
+                return Err(format!("{}: {error}", resource.name));
+            }
+            segments.extend(entry.segments.iter().copied());
+        }
+        let strokes = self.make_line_art_strokes(&segments, self.next_id)?;
+        let count = strokes.len();
+        let current_points: usize = document
+            .strokes
+            .iter()
+            .map(|stroke| stroke.points.len())
+            .sum();
+        if document.strokes.len().saturating_add(count) > 100_000
+            || current_points.saturating_add(count.saturating_mul(2)) > 2_000_000
+        {
+            return Err("Live line-art export exceeds the document stroke or point limit".into());
+        }
+        document.strokes.extend(strokes);
+        Ok(count)
+    }
+
+    pub(super) fn paint_line_art_preview(&self, painter: &egui::Painter, canvas: egui::Rect) {
+        let paint_segments = |segments: &[[glam::Vec3; 2]], color| {
+            for line in segments {
+                if let (Some((a, _)), Some((b, _))) = (
+                    crate::gizmo::project(&self.camera, canvas, line[0]),
+                    crate::gizmo::project(&self.camera, canvas, line[1]),
+                ) {
+                    painter.line_segment([a, b], egui::Stroke::new(1.5_f32, color));
+                }
+            }
+        };
+        if let Some(draft) = &self.line_art_draft {
+            if self
+                .doc
+                .model_references
+                .iter()
+                .any(|resource| resource.id == draft.source_id && resource.visible)
+            {
+                paint_segments(
+                    &draft.segments,
+                    egui::Color32::from_rgba_unmultiplied(255, 185, 55, 210),
+                );
+            }
+        }
+        for resource in self
+            .doc
+            .model_references
+            .iter()
+            .filter(|resource| resource.visible && resource.live_line_art.is_some())
+        {
+            let Some(key) = self.live_line_art_key(resource, canvas) else {
+                continue;
+            };
+            let Some(entry) = self.live_line_art_cache.get(&resource.id) else {
+                continue;
+            };
+            if entry.key == key && entry.error.is_none() {
+                paint_segments(
+                    &entry.segments,
+                    egui::Color32::from_rgba_unmultiplied(93, 222, 166, 210),
                 );
             }
         }
@@ -322,15 +742,29 @@ impl SketchApp {
             } else {
                 ui.small("Visible models only; extraction is capped at 250,000 triangles, 750,000 candidate edges, and 20,000 output strokes.");
             }
+            ui.small("Line-art settings apply only when you choose Preview, Make live, or Update settings. Cancel discards the preview and leaves live settings unchanged.");
+            ui.small("Live sources refresh after the camera or model transform settles. Camera-only refreshes do not add undo history; Bake view converts the overlay to ordinary strokes and detaches it in one undo step. Detach removes the overlay without adding strokes.");
 
             let before = self.model_reference_edit_state();
             let mut remove = None;
             let mut changed = false;
             let mut geometry_changed = false;
             let mut activate = None;
+            let mut live_action = None;
+            let current_live_settings = self.current_line_art_settings();
+            let active_layer_bakeable = self
+                .doc
+                .layers
+                .iter()
+                .any(|layer| layer.id == self.doc.active_layer && layer.visible && !layer.locked);
             let active_model_reference = self.doc.active_model_reference;
             for index in 0..self.doc.model_references.len() {
                 let original = self.doc.model_references[index].clone();
+                let live_cache_info = self
+                    .live_line_art_cache
+                    .get(&original.id)
+                    .map(|entry| (entry.error.clone(), entry.truncated));
+                let model_available = self.obj_reference_models.contains_key(&original.id);
                 let mut resource_changed = false;
                 ui.group(|ui| {
                     let resource = &mut self.doc.model_references[index];
@@ -349,6 +783,63 @@ impl SketchApp {
                     ui.add_enabled_ui(!resource.locked, |ui| {
                         resource_changed |= transform_controls(ui, resource);
                     });
+                    ui.horizontal(|ui| {
+                        if resource.live_line_art.is_some() {
+                            ui.label("Live line art");
+                            if ui
+                                .add_enabled(
+                                    resource.visible && !resource.locked,
+                                    egui::Button::new("Update settings"),
+                                )
+                                .clicked()
+                            {
+                                live_action = Some(LineArtCommand::SetLive(
+                                    resource.id,
+                                    Some(current_live_settings),
+                                ));
+                            }
+                            if ui
+                                .add_enabled(
+                                    resource.visible && model_available && active_layer_bakeable,
+                                    egui::Button::new("Bake view"),
+                                )
+                                .clicked()
+                            {
+                                live_action = Some(LineArtCommand::BakeLive(resource.id));
+                            }
+                            if ui
+                                .add_enabled(!resource.locked, egui::Button::new("Detach"))
+                                .clicked()
+                            {
+                                live_action = Some(LineArtCommand::SetLive(resource.id, None));
+                            }
+                        } else if ui
+                            .add_enabled(
+                                resource.visible && !resource.locked && model_available,
+                                egui::Button::new("Make live"),
+                            )
+                            .clicked()
+                        {
+                            live_action = Some(LineArtCommand::SetLive(
+                                resource.id,
+                                Some(current_live_settings),
+                            ));
+                        }
+                    });
+                    if resource.live_line_art.is_some() {
+                        if let Some((Some(error), _)) = &live_cache_info {
+                            ui.colored_label(ui_style::colors(ui.ctx()).warning, error);
+                        }
+                        if live_cache_info
+                            .as_ref()
+                            .is_some_and(|(_, truncated)| *truncated)
+                        {
+                            ui.colored_label(
+                                ui_style::colors(ui.ctx()).warning,
+                                "Live line art is truncated by the per-source output limit.",
+                            );
+                        }
+                    }
                     if let Err(error) = resource.validate() {
                         *resource = original.clone();
                         resource_changed = false;
@@ -363,6 +854,8 @@ impl SketchApp {
                 if self.line_art_draft.as_ref().is_some_and(|draft| draft.source_id == resource.id) {
                     self.line_art_draft = None;
                 }
+                self.live_line_art_cache.remove(&resource.id);
+                self.live_line_art_pending.remove(&resource.id);
                 if self.selected_model_reference == Some(resource.id) {
                     self.selected_model_reference = None;
                 }
@@ -370,6 +863,9 @@ impl SketchApp {
                     self.doc.active_model_reference = None;
                 }
                 changed = true;
+            }
+            if let Some(command) = live_action {
+                self.line_art_command = Some(command);
             }
             if let Some((id, true)) = activate {
                 if self.doc.model_references.iter().any(|resource| {
@@ -496,6 +992,7 @@ impl SketchApp {
             center,
             rotation,
             scale,
+            live_line_art: None,
             asset,
         };
         let triangle_count = model.triangles.len();
@@ -788,6 +1285,7 @@ mod tests {
             center: glam::Vec3::ZERO,
             rotation: glam::Quat::IDENTITY,
             scale: 1.0,
+            live_line_art: None,
             asset: crate::obj_reference_storage::ObjReferenceAsset {
                 id,
                 bundle_dir: format!("models/{id}"),
@@ -885,6 +1383,7 @@ mod tests {
             center,
             rotation: glam::Quat::IDENTITY,
             scale,
+            live_line_art: None,
             asset: crate::obj_reference_storage::ObjReferenceAsset {
                 id,
                 bundle_dir: format!("models/{id}"),

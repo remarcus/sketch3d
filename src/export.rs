@@ -2040,6 +2040,7 @@ mod obj_reference_export_tests {
             center: Vec3::new(1.0, 2.0, 3.0),
             rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
             scale: 2.0,
+            live_line_art: None,
             asset,
         }
     }

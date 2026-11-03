@@ -48,6 +48,7 @@ impl SketchApp {
             center: Vec3::ZERO,
             rotation: glam::Quat::IDENTITY,
             scale: 1.0,
+            live_line_art: None,
             asset: crate::obj_reference_storage::ObjReferenceAsset {
                 id: MODEL_ID,
                 bundle_dir: format!("models/{MODEL_ID}"),

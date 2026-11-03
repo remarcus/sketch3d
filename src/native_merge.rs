@@ -865,6 +865,7 @@ mod tests {
             center: Vec3::new(-1.0, 0.0, 0.0),
             rotation: Quat::IDENTITY,
             scale: 1.0,
+            live_line_art: None,
             asset: source_model_asset,
         });
         fs::write(&source_path, serde_json::to_vec(&source).unwrap()).unwrap();

@@ -2851,6 +2851,7 @@ mod tests {
                 center: glam::Vec3::ZERO,
                 rotation: glam::Quat::IDENTITY,
                 scale: 1.0,
+                live_line_art: None,
                 asset: crate::obj_reference_storage::ObjReferenceAsset {
                     id: 3,
                     bundle_dir: "models/3".into(),

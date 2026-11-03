@@ -20,6 +20,9 @@ pub struct ObjReferenceResource {
     pub rotation: Quat,
     #[serde(default = "default_scale")]
     pub scale: f32,
+    /// Optional camera-dependent line-art source settings owned by this model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_line_art: Option<crate::model_line_art::Settings>,
     pub asset: ObjReferenceAsset,
 }
 
@@ -57,6 +60,9 @@ impl ObjReferenceResource {
             return Err("OBJ reference scale must be between 0.001 and 10000".into());
         }
         self.asset.validate()?;
+        if let Some(settings) = self.live_line_art {
+            settings.validate()?;
+        }
         if self.asset.id != self.id {
             return Err("OBJ reference asset ID does not match its resource ID".into());
         }
@@ -75,14 +81,22 @@ pub fn validate_catalog(
     }
     let mut ids = HashSet::with_capacity(resources.len());
     let mut names = HashSet::with_capacity(resources.len());
+    let mut live_sources = 0usize;
     for resource in resources {
         resource.validate()?;
+        live_sources += usize::from(resource.live_line_art.is_some());
         if !ids.insert(resource.id) {
             return Err("OBJ reference IDs must be unique".into());
         }
         if !names.insert(resource.name.to_lowercase()) {
             return Err("OBJ reference names must be unique".into());
         }
+    }
+    if live_sources > crate::model_line_art::MAX_LIVE_SOURCES {
+        return Err(format!(
+            "A drawing can contain at most {} live model line-art sources",
+            crate::model_line_art::MAX_LIVE_SOURCES
+        ));
     }
     if active.is_some_and(|id| {
         !resources

@@ -1683,6 +1683,7 @@ mod tests {
             center: glam::Vec3::ZERO,
             rotation: glam::Quat::IDENTITY,
             scale: 1.0,
+            live_line_art: None,
             asset: model_asset,
         };
         let document = crate::document::Document {

@@ -129,6 +129,7 @@ pub fn run(output: &Path) -> Result<(), String> {
             center: Vec3::new(-1.0, 0.0, 0.0),
             rotation: Quat::IDENTITY,
             scale: 1.0,
+            live_line_art: None,
             asset: model_asset,
         });
     source

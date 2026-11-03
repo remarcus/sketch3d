@@ -197,6 +197,13 @@ pub enum Edit {
         before: ModelReferenceState,
         after: ModelReferenceState,
     },
+    /// Turn a live model overlay into ordinary strokes and detach its source
+    /// as one reversible operation.
+    BakeLiveLineArt {
+        strokes: Vec<Stroke>,
+        before: ModelReferenceState,
+        after: ModelReferenceState,
+    },
     MixedResources {
         before: crate::mixed_resources::ResourceState,
         after: crate::mixed_resources::ResourceState,
@@ -287,6 +294,26 @@ impl Edit {
                 doc.active_image_plane = *active_plane;
                 doc.guide_resources = guides.clone();
                 doc.active_guide = *active_guide;
+            }
+            Self::BakeLiveLineArt {
+                strokes,
+                before,
+                after,
+            } => {
+                let (models, active_model, planes, active_plane, guides, active_guide) =
+                    if forward { after } else { before };
+                doc.model_references = models.clone();
+                doc.active_model_reference = *active_model;
+                doc.image_planes = planes.clone();
+                doc.active_image_plane = *active_plane;
+                doc.guide_resources = guides.clone();
+                doc.active_guide = *active_guide;
+                if forward {
+                    doc.strokes.extend(strokes.iter().cloned());
+                } else {
+                    let ids: HashSet<_> = strokes.iter().map(|stroke| stroke.id).collect();
+                    doc.strokes.retain(|stroke| !ids.contains(&stroke.id));
+                }
             }
             Self::MixedResources { before, after } => {
                 crate::mixed_resources::restore_state(doc, if forward { after } else { before });

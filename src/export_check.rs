@@ -714,6 +714,7 @@ pub fn run() -> Result<(), String> {
         center: Vec3::new(4.0, 1.0, -0.5),
         rotation: glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
         scale: 2.0,
+        live_line_art: None,
         asset: crate::obj_reference_storage::ObjReferenceAsset {
             id: 9002,
             bundle_dir: "models/9002".into(),

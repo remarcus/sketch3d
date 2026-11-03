@@ -831,6 +831,7 @@ mod tests {
             center: Vec3::new(1.0, 2.0, 3.0),
             rotation: Quat::IDENTITY,
             scale: 1.25,
+            live_line_art: None,
             asset: crate::obj_reference_storage::ObjReferenceAsset {
                 id: 42,
                 bundle_dir: "models/42".into(),

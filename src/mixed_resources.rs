@@ -826,6 +826,7 @@ mod tests {
             center: Vec3::new(0.0, 1.0, 0.0),
             rotation: Quat::IDENTITY,
             scale: 1.0,
+            live_line_art: None,
             asset: ObjReferenceAsset {
                 id: 31,
                 bundle_dir: "models/31".into(),

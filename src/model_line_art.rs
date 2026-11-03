@@ -5,18 +5,61 @@ use crate::{
     obj_reference::ObjModel,
 };
 use glam::Vec3;
+use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 pub const MAX_INPUT_TRIANGLES: usize = 250_000;
 pub const MAX_CANDIDATE_EDGES: usize = 750_000;
 pub const MAX_OUTPUT_STROKES: usize = 20_000;
 pub const MAX_OUTPUT_POINTS: usize = MAX_OUTPUT_STROKES * 2;
+pub const MAX_LIVE_SOURCES: usize = 4;
+pub const MAX_LIVE_OUTPUT_PER_SOURCE: usize = 5_000;
+pub const LIVE_REGENERATION_DEBOUNCE_MS: u64 = 120;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub crease_angle_degrees: f32,
     pub boundaries: bool,
     pub creases: bool,
     pub silhouettes: bool,
+}
+
+impl Settings {
+    pub fn validate(self) -> Result<(), String> {
+        if !self.crease_angle_degrees.is_finite()
+            || !(0.0..=180.0).contains(&self.crease_angle_degrees)
+        {
+            return Err("Crease angle must be between 0 and 180 degrees".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveLineArtKey {
+    pub source_id: u64,
+    pub asset_bundle: String,
+    pub settings: Settings,
+    pub camera_projection: crate::geometry::Projection,
+    pub camera_angles: [f32; 3],
+    pub camera_distance: f32,
+    pub camera_target: Vec3,
+    pub canvas_size: [f32; 2],
+    pub resource_transforms: Vec<(u64, bool, Vec3, glam::Quat, f32)>,
+}
+
+#[derive(Clone)]
+pub struct CachedLiveLineArt {
+    pub key: LiveLineArtKey,
+    pub segments: Vec<[Vec3; 2]>,
+    pub truncated: bool,
+    pub error: Option<String>,
+}
+
+pub struct PendingLiveLineArt {
+    pub key: LiveLineArtKey,
+    pub started: Instant,
 }
 
 #[derive(Clone)]
@@ -36,6 +79,17 @@ pub struct CappedSegments {
 /// edge from leaking through the occluder. The callback uses the scene BVH.
 pub fn filter_visible<F>(
     segments: impl IntoIterator<Item = [Vec3; 2]>,
+    visible: F,
+) -> CappedSegments
+where
+    F: FnMut(Vec3) -> bool,
+{
+    filter_visible_limited(segments, MAX_OUTPUT_STROKES, visible)
+}
+
+pub fn filter_visible_limited<F>(
+    segments: impl IntoIterator<Item = [Vec3; 2]>,
+    output_limit: usize,
     mut visible: F,
 ) -> CappedSegments
 where
@@ -48,7 +102,7 @@ where
             .into_iter()
             .all(|t| visible(segment[0].lerp(segment[1], t)));
         if is_visible {
-            if output.len() == MAX_OUTPUT_STROKES {
+            if output.len() == output_limit {
                 truncated = true;
                 break;
             }
@@ -87,11 +141,7 @@ pub fn extract(
             "Line art is limited to {MAX_INPUT_TRIANGLES} triangles per model"
         ));
     }
-    if !settings.crease_angle_degrees.is_finite()
-        || !(0.0..=180.0).contains(&settings.crease_angle_degrees)
-    {
-        return Err("Crease angle must be between 0 and 180 degrees".into());
-    }
+    settings.validate()?;
     let index = ObjMeshIndex::new(model)?;
     let mut lines = Vec::new();
     let crease_cos = settings.crease_angle_degrees.to_radians().cos();

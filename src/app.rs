@@ -87,6 +87,8 @@ enum LineArtCommand {
     Update,
     Bake,
     Cancel,
+    SetLive(u64, Option<crate::model_line_art::Settings>),
+    BakeLive(u64),
 }
 #[path = "palette_ui.rs"]
 mod palette_ui;
@@ -223,6 +225,9 @@ pub struct SketchApp {
     obj_reference_verification_source: Option<Option<PathBuf>>,
     obj_reference_verification_source_root: Option<tempfile::TempDir>,
     line_art_draft: Option<crate::model_line_art::Draft>,
+    live_line_art_cache: HashMap<u64, crate::model_line_art::CachedLiveLineArt>,
+    live_line_art_pending: HashMap<u64, crate::model_line_art::PendingLiveLineArt>,
+    line_art_canvas_size: Option<[f32; 2]>,
     line_art_crease_angle: f32,
     line_art_boundaries: bool,
     line_art_creases: bool,
@@ -1770,6 +1775,9 @@ impl SketchApp {
             obj_reference_verification_button_clicked: false,
             obj_reference_verification_source: None,
             line_art_draft: None,
+            live_line_art_cache: HashMap::new(),
+            live_line_art_pending: HashMap::new(),
+            line_art_canvas_size: None,
             line_art_crease_angle: 35.0,
             line_art_boundaries: true,
             line_art_creases: true,
@@ -2299,6 +2307,7 @@ impl SketchApp {
                     center: Vec3::new(0.0, 0.0, -0.25),
                     rotation: glam::Quat::IDENTITY,
                     scale: 1.0,
+                    live_line_art: None,
                     asset: crate::obj_reference_storage::ObjReferenceAsset {
                         id: 9201,
                         bundle_dir: "models/9201".into(),
@@ -3237,7 +3246,10 @@ impl SketchApp {
             );
             let models_changed = matches!(
                 edit,
-                Edit::ModelReferences { .. } | Edit::MixedResources { .. } | Edit::Merge(_)
+                Edit::ModelReferences { .. }
+                    | Edit::BakeLiveLineArt { .. }
+                    | Edit::MixedResources { .. }
+                    | Edit::Merge(_)
             );
             edit.apply(&mut self.doc, false);
             self.redo.push(edit);
@@ -3279,7 +3291,10 @@ impl SketchApp {
             );
             let models_changed = matches!(
                 edit,
-                Edit::ModelReferences { .. } | Edit::MixedResources { .. } | Edit::Merge(_)
+                Edit::ModelReferences { .. }
+                    | Edit::BakeLiveLineArt { .. }
+                    | Edit::MixedResources { .. }
+                    | Edit::Merge(_)
             );
             edit.apply(&mut self.doc, true);
             self.undo.push(edit);
@@ -3397,6 +3412,7 @@ impl SketchApp {
                         .unwrap_or_else(|_| self.image_asset_root.clone());
                 if let Ok(models) = self.load_obj_reference_models(&self.image_asset_root) {
                     self.obj_reference_models = models;
+                    self.clear_live_line_art_cache();
                     self.refresh_obj_reference_meshes();
                 }
                 self.dirty = false;
@@ -3481,6 +3497,7 @@ impl SketchApp {
                 self.loft_preview = None;
                 self.image_plane_assets.clear();
                 self.obj_reference_models.clear();
+                self.clear_live_line_art_cache();
                 self.obj_surface_indices.clear();
                 self.selected_model_reference = None;
                 self.renderer.clear_image_plane_assets();
@@ -3550,6 +3567,7 @@ impl SketchApp {
                             self.loft_preview = None;
                             self.image_plane_assets = assets;
                             self.obj_reference_models = models;
+                            self.clear_live_line_art_cache();
                             self.obj_surface_indices.clear();
                             self.selected_model_reference = None;
                             self.image_asset_root =
@@ -4326,6 +4344,7 @@ impl SketchApp {
                             match self.load_obj_reference_models(&self.image_asset_root) {
                                 Ok(models) => {
                                     self.obj_reference_models = models;
+                                    self.clear_live_line_art_cache();
                                     self.refresh_obj_reference_meshes();
                                 }
                                 Err(error) => reload_issue = Some(error),
@@ -6509,7 +6528,8 @@ impl eframe::App for SketchApp {
                 if !curved_drawing_frame {
                     self.canvas_input(ctx, rect, replay_pen.map_or(pen, |sample| vec![sample]));
                 }
-                self.process_line_art_command(rect);
+                self.process_line_art_command(rect, ctx);
+                self.refresh_live_line_art(rect, ctx, false);
                 self.verify_canvas_point_workflow(ctx, rect);
                 let scale = ctx.pixels_per_point();
                 if self.select_mode && !self.presentation.artwork {
@@ -6614,15 +6634,31 @@ impl eframe::App for SketchApp {
                     {
                         self.status =
                             "Choose an OBJ destination different from the native drawing.".into();
-                    } else if let Err(error) = self.obj_export.start(
-                        destination,
-                        selected,
-                        replace,
-                        &self.doc,
-                        &self.selected,
-                        ctx,
-                    ) {
-                        self.status = format!("Could not start OBJ export: {error}");
+                    } else {
+                        let mut export_document = self.doc.clone();
+                        let line_art_result = if !selected
+                            && self
+                                .doc
+                                .model_references
+                                .iter()
+                                .any(|resource| resource.visible && resource.live_line_art.is_some())
+                        {
+                            self.append_live_line_art_to_export(&mut export_document, ctx)
+                        } else {
+                            Ok(0)
+                        };
+                        if let Err(error) = line_art_result {
+                            self.status = format!("Cannot snapshot live model line art: {error}");
+                        } else if let Err(error) = self.obj_export.start(
+                            destination,
+                            selected,
+                            replace,
+                            &export_document,
+                            &self.selected,
+                            ctx,
+                        ) {
+                            self.status = format!("Could not start OBJ export: {error}");
+                        }
                     }
                 }
                 self.verify_png_export(ctx);
