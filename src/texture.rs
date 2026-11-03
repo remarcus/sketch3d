@@ -231,8 +231,8 @@ impl TextureDynamics {
 }
 
 /// Versioned controls for the app-generated repeating coverage masks.
-/// Existing procedural kinds retain their legacy pixels until they opt into
-/// their generator controls; Crosshatch uses all fields in version 1.
+/// Grain, Dry Brush, and Crosshatch use these controls in version 1; the other
+/// procedural kinds retain their legacy pixels until they gain a generator.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TextureGeneratorSettings {
@@ -477,29 +477,37 @@ pub fn key(settings: TextureSettings) -> TextureCacheKey {
     if settings.image.is_some() || settings.kind == TextureKind::Solid || settings.strength == 0.0 {
         (TextureKind::Solid, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     } else {
+        let uses_generator = matches!(
+            settings.kind,
+            TextureKind::Grain | TextureKind::DryBrush | TextureKind::Crosshatch
+        );
         (
             settings.kind,
             settings.strength.to_bits(),
             settings.seed,
             settings.threshold.to_bits(),
             settings.contrast.to_bits(),
-            settings.generator.version as u32,
-            if settings.kind == TextureKind::Crosshatch {
+            if uses_generator {
+                settings.generator.version as u32
+            } else {
+                0
+            },
+            if uses_generator {
                 u32::from(settings.generator.frequency)
             } else {
                 0
             },
-            if settings.kind == TextureKind::Crosshatch {
+            if uses_generator {
                 u32::from(settings.generator.coarseness)
             } else {
                 0
             },
-            if settings.kind == TextureKind::Crosshatch {
+            if uses_generator {
                 settings.generator.direction_degrees.to_bits()
             } else {
                 0
             },
-            if settings.kind == TextureKind::Crosshatch {
+            if uses_generator {
                 settings.generator.anisotropy.to_bits()
             } else {
                 0
@@ -551,16 +559,78 @@ fn texel_alpha(settings: TextureSettings, x: u32, y: u32) -> u8 {
     let alpha = match settings.kind {
         TextureKind::Solid => 1.0,
         TextureKind::Grain => {
-            if noise(x, y, settings.seed) >= settings.strength * 0.65 {
+            let covered = if settings.generator == TextureGeneratorSettings::default() {
+                noise(x, y, settings.seed) >= settings.strength * 0.65
+            } else {
+                let generator = settings.generator;
+                let frequency = i32::from(generator.frequency);
+                let fine_parallel = periodic_wave(
+                    x,
+                    y,
+                    direction_mode(generator.direction_degrees, frequency),
+                    settings.seed ^ 0x6d2b_79f5,
+                );
+                let cross_frequency = (frequency as f32 * generator.anisotropy)
+                    .round()
+                    .clamp(1.0, 16.0) as i32;
+                let fine_cross = periodic_wave(
+                    x,
+                    y,
+                    direction_mode(generator.direction_degrees + 90.0, cross_frequency),
+                    settings.seed ^ 0xa511_e9b3,
+                );
+                let coarse_frequency = (frequency / i32::from(generator.coarseness)).max(1);
+                let coarse = periodic_wave(
+                    x,
+                    y,
+                    direction_mode(generator.direction_degrees, coarse_frequency),
+                    settings.seed ^ 0x02e5_be93,
+                );
+                let grain = coarse * 0.5 + fine_parallel * 0.3 + fine_cross * 0.2;
+                grain >= settings.strength * 0.65
+            };
+            if covered {
                 1.0
             } else {
                 0.0
             }
         }
         TextureKind::DryBrush => {
-            let lane = noise(0, y / 3, settings.seed);
-            let streak = noise(x / 16, y / 3, settings.seed ^ 0x7a21_eb37);
-            if lane * 0.85 + streak * 0.15 >= settings.strength * 0.8 {
+            let coverage = if settings.generator == TextureGeneratorSettings::default() {
+                let lane = noise(0, y / 3, settings.seed);
+                let streak = noise(x / 16, y / 3, settings.seed ^ 0x7a21_eb37);
+                lane * 0.85 + streak * 0.15
+            } else {
+                let generator = settings.generator;
+                let frequency = i32::from(generator.frequency);
+                let across_frequency = (frequency as f32 * generator.anisotropy)
+                    .round()
+                    .clamp(1.0, 16.0) as i32;
+                let across = periodic_wave(
+                    x,
+                    y,
+                    direction_mode(generator.direction_degrees + 90.0, across_frequency),
+                    settings.seed ^ 0x7a21_eb37,
+                );
+                let along_frequency = (frequency / i32::from(generator.coarseness)).max(1);
+                let along = periodic_wave(
+                    x,
+                    y,
+                    direction_mode(generator.direction_degrees, along_frequency),
+                    settings.seed ^ 0x68bc_21eb,
+                );
+                let breakup = periodic_wave(
+                    x,
+                    y,
+                    direction_mode(
+                        generator.direction_degrees + 90.0,
+                        (across_frequency * 2).min(32),
+                    ),
+                    settings.seed ^ 0x02e5_be93,
+                );
+                across * 0.68 + along * 0.24 + breakup * 0.08
+            };
+            if coverage >= settings.strength * 0.8 {
                 1.0
             } else {
                 0.0
@@ -590,8 +660,8 @@ fn texel_alpha(settings: TextureSettings, x: u32, y: u32) -> u8 {
                 let second_frequency = (frequency as f32 * generator.anisotropy)
                     .round()
                     .clamp(1.0, 16.0) as i32;
-                let first = hatch_vector(generator.direction_degrees, frequency);
-                let second = hatch_vector(generator.direction_degrees + 90.0, second_frequency);
+                let first = direction_mode(generator.direction_degrees + 90.0, frequency);
+                let second = direction_mode(generator.direction_degrees + 180.0, second_frequency);
                 let phase = (settings.seed % SIZE) as i32;
                 let band = |vector: [i32; 2]| {
                     let value = (x as i32 * vector[0] + y as i32 * vector[1] + phase)
@@ -629,8 +699,8 @@ fn texel_alpha(settings: TextureSettings, x: u32, y: u32) -> u8 {
     (alpha * 255.0).round() as u8
 }
 
-fn hatch_vector(direction_degrees: f32, frequency: i32) -> [i32; 2] {
-    let normal = (direction_degrees + 90.0).to_radians();
+fn direction_mode(direction_degrees: f32, frequency: i32) -> [i32; 2] {
+    let normal = direction_degrees.to_radians();
     let scale = frequency as f32 * std::f32::consts::SQRT_2;
     let mut vector = [
         (normal.cos() * scale).round() as i32,
@@ -644,6 +714,12 @@ fn hatch_vector(direction_degrees: f32, frequency: i32) -> [i32; 2] {
         }] = 1;
     }
     vector
+}
+
+fn periodic_wave(x: u32, y: u32, mode: [i32; 2], seed: u32) -> f32 {
+    let cycles = (x as i32 * mode[0] + y as i32 * mode[1]) as f32 / SIZE as f32;
+    let phase = noise(0, 0, seed) * std::f32::consts::TAU;
+    0.5 + 0.5 * (cycles * std::f32::consts::TAU + phase).sin()
 }
 
 fn periodic_value_noise(x: u32, y: u32, seed: u32, period: u32) -> f32 {

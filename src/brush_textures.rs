@@ -205,55 +205,133 @@ impl SketchApp {
                         }
                     }
                 } else if self.brush.texture.kind != TextureKind::Solid {
-                    if self.brush.texture.kind == TextureKind::Crosshatch {
+                    if matches!(
+                        self.brush.texture.kind,
+                        TextureKind::Grain | TextureKind::DryBrush | TextureKind::Crosshatch
+                    ) {
+                        let kind = self.brush.texture.kind;
                         let mut generator = self.brush.texture.generator;
                         ui.separator();
-                        ui.strong("Crosshatch generator");
+                        ui.strong(match kind {
+                            TextureKind::Grain => "Paper grain generator",
+                            TextureKind::DryBrush => "Directional fiber generator",
+                            _ => "Crosshatch generator",
+                        });
                         ui.add(
                             egui::Slider::new(&mut generator.frequency, 1..=8)
                                 .text("Frequency"),
                         );
                         ui.add(
                             egui::Slider::new(&mut generator.coarseness, 1..=4)
-                                .text("Line coarseness"),
+                                .text(match kind {
+                                    TextureKind::Grain => "Coarse scale",
+                                    TextureKind::DryBrush => "Streak length",
+                                    _ => "Line coarseness",
+                                }),
                         );
                         ui.add(
                             egui::Slider::new(&mut generator.direction_degrees, -180.0..=180.0)
-                                .text("Direction"),
+                                .text(match kind {
+                                    TextureKind::Grain => "Grain direction",
+                                    TextureKind::DryBrush => "Fiber direction",
+                                    _ => "Direction",
+                                }),
                         );
                         ui.add(
                             egui::Slider::new(&mut generator.anisotropy, 0.5..=2.0)
-                                .text("Hatch spacing ratio"),
+                                .text(match kind {
+                                    TextureKind::Grain => "Directional anisotropy",
+                                    TextureKind::DryBrush => "Fiber spacing ratio",
+                                    _ => "Hatch spacing ratio",
+                                }),
                         );
                         ui.horizontal_wrapped(|ui| {
-                            if ui.button("Fine hatch").clicked() {
-                                generator = crate::texture::TextureGeneratorSettings {
-                                    frequency: 8,
-                                    coarseness: 1,
-                                    ..Default::default()
-                                };
-                            }
-                            if ui.button("Bold hatch").clicked() {
-                                generator = crate::texture::TextureGeneratorSettings {
-                                    frequency: 2,
-                                    coarseness: 4,
-                                    ..Default::default()
-                                };
-                            }
-                            if ui.button("Directional hatch").clicked() {
-                                generator = crate::texture::TextureGeneratorSettings {
-                                    frequency: 6,
-                                    coarseness: 2,
-                                    direction_degrees: 30.0,
-                                    anisotropy: 1.5,
-                                    ..Default::default()
-                                };
+                            match kind {
+                                TextureKind::Grain => {
+                                    if ui.button("Fine paper").clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 8,
+                                            coarseness: 1,
+                                            ..Default::default()
+                                        };
+                                    }
+                                    if ui.button("Soft paper").clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 2,
+                                            coarseness: 4,
+                                            ..Default::default()
+                                        };
+                                    }
+                                    if ui.button("Directional paper").clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 6,
+                                            coarseness: 2,
+                                            direction_degrees: 30.0,
+                                            anisotropy: 1.5,
+                                            ..Default::default()
+                                        };
+                                    }
+                                }
+                                TextureKind::DryBrush => {
+                                    if ui.button("Long fibers").clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 4,
+                                            coarseness: 4,
+                                            direction_degrees: 0.0,
+                                            anisotropy: 1.25,
+                                            ..Default::default()
+                                        };
+                                    }
+                                    if ui.button("Short fibers").clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 8,
+                                            coarseness: 1,
+                                            direction_degrees: 0.0,
+                                            anisotropy: 1.0,
+                                            ..Default::default()
+                                        };
+                                    }
+                                    if ui.button("Angled fibers").clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 6,
+                                            coarseness: 2,
+                                            direction_degrees: 35.0,
+                                            anisotropy: 1.5,
+                                            ..Default::default()
+                                        };
+                                    }
+                                }
+                                _ => {
+                                    if ui.button("Fine hatch").clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 8,
+                                            coarseness: 1,
+                                            ..Default::default()
+                                        };
+                                    }
+                                    if ui.button("Bold hatch").clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 2,
+                                            coarseness: 4,
+                                            ..Default::default()
+                                        };
+                                    }
+                                    if ui.button("Directional hatch").clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 6,
+                                            coarseness: 2,
+                                            direction_degrees: 30.0,
+                                            anisotropy: 1.5,
+                                            ..Default::default()
+                                        };
+                                    }
+                                }
                             }
                             if ui.button("Reset generator").clicked() {
                                 generator = Default::default();
                             }
                         });
-                        ui.small("Procedural coverage mask; this changes stroke gaps and does not simulate physical paint.");
+                        ui.small("Procedural coverage changes stroke gaps; it does not simulate physical paint.");
                         self.brush.texture.generator = generator;
                     }
                     ui.add(egui::Slider::new(&mut self.brush.texture.scale, 0.02..=10.0).logarithmic(true).text("Spacing"));

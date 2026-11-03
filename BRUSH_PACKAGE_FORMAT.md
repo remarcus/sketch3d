@@ -37,11 +37,12 @@ selection cycles through weighted slots. Single-tip brushes keep the legacy
 fields and default behavior.
 
 Version 8 stores versioned procedural generator controls for frequency,
-coarseness, direction, and anisotropy. Crosshatch defaults retain the existing
-mask exactly; edited settings generate a deterministic, seamless repeating
-coverage mask. Texture contrast and strength remain in the shared texture
-settings. A coverage mask changes stroke gaps and does not simulate physical
-paint. Older readers may ignore these controls or reject version 8.
+coarseness, direction, and anisotropy on Grain, Dry Brush, and Crosshatch.
+Default settings retain each existing mask exactly; edited settings generate a
+deterministic, seamless repeating coverage mask. Texture contrast and strength
+remain in the shared texture settings. A coverage mask changes stroke gaps and
+does not simulate physical paint. Older readers may ignore these controls or
+reject version 8.
 
 The top-level object contains `format: "spatial-sketch-brush"`, `version`, and
 a `preset` object with `name`, `brush`, `radius`, `color`, and `stabilization`.
