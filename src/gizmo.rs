@@ -169,7 +169,7 @@ fn textured_surface_covered(
     let Some((_, uv)) = nearest else {
         return Some(false);
     };
-    if stroke.brush.flow.enabled {
+    if stroke.brush.flow.enabled && stroke.brush.texture.image.is_none() {
         return Some(true);
     }
     if stroke.brush.tip_asset_id != 0 {
@@ -177,6 +177,13 @@ fn textured_surface_covered(
             tip_asset
                 .and_then(|asset| asset.alpha_at_uv(uv).ok())
                 .is_some_and(|alpha| alpha > 0.001),
+        );
+    }
+    if let Some(settings) = stroke.brush.texture.image {
+        return Some(
+            tip_asset
+                .and_then(|asset| asset.repeating_coverage_at_uv(settings, uv).ok())
+                .is_some_and(|coverage| coverage > 0.001),
         );
     }
     Some(crate::texture::covered_at_uv(stroke.brush.texture, uv))
@@ -217,6 +224,7 @@ fn pick_filtered(
                     || stroke.brush.strands.enabled
                     || stroke.brush.dabs.enabled
                     || stroke.brush.tip_asset_id != 0
+                    || stroke.brush.texture.image.is_some()
                     || (stroke.brush.texture.kind != crate::texture::TextureKind::Solid
                         && stroke.brush.texture.strength > 0.0));
             if mesh_covered {
@@ -239,10 +247,14 @@ fn pick_filtered(
                             .min(camera.world_per_pixel(pair[1].position, rect.height()));
                     distance(pos, a, b).0 <= pick_slop_px + width
                 });
-                let tip_asset = doc
-                    .brush_tip_assets
-                    .iter()
-                    .find(|asset| asset.id == stroke.brush.tip_asset_id);
+                let tip_asset = doc.brush_tip_assets.iter().find(|asset| {
+                    asset.id
+                        == if stroke.brush.tip_asset_id != 0 {
+                            stroke.brush.tip_asset_id
+                        } else {
+                            stroke.brush.texture.image.map_or(0, |image| image.asset_id)
+                        }
+                });
                 if !close
                     || textured_surface_covered(stroke, tip_asset, origin, direction) == Some(false)
                 {

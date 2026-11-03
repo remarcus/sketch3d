@@ -28,6 +28,10 @@ pub struct PresetUi {
     preview_preset: Option<Preset>,
     preview_doc: Document,
     tip_previews: HashMap<u64, egui::TextureHandle>,
+    repeating_texture_preview: Option<(
+        (crate::texture::ImageTextureCacheKey, [u32; 3]),
+        egui::TextureHandle,
+    )>,
     search: String,
     browser_open: bool,
     focus_search: bool,
@@ -61,6 +65,7 @@ impl PresetUi {
             preview_preset: None,
             preview_doc: Document::default(),
             tip_previews: HashMap::new(),
+            repeating_texture_preview: None,
             search: String::new(),
             browser_open: false,
             focus_search: false,
@@ -126,9 +131,56 @@ impl PresetUi {
         Ok(())
     }
 
+    fn create_from_current(
+        &mut self,
+        name: &str,
+        current: &Preset,
+        repeating_texture_asset: Option<&crate::brush_tip::BrushTipAsset>,
+    ) -> Result<u64, String> {
+        let mut changed = self.library.clone();
+        if let Some(asset) = repeating_texture_asset {
+            changed.add_image_asset(asset.clone())?;
+        }
+        let id = changed.create(
+            name,
+            current.brush,
+            current.radius,
+            current.color,
+            current.stabilization,
+        )?;
+        self.library = changed;
+        Ok(id)
+    }
+
+    fn update_from_current(
+        &mut self,
+        preset_id: u64,
+        current: &Preset,
+        repeating_texture_asset: Option<&crate::brush_tip::BrushTipAsset>,
+    ) -> Result<(), String> {
+        let mut changed = self.library.clone();
+        if let Some(asset) = repeating_texture_asset {
+            changed.add_image_asset(asset.clone())?;
+        }
+        changed.update(
+            preset_id,
+            current.brush,
+            current.radius,
+            current.color,
+            current.stabilization,
+        )?;
+        self.library = changed;
+        Ok(())
+    }
+
     /// Browsing and editing library entries never applies them to the active brush.
     /// Only the explicit Use preset button returns a resolved value to the app.
-    pub fn show(&mut self, ui: &mut egui::Ui, current: Preset) -> Option<Preset> {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        current: Preset,
+        repeating_texture_asset: Option<&crate::brush_tip::BrushTipAsset>,
+    ) -> Option<Preset> {
         let mut chosen = None;
         egui::CollapsingHeader::new("Brush library")
             .default_open(true)
@@ -160,6 +212,7 @@ impl PresetUi {
                 if let Some(preset) = self.library.get(self.selected).cloned() {
                     self.preview(ui, &preset);
                     self.tip_preview(ui, &preset);
+                    self.repeating_texture_preview(ui, &preset);
                     if ui.button("Import PNG tip…").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
                             .add_filter("PNG image", &["png"])
@@ -169,6 +222,22 @@ impl PresetUi {
                                 Ok(file_name) => self.persist(&format!("Imported {file_name}")),
                                 Err(error) => {
                                     self.notice = format!("Brush tip import failed: {error}")
+                                }
+                            }
+                        }
+                    }
+                    if ui.button("Import repeating PNG texture…").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("PNG image", &["png"])
+                            .pick_file()
+                        {
+                            match self.import_repeating_texture(&path, preset.id) {
+                                Ok(file_name) => {
+                                    self.persist(&format!("Imported repeating texture {file_name}"))
+                                }
+                                Err(error) => {
+                                    self.notice =
+                                        format!("Repeating texture import failed: {error}")
                                 }
                             }
                         }
@@ -285,12 +354,10 @@ impl PresetUi {
                                 } else {
                                     self.name.clone()
                                 };
-                                match self.library.create(
+                                match self.create_from_current(
                                     &name,
-                                    current.brush,
-                                    current.radius,
-                                    current.color,
-                                    current.stabilization,
+                                    &current,
+                                    repeating_texture_asset,
                                 ) {
                                     Ok(id) => {
                                         self.choose(id);
@@ -348,12 +415,10 @@ impl PresetUi {
                                 )
                                 .clicked()
                             {
-                                match self.library.update(
+                                match self.update_from_current(
                                     self.selected,
-                                    current.brush,
-                                    current.radius,
-                                    current.color,
-                                    current.stabilization,
+                                    &current,
+                                    repeating_texture_asset,
                                 ) {
                                     Ok(()) => {
                                         self.persist("Preset updated");
@@ -451,8 +516,22 @@ impl PresetUi {
                             {
                                 let tip_asset =
                                     self.library.tip_asset(preset.brush.tip_asset_id).cloned();
-                                let result =
-                                    BrushPackage::from_preset(preset, tip_asset).save(&path);
+                                let repeating_texture_asset = preset
+                                    .brush
+                                    .texture
+                                    .image
+                                    .and_then(|settings| self.library.tip_asset(settings.asset_id))
+                                    .cloned();
+                                let package = if repeating_texture_asset.is_some() {
+                                    BrushPackage::from_preset_with_assets(
+                                        preset,
+                                        tip_asset,
+                                        repeating_texture_asset,
+                                    )
+                                } else {
+                                    BrushPackage::from_preset(preset, tip_asset)
+                                };
+                                let result = package.save(&path);
                                 self.notice = match result {
                                     Ok(()) => {
                                         format!("Brush package exported to {}", path.display())
@@ -564,6 +643,7 @@ impl PresetUi {
                     ui.strong(format!("Preview: {}", preset.name));
                     self.preview(ui, &preset);
                     self.tip_preview(ui, &preset);
+                    self.repeating_texture_preview(ui, &preset);
                     describe_preset(ui, &preset);
                     if ui.button("Use selected preset").clicked() {
                         use_id = Some(selected_id);
@@ -586,6 +666,11 @@ impl PresetUi {
             self.preview_doc = preview_document(preset);
             if let Some(asset) = self.library.tip_asset(preset.brush.tip_asset_id) {
                 self.preview_doc.brush_tip_assets.push(asset.clone());
+            }
+            if let Some(settings) = preset.brush.texture.image {
+                if let Some(asset) = self.library.tip_asset(settings.asset_id) {
+                    self.preview_doc.brush_tip_assets.push(asset.clone());
+                }
             }
             self.preview_preset = Some(preset.clone());
             self.renderer.invalidate();
@@ -656,6 +741,40 @@ impl PresetUi {
         }
     }
 
+    fn repeating_texture_preview(&mut self, ui: &mut egui::Ui, preset: &Preset) {
+        let Some(settings) = preset.brush.texture.image else {
+            return;
+        };
+        let Some(asset) = self.library.tip_asset(settings.asset_id) else {
+            ui.small("Repeating texture asset is unavailable.");
+            return;
+        };
+        let preview_key = (settings.cache_key(), preset.color.map(f32::to_bits));
+        if self
+            .repeating_texture_preview
+            .as_ref()
+            .is_none_or(|(key, _)| *key != preview_key)
+        {
+            let Ok(preview) = asset.repeating_preview_pixels(settings, preset.color) else {
+                ui.small("Repeating texture preview could not be prepared.");
+                self.repeating_texture_preview = None;
+                return;
+            };
+            let size = [preview.size[0] as usize, preview.size[1] as usize];
+            let preview_image = egui::ColorImage::from_rgba_unmultiplied(size, &preview.pixels);
+            let texture = ui.ctx().load_texture(
+                format!("brush-repeat-preview-{:016x}", settings.asset_id),
+                preview_image,
+                egui::TextureOptions::NEAREST,
+            );
+            self.repeating_texture_preview = Some((preview_key, texture));
+        }
+        if let Some((_, texture)) = &self.repeating_texture_preview {
+            ui.small("Repeat preview · transparent gutters");
+            ui.image((texture.id(), egui::vec2(96.0, 96.0)));
+        }
+    }
+
     fn import_tip(&mut self, path: &Path, preset_id: u64) -> Result<String, String> {
         let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
@@ -679,6 +798,33 @@ impl PresetUi {
         let asset = crate::brush_tip::BrushTipAsset::from_png(bytes, provenance)?;
         let file_name = asset.file_name();
         self.library.assign_tip_asset(preset_id, asset)?;
+        Ok(file_name)
+    }
+
+    fn import_repeating_texture(&mut self, path: &Path, preset_id: u64) -> Result<String, String> {
+        let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err("Choose a regular PNG image file".into());
+        }
+        let mut bytes =
+            Vec::with_capacity(metadata.len().min(crate::brush_tip::MAX_PNG_BYTES as u64) as usize);
+        fs::File::open(path)
+            .map_err(|error| error.to_string())?
+            .take(crate::brush_tip::MAX_PNG_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() > crate::brush_tip::MAX_PNG_BYTES {
+            return Err("Repeating texture PNG must be no larger than 512 KiB".into());
+        }
+        let provenance = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| name.chars().count() <= 240 && !name.chars().any(char::is_control))
+            .map(|name| format!("Imported from {name}"));
+        let asset = crate::brush_tip::BrushTipAsset::from_png(bytes, provenance)?;
+        let file_name = asset.file_name();
+        self.library
+            .assign_repeating_texture_asset(preset_id, asset)?;
         Ok(file_name)
     }
 }

@@ -14,7 +14,13 @@ impl SketchApp {
             color: self.color,
             stabilization: self.stabilization,
         };
-        if let Some(preset) = self.preset_ui.show(ui, current) {
+        let repeating_texture_asset = self.brush.texture.image.and_then(|settings| {
+            self.doc
+                .brush_tip_assets
+                .iter()
+                .find(|asset| asset.id == settings.asset_id)
+        });
+        if let Some(preset) = self.preset_ui.show(ui, current, repeating_texture_asset) {
             self.apply_preset(preset);
         }
     }
@@ -29,6 +35,18 @@ impl SketchApp {
                 self.dirty = true;
             } else {
                 self.status = "Cannot apply brush tip: preset asset is missing".into();
+                return;
+            }
+        }
+        if let Some(settings) = preset.brush.texture.image {
+            if let Some(asset) = self.preset_ui.library.tip_asset(settings.asset_id) {
+                if let Err(error) = self.doc.add_brush_tip_asset(asset.clone()) {
+                    self.status = format!("Cannot apply repeating texture: {error}");
+                    return;
+                }
+                self.dirty = true;
+            } else {
+                self.status = "Cannot apply repeating texture: preset asset is missing".into();
                 return;
             }
         }

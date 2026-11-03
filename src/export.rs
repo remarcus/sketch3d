@@ -223,6 +223,16 @@ fn ensure_binary_budget(current: usize, additional: usize, label: &str) -> Resul
     }
 }
 
+fn image_asset_png(asset: &crate::image_planes::ImageAsset) -> Result<Vec<u8>, String> {
+    let image = image::RgbaImage::from_raw(asset.size[0], asset.size[1], asset.pixels.clone())
+        .ok_or("Repeating texture dimensions do not match its pixels")?;
+    let mut output = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut output, image::ImageFormat::Png)
+        .map_err(|error| format!("Could not encode repeating brush texture: {error}"))?;
+    Ok(output.into_inner())
+}
+
 pub fn encode(doc: &Document, selected: Option<&HashSet<u64>>) -> Result<EncodedGlb, String> {
     encode_with_images(doc, selected, None)
 }
@@ -234,7 +244,7 @@ pub fn encode_with_images(
     selected: Option<&HashSet<u64>>,
     image_root: Option<&Path>,
 ) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=27) {
+    if !matches!(doc.version, 1..=28) {
         return Err("Unsupported source document version".into());
     }
     crate::brush_tip::validate_catalog(&doc.brush_tip_assets)?;
@@ -285,6 +295,7 @@ pub fn encode_with_images(
     let mut materials = Vec::new();
     let mut colors = HashMap::new();
     let mut image_keys = HashMap::new();
+    let mut image_texture_keys = HashMap::new();
     let mut tip_image_keys = HashMap::new();
     let mut fill_image_keys = HashMap::new();
     let mut images = Vec::new();
@@ -312,7 +323,31 @@ pub fn encode_with_images(
             return Err("Source document has duplicate stroke IDs".into());
         }
         let layer_opacity = doc.layer_opacity(stroke.layer_id);
+        let settings = stroke.brush.texture;
+        let image_settings = settings.image;
+        if let Some(settings) = image_settings {
+            if !settings.is_valid() || stroke.brush.tip_asset_id != 0 {
+                return Err(format!(
+                    "Stroke {} has invalid or conflicting repeating texture settings",
+                    stroke.id
+                ));
+            }
+            if !tip_assets.contains_key(&settings.asset_id) {
+                return Err(format!(
+                    "Stroke {} refers to a missing repeating texture",
+                    stroke.id
+                ));
+            }
+        }
         let mut mesh = stroke_mesh(stroke)?;
+        if image_settings.is_some_and(|settings| {
+            settings.mode == crate::texture::ImageTextureMode::RgbaWithAlpha
+                && !settings.tint_with_brush
+        }) {
+            for vertex in &mut mesh.vertices {
+                vertex[8..11].fill(1.0);
+            }
+        }
         for vertex in &mut mesh.vertices {
             vertex[11] *= layer_opacity;
         }
@@ -372,14 +407,17 @@ pub fn encode_with_images(
         fill_repeat_sampler |= fill_texture_key.is_some_and(|(_, repeat)| repeat);
         let double_sided =
             stroke.fill.is_some() || stroke.brush.kind == BrushKind::Ribbon || tip_key.is_some();
-        let settings = stroke.brush.texture;
-        let texture_key = (tip_key.is_none() && settings.kind != TextureKind::Solid)
+        let image_texture_key = image_settings.map(|settings| settings.cache_key());
+        let texture_key = (tip_key.is_none()
+            && image_texture_key.is_none()
+            && settings.kind != TextureKind::Solid)
             .then(|| texture::key(settings));
         let alpha_blended = layer_opacity < 1.0
             || stroke.brush.opacity < 1.0
             || stroke.brush.flow.enabled
             || tip_key.is_some()
             || fill_texture_key.is_some()
+            || image_texture_key.is_some()
             || (stroke.fill.is_none() && stroke.brush.softness > 0.0)
             || stroke.material == crate::document::StrokeMaterial::Cutout
             || settings.kind.uses_continuous_alpha()
@@ -394,6 +432,7 @@ pub fn encode_with_images(
             has_vertex_colors,
             double_sided,
             texture_key,
+            image_texture_key,
             tip_key,
             fill_texture_key,
             alpha_blended,
@@ -408,11 +447,16 @@ pub fn encode_with_images(
             } else {
                 1.0
             };
-            let base_color = if has_vertex_colors || fill_texture_key.is_some() {
-                [1.0; 3]
-            } else {
-                stroke.color
-            };
+            let image_uses_source_color = image_settings.is_some_and(|settings| {
+                settings.mode == crate::texture::ImageTextureMode::RgbaWithAlpha
+                    && !settings.tint_with_brush
+            });
+            let base_color =
+                if has_vertex_colors || fill_texture_key.is_some() || image_uses_source_color {
+                    [1.0; 3]
+                } else {
+                    stroke.color
+                };
             let mut material = json!({"name":format!("Ink {}",index+1),"pbrMetallicRoughness":{"baseColorFactor":[base_color[0],base_color[1],base_color[2],material_alpha],"metallicFactor":0.0,"roughnessFactor":0.8},"alphaMode":if alpha_blended {"BLEND"} else if texture_key.is_some() {"MASK"} else {"OPAQUE"},"doubleSided":double_sided});
             match stroke.material {
                 crate::document::StrokeMaterial::Shaded => {}
@@ -423,11 +467,12 @@ pub fn encode_with_images(
                 crate::document::StrokeMaterial::Emissive => {
                     uses_unlit = true;
                     material["extensions"] = json!({"KHR_materials_unlit":{}});
-                    material["emissiveFactor"] = json!(if has_local_colors {
-                        [1.0; 3]
-                    } else {
-                        stroke.color
-                    });
+                    material["emissiveFactor"] =
+                        json!(if has_local_colors || image_uses_source_color {
+                            [1.0; 3]
+                        } else {
+                            stroke.color
+                        });
                 }
                 crate::document::StrokeMaterial::Cutout => {}
             }
@@ -481,6 +526,35 @@ pub fn encode_with_images(
                     textures.push(json!({"sampler":1,"source":index}));
                     tip_image_keys.insert(tip_id, index);
                     image_samplers = true;
+                    index
+                };
+                material["pbrMetallicRoughness"]["baseColorTexture"] =
+                    json!({"index":image_index,"texCoord":0});
+            } else if let (Some(texture_key), Some(settings)) = (image_texture_key, image_settings)
+            {
+                let image_index = if let Some(index) = image_texture_keys.get(&texture_key) {
+                    *index
+                } else {
+                    let asset = tip_assets[&settings.asset_id];
+                    let pixels = asset.repeating_texture_pixels(settings)?;
+                    let png = image_asset_png(&pixels)?;
+                    ensure_binary_budget(binary.len(), png.len() + 3, "repeating textures")?;
+                    while !binary.len().is_multiple_of(4) {
+                        binary.push(0);
+                    }
+                    let offset = binary.len();
+                    binary.extend_from_slice(&png);
+                    let view = views.len();
+                    views.push(json!({"buffer":0,"byteOffset":offset,"byteLength":png.len()}));
+                    while !binary.len().is_multiple_of(4) {
+                        binary.push(0);
+                    }
+                    let index = images.len();
+                    images.push(json!({"name":format!("Repeating texture {:016x}",settings.asset_id),"bufferView":view,"mimeType":"image/png"}));
+                    textures.push(json!({"sampler":2,"source":index}));
+                    image_samplers = true;
+                    fill_repeat_sampler = true;
+                    image_texture_keys.insert(texture_key, index);
                     index
                 };
                 material["pbrMetallicRoughness"]["baseColorTexture"] =
@@ -543,6 +617,18 @@ pub fn encode_with_images(
         if stroke.material == crate::document::StrokeMaterial::Cutout {
             node["extras"]["spatialSketchCompositingFallback"] =
                 json!("fully_transparent_geometry_destination_not_erased");
+        }
+        if let Some(settings) = image_settings {
+            node["extras"]["spatialSketchRepeatingImageTexture"] = json!({
+                "assetId": settings.asset_id.to_string(),
+                "mode": settings.mode,
+                "coverageSource": settings.mask_source,
+                "tintWithBrush": settings.tint_with_brush,
+                "invert": settings.invert,
+                "contrast": settings.contrast,
+                "strength": settings.strength,
+                "sampler": "linear_repeat",
+            });
         }
         if let Some(fill) = stroke.fill {
             node["extras"]["spatialSketchGeometry"] = json!("planar_fill");
@@ -1496,7 +1582,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 27);
+        assert_eq!(loaded.version, 28);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -1811,7 +1897,7 @@ mod group_export_tests {
     fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
         let doc = crate::export_check::grouped_fixture();
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-        assert_eq!(loaded.version, 27);
+        assert_eq!(loaded.version, 28);
         assert_eq!(loaded.strokes, doc.strokes);
         let encoded = encode(&doc, None).unwrap();
         let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();

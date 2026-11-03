@@ -18,7 +18,7 @@ const FIRST_PERSONAL_ID: u64 = 100;
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_PACKAGE_BYTES: u64 = 1024 * 1024;
 const PACKAGE_FORMAT: &str = "spatial-sketch-brush";
-const LIBRARY_VERSION: u32 = 5;
+const LIBRARY_VERSION: u32 = 6;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Preset {
@@ -31,7 +31,8 @@ pub struct Preset {
 }
 
 /// Portable, self-contained brush definition. Version 1 is settings-only;
-/// version 2 can carry a bounded PNG tip without a source path.
+/// version 2 can carry a PNG stamp tip; version 3 can also carry a repeating
+/// image texture as a separately role-tagged asset.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushPackage {
     pub format: String,
@@ -39,6 +40,8 @@ pub struct BrushPackage {
     pub preset: PackagePreset,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tip_asset: Option<crate::brush_tip::BrushTipAsset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeating_texture_asset: Option<crate::brush_tip::BrushTipAsset>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -55,9 +58,23 @@ impl BrushPackage {
         preset: &Preset,
         tip_asset: Option<crate::brush_tip::BrushTipAsset>,
     ) -> Self {
+        Self::from_preset_with_assets(preset, tip_asset, None)
+    }
+
+    pub fn from_preset_with_assets(
+        preset: &Preset,
+        tip_asset: Option<crate::brush_tip::BrushTipAsset>,
+        repeating_texture_asset: Option<crate::brush_tip::BrushTipAsset>,
+    ) -> Self {
         Self {
             format: PACKAGE_FORMAT.into(),
-            version: if tip_asset.is_some() { 2 } else { 1 },
+            version: if repeating_texture_asset.is_some() {
+                3
+            } else if tip_asset.is_some() {
+                2
+            } else {
+                1
+            },
             preset: PackagePreset {
                 name: preset.name.clone(),
                 brush: preset.brush,
@@ -66,12 +83,17 @@ impl BrushPackage {
                 stabilization: preset.stabilization,
             },
             tip_asset,
+            repeating_texture_asset,
         }
     }
 
     pub fn to_json(&self) -> Result<String, String> {
         let preset = self.as_preset()?;
-        let canonical = Self::from_preset(&preset, self.tip_asset.clone());
+        let canonical = Self::from_preset_with_assets(
+            &preset,
+            self.tip_asset.clone(),
+            self.repeating_texture_asset.clone(),
+        );
         let text = serde_json::to_string_pretty(&canonical).map_err(|e| e.to_string())?;
         if text.len() as u64 > MAX_PACKAGE_BYTES {
             return Err("Brush package is too large".into());
@@ -132,32 +154,52 @@ impl BrushPackage {
         if self.format != PACKAGE_FORMAT {
             return Err("This is not a Sketch3D brush package".into());
         }
-        if !matches!(self.version, 1 | 2) {
+        if !matches!(self.version, 1 | 2 | 3) {
             return Err("Unsupported brush package version".into());
         }
-        match (
-            &self.tip_asset,
-            self.version,
-            self.preset.brush.tip_asset_id,
-        ) {
-            (None, 1, 0) | (None, 2, 0) => {}
-            (Some(asset), 2, id) if id == asset.id => {
-                asset.validate()?;
-                if !self.preset.brush.dabs.enabled
-                    || self.preset.brush.texture.kind != TextureKind::Solid
-                    || self.preset.brush.dynamics.tilt_orientation
-                    || self.preset.brush.dynamics.tilt_shading
-                    || (self.preset.brush.tip_aspect - asset.size[0] as f32 / asset.size[1] as f32)
-                        .abs()
-                        > 1e-4
-                {
-                    return Err(
-                        "Brush package image-tip settings are invalid or do not match its asset"
-                            .into(),
-                    );
+        match self.version {
+            1 if self.tip_asset.is_none()
+                && self.repeating_texture_asset.is_none()
+                && self.preset.brush.tip_asset_id == 0
+                && self.preset.brush.texture.image.is_none() => {}
+            2 if self.repeating_texture_asset.is_none()
+                && self.preset.brush.texture.image.is_none() =>
+            {
+                match (&self.tip_asset, self.preset.brush.tip_asset_id) {
+                    (None, 0) => {}
+                    (Some(asset), id) if id == asset.id => {
+                        asset.validate()?;
+                        if !valid_tip_settings(&self.preset.brush, asset) {
+                            return Err("Brush package image-tip settings are invalid".into());
+                        }
+                    }
+                    _ => {
+                        return Err(
+                            "Brush package tip asset reference is missing or inconsistent".into(),
+                        )
+                    }
                 }
             }
-            _ => return Err("Brush package tip asset reference is missing or inconsistent".into()),
+            3 => match (
+                &self.tip_asset,
+                &self.repeating_texture_asset,
+                self.preset.brush.tip_asset_id,
+                self.preset.brush.texture.image,
+            ) {
+                (None, Some(asset), 0, Some(settings)) if settings.asset_id == asset.id => {
+                    asset.validate()?;
+                    if !settings.is_valid() || self.preset.brush.texture.kind != TextureKind::Solid
+                    {
+                        return Err("Brush package repeating-texture settings are invalid".into());
+                    }
+                }
+                _ => {
+                    return Err(
+                        "Brush package image asset reference is missing or inconsistent".into(),
+                    )
+                }
+            },
+            _ => return Err("Brush package asset references are missing or inconsistent".into()),
         }
         let preset = Preset {
             id: FIRST_PERSONAL_ID,
@@ -179,8 +221,14 @@ impl BrushPackage {
         let mut preset = self.as_preset()?;
         let mut changed = library.clone();
         if let Some(asset) = &self.tip_asset {
-            changed.add_tip_asset(asset.clone())?;
+            changed.add_image_asset(asset.clone())?;
             preset.brush.tip_asset_id = asset.id;
+        }
+        if let Some(asset) = &self.repeating_texture_asset {
+            changed.add_image_asset(asset.clone())?;
+            if let Some(settings) = &mut preset.brush.texture.image {
+                settings.asset_id = asset.id;
+            }
         }
         let base = format!("{} (imported)", preset.name);
         let mut name = base.clone();
@@ -234,6 +282,17 @@ impl BrushPackage {
         Ok(())
     }
 }
+
+fn valid_tip_settings(brush: &Brush, asset: &crate::brush_tip::BrushTipAsset) -> bool {
+    brush.dabs.enabled
+        && brush.tip_asset_id == asset.id
+        && brush.texture.image.is_none()
+        && brush.texture.kind == TextureKind::Solid
+        && !brush.dynamics.tilt_orientation
+        && !brush.dynamics.tilt_shading
+        && (brush.tip_aspect - asset.size[0] as f32 / asset.size[1] as f32).abs() <= 1e-4
+}
+
 impl Preset {
     pub fn is_builtin(&self) -> bool {
         (1..=BUILTIN_PRESET_COUNT as u64).contains(&self.id)
@@ -636,6 +695,16 @@ impl Library {
                     );
                 }
             }
+            if let Some(settings) = preset.brush.texture.image {
+                let asset = tip_assets
+                    .get(&settings.asset_id)
+                    .ok_or("Preset refers to a missing repeating texture asset")?;
+                asset.validate()?;
+                if preset.brush.tip_asset_id != 0 || preset.brush.texture.kind != TextureKind::Solid
+                {
+                    return Err("Preset repeating-texture settings are invalid".into());
+                }
+            }
             if !preset.is_builtin() && !(FIRST_PERSONAL_ID..self.next_id).contains(&preset.id) {
                 return Err("Invalid preset ID".into());
             }
@@ -653,7 +722,10 @@ impl Library {
         self.tip_assets.iter().find(|asset| asset.id == id)
     }
 
-    fn add_tip_asset(&mut self, asset: crate::brush_tip::BrushTipAsset) -> Result<(), String> {
+    pub fn add_image_asset(
+        &mut self,
+        asset: crate::brush_tip::BrushTipAsset,
+    ) -> Result<(), String> {
         asset.validate()?;
         if let Some(existing) = self.tip_asset(asset.id) {
             if existing.png != asset.png {
@@ -670,7 +742,7 @@ impl Library {
         asset: crate::brush_tip::BrushTipAsset,
     ) -> Result<(), String> {
         let mut changed = self.clone();
-        changed.add_tip_asset(asset.clone())?;
+        changed.add_image_asset(asset.clone())?;
         let preset = changed
             .presets
             .iter_mut()
@@ -689,20 +761,48 @@ impl Library {
         *self = changed;
         Ok(())
     }
+    pub fn assign_repeating_texture_asset(
+        &mut self,
+        preset_id: u64,
+        asset: crate::brush_tip::BrushTipAsset,
+    ) -> Result<(), String> {
+        let mut changed = self.clone();
+        changed.add_image_asset(asset.clone())?;
+        let preset = changed
+            .presets
+            .iter_mut()
+            .find(|preset| preset.id == preset_id)
+            .ok_or("Selected brush preset no longer exists")?;
+        if preset.brush.tip_asset_id != 0 {
+            return Err("A brush cannot combine a stamp tip and repeating texture".into());
+        }
+        preset.brush.texture = TextureSettings {
+            image: Some(crate::texture::ImageTextureSettings {
+                asset_id: asset.id,
+                ..Default::default()
+            }),
+            kind: TextureKind::Solid,
+            ..preset.brush.texture
+        };
+        changed.validate()?;
+        *self = changed;
+        Ok(())
+    }
     pub fn from_json(text: &str) -> Result<Self, String> {
         if text.len() as u64 > MAX_FILE_BYTES {
             return Err("Brush library file is too large".into());
         }
         let mut library: Self =
             serde_json::from_str(text).map_err(|e| format!("Cannot read brush library: {e}"))?;
-        if matches!(library.version, 1..=4) {
+        if matches!(library.version, 1..=5) {
             let previous_version = library.version;
             let defaults = Library::default();
             let first_new_id = match previous_version {
                 1 => 11,
                 2 => 14,
                 3 => 16,
-                _ => 17,
+                4 => 17,
+                _ => BUILTIN_PRESET_COUNT as u64 + 1,
             };
             for preset in defaults
                 .presets

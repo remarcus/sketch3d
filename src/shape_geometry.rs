@@ -711,7 +711,7 @@ mod tests {
         let serialized = serde_json::to_string(&document).unwrap();
         let reopened = Document::from_json(&serialized).unwrap();
         assert_eq!(reopened.strokes, document.strokes);
-        assert_eq!(reopened.version, 27);
+        assert_eq!(reopened.version, 28);
 
         let recovery_root = tempfile::tempdir().unwrap();
         let snapshot = crate::recovery_store::RecoverySnapshot::new(

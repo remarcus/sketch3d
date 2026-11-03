@@ -2,36 +2,181 @@ use super::ui_style;
 use super::*;
 use crate::{
     editing, export_check, geometry, gizmo,
-    texture::{TextureKind, TextureSettings},
+    texture::{
+        ImageMaskSource, ImageTextureMode, ImageTextureSettings, TextureKind, TextureSettings,
+    },
 };
+use std::io::Read;
 
 impl SketchApp {
     pub(super) fn texture_controls(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Surface texture").default_open(true).show(ui,|ui| {
-            ui_style::field_row(ui, "Pattern", |ui| {
-                ui.horizontal_wrapped(|ui| {
-                for kind in [TextureKind::Solid,TextureKind::Grain,TextureKind::DryBrush,TextureKind::Pattern,TextureKind::Graphite,TextureKind::Charcoal,TextureKind::Crosshatch] {
-                    ui.radio_value(&mut self.brush.texture.kind,kind,kind.label());
+        egui::CollapsingHeader::new("Surface texture")
+            .default_open(true)
+            .show(ui, |ui| {
+                if self.brush.texture.image.is_none() {
+                    ui_style::field_row(ui, "Pattern", |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for kind in [
+                                TextureKind::Solid,
+                                TextureKind::Grain,
+                                TextureKind::DryBrush,
+                                TextureKind::Pattern,
+                                TextureKind::Graphite,
+                                TextureKind::Charcoal,
+                                TextureKind::Crosshatch,
+                            ] {
+                                ui.radio_value(&mut self.brush.texture.kind, kind, kind.label());
+                            }
+                        });
+                    });
+                    if ui.button("Import repeating PNG texture…").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("PNG image", &["png"])
+                            .pick_file()
+                        {
+                            match import_repeating_texture(&path) {
+                                Ok(asset) => match self.doc.add_brush_tip_asset(asset.clone()) {
+                                    Ok(()) => {
+                                        self.brush.texture = TextureSettings {
+                                            image: Some(ImageTextureSettings {
+                                                asset_id: asset.id,
+                                                ..Default::default()
+                                            }),
+                                            kind: TextureKind::Solid,
+                                            ..self.brush.texture
+                                        };
+                                        self.dirty = true;
+                                        self.renderer.invalidate();
+                                        self.status = format!(
+                                            "Repeating texture {} imported",
+                                            asset.file_name()
+                                        );
+                                    }
+                                    Err(error) => {
+                                        self.status = format!("Repeating texture import failed: {error}");
+                                    }
+                                },
+                                Err(error) => {
+                                    self.status = format!("Repeating texture import failed: {error}");
+                                }
+                            }
+                        }
+                    }
                 }
-                });
+
+                if let Some(mut image) = self.brush.texture.image {
+                    egui::ComboBox::from_label("Image mode")
+                        .selected_text(match image.mode {
+                            ImageTextureMode::CoverageMask => "Coverage mask",
+                            ImageTextureMode::RgbaWithAlpha => "RGB with alpha",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut image.mode,
+                                ImageTextureMode::CoverageMask,
+                                "Coverage mask",
+                            );
+                            ui.selectable_value(
+                                &mut image.mode,
+                                ImageTextureMode::RgbaWithAlpha,
+                                "RGB with alpha",
+                            );
+                        });
+                    egui::ComboBox::from_label("Coverage source")
+                        .selected_text(match image.mask_source {
+                            ImageMaskSource::Alpha => "Alpha",
+                            ImageMaskSource::Luminance => "Luminance",
+                            ImageMaskSource::LuminanceTimesAlpha => "Luminance × alpha",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut image.mask_source,
+                                ImageMaskSource::Alpha,
+                                "Alpha",
+                            );
+                            ui.selectable_value(
+                                &mut image.mask_source,
+                                ImageMaskSource::Luminance,
+                                "Luminance",
+                            );
+                            ui.selectable_value(
+                                &mut image.mask_source,
+                                ImageMaskSource::LuminanceTimesAlpha,
+                                "Luminance × alpha",
+                            );
+                        });
+                    if image.mode == ImageTextureMode::RgbaWithAlpha {
+                        ui.checkbox(&mut image.tint_with_brush, "Tint RGB with brush color");
+                    } else {
+                        ui.small("Coverage masks are tinted with the brush color.");
+                    }
+                    ui.checkbox(&mut image.invert, "Invert coverage");
+                    ui.add(egui::Slider::new(&mut image.contrast, 0.0..=4.0).text("Contrast"));
+                    ui.add(egui::Slider::new(&mut image.strength, 0.0..=1.0).text("Strength"));
+                    self.brush.texture.image = Some(image);
+                    ui.add(egui::Slider::new(&mut self.brush.texture.scale, 0.02..=10.0).logarithmic(true).text("Repeat spacing"));
+                    ui.add(egui::Slider::new(&mut self.brush.texture.mapping.rotation_degrees, -180.0..=180.0).text("Texture rotation"));
+                    for axis in 0..2 {
+                        ui.add(egui::Slider::new(&mut self.brush.texture.mapping.scale[axis], 0.05..=20.0).logarithmic(true).text(if axis == 0 { "Texture U scale" } else { "Texture V scale" }));
+                    }
+                    if ui.button("Reset texture mapping").clicked() {
+                        self.brush.texture.mapping = Default::default();
+                    }
+                    let preview_key = (image.cache_key(), self.color.map(f32::to_bits));
+                    let refresh_preview = self
+                        .repeating_texture_preview
+                        .as_ref()
+                        .is_none_or(|(key, _)| *key != preview_key);
+                    if refresh_preview {
+                        let preview = self
+                            .doc
+                            .brush_tip_assets
+                            .iter()
+                            .find(|asset| asset.id == image.asset_id)
+                            .and_then(|asset| {
+                                asset
+                                    .repeating_preview_pixels(image, self.color)
+                                    .ok()
+                            });
+                        self.repeating_texture_preview = preview.map(|preview| {
+                            let size = [preview.size[0] as usize, preview.size[1] as usize];
+                            let image = egui::ColorImage::from_rgba_unmultiplied(size, &preview.pixels);
+                            (
+                                preview_key,
+                                ui.ctx().load_texture(
+                                    format!("repeating-brush-texture-{:016x}", preview_key.0.0),
+                                    image,
+                                    egui::TextureOptions::NEAREST,
+                                ),
+                            )
+                        });
+                    }
+                    if let Some((_, texture)) = &self.repeating_texture_preview {
+                        ui.label("Repeat preview · transparent gutters");
+                        ui.image((texture.id(), egui::vec2(96.0, 96.0)));
+                    }
+                    if ui.button("Clear repeating image texture").clicked() {
+                        self.brush.texture.image = None;
+                        self.brush.texture.kind = TextureKind::Solid;
+                    }
+                    ui.small("Image colors repeat along the stroke. Transparent texels leave open gaps.");
+                } else if self.brush.texture.kind != TextureKind::Solid {
+                    ui.add(egui::Slider::new(&mut self.brush.texture.scale, 0.02..=10.0).logarithmic(true).text("Spacing"));
+                    ui.add(egui::Slider::new(&mut self.brush.texture.strength, 0.0..=1.0).text("Strength"));
+                    ui.add(egui::Slider::new(&mut self.brush.texture.mapping.rotation_degrees, -180.0..=180.0).text("Texture rotation"));
+                    for axis in 0..2 {
+                        ui.add(egui::Slider::new(&mut self.brush.texture.mapping.scale[axis], 0.05..=20.0).logarithmic(true).text(if axis == 0 { "Texture U scale" } else { "Texture V scale" }));
+                        ui.add(egui::DragValue::new(&mut self.brush.texture.mapping.offset[axis]).speed(0.01).range(-1000.0..=1000.0).prefix(if axis == 0 { "U offset " } else { "V offset " }));
+                    }
+                    if ui.button("Reset texture mapping").clicked() { self.brush.texture.mapping = Default::default(); }
+                    if ui.button("Vary pattern").clicked() {self.brush.texture.seed=self.brush.texture.seed.wrapping_add(1);}
+                    if self.brush.texture.kind.uses_continuous_alpha() {
+                        ui.small("Soft alpha grain stays fixed in world space. Pressure controls coverage; reported tilt broadens graphite/charcoal. Mouse or missing tilt uses the No-tilt fallback width.");
+                    } else {
+                        ui.small("Spacing is in world units. Gaps remain part of the selectable stroke footprint.");
+                    }
+                }
             });
-            if self.brush.texture.kind!=TextureKind::Solid {
-                ui.add(egui::Slider::new(&mut self.brush.texture.scale,0.02..=10.0).logarithmic(true).text("Spacing"));
-                ui.add(egui::Slider::new(&mut self.brush.texture.strength,0.0..=1.0).text("Strength"));
-                ui.add(egui::Slider::new(&mut self.brush.texture.mapping.rotation_degrees,-180.0..=180.0).text("Texture rotation"));
-                for axis in 0..2 {
-                    ui.add(egui::Slider::new(&mut self.brush.texture.mapping.scale[axis],0.05..=20.0).logarithmic(true).text(if axis == 0 { "Texture U scale" } else { "Texture V scale" }));
-                    ui.add(egui::DragValue::new(&mut self.brush.texture.mapping.offset[axis]).speed(0.01).range(-1000.0..=1000.0).prefix(if axis == 0 { "U offset " } else { "V offset " }));
-                }
-                if ui.button("Reset texture mapping").clicked() { self.brush.texture.mapping = Default::default(); }
-                if ui.button("Vary pattern").clicked() {self.brush.texture.seed=self.brush.texture.seed.wrapping_add(1);}
-                if self.brush.texture.kind.uses_continuous_alpha() {
-                    ui.small("Soft alpha grain stays fixed in world space. Pressure controls coverage; reported tilt broadens graphite/charcoal. Mouse or missing tilt uses the No-tilt fallback width.");
-                } else {
-                    ui.small("Spacing is in world units. Gaps remain part of the selectable stroke footprint.");
-                }
-            }
-        });
     }
     pub(super) fn load_textures(&mut self) {
         self.load_brushes();
@@ -149,7 +294,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 27);
+                assert_eq!(loaded.version, 28);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.load_textures();
                 self.brush.texture = TextureSettings {
@@ -240,4 +385,29 @@ impl SketchApp {
         }
         self.texture_verification_frame = Some(frame + 1);
     }
+}
+
+fn import_repeating_texture(
+    path: &std::path::Path,
+) -> Result<crate::brush_tip::BrushTipAsset, String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err("Choose a regular PNG image file".into());
+    }
+    let mut bytes =
+        Vec::with_capacity(metadata.len().min(crate::brush_tip::MAX_PNG_BYTES as u64) as usize);
+    std::fs::File::open(path)
+        .map_err(|error| error.to_string())?
+        .take(crate::brush_tip::MAX_PNG_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > crate::brush_tip::MAX_PNG_BYTES {
+        return Err("Repeating texture PNG must be no larger than 512 KiB".into());
+    }
+    let provenance = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| name.chars().count() <= 240 && !name.chars().any(char::is_control))
+        .map(|name| format!("Imported from {name}"));
+    crate::brush_tip::BrushTipAsset::from_png(bytes, provenance)
 }

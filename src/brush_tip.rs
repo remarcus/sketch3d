@@ -77,6 +77,140 @@ impl BrushTipAsset {
         Ok(f32::from(decoded.pixels[(y * decoded.size[0] as usize + x) * 4 + 3]) / 255.0)
     }
 
+    /// Prepare bounded repeating-texture pixels from this shared image asset.
+    /// Mask mode discards source RGB and writes interpreted coverage to alpha;
+    /// RGBA mode preserves source color while applying contrast, inversion, and
+    /// strength to its coverage channel.
+    pub fn repeating_texture_pixels(
+        &self,
+        settings: crate::texture::ImageTextureSettings,
+    ) -> Result<crate::image_planes::ImageAsset, String> {
+        use crate::texture::{ImageMaskSource, ImageTextureMode};
+
+        if !settings.is_valid() || settings.asset_id != self.id {
+            return Err("Repeating texture settings do not match the image asset".into());
+        }
+        let mut decoded = self.decoded()?;
+        for pixel in decoded.pixels.chunks_exact_mut(4) {
+            let alpha = f32::from(pixel[3]) / 255.0;
+            let luminance = (0.2126 * f32::from(pixel[0])
+                + 0.7152 * f32::from(pixel[1])
+                + 0.0722 * f32::from(pixel[2]))
+                / 255.0;
+            let source_coverage = match settings.mask_source {
+                ImageMaskSource::Alpha => alpha,
+                ImageMaskSource::Luminance => luminance,
+                ImageMaskSource::LuminanceTimesAlpha => luminance * alpha,
+            };
+            let mut coverage = (source_coverage - 0.5) * settings.contrast + 0.5;
+            if settings.invert {
+                coverage = 1.0 - coverage;
+            }
+            coverage = coverage.clamp(0.0, 1.0);
+            match settings.mode {
+                ImageTextureMode::CoverageMask => {
+                    let strength = settings.strength;
+                    let alpha = 1.0 + (coverage - 1.0) * strength;
+                    pixel[..3].fill(255);
+                    pixel[3] = (alpha * 255.0).round() as u8;
+                }
+                ImageTextureMode::RgbaWithAlpha => {
+                    let alpha = 1.0 + (coverage - 1.0) * settings.strength;
+                    pixel[3] = (alpha * 255.0).round() as u8;
+                }
+            }
+        }
+        Ok(decoded)
+    }
+
+    pub fn repeating_coverage_at_uv(
+        &self,
+        settings: crate::texture::ImageTextureSettings,
+        uv: [f32; 2],
+    ) -> Result<f32, String> {
+        if uv.iter().any(|value| !value.is_finite()) {
+            return Err("Repeating texture UV coordinates are invalid".into());
+        }
+        let image = self.repeating_texture_pixels(settings)?;
+        let x = (uv[0].rem_euclid(1.0) * image.size[0] as f32).floor() as usize;
+        let y = (uv[1].rem_euclid(1.0) * image.size[1] as f32).floor() as usize;
+        let index = (y * image.size[0] as usize + x) * 4 + 3;
+        Ok(f32::from(image.pixels[index]) / 255.0)
+    }
+
+    /// Build a small tiled checkerboard preview with transparent gutters so
+    /// transparent texels and repeat seams remain visible in the editor.
+    pub fn repeating_preview_pixels(
+        &self,
+        settings: crate::texture::ImageTextureSettings,
+        tint: [f32; 3],
+    ) -> Result<crate::image_planes::ImageAsset, String> {
+        if tint
+            .iter()
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+        {
+            return Err("Repeating texture preview tint is invalid".into());
+        }
+        let source = self.repeating_texture_pixels(settings)?;
+        let gutter = 2_u32;
+        let columns = 3_u32;
+        let rows = 3_u32;
+        let width = source.size[0] * columns + gutter * (columns + 1);
+        let height = source.size[1] * rows + gutter * (rows + 1);
+        let mut pixels = vec![0; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let checker = if (x / 8 + y / 8).is_multiple_of(2) {
+                    [0.72_f32; 3]
+                } else {
+                    [0.88_f32; 3]
+                };
+                let mut color = checker;
+                if x >= gutter && y >= gutter {
+                    let tile_x = (x - gutter) / (source.size[0] + gutter);
+                    let tile_y = (y - gutter) / (source.size[1] + gutter);
+                    let local_x = (x - gutter) % (source.size[0] + gutter);
+                    let local_y = (y - gutter) % (source.size[1] + gutter);
+                    if tile_x < columns
+                        && tile_y < rows
+                        && local_x < source.size[0]
+                        && local_y < source.size[1]
+                    {
+                        let index = ((local_y * source.size[0] + local_x) * 4) as usize;
+                        let alpha = f32::from(source.pixels[index + 3]) / 255.0;
+                        let source_rgb = std::array::from_fn(|channel| {
+                            let encoded = f32::from(source.pixels[index + channel]) / 255.0;
+                            let source_linear = crate::presentation::srgb_to_linear(encoded);
+                            let textured_linear = if settings.mode
+                                == crate::texture::ImageTextureMode::CoverageMask
+                                || settings.tint_with_brush
+                            {
+                                source_linear * tint[channel]
+                            } else {
+                                source_linear
+                            };
+                            let background_linear =
+                                crate::presentation::srgb_to_linear(checker[channel]);
+                            crate::presentation::linear_to_srgb(
+                                textured_linear * alpha + background_linear * (1.0 - alpha),
+                            )
+                        });
+                        color = source_rgb;
+                    }
+                }
+                let index = ((y * width + x) * 4) as usize;
+                for channel in 0..3 {
+                    pixels[index + channel] = (color[channel] * 255.0).round() as u8;
+                }
+                pixels[index + 3] = 255;
+            }
+        }
+        Ok(crate::image_planes::ImageAsset {
+            size: [width, height],
+            pixels,
+        })
+    }
+
     pub fn file_name(&self) -> String {
         format!("brush-tip-{:016x}.png", self.id)
     }

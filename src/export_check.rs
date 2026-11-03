@@ -310,6 +310,7 @@ pub fn textured_fixture() -> Document {
             thickness: 0.3,
             texture: TextureSettings {
                 kind: texture_kind,
+                image: None,
                 scale: 0.3,
                 strength: 0.8,
                 seed: 42 + row as u32,

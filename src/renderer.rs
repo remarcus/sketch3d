@@ -57,6 +57,7 @@ struct Mesh {
     brush_kind: BrushKind,
     material: StrokeMaterial,
     layer_opacity: f32,
+    image_tint_with_brush: bool,
     bounds: Option<(Vec3, Vec3)>,
 }
 
@@ -320,6 +321,7 @@ pub struct SceneRenderer {
     image_plane_meshes: HashMap<u64, ImagePlaneMesh>,
     image_plane_textures: HashMap<u64, ImagePlaneTexture>,
     tip_textures: HashMap<u64, ImagePlaneTexture>,
+    image_textures: HashMap<texture::ImageTextureCacheKey, ImagePlaneTexture>,
     fill_textures: HashMap<(u64, bool), ImagePlaneTexture>,
     screen_background: Option<ScreenBackgroundTexture>,
     obj_reference_meshes: HashMap<u64, ObjReferenceMeshes>,
@@ -931,6 +933,7 @@ impl SceneRenderer {
             image_plane_meshes: HashMap::new(),
             image_plane_textures: HashMap::new(),
             tip_textures: HashMap::new(),
+            image_textures: HashMap::new(),
             fill_textures: HashMap::new(),
             screen_background: None,
             obj_reference_meshes: HashMap::new(),
@@ -1024,7 +1027,20 @@ impl SceneRenderer {
         label: &'static str,
     ) -> Result<ImagePlaneTexture, String> {
         let decoded = asset.decoded()?;
-        let (width, height) = (decoded.size[0], decoded.size[1]);
+        self.create_image_texture(&decoded, repeat, label)
+    }
+
+    fn create_image_texture(
+        &self,
+        image: &crate::image_planes::ImageAsset,
+        repeat: bool,
+        label: &'static str,
+    ) -> Result<ImagePlaneTexture, String> {
+        let (width, height) = (image.size[0], image.size[1]);
+        let expected_bytes = u64::from(width) * u64::from(height) * 4;
+        if width == 0 || height == 0 || expected_bytes != image.pixels.len() as u64 {
+            return Err("Portable image texture dimensions do not match its pixels".into());
+        }
         let texture = self.state.device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
@@ -1046,7 +1062,7 @@ impl SceneRenderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &decoded.pixels,
+            &image.pixels,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(width * 4),
@@ -1079,7 +1095,7 @@ impl SceneRenderer {
             .state
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Brush image tip bind group"),
+                label: Some(label),
                 layout: &self.texture_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
@@ -1124,6 +1140,42 @@ impl SceneRenderer {
                 self.tip_textures.insert(id, texture);
             }
         }
+        let mut image_needed: HashMap<
+            texture::ImageTextureCacheKey,
+            texture::ImageTextureSettings,
+        > = doc
+            .strokes
+            .iter()
+            .filter(|stroke| doc.visible(stroke))
+            .filter_map(|stroke| stroke.brush.texture.image)
+            .chain(
+                self.repeat_preview
+                    .iter()
+                    .filter_map(|(stroke, _)| stroke.brush.texture.image),
+            )
+            .map(|settings| (settings.cache_key(), settings))
+            .collect();
+        self.image_textures
+            .retain(|key, _| image_needed.contains_key(key));
+        for (key, settings) in image_needed.drain() {
+            if self.image_textures.contains_key(&key) {
+                continue;
+            }
+            let Some(asset) = doc
+                .brush_tip_assets
+                .iter()
+                .find(|asset| asset.id == settings.asset_id)
+            else {
+                continue;
+            };
+            if let Ok(pixels) = asset.repeating_texture_pixels(settings) {
+                if let Ok(texture) =
+                    self.create_image_texture(&pixels, true, "Portable repeating brush texture")
+                {
+                    self.image_textures.insert(key, texture);
+                }
+            }
+        }
         let mut fill_needed: HashSet<(u64, bool)> = doc
             .strokes
             .iter()
@@ -1160,6 +1212,13 @@ impl SceneRenderer {
             .and_then(|fill| fill.texture)
             .and_then(|texture| self.fill_textures.get(&(texture.asset_id, texture.repeat)))
             .or_else(|| self.tip_textures.get(&stroke.brush.tip_asset_id))
+            .or_else(|| {
+                stroke
+                    .brush
+                    .texture
+                    .image
+                    .and_then(|settings| self.image_textures.get(&settings.cache_key()))
+            })
             .map(|texture| &texture.bind)
             .unwrap_or(&self.textures[&texture::key(stroke.brush.texture)])
     }
@@ -1564,6 +1623,7 @@ impl SceneRenderer {
             brush_kind,
             material,
             layer_opacity: 1.0,
+            image_tint_with_brush: true,
             bounds: vertex_bounds(vertices),
         }
     }
@@ -1867,12 +1927,18 @@ impl SceneRenderer {
         self.meshes.retain(|id, _| ids.contains(id));
         for stroke in doc.strokes.iter().filter(|s| doc.visible(s)) {
             let layer_opacity = doc.layer_opacity(stroke.layer_id);
+            let image_tint_with_brush = stroke
+                .brush
+                .texture
+                .image
+                .is_none_or(|image| image.tint_with_brush);
             if self.meshes.get(&stroke.id).is_some_and(|m| {
                 m.points == stroke.points.len()
                     && m.modifier_key
                         == crate::stroke_modifiers::GeometryCacheKey::for_stroke(stroke)
                     && m.brush_kind == stroke.brush.kind
                     && m.material == stroke.material
+                    && m.image_tint_with_brush == image_tint_with_brush
                     && (m.layer_opacity - layer_opacity).abs() < 0.000_001
             }) {
                 continue;
@@ -1893,6 +1959,11 @@ impl SceneRenderer {
                     vertex.color = selection_color;
                 }
             }
+            if !image_tint_with_brush && !self.selected.contains(&stroke.id) {
+                for vertex in &mut vertices {
+                    vertex.color = [1.0; 3];
+                }
+            }
             for vertex in &mut vertices {
                 vertex.opacity *= layer_opacity;
             }
@@ -1910,6 +1981,7 @@ impl SceneRenderer {
                 mesh.modifier_key = crate::stroke_modifiers::GeometryCacheKey::for_stroke(stroke);
                 mesh.material = stroke.material;
                 mesh.layer_opacity = layer_opacity;
+                mesh.image_tint_with_brush = image_tint_with_brush;
                 mesh.bounds = vertex_bounds(&vertices);
             } else {
                 let mut mesh = self.mesh(
@@ -1920,6 +1992,7 @@ impl SceneRenderer {
                 );
                 mesh.layer_opacity = layer_opacity;
                 mesh.modifier_key = crate::stroke_modifiers::GeometryCacheKey::for_stroke(stroke);
+                mesh.image_tint_with_brush = image_tint_with_brush;
                 self.meshes.insert(stroke.id, mesh);
             }
         }

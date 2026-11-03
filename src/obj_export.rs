@@ -18,14 +18,13 @@ type MaterialKey = (
     u32,
     u32,
     u32,
-    TextureKind,
-    u32,
-    u32,
+    (TextureKind, u32, u32),
     StrokeMaterial,
     u64,
     u32,
     u64,
     bool,
+    Option<crate::texture::ImageTextureCacheKey>,
 );
 
 /// Write a compact OBJ/MTL fixture with one stroke for each material mode.
@@ -92,6 +91,10 @@ struct Material {
     mask_file: Option<String>,
     tip_file: Option<String>,
     tip_alpha_file: Option<String>,
+    image_texture_file: Option<String>,
+    image_texture_alpha_file: Option<String>,
+    image_texture_png: Option<Vec<u8>>,
+    image_texture_alpha_png: Option<Vec<u8>>,
     fill_texture_id: Option<u64>,
     fill_texture_repeat: bool,
     fill_texture_file: Option<String>,
@@ -136,6 +139,15 @@ pub fn write_obj_bundle(
     }) {
         return Err("An exported fill refers to a missing image texture".into());
     }
+    if strokes.iter().any(|stroke| {
+        stroke.brush.texture.image.is_some_and(|settings| {
+            !settings.is_valid()
+                || !tip_assets.contains_key(&settings.asset_id)
+                || stroke.brush.tip_asset_id != 0
+        })
+    }) {
+        return Err("An exported stroke refers to an invalid repeating image texture".into());
+    }
     if strokes.is_empty() {
         return Err("No visible strokes to export".into());
     }
@@ -154,7 +166,8 @@ pub fn write_obj_bundle(
         let layer_opacity = doc.layer_opacity(stroke.layer_id);
         let key = material_key(stroke, layer_opacity);
         let has_tip = stroke.brush.tip_asset_id != 0;
-        let textured = !has_tip && key.4 != TextureKind::Solid;
+        let image_settings = stroke.brush.texture.image;
+        let textured = !has_tip && image_settings.is_none() && (key.4).0 != TextureKind::Solid;
         if let std::collections::hash_map::Entry::Vacant(entry) = material_ids.entry(key) {
             if materials.len() >= 65_536 {
                 return Err("OBJ export exceeds the 65,536 material limit".into());
@@ -175,35 +188,77 @@ pub fn write_obj_bundle(
             let fill_texture_alpha_file =
                 fill_texture_id.map(|id| format!("fill-alpha-{id:016x}.png"));
             let fill_texture_file = fill_texture_id.map(|id| format!("fill-{id:016x}.png"));
+            let processed_image = image_settings
+                .map(|settings| tip_assets[&settings.asset_id].repeating_texture_pixels(settings))
+                .transpose()?;
+            let image_texture_png = processed_image
+                .as_ref()
+                .map(encode_image_asset)
+                .transpose()?;
+            let image_texture_alpha_png = processed_image
+                .as_ref()
+                .map(encode_image_alpha)
+                .transpose()?;
+            let image_texture_file =
+                image_texture_png
+                    .as_ref()
+                    .zip(image_settings)
+                    .map(|(png, settings)| {
+                        format!(
+                            "image-{:016x}-{:016x}.png",
+                            settings.asset_id,
+                            crate::brush_tip::content_id(png)
+                        )
+                    });
+            let image_texture_alpha_file = image_texture_alpha_png
+                .as_ref()
+                .zip(image_settings)
+                .map(|(png, settings)| {
+                    format!(
+                        "image-alpha-{:016x}-{:016x}.png",
+                        settings.asset_id,
+                        crate::brush_tip::content_id(png)
+                    )
+                });
+            let image_uses_source_color = image_settings.is_some_and(|settings| {
+                settings.mode == crate::texture::ImageTextureMode::RgbaWithAlpha
+                    && !settings.tint_with_brush
+            });
             entry.insert(index);
             materials.push(Material {
                 name: format!("material_{index:05}"),
-                diffuse: stroke.fill.and_then(|fill| fill.texture).map_or_else(
-                    || {
-                        if stroke.has_local_colors() {
-                            local_color_fallback(stroke)
-                        } else {
-                            stroke.gradient.map_or_else(
-                                || {
-                                    stroke
-                                        .fill
-                                        .and_then(|fill| fill.gradient)
-                                        .map_or(stroke.color, |gradient| {
-                                            gradient.sample(glam::Vec2::splat(0.5))
-                                        })
-                                },
-                                |gradient| gradient.sample(0.5),
-                            )
-                        }
-                    },
-                    |texture| {
-                        let base = stroke
-                            .fill
-                            .and_then(|fill| fill.gradient)
-                            .map_or([1.0; 3], |gradient| gradient.sample(glam::Vec2::splat(0.5)));
-                        std::array::from_fn(|i| base[i] * texture.tint[i])
-                    },
-                ),
+                diffuse: if image_uses_source_color {
+                    [1.0; 3]
+                } else {
+                    stroke.fill.and_then(|fill| fill.texture).map_or_else(
+                        || {
+                            if stroke.has_local_colors() {
+                                local_color_fallback(stroke)
+                            } else {
+                                stroke.gradient.map_or_else(
+                                    || {
+                                        stroke
+                                            .fill
+                                            .and_then(|fill| fill.gradient)
+                                            .map_or(stroke.color, |gradient| {
+                                                gradient.sample(glam::Vec2::splat(0.5))
+                                            })
+                                    },
+                                    |gradient| gradient.sample(0.5),
+                                )
+                            }
+                        },
+                        |texture| {
+                            let base = stroke
+                                .fill
+                                .and_then(|fill| fill.gradient)
+                                .map_or([1.0; 3], |gradient| {
+                                    gradient.sample(glam::Vec2::splat(0.5))
+                                });
+                            std::array::from_fn(|i| base[i] * texture.tint[i])
+                        },
+                    )
+                },
                 gradient_fallback: stroke.gradient.is_some()
                     || stroke.fill.and_then(|fill| fill.gradient).is_some()
                     || stroke.has_local_colors(),
@@ -221,6 +276,10 @@ pub fn write_obj_bundle(
                 mask_file,
                 tip_file,
                 tip_alpha_file,
+                image_texture_file,
+                image_texture_alpha_file,
+                image_texture_png,
+                image_texture_alpha_png,
                 fill_texture_id,
                 fill_texture_repeat,
                 fill_texture_file,
@@ -320,6 +379,12 @@ pub fn write_obj_bundle(
                 material.tip_alpha_file.as_deref().unwrap_or_default()
             )
             .unwrap();
+        } else if let (Some(image_file), Some(alpha_file)) = (
+            &material.image_texture_file,
+            &material.image_texture_alpha_file,
+        ) {
+            writeln!(mtl, "map_Kd sketch3d-{nonce}-{image_file}").unwrap();
+            writeln!(mtl, "map_d sketch3d-{nonce}-{alpha_file}").unwrap();
         } else if let Some(mask_file) = &material.mask_file {
             writeln!(mtl, "map_d sketch3d-{nonce}-{mask_file}").unwrap();
         }
@@ -331,6 +396,7 @@ pub fn write_obj_bundle(
     let mut companion_size = mtl.len();
     let mut emitted_tips = std::collections::HashSet::new();
     let mut emitted_fill_textures = std::collections::HashSet::new();
+    let mut emitted_image_textures = std::collections::HashSet::new();
     for (index, material) in materials.iter().enumerate() {
         if let Some(id) = material.fill_texture_id {
             if emitted_fill_textures.insert(id) {
@@ -397,6 +463,34 @@ pub fn write_obj_bundle(
             }
             let name = format!("sketch3d-{nonce}-mask-{index:05}.png");
             companion_files.push((parent.join(name), bytes));
+        }
+        if let (Some(image_file), Some(alpha_file), Some(image_png), Some(alpha_png)) = (
+            &material.image_texture_file,
+            &material.image_texture_alpha_file,
+            &material.image_texture_png,
+            &material.image_texture_alpha_png,
+        ) {
+            if emitted_image_textures.insert(image_file.clone()) {
+                companion_size = companion_size
+                    .checked_add(image_png.len())
+                    .ok_or("OBJ repeating texture companion size overflow")?;
+                companion_files.push((
+                    parent.join(format!("sketch3d-{nonce}-{image_file}")),
+                    image_png.clone(),
+                ));
+            }
+            if emitted_image_textures.insert(alpha_file.clone()) {
+                companion_size = companion_size
+                    .checked_add(alpha_png.len())
+                    .ok_or("OBJ repeating texture companion size overflow")?;
+                if companion_size >= export::MAX_BINARY_BYTES {
+                    return Err("OBJ repeating textures exceed the 128 MiB export limit".into());
+                }
+                companion_files.push((
+                    parent.join(format!("sketch3d-{nonce}-{alpha_file}")),
+                    alpha_png.clone(),
+                ));
+            }
         }
     }
     companion_files.push((mtl_path.clone(), mtl.into_bytes()));
@@ -565,14 +659,17 @@ fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
         diffuse[1].to_bits(),
         diffuse[2].to_bits(),
         (stroke.brush.opacity * fill_texture.map_or(1.0, |texture| texture.opacity)).to_bits(),
-        texture.0,
-        texture.1,
-        texture.2,
+        texture,
         stroke.material,
         stroke.brush.tip_asset_id,
         layer_opacity.to_bits(),
         fill_texture.map_or(0, |texture| texture.asset_id),
         fill_texture.is_none_or(|texture| texture.repeat),
+        stroke
+            .brush
+            .texture
+            .image
+            .map(|settings| settings.cache_key()),
     )
 }
 
@@ -623,6 +720,32 @@ fn tip_alpha_png(asset: &crate::brush_tip::BrushTipAsset) -> Result<Vec<u8>, Str
     image::DynamicImage::ImageRgba8(image)
         .write_to(&mut output, image::ImageFormat::Png)
         .map_err(|error| format!("Could not encode brush tip alpha map: {error}"))?;
+    Ok(output.into_inner())
+}
+
+fn encode_image_asset(asset: &crate::image_planes::ImageAsset) -> Result<Vec<u8>, String> {
+    let image = image::RgbaImage::from_raw(asset.size[0], asset.size[1], asset.pixels.clone())
+        .ok_or("Repeating texture dimensions do not match its pixels")?;
+    let mut output = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut output, image::ImageFormat::Png)
+        .map_err(|error| format!("Could not encode repeating texture image: {error}"))?;
+    Ok(output.into_inner())
+}
+
+fn encode_image_alpha(asset: &crate::image_planes::ImageAsset) -> Result<Vec<u8>, String> {
+    let expected_bytes = u64::from(asset.size[0]) * u64::from(asset.size[1]) * 4;
+    if asset.size.contains(&0) || expected_bytes != asset.pixels.len() as u64 {
+        return Err("Repeating texture alpha dimensions do not match its pixels".into());
+    }
+    let mut image = image::RgbaImage::new(asset.size[0], asset.size[1]);
+    for (pixel, source) in image.pixels_mut().zip(asset.pixels.as_chunks::<4>().0) {
+        pixel.0 = [source[3], source[3], source[3], 255];
+    }
+    let mut output = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image)
+        .write_to(&mut output, image::ImageFormat::Png)
+        .map_err(|error| format!("Could not encode repeating texture alpha map: {error}"))?;
     Ok(output.into_inner())
 }
 

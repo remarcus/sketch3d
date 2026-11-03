@@ -497,6 +497,16 @@ fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> 
                 fragment.point_colors = crate::stroke_sculpt::remap_point_colors(stroke, &points);
                 fragment.points = points;
                 fragment.curve = None;
+                if fragment.brush.texture.image.is_some() && !fragment.brush.dabs.enabled {
+                    let local_start = (origin - stroke.brush.dab_distance_origin).max(0.0)
+                        / fragment.brush.texture.scale;
+                    let mapping = fragment.brush.texture.mapping;
+                    let (sin, cos) = mapping.rotation_degrees.to_radians().sin_cos();
+                    fragment.brush.texture.mapping.offset[0] +=
+                        cos * local_start / mapping.scale[0];
+                    fragment.brush.texture.mapping.offset[1] +=
+                        sin * local_start / mapping.scale[0];
+                }
                 if let Some(patch) = &mut fragment.model_surface {
                     let stamp_extent = if fragment.brush.tip_asset_id != 0 {
                         fragment.radius / fragment.brush.tip_aspect

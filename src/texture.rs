@@ -16,6 +16,78 @@ pub enum TextureKind {
     Charcoal,
     Crosshatch,
 }
+
+/// Interpretation applied to the pixels of an imported repeating brush image.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageTextureMode {
+    /// Use image luminance and/or alpha as a coverage mask tinted by the brush.
+    CoverageMask,
+    /// Preserve source RGB and alpha; brush tint is an explicit setting.
+    #[default]
+    RgbaWithAlpha,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageMaskSource {
+    #[default]
+    Alpha,
+    Luminance,
+    LuminanceTimesAlpha,
+}
+
+/// Settings are stored on stroke textures; image bytes live in the shared,
+/// content-addressed document image catalog.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageTextureSettings {
+    pub asset_id: u64,
+    pub mode: ImageTextureMode,
+    pub mask_source: ImageMaskSource,
+    pub tint_with_brush: bool,
+    pub invert: bool,
+    pub contrast: f32,
+    pub strength: f32,
+}
+
+impl ImageTextureSettings {
+    pub fn cache_key(self) -> ImageTextureCacheKey {
+        (
+            self.asset_id,
+            self.mode,
+            self.mask_source,
+            self.tint_with_brush,
+            self.invert,
+            self.contrast.to_bits(),
+            self.strength.to_bits(),
+        )
+    }
+
+    pub fn is_valid(self) -> bool {
+        self.asset_id != 0
+            && self.contrast.is_finite()
+            && (0.0..=4.0).contains(&self.contrast)
+            && self.strength.is_finite()
+            && (0.0..=1.0).contains(&self.strength)
+    }
+}
+
+pub type ImageTextureCacheKey = (u64, ImageTextureMode, ImageMaskSource, bool, bool, u32, u32);
+
+impl Default for ImageTextureSettings {
+    fn default() -> Self {
+        Self {
+            asset_id: 0,
+            mode: ImageTextureMode::RgbaWithAlpha,
+            mask_source: ImageMaskSource::Alpha,
+            tint_with_brush: false,
+            invert: false,
+            contrast: 1.0,
+            strength: 1.0,
+        }
+    }
+}
 impl TextureKind {
     pub fn label(self) -> &'static str {
         match self {
@@ -39,6 +111,8 @@ impl TextureKind {
 pub struct TextureSettings {
     #[serde(default)]
     pub mapping: TextureMapping,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageTextureSettings>,
     pub kind: TextureKind,
     pub scale: f32,
     pub strength: f32,
@@ -48,6 +122,7 @@ impl Default for TextureSettings {
     fn default() -> Self {
         Self {
             mapping: TextureMapping::default(),
+            image: None,
             kind: TextureKind::Solid,
             scale: 0.2,
             strength: 0.65,
@@ -58,6 +133,8 @@ impl Default for TextureSettings {
 impl TextureSettings {
     pub fn is_valid(self) -> bool {
         self.mapping.is_valid()
+            && self.image.is_none_or(ImageTextureSettings::is_valid)
+            && (self.image.is_none() || self.kind == TextureKind::Solid)
             && self.scale.is_finite()
             && (0.02..=10.0).contains(&self.scale)
             && self.strength.is_finite()
@@ -110,7 +187,7 @@ impl TextureMapping {
 
 /// Scale affects UVs only and therefore does not create another mask image.
 pub fn key(settings: TextureSettings) -> (TextureKind, u32, u32) {
-    if settings.kind == TextureKind::Solid || settings.strength == 0.0 {
+    if settings.image.is_some() || settings.kind == TextureKind::Solid || settings.strength == 0.0 {
         (TextureKind::Solid, 0, 0)
     } else {
         (settings.kind, settings.strength.to_bits(), settings.seed)
