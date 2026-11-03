@@ -198,7 +198,11 @@ impl SketchApp {
                     ui.small("Image colors repeat along the stroke. Transparent texels leave open gaps.");
                     ui.small("Repeat spacing uses document world units; U/V scale and offsets use tile coordinates.");
                     if self.brush.tip_asset_id != 0 && image.strength > 0.0 {
-                        ui.small("Image-tip alpha and repeating image coverage multiply; tip color and tint stay intact. GLB/OBJ export currently rejects this combination.");
+                        if self.brush.flow.enabled {
+                            ui.small("Image-tip grain cannot be exported with Airbrush flow geometry yet.");
+                        } else {
+                            ui.small("Image-tip alpha and repeating image coverage multiply; tip color and tint stay intact. GLB/OBJ export bakes the result into a per-stamp atlas.");
+                        }
                     }
                 } else if self.brush.texture.kind != TextureKind::Solid {
                     ui.add(egui::Slider::new(&mut self.brush.texture.scale, 0.02..=10.0).logarithmic(true).text("Spacing"));
@@ -219,7 +223,11 @@ impl SketchApp {
                         ui.small("Spacing is in world units. Gaps remain part of the selectable stroke footprint.");
                     }
                     if self.brush.tip_asset_id != 0 && self.brush.texture.strength > 0.0 {
-                        ui.small("Image-tip alpha and grain coverage multiply; tip color and tint stay intact. GLB/OBJ export currently rejects this combination.");
+                        if self.brush.flow.enabled {
+                            ui.small("Image-tip grain cannot be exported with Airbrush flow geometry yet.");
+                        } else {
+                            ui.small("Image-tip alpha and grain coverage multiply; tip color and tint stay intact. GLB/OBJ export bakes the result into a per-stamp atlas.");
+                        }
                     }
                     ui.small("U/V scale and offsets use tile coordinates; repeat spacing uses document world units.");
                 }

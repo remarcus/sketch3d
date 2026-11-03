@@ -15,6 +15,9 @@ use std::{
 
 pub(crate) const MAX_BINARY_BYTES: usize = 128 * 1024 * 1024;
 pub(crate) const MAX_TRIANGLE_VERTICES_PER_STROKE: usize = 2_000_000;
+const MAX_COMPOSITE_TEXTURE_DIMENSION: u32 = 8_192;
+const MAX_COMPOSITE_TEXTURE_PIXELS: u64 = 32 * 1024 * 1024;
+const COMPOSITE_TEXTURE_GUTTER: u32 = 4;
 #[derive(Clone, Debug, Serialize)]
 pub struct ExportSummary {
     pub strokes: usize,
@@ -64,6 +67,23 @@ pub(crate) struct Mesh {
 }
 
 pub(crate) fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
+    stroke_mesh_internal(stroke, None, None, false).map(|(mesh, _)| mesh)
+}
+
+pub(crate) fn stroke_mesh_with_grain(
+    stroke: &Stroke,
+    tip_asset: Option<&crate::brush_tip::BrushTipAsset>,
+    grain_asset: Option<&crate::brush_tip::BrushTipAsset>,
+) -> Result<(Mesh, Option<crate::image_planes::ImageAsset>), String> {
+    stroke_mesh_internal(stroke, tip_asset, grain_asset, true)
+}
+
+fn stroke_mesh_internal(
+    stroke: &Stroke,
+    tip_asset: Option<&crate::brush_tip::BrushTipAsset>,
+    grain_asset: Option<&crate::brush_tip::BrushTipAsset>,
+    compose_grain: bool,
+) -> Result<(Mesh, Option<crate::image_planes::ImageAsset>), String> {
     if !stroke.brush.is_valid()
         || !stroke.radius.is_finite()
         || !(0.001..=1.0).contains(&stroke.radius)
@@ -110,13 +130,22 @@ pub(crate) fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
     if stroke.fill.is_some() {
         crate::polygon::triangulate(stroke)?;
     }
-    let source = geometry::stroke_mesh(stroke);
+    let mut source = geometry::stroke_mesh(stroke);
     if source.len() > MAX_TRIANGLE_VERTICES_PER_STROKE {
         return Err(format!(
             "Stroke {} exceeds the working mesh budget",
             stroke.id
         ));
     }
+    let composite_image = if compose_grain && has_independent_tip_grain(stroke) {
+        let tip = tip_asset.ok_or("Missing image-tip asset for combined texture export")?;
+        if tip.id != stroke.brush.tip_asset_id {
+            return Err("Combined texture export received the wrong image-tip asset".into());
+        }
+        Some(compose_tip_grain(stroke, tip, grain_asset, &mut source)?)
+    } else {
+        None
+    };
     let mut mesh = Mesh {
         vertices: Vec::new(),
         indices: Vec::new(),
@@ -208,7 +237,274 @@ pub(crate) fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
             mesh.indices.push(index);
         }
     }
-    Ok(mesh)
+    Ok((mesh, composite_image))
+}
+
+pub(crate) fn has_independent_tip_grain(stroke: &Stroke) -> bool {
+    stroke.fill.is_none()
+        && stroke.brush.tip_asset_id != 0
+        && (stroke
+            .brush
+            .texture
+            .image
+            .is_some_and(|settings| settings.strength > 0.0)
+            || (stroke.brush.texture.kind != TextureKind::Solid
+                && stroke.brush.texture.strength > 0.0))
+}
+
+fn compose_tip_grain(
+    stroke: &Stroke,
+    tip: &crate::brush_tip::BrushTipAsset,
+    grain_asset: Option<&crate::brush_tip::BrushTipAsset>,
+    vertices: &mut [geometry::Vertex],
+) -> Result<crate::image_planes::ImageAsset, String> {
+    if stroke.brush.flow.enabled {
+        return Err(format!(
+            "Stroke {} combines tip grain with airbrush flow geometry, which GLB/OBJ export cannot bake yet",
+            stroke.id
+        ));
+    }
+    if !vertices.len().is_multiple_of(6) {
+        return Err("Combined tip/grain export requires complete image-stamp quads".into());
+    }
+    let stamp_count = vertices.len() / 6;
+    if stamp_count == 0 {
+        return Ok(crate::image_planes::ImageAsset {
+            size: [1, 1],
+            pixels: vec![0; 4],
+        });
+    }
+    let tip_pixels = tip.decoded()?;
+    let processed_grain = if let Some(settings) = stroke.brush.texture.image {
+        let asset =
+            grain_asset.ok_or("Missing repeating image asset for combined texture export")?;
+        Some(asset.repeating_texture_pixels(settings)?)
+    } else {
+        None
+    };
+    if let (Some(settings), Some(asset)) = (stroke.brush.texture.image, grain_asset) {
+        if settings.asset_id != asset.id {
+            return Err("Combined texture export received the wrong grain asset".into());
+        }
+    }
+    let procedural_grain = processed_grain
+        .is_none()
+        .then(|| crate::texture::rgba(stroke.brush.texture));
+    let tip_long_side = tip_pixels.size[0].max(tip_pixels.size[1]);
+    let mut selected = None;
+    for long_side in [512_u32, 256, 128, 64, 32] {
+        let long_side = long_side.min(tip_long_side.max(32));
+        let (tile_width, tile_height) = if tip_pixels.size[0] >= tip_pixels.size[1] {
+            (
+                long_side,
+                ((u64::from(long_side) * u64::from(tip_pixels.size[1])
+                    + u64::from(tip_pixels.size[0]) / 2)
+                    / u64::from(tip_pixels.size[0]))
+                .max(1) as u32,
+            )
+        } else {
+            (
+                ((u64::from(long_side) * u64::from(tip_pixels.size[0])
+                    + u64::from(tip_pixels.size[1]) / 2)
+                    / u64::from(tip_pixels.size[1]))
+                .max(1) as u32,
+                long_side,
+            )
+        };
+        let cell_width = tile_width + COMPOSITE_TEXTURE_GUTTER * 2;
+        let cell_height = tile_height + COMPOSITE_TEXTURE_GUTTER * 2;
+        let ideal_columns = (stamp_count as f64 * f64::from(cell_height) / f64::from(cell_width))
+            .sqrt()
+            .ceil() as u64;
+        let max_columns = MAX_COMPOSITE_TEXTURE_DIMENSION / cell_width;
+        if max_columns == 0 {
+            continue;
+        }
+        let columns = ideal_columns.clamp(1, u64::from(max_columns)) as u32;
+        let rows = stamp_count.div_ceil(columns as usize) as u32;
+        let width = columns * cell_width;
+        let height = rows * cell_height;
+        let pixels = u64::from(width) * u64::from(height);
+        if width <= MAX_COMPOSITE_TEXTURE_DIMENSION
+            && height <= MAX_COMPOSITE_TEXTURE_DIMENSION
+            && pixels <= MAX_COMPOSITE_TEXTURE_PIXELS
+        {
+            selected = Some((
+                tile_width,
+                tile_height,
+                cell_width,
+                cell_height,
+                columns,
+                width,
+                height,
+            ));
+            break;
+        }
+    }
+    let Some((tile_width, tile_height, cell_width, cell_height, columns, width, height)) = selected
+    else {
+        return Err(format!(
+            "Combined tip/grain export exceeds the {} MiB atlas budget",
+            MAX_COMPOSITE_TEXTURE_PIXELS * 4 / (1024 * 1024)
+        ));
+    };
+    let mut pixels = vec![0; (u64::from(width) * u64::from(height) * 4) as usize];
+    for stamp_index in 0..stamp_count {
+        let source = &mut vertices[stamp_index * 6..stamp_index * 6 + 6];
+        let mut tile = vec![0; (tile_width * tile_height * 4) as usize];
+        for y in 0..tile_height {
+            for x in 0..tile_width {
+                let tip_uv = [
+                    (x as f32 + 0.5) / tile_width as f32,
+                    (y as f32 + 0.5) / tile_height as f32,
+                ];
+                let grain_uv = stamp_grain_uv(source, tip_uv)
+                    .ok_or("Combined tip/grain export found invalid stamp coordinates")?;
+                let tip_rgba = sample_tip_linear(&tip_pixels, tip_uv);
+                let grain_alpha = if let Some(image) = &processed_grain {
+                    sample_alpha_linear_repeat(image, grain_uv)
+                } else {
+                    sample_procedural_alpha(
+                        procedural_grain.as_deref().unwrap(),
+                        crate::texture::SIZE,
+                        grain_uv,
+                    )
+                };
+                let index = ((y * tile_width + x) * 4) as usize;
+                for channel in 0..3 {
+                    tile[index + channel] = (crate::presentation::linear_to_srgb(tip_rgba[channel])
+                        * 255.0)
+                        .round() as u8;
+                }
+                tile[index + 3] = (tip_rgba[3] * grain_alpha * 255.0).round() as u8;
+            }
+        }
+        let tile_x = stamp_index as u32 % columns;
+        let tile_y = stamp_index as u32 / columns;
+        // Keep the full gutter on all four sides so neighboring stamps cannot
+        // bleed together when a downstream renderer filters the atlas.
+        let inner_x = tile_x * cell_width + COMPOSITE_TEXTURE_GUTTER;
+        let inner_y = tile_y * cell_height + COMPOSITE_TEXTURE_GUTTER;
+        for y in 0..cell_height {
+            let source_y = y
+                .saturating_sub(COMPOSITE_TEXTURE_GUTTER)
+                .min(tile_height - 1);
+            for x in 0..cell_width {
+                let source_x = x
+                    .saturating_sub(COMPOSITE_TEXTURE_GUTTER)
+                    .min(tile_width - 1);
+                let source_index = ((source_y * tile_width + source_x) * 4) as usize;
+                let target_index =
+                    (((inner_y + y - COMPOSITE_TEXTURE_GUTTER) * width + inner_x + x
+                        - COMPOSITE_TEXTURE_GUTTER)
+                        * 4) as usize;
+                pixels[target_index..target_index + 4]
+                    .copy_from_slice(&tile[source_index..source_index + 4]);
+            }
+        }
+        for vertex in source {
+            vertex.uv = [
+                (inner_x as f32 + 0.5 + vertex.uv[0] * (tile_width - 1) as f32) / width as f32,
+                (inner_y as f32 + 0.5 + vertex.uv[1] * (tile_height - 1) as f32) / height as f32,
+            ];
+        }
+    }
+    Ok(crate::image_planes::ImageAsset {
+        size: [width, height],
+        pixels,
+    })
+}
+
+fn stamp_grain_uv(stamp: &[geometry::Vertex], uv: [f32; 2]) -> Option<[f32; 2]> {
+    for triangle in [&stamp[..3], &stamp[3..6]] {
+        let a = glam::Vec2::from_array(triangle[0].uv);
+        let b = glam::Vec2::from_array(triangle[1].uv);
+        let c = glam::Vec2::from_array(triangle[2].uv);
+        let point = glam::Vec2::from_array(uv);
+        let area = (b - a).perp_dot(c - a);
+        if area.abs() <= 1e-8 {
+            continue;
+        }
+        let wb = (point - a).perp_dot(c - a) / area;
+        let wc = (b - a).perp_dot(point - a) / area;
+        let wa = 1.0 - wb - wc;
+        if wa >= -1e-4 && wb >= -1e-4 && wc >= -1e-4 {
+            return Some(std::array::from_fn(|axis| {
+                triangle[0].grain_uv[axis] * wa
+                    + triangle[1].grain_uv[axis] * wb
+                    + triangle[2].grain_uv[axis] * wc
+            }));
+        }
+    }
+    None
+}
+
+fn sample_tip_linear(image: &crate::image_planes::ImageAsset, uv: [f32; 2]) -> [f32; 4] {
+    sample_rgba_linear(image, uv, false)
+}
+
+fn sample_alpha_linear_repeat(image: &crate::image_planes::ImageAsset, uv: [f32; 2]) -> f32 {
+    sample_rgba_linear(image, uv, true)[3]
+}
+
+fn sample_rgba_linear(
+    image: &crate::image_planes::ImageAsset,
+    uv: [f32; 2],
+    repeat: bool,
+) -> [f32; 4] {
+    let [width, height] = image.size;
+    let (x0, x1, tx) = sample_axis(uv[0], width, repeat);
+    let (y0, y1, ty) = sample_axis(uv[1], height, repeat);
+    let corners = [
+        read_pixel(image, x0, y0),
+        read_pixel(image, x1, y0),
+        read_pixel(image, x0, y1),
+        read_pixel(image, x1, y1),
+    ];
+    std::array::from_fn(|channel| {
+        let top = corners[0][channel] + (corners[1][channel] - corners[0][channel]) * tx;
+        let bottom = corners[2][channel] + (corners[3][channel] - corners[2][channel]) * tx;
+        top + (bottom - top) * ty
+    })
+}
+
+fn sample_axis(coordinate: f32, size: u32, repeat: bool) -> (u32, u32, f32) {
+    let coordinate = if repeat {
+        coordinate.rem_euclid(1.0) * size as f32 - 0.5
+    } else {
+        coordinate.clamp(0.0, 1.0) * size as f32 - 0.5
+    };
+    let base = coordinate.floor();
+    let amount = coordinate - base;
+    if repeat {
+        let low = (base as i64).rem_euclid(i64::from(size)) as u32;
+        (low, (low + 1) % size, amount)
+    } else {
+        let low = (base as i32).clamp(0, size as i32 - 1) as u32;
+        let high = (base as i32 + 1).clamp(0, size as i32 - 1) as u32;
+        (low, high, amount)
+    }
+}
+
+fn read_pixel(image: &crate::image_planes::ImageAsset, x: u32, y: u32) -> [f32; 4] {
+    let index = ((y * image.size[0] + x) * 4) as usize;
+    std::array::from_fn(|channel| {
+        let encoded = f32::from(image.pixels[index + channel]) / 255.0;
+        if channel == 3 {
+            encoded
+        } else {
+            crate::presentation::srgb_to_linear(encoded)
+        }
+    })
+}
+
+fn sample_procedural_alpha(pixels: &[u8], size: u32, uv: [f32; 2]) -> f32 {
+    if !uv.into_iter().all(f32::is_finite) {
+        return 0.0;
+    }
+    let x = (uv[0].rem_euclid(1.0) * size as f32).floor() as u32;
+    let y = (uv[1].rem_euclid(1.0) * size as f32).floor() as u32;
+    f32::from(pixels[((y * size + x) * 4 + 3) as usize]) / 255.0
 }
 fn ensure_binary_budget(current: usize, additional: usize, label: &str) -> Result<(), String> {
     if current
@@ -297,10 +593,12 @@ pub fn encode_with_images(
     let mut image_keys = HashMap::new();
     let mut image_texture_keys = HashMap::new();
     let mut tip_image_keys = HashMap::new();
+    let mut composite_image_keys = HashMap::new();
     let mut fill_image_keys = HashMap::new();
     let mut images = Vec::new();
     let mut textures = Vec::new();
     let mut image_samplers = false;
+    let mut composite_sampler = false;
     let mut fill_repeat_sampler = false;
     let mut uses_unlit = false;
     let mut ids = HashSet::new();
@@ -325,15 +623,6 @@ pub fn encode_with_images(
         let layer_opacity = doc.layer_opacity(stroke.layer_id);
         let settings = stroke.brush.texture;
         let image_settings = settings.image;
-        if stroke.brush.tip_asset_id != 0
-            && (image_settings.is_some_and(|settings| settings.strength > 0.0)
-                || (settings.kind != crate::texture::TextureKind::Solid && settings.strength > 0.0))
-        {
-            return Err(format!(
-                "Stroke {} combines image-tip alpha with independent grain coverage, which GLB export does not support",
-                stroke.id
-            ));
-        }
         if let Some(settings) = image_settings {
             if !settings.is_valid() {
                 return Err(format!(
@@ -348,11 +637,25 @@ pub fn encode_with_images(
                 ));
             }
         }
-        let mut mesh = stroke_mesh(stroke)?;
-        if image_settings.is_some_and(|settings| {
-            settings.mode == crate::texture::ImageTextureMode::RgbaWithAlpha
-                && !settings.tint_with_brush
-        }) {
+        let tip_asset = if stroke.brush.tip_asset_id == 0 {
+            None
+        } else {
+            Some(
+                tip_assets
+                    .get(&stroke.brush.tip_asset_id)
+                    .ok_or_else(|| format!("Stroke {} refers to a missing brush tip", stroke.id))?,
+            )
+        };
+        let grain_asset =
+            image_settings.and_then(|settings| tip_assets.get(&settings.asset_id).copied());
+        let (mut mesh, composite_image) =
+            stroke_mesh_with_grain(stroke, tip_asset.copied(), grain_asset)?;
+        if composite_image.is_none()
+            && image_settings.is_some_and(|settings| {
+                settings.mode == crate::texture::ImageTextureMode::RgbaWithAlpha
+                    && !settings.tint_with_brush
+            })
+        {
             for vertex in &mut mesh.vertices {
                 vertex[8..11].fill(1.0);
             }
@@ -443,6 +746,7 @@ pub fn encode_with_images(
             texture_key,
             image_texture_key,
             tip_key,
+            composite_image.as_ref().map(|_| stroke.id),
             fill_texture_key,
             alpha_blended,
             stroke.material,
@@ -456,10 +760,11 @@ pub fn encode_with_images(
             } else {
                 1.0
             };
-            let image_uses_source_color = image_settings.is_some_and(|settings| {
-                settings.mode == crate::texture::ImageTextureMode::RgbaWithAlpha
-                    && !settings.tint_with_brush
-            });
+            let image_uses_source_color = composite_image.is_none()
+                && image_settings.is_some_and(|settings| {
+                    settings.mode == crate::texture::ImageTextureMode::RgbaWithAlpha
+                        && !settings.tint_with_brush
+                });
             let base_color =
                 if has_vertex_colors || fill_texture_key.is_some() || image_uses_source_color {
                     [1.0; 3]
@@ -509,6 +814,36 @@ pub fn encode_with_images(
                     textures.push(json!({"sampler":if repeat { 2 } else { 1 },"source":index}));
                     image_samplers = true;
                     fill_image_keys.insert((asset_id, repeat), index);
+                    index
+                };
+                material["pbrMetallicRoughness"]["baseColorTexture"] =
+                    json!({"index":image_index,"texCoord":0});
+            } else if let Some(composite) = &composite_image {
+                let image_index = if let Some(index) = composite_image_keys.get(&stroke.id) {
+                    *index
+                } else {
+                    let png = image_asset_png(composite)?;
+                    ensure_binary_budget(
+                        binary.len(),
+                        png.len() + 3,
+                        "combined tip/grain textures",
+                    )?;
+                    while !binary.len().is_multiple_of(4) {
+                        binary.push(0);
+                    }
+                    let offset = binary.len();
+                    binary.extend_from_slice(&png);
+                    let view = views.len();
+                    views.push(json!({"buffer":0,"byteOffset":offset,"byteLength":png.len()}));
+                    while !binary.len().is_multiple_of(4) {
+                        binary.push(0);
+                    }
+                    let index = images.len();
+                    images.push(json!({"name":format!("Combined tip/grain stroke {}",stroke.id),"bufferView":view,"mimeType":"image/png"}));
+                    textures.push(json!({"sampler":3,"source":index}));
+                    composite_image_keys.insert(stroke.id, index);
+                    image_samplers = true;
+                    composite_sampler = true;
                     index
                 };
                 material["pbrMetallicRoughness"]["baseColorTexture"] =
@@ -638,6 +973,25 @@ pub fn encode_with_images(
                 "strength": settings.strength,
                 "sampler": "linear_repeat",
             });
+        }
+        if composite_image.is_some() {
+            node["extras"]["spatialSketchTipGrainComposite"] = json!({
+                "coverage": "tip_alpha_times_grain_alpha",
+                "tipRgb": "preserved",
+                "grainAnchor": settings.anchor_mode,
+                "grainScale": settings.scale,
+                "grainStrength": settings.strength,
+                "grainThreshold": settings.threshold,
+                "grainContrast": settings.contrast,
+                "grainMapping": settings.mapping,
+                "grainSource": if image_settings.is_some() { "repeating_image" } else { "procedural" },
+                "texture": "per_stamp_baked_atlas",
+                "atlasSize": composite_image.as_ref().map(|image| image.size),
+            });
+            if stroke.material == crate::document::StrokeMaterial::Emissive {
+                node["extras"]["spatialSketchEmissiveTipGrainFallback"] =
+                    json!("baseColorTexture_and_COLOR_0_preserve_tip_and_composite_alpha; emissiveFactor_remains_uniform");
+            }
         }
         if let Some(fill) = stroke.fill {
             node["extras"]["spatialSketchGeometry"] = json!("planar_fill");
@@ -992,6 +1346,13 @@ pub fn encode_with_images(
         }
         if fill_repeat_sampler {
             samplers.push(json!({"magFilter":9729,"minFilter":9987,"wrapS":10497,"wrapT":10497}));
+        }
+        if composite_sampler {
+            while samplers.len() < 3 {
+                samplers
+                    .push(json!({"magFilter":9729,"minFilter":9987,"wrapS":10497,"wrapT":10497}));
+            }
+            samplers.push(json!({"magFilter":9729,"minFilter":9729,"wrapS":33071,"wrapT":33071}));
         }
         root["samplers"] = json!(samplers);
     }

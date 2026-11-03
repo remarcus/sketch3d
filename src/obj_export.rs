@@ -21,6 +21,7 @@ type MaterialKey = (
     texture::TextureCacheKey,
     StrokeMaterial,
     u64,
+    u64,
     u32,
     u64,
     bool,
@@ -95,6 +96,10 @@ struct Material {
     image_texture_alpha_file: Option<String>,
     image_texture_png: Option<Vec<u8>>,
     image_texture_alpha_png: Option<Vec<u8>>,
+    composite_texture_file: Option<String>,
+    composite_texture_alpha_file: Option<String>,
+    composite_texture_png: Option<Vec<u8>>,
+    composite_texture_alpha_png: Option<Vec<u8>>,
     fill_texture_id: Option<u64>,
     fill_texture_repeat: bool,
     fill_texture_file: Option<String>,
@@ -146,21 +151,6 @@ pub fn write_obj_bundle(
     }) {
         return Err("An exported stroke refers to an invalid repeating image texture".into());
     }
-    if strokes.iter().any(|stroke| {
-        stroke.brush.tip_asset_id != 0
-            && (stroke
-                .brush
-                .texture
-                .image
-                .is_some_and(|settings| settings.strength > 0.0)
-                || (stroke.brush.texture.kind != TextureKind::Solid
-                    && stroke.brush.texture.strength > 0.0))
-    }) {
-        return Err(
-            "OBJ export does not support multiplying image-tip alpha by independent grain coverage"
-                .into(),
-        );
-    }
     if strokes.is_empty() {
         return Err("No visible strokes to export".into());
     }
@@ -174,8 +164,19 @@ pub fn write_obj_bundle(
 
     let mut materials = Vec::<Material>::new();
     let mut material_ids = HashMap::<MaterialKey, usize>::new();
+    let mut prepared_meshes = HashMap::<u64, export::Mesh>::new();
     for stroke in &strokes {
-        export::stroke_mesh(stroke)?;
+        let tip_asset = tip_assets.get(&stroke.brush.tip_asset_id).copied();
+        let grain_asset = stroke
+            .brush
+            .texture
+            .image
+            .and_then(|settings| tip_assets.get(&settings.asset_id).copied());
+        let (prepared_mesh, composite_image) =
+            export::stroke_mesh_with_grain(stroke, tip_asset, grain_asset)?;
+        if composite_image.is_some() {
+            prepared_meshes.insert(stroke.id, prepared_mesh);
+        }
         let layer_opacity = doc.layer_opacity(stroke.layer_id);
         let key = material_key(stroke, layer_opacity);
         let has_tip = stroke.brush.tip_asset_id != 0;
@@ -187,9 +188,10 @@ pub fn write_obj_bundle(
             }
             let index = materials.len();
             let mask_file = textured.then(|| format!("mask-{index:05}.png"));
-            let tip_file = has_tip.then(|| format!("tip-{:016x}.png", stroke.brush.tip_asset_id));
-            let tip_alpha_file =
-                has_tip.then(|| format!("tip-alpha-{:016x}.png", stroke.brush.tip_asset_id));
+            let tip_file = (has_tip && composite_image.is_none())
+                .then(|| format!("tip-{:016x}.png", stroke.brush.tip_asset_id));
+            let tip_alpha_file = (has_tip && composite_image.is_none())
+                .then(|| format!("tip-alpha-{:016x}.png", stroke.brush.tip_asset_id));
             let fill_texture_id = stroke
                 .fill
                 .and_then(|fill| fill.texture)
@@ -201,9 +203,15 @@ pub fn write_obj_bundle(
             let fill_texture_alpha_file =
                 fill_texture_id.map(|id| format!("fill-alpha-{id:016x}.png"));
             let fill_texture_file = fill_texture_id.map(|id| format!("fill-{id:016x}.png"));
-            let processed_image = image_settings
-                .map(|settings| tip_assets[&settings.asset_id].repeating_texture_pixels(settings))
-                .transpose()?;
+            let processed_image = if composite_image.is_none() {
+                image_settings
+                    .map(|settings| {
+                        tip_assets[&settings.asset_id].repeating_texture_pixels(settings)
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
             let image_texture_png = processed_image
                 .as_ref()
                 .map(encode_image_asset)
@@ -233,10 +241,33 @@ pub fn write_obj_bundle(
                         crate::brush_tip::content_id(png)
                     )
                 });
-            let image_uses_source_color = image_settings.is_some_and(|settings| {
-                settings.mode == crate::texture::ImageTextureMode::RgbaWithAlpha
-                    && !settings.tint_with_brush
+            let composite_texture_png = composite_image
+                .as_ref()
+                .map(encode_image_asset)
+                .transpose()?;
+            let composite_texture_alpha_png = composite_image
+                .as_ref()
+                .map(encode_image_alpha)
+                .transpose()?;
+            let composite_texture_file = composite_texture_png.as_ref().map(|png| {
+                format!(
+                    "tip-grain-{:016x}-{:016x}.png",
+                    stroke.id,
+                    crate::brush_tip::content_id(png)
+                )
             });
+            let composite_texture_alpha_file = composite_texture_alpha_png.as_ref().map(|png| {
+                format!(
+                    "tip-grain-alpha-{:016x}-{:016x}.png",
+                    stroke.id,
+                    crate::brush_tip::content_id(png)
+                )
+            });
+            let image_uses_source_color = composite_image.is_none()
+                && image_settings.is_some_and(|settings| {
+                    settings.mode == crate::texture::ImageTextureMode::RgbaWithAlpha
+                        && !settings.tint_with_brush
+                });
             entry.insert(index);
             materials.push(Material {
                 name: format!("material_{index:05}"),
@@ -293,6 +324,10 @@ pub fn write_obj_bundle(
                 image_texture_alpha_file,
                 image_texture_png,
                 image_texture_alpha_png,
+                composite_texture_file,
+                composite_texture_alpha_file,
+                composite_texture_png,
+                composite_texture_alpha_png,
                 fill_texture_id,
                 fill_texture_repeat,
                 fill_texture_file,
@@ -336,6 +371,12 @@ pub fn write_obj_bundle(
     }
     if strokes.iter().any(|stroke| stroke.has_local_colors()) {
         mtl.push_str("# OBJ/MTL cannot store per-vertex color; locally painted strokes use a length-weighted average of their resolved sample colors.\n");
+    }
+    if strokes
+        .iter()
+        .any(|stroke| export::has_independent_tip_grain(stroke))
+    {
+        mtl.push_str("# Image-tip and independent grain alpha are multiplied in a per-stamp atlas; large strokes use bounded atlas resolution.\n");
     }
     for material in &materials {
         writeln!(mtl, "newmtl {}", material.name).unwrap();
@@ -382,6 +423,11 @@ pub fn write_obj_bundle(
             )
             .unwrap();
             if let Some(alpha_file) = &material.fill_texture_alpha_file {
+                writeln!(mtl, "map_d sketch3d-{nonce}-{alpha_file}").unwrap();
+            }
+        } else if let Some(composite_file) = &material.composite_texture_file {
+            writeln!(mtl, "map_Kd sketch3d-{nonce}-{composite_file}").unwrap();
+            if let Some(alpha_file) = &material.composite_texture_alpha_file {
                 writeln!(mtl, "map_d sketch3d-{nonce}-{alpha_file}").unwrap();
             }
         } else if let Some(tip_file) = &material.tip_file {
@@ -464,6 +510,27 @@ pub fn write_obj_bundle(
                     )),
                     alpha_png,
                 ));
+            }
+        }
+        if let (Some(image_file), Some(alpha_file), Some(image_png), Some(alpha_png)) = (
+            &material.composite_texture_file,
+            &material.composite_texture_alpha_file,
+            &material.composite_texture_png,
+            &material.composite_texture_alpha_png,
+        ) {
+            for (name, bytes) in [(image_file, image_png), (alpha_file, alpha_png)] {
+                if emitted_image_textures.insert(name.clone()) {
+                    companion_size = companion_size
+                        .checked_add(bytes.len())
+                        .ok_or("OBJ combined texture companion size overflow")?;
+                    if companion_size >= export::MAX_BINARY_BYTES {
+                        return Err("OBJ combined textures exceed the 128 MiB export limit".into());
+                    }
+                    companion_files.push((
+                        parent.join(format!("sketch3d-{nonce}-{name}")),
+                        bytes.clone(),
+                    ));
+                }
             }
         }
         if material.mask_file.is_some() {
@@ -552,7 +619,11 @@ pub fn write_obj_bundle(
         writeln!(writer, "mtllib {mtl_name}").map_err(|error| error.to_string())?;
         let mut vertex_offset = 0_usize;
         for stroke in &strokes {
-            let mesh = export::stroke_mesh(stroke)?;
+            let mesh = if let Some(mesh) = prepared_meshes.remove(&stroke.id) {
+                mesh
+            } else {
+                export::stroke_mesh(stroke)?
+            };
             if mesh.indices.is_empty() {
                 continue;
             }
@@ -675,6 +746,11 @@ fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
         texture,
         stroke.material,
         stroke.brush.tip_asset_id,
+        if export::has_independent_tip_grain(stroke) {
+            stroke.id
+        } else {
+            0
+        },
         layer_opacity.to_bits(),
         fill_texture.map_or(0, |texture| texture.asset_id),
         fill_texture.is_none_or(|texture| texture.repeat),
