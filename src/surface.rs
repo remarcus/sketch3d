@@ -501,6 +501,9 @@ impl Surface {
                 let slant = (1.0 + (cone.radius / cone.height).powi(2)).sqrt();
                 (0.0..=cone.height * slant).contains(&parameter.y)
             }
+            Self::Freeform(_) | Self::Loft(_) => {
+                (0.0..=1.0).contains(&parameter.x) && (0.0..=1.0).contains(&parameter.y)
+            }
             _ => true,
         }
     }

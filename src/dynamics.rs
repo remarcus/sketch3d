@@ -98,6 +98,12 @@ pub enum DabSurfaceTarget {
     Revolved {
         surface: crate::revolved::Revolved,
     },
+    Freeform {
+        surface: crate::document::guide_resources::FreeformSurface,
+    },
+    Loft {
+        surface: crate::document::guide_resources::LoftSurface,
+    },
 }
 
 impl DabSurfaceTarget {
@@ -144,6 +150,8 @@ impl DabSurfaceTarget {
                     && minor_radius > 0.0
             }
             Self::Revolved { surface } => surface.valid(),
+            Self::Freeform { surface } => surface.validate().is_ok(),
+            Self::Loft { surface } => surface.validate().is_ok(),
         }
     }
 
@@ -196,6 +204,8 @@ impl DabSurfaceTarget {
                 height,
             }),
             Self::Revolved { surface } => Surface::Revolved(surface),
+            Self::Freeform { surface } => Surface::Freeform(surface),
+            Self::Loft { surface } => Surface::Loft(surface),
         }
     }
 }

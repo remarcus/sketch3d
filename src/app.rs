@@ -1631,6 +1631,12 @@ fn dab_target_from_geometry(
                 },
             }
         }
+        GuideGeometry::Freeform { surface } => {
+            crate::dynamics::DabSurfaceTarget::Freeform { surface: *surface }
+        }
+        GuideGeometry::Loft { surface } => {
+            crate::dynamics::DabSurfaceTarget::Loft { surface: *surface }
+        }
         _ => return None,
     })
 }
@@ -2738,9 +2744,9 @@ impl SketchApp {
             self.finish();
             self.resume_ink = begin;
             self.status = if self.brush.tip_asset_id != 0 {
-                "Image stamps support planes and projected marks on analytic curved guides; freeform, loft, and model surfaces are unsupported.".into()
+                "Image stamps support planes and projected marks on saved curved guides; model surfaces are unsupported.".into()
             } else {
-                "Dab scatter supports planes and analytic curved guides. Turn scatter off for freeform, loft, and model surfaces.".into()
+                "Dab scatter supports planes and saved curved guides. Turn scatter off for model surfaces.".into()
             };
             return;
         }
