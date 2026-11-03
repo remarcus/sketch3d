@@ -839,7 +839,8 @@ fn stroke_mesh_unmapped_evaluated(stroke: &Stroke) -> Vec<Vertex> {
             mesh
         }
     };
-    if stroke.fill.is_none() {
+    let dab_geometry = stroke.fill.is_none() && stroke.brush.dabs.enabled;
+    if stroke.fill.is_none() && !dab_geometry {
         if let Some(point_colors) = stroke
             .point_colors
             .as_ref()
@@ -866,7 +867,7 @@ fn stroke_mesh_unmapped_evaluated(stroke: &Stroke) -> Vec<Vertex> {
     }
     for vertex in &mut vertices {
         vertex.material = material;
-        if stroke.point_colors.is_none() {
+        if stroke.point_colors.is_none() && !dab_geometry {
             if let Some(gradient) = stroke.gradient {
                 vertex.color = gradient.sample(vertex.gradient_t);
             }
@@ -899,8 +900,9 @@ fn tip_mesh(stroke: &Stroke) -> Vec<Vertex> {
     let Ok(dabs) = crate::dab_placement::sample(stroke) else {
         return Vec::new();
     };
+    let colors = dab_colors(stroke, &dabs);
     let mut vertices = Vec::with_capacity(dabs.len().saturating_mul(6));
-    for dab in dabs {
+    for (dab, color) in dabs.into_iter().zip(colors) {
         let tangent = dab.tangent.try_normalize().unwrap_or(Vec3::Y);
         let side = dab.normal.cross(tangent).try_normalize().unwrap_or(Vec3::X);
         let angle = (stroke.brush.angle_degrees + dab.angle_degrees).to_radians();
@@ -966,7 +968,7 @@ fn tip_mesh(stroke: &Stroke) -> Vec<Vertex> {
             positions,
             [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             dab.normal,
-            stroke.color,
+            color,
             [opacity; 4],
             0.0,
             [dab.gradient_t; 4],
@@ -1004,19 +1006,28 @@ fn dab_mesh(stroke: &Stroke) -> Vec<Vertex> {
     let Ok(dabs) = crate::dab_placement::sample(stroke) else {
         return Vec::new();
     };
+    let colors = dab_colors(stroke, &dabs);
     let mut vertices = Vec::with_capacity(dabs.len().saturating_mul(24));
     let surface_target = stroke
         .brush
         .dabs
         .surface_target
         .map(|target| target.surface());
-    for dab in dabs {
+    for (dab, color) in dabs.into_iter().zip(colors) {
         if let Some(surface) = surface_target {
+            let start = vertices.len();
             surface_dab_mesh(stroke, dab, surface, &mut vertices);
+            for vertex in &mut vertices[start..] {
+                vertex.color = color;
+            }
             continue;
         }
         if let Some(patch) = &stroke.model_surface {
+            let start = vertices.len();
             model_surface_dab_mesh(stroke, dab, patch, &mut vertices);
+            for vertex in &mut vertices[start..] {
+                vertex.color = color;
+            }
             continue;
         }
         let tangent = dab.tangent.try_normalize().unwrap_or(Vec3::Y);
@@ -1060,7 +1071,7 @@ fn dab_mesh(stroke: &Stroke) -> Vec<Vertex> {
                             gradient_t: dab.gradient_t,
                             position: position.to_array(),
                             normal: face_normal.to_array(),
-                            color: stroke.color,
+                            color,
                             uv: [
                                 0.5 + offset.dot(width_axis) / stroke.brush.texture.scale,
                                 0.5 + offset.dot(normal_axis) / stroke.brush.texture.scale,
@@ -1078,6 +1089,64 @@ fn dab_mesh(stroke: &Stroke) -> Vec<Vertex> {
         }
     }
     vertices
+}
+
+fn dab_colors(stroke: &Stroke, dabs: &[crate::dab_placement::ResolvedDab]) -> Vec<[f32; 3]> {
+    let point_profile = stroke
+        .point_colors
+        .as_ref()
+        .filter(|colors| colors.len() == stroke.points.len())
+        .map(|point_colors| {
+            let distances = crate::dynamics::arc_lengths(&stroke.points);
+            let total = distances.last().copied().unwrap_or(0.0);
+            let colors = point_colors
+                .iter()
+                .enumerate()
+                .map(|(index, painted)| {
+                    let t = if total > 1.0e-8 {
+                        distances[index] / total
+                    } else {
+                        0.0
+                    };
+                    painted.unwrap_or_else(|| stroke.base_color_at(t))
+                })
+                .collect::<Vec<_>>();
+            (distances, total, colors)
+        });
+    let variation = stroke.brush.dab_color_variation;
+    dabs.iter()
+        .map(|dab| {
+            let base = point_profile.as_ref().map_or_else(
+                || stroke.base_color_at(dab.gradient_t),
+                |(distances, total, colors)| {
+                    sample_color_profile(distances, colors, *total, dab.gradient_t)
+                },
+            );
+            let random = std::array::from_fn(|channel| {
+                crate::dab_placement::random01(
+                    stroke.brush.dab_seed,
+                    dab.dab_index,
+                    channel as u64 + 4,
+                )
+            });
+            variation.apply(base, random)
+        })
+        .collect()
+}
+
+pub(crate) fn resolved_dab_color_average(stroke: &Stroke) -> Option<[f32; 3]> {
+    let dabs = crate::dab_placement::sample(stroke).ok()?;
+    let colors = dab_colors(stroke, &dabs);
+    if colors.is_empty() {
+        return None;
+    }
+    let sum = colors.iter().fold([0.0; 3], |mut sum, color| {
+        for channel in 0..3 {
+            sum[channel] += color[channel];
+        }
+        sum
+    });
+    Some(sum.map(|channel| channel / colors.len() as f32))
 }
 
 fn surface_dab_mesh(

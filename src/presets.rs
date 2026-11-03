@@ -18,7 +18,7 @@ const FIRST_PERSONAL_ID: u64 = 100;
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_PACKAGE_BYTES: u64 = 1024 * 1024;
 const PACKAGE_FORMAT: &str = "spatial-sketch-brush";
-const LIBRARY_VERSION: u32 = 8;
+const LIBRARY_VERSION: u32 = 9;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Preset {
@@ -33,7 +33,8 @@ pub struct Preset {
 /// Portable, self-contained brush definition. Version 1 is settings-only;
 /// version 2 can carry a PNG stamp tip; version 3 adds repeating image
 /// textures; version 4 adds captured texture anchors and scale behavior;
-/// version 5 adds independent tip grain and threshold/contrast controls.
+/// version 5 adds independent tip grain and threshold/contrast controls;
+/// version 6 adds deterministic per-dab color variation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushPackage {
     pub format: String,
@@ -69,7 +70,9 @@ impl BrushPackage {
     ) -> Self {
         Self {
             format: PACKAGE_FORMAT.into(),
-            version: if texture_needs_v5(preset.brush.texture, preset.brush.tip_asset_id != 0)
+            version: if preset.brush.dab_color_variation.is_enabled() {
+                6
+            } else if texture_needs_v5(preset.brush.texture, preset.brush.tip_asset_id != 0)
                 || (tip_asset.is_some() && repeating_texture_asset.is_some())
             {
                 5
@@ -161,7 +164,7 @@ impl BrushPackage {
         if self.format != PACKAGE_FORMAT {
             return Err("This is not a Sketch3D brush package".into());
         }
-        if !matches!(self.version, 1..=5) {
+        if !matches!(self.version, 1..=6) {
             return Err("Unsupported brush package version".into());
         }
         match self.version {
@@ -249,7 +252,7 @@ impl BrushPackage {
                     }
                 }
             }
-            5 => {
+            5 | 6 => {
                 match (&self.tip_asset, self.preset.brush.tip_asset_id) {
                     (None, 0) => {}
                     (Some(asset), id) if id == asset.id => {
@@ -895,7 +898,7 @@ impl Library {
         }
         let mut library: Self =
             serde_json::from_str(text).map_err(|e| format!("Cannot read brush library: {e}"))?;
-        if matches!(library.version, 1..=7) {
+        if matches!(library.version, 1..=8) {
             let previous_version = library.version;
             let defaults = Library::default();
             let first_new_id = match previous_version {

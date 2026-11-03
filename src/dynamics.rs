@@ -67,6 +67,87 @@ pub struct DabSettings {
     pub surface_target: Option<DabSurfaceTarget>,
 }
 
+/// Maximum seeded per-dab color offsets in sRGB HSV space. The brush's base
+/// tint, stroke gradient, or locally painted color is sampled first; this
+/// variation is applied afterward. For image tips it changes the tint while
+/// leaving the source image RGB and alpha intact.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DabColorVariation {
+    #[serde(default)]
+    pub hue_degrees: f32,
+    #[serde(default)]
+    pub saturation: f32,
+    #[serde(default)]
+    pub value: f32,
+}
+
+impl DabColorVariation {
+    pub fn is_valid(self) -> bool {
+        self.hue_degrees.is_finite()
+            && (0.0..=180.0).contains(&self.hue_degrees)
+            && self.saturation.is_finite()
+            && (0.0..=1.0).contains(&self.saturation)
+            && self.value.is_finite()
+            && (0.0..=1.0).contains(&self.value)
+    }
+
+    pub fn is_enabled(self) -> bool {
+        self.hue_degrees > 0.0 || self.saturation > 0.0 || self.value > 0.0
+    }
+
+    /// Apply symmetric seeded offsets to a linear RGB color. `random` contains
+    /// three stable values in [0, 1), keyed by the global dab index.
+    pub fn apply(self, linear_rgb: [f32; 3], random: [f32; 3]) -> [f32; 3] {
+        if !self.is_enabled() {
+            return linear_rgb;
+        }
+        let srgb = linear_rgb.map(crate::presentation::linear_to_srgb);
+        let (hue, saturation, value) = rgb_to_hsv(srgb);
+        let hue = (hue + (random[0] * 2.0 - 1.0) * self.hue_degrees / 360.0).rem_euclid(1.0);
+        let saturation = (saturation + (random[1] * 2.0 - 1.0) * self.saturation).clamp(0.0, 1.0);
+        let value = (value + (random[2] * 2.0 - 1.0) * self.value).clamp(0.0, 1.0);
+        hsv_to_rgb(hue, saturation, value).map(crate::presentation::srgb_to_linear)
+    }
+}
+
+fn rgb_to_hsv(rgb: [f32; 3]) -> (f32, f32, f32) {
+    let [red, green, blue] = rgb;
+    let maximum = red.max(green).max(blue);
+    let minimum = red.min(green).min(blue);
+    let delta = maximum - minimum;
+    let hue = if delta <= f32::EPSILON {
+        0.0
+    } else if maximum == red {
+        ((green - blue) / delta).rem_euclid(6.0) / 6.0
+    } else if maximum == green {
+        ((blue - red) / delta + 2.0) / 6.0
+    } else {
+        ((red - green) / delta + 4.0) / 6.0
+    };
+    let saturation = if maximum <= f32::EPSILON {
+        0.0
+    } else {
+        delta / maximum
+    };
+    (hue, saturation, maximum)
+}
+
+fn hsv_to_rgb(hue: f32, saturation: f32, value: f32) -> [f32; 3] {
+    let sector = hue * 6.0;
+    let chroma = value * saturation;
+    let intermediate = chroma * (1.0 - ((sector.rem_euclid(2.0)) - 1.0).abs());
+    let (red, green, blue) = match sector.floor() as i32 {
+        0 => (chroma, intermediate, 0.0),
+        1 => (intermediate, chroma, 0.0),
+        2 => (0.0, chroma, intermediate),
+        3 => (0.0, intermediate, chroma),
+        4 => (intermediate, 0.0, chroma),
+        _ => (chroma, 0.0, intermediate),
+    };
+    let offset = value - chroma;
+    [red + offset, green + offset, blue + offset]
+}
+
 /// Serializable snapshot of analytic guide geometry used by dab-based marks.
 /// Model meshes and freeform guides remain unsupported by this dab stage.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

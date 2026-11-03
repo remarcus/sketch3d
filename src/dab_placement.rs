@@ -32,6 +32,8 @@ fn first_dab_index(origin: f32, step: f32) -> f32 {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolvedDab {
+    /// Stable global spacing index, retained through split fragments.
+    pub dab_index: u64,
     pub position: Vec3,
     pub tangent: Vec3,
     pub normal: Vec3,
@@ -321,6 +323,7 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> Option<ResolvedDab
     );
     let angle = (angle_random * 2.0 - 1.0) * stroke.brush.dabs.angle_variation_degrees;
     Some(ResolvedDab {
+        dab_index: index,
         position: center + scatter,
         tangent,
         normal,
@@ -359,7 +362,7 @@ fn point_thickness_at_distance(stroke: &Stroke, distances: &[f32], distance: f32
     values[segment] + (values[segment + 1] - values[segment]) * t
 }
 
-fn random01(seed: u64, index: u64, channel: u64) -> f32 {
+pub(crate) fn random01(seed: u64, index: u64, channel: u64) -> f32 {
     let bits = splitmix64(seed ^ index.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ channel);
     (bits >> 40) as f32 * (1.0 / 16_777_216.0)
 }

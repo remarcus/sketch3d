@@ -1,5 +1,5 @@
 pub use crate::dynamics::{
-    AirbrushSettings, DabSettings, Dynamics, PressureMapping, StrandSettings,
+    AirbrushSettings, DabColorVariation, DabSettings, Dynamics, PressureMapping, StrandSettings,
 };
 use crate::texture::TextureSettings;
 use glam::{Quat, Vec3};
@@ -77,6 +77,9 @@ pub struct Brush {
     pub dynamics: Dynamics,
     #[serde(default)]
     pub dabs: DabSettings,
+    /// Seeded per-mark color offsets applied after the stroke's color profile.
+    #[serde(default)]
+    pub dab_color_variation: DabColorVariation,
     #[serde(default)]
     pub strands: StrandSettings,
     #[serde(default)]
@@ -113,6 +116,7 @@ impl Default for Brush {
             tangent: Vec3::X,
             dynamics: Dynamics::default(),
             dabs: DabSettings::default(),
+            dab_color_variation: DabColorVariation::default(),
             strands: StrandSettings::default(),
             flow: AirbrushSettings::default(),
             dab_seed: 0,
@@ -138,6 +142,7 @@ impl Brush {
             && (0.05..=20.0).contains(&self.tube_profile_scale.y)
             && (0.05..=20.0).contains(&self.tube_profile_scale.z)
             && self.dabs.is_valid()
+            && self.dab_color_variation.is_valid()
             && self.strands.is_valid()
             && self.flow.is_valid()
             && self.dab_distance_origin.is_finite()

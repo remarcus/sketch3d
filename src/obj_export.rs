@@ -305,7 +305,8 @@ pub fn write_obj_bundle(
                 },
                 gradient_fallback: stroke.gradient.is_some()
                     || stroke.fill.and_then(|fill| fill.gradient).is_some()
-                    || stroke.has_local_colors(),
+                    || stroke.has_local_colors()
+                    || (stroke.brush.dabs.enabled && stroke.brush.dab_color_variation.is_enabled()),
                 opacity: if stroke.material == StrokeMaterial::Cutout {
                     0.0
                 } else {
@@ -371,6 +372,12 @@ pub fn write_obj_bundle(
     }
     if strokes.iter().any(|stroke| stroke.has_local_colors()) {
         mtl.push_str("# OBJ/MTL cannot store per-vertex color; locally painted strokes use a length-weighted average of their resolved sample colors.\n");
+    }
+    if strokes
+        .iter()
+        .any(|stroke| stroke.brush.dabs.enabled && stroke.brush.dab_color_variation.is_enabled())
+    {
+        mtl.push_str("# OBJ/MTL cannot store per-dab color; seeded dab variation is represented by the mean resolved dab tint.\n");
     }
     if strokes
         .iter()
@@ -720,7 +727,9 @@ fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
     let fill_texture = stroke.fill.and_then(|fill| fill.texture);
     let diffuse = fill_texture.map_or_else(
         || {
-            if stroke.has_local_colors() {
+            if stroke.brush.dabs.enabled && stroke.brush.dab_color_variation.is_enabled() {
+                crate::geometry::resolved_dab_color_average(stroke).unwrap_or(stroke.color)
+            } else if stroke.has_local_colors() {
                 local_color_fallback(stroke)
             } else {
                 stroke.gradient.map_or_else(

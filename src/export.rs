@@ -201,6 +201,7 @@ fn stroke_mesh_internal(
                 vertex.uv[1],
                 if stroke.gradient.is_some()
                     || stroke.has_local_colors()
+                    || (stroke.brush.dabs.enabled && stroke.brush.dab_color_variation.is_enabled())
                     || stroke.fill.and_then(|fill| fill.gradient).is_some()
                     || stroke.fill.and_then(|fill| fill.texture).is_some()
                 {
@@ -210,6 +211,7 @@ fn stroke_mesh_internal(
                 },
                 if stroke.gradient.is_some()
                     || stroke.has_local_colors()
+                    || (stroke.brush.dabs.enabled && stroke.brush.dab_color_variation.is_enabled())
                     || stroke.fill.and_then(|fill| fill.gradient).is_some()
                     || stroke.fill.and_then(|fill| fill.texture).is_some()
                 {
@@ -219,6 +221,7 @@ fn stroke_mesh_internal(
                 },
                 if stroke.gradient.is_some()
                     || stroke.has_local_colors()
+                    || (stroke.brush.dabs.enabled && stroke.brush.dab_color_variation.is_enabled())
                     || stroke.fill.and_then(|fill| fill.gradient).is_some()
                     || stroke.fill.and_then(|fill| fill.texture).is_some()
                 {
@@ -764,7 +767,9 @@ pub fn encode_with_images(
         let fill_gradient = stroke.fill.and_then(|fill| fill.gradient).is_some();
         let has_local_colors = stroke.has_local_colors();
         let has_gradient = stroke.gradient.is_some() || fill_gradient;
-        let has_vertex_colors = has_gradient || has_local_colors;
+        let has_vertex_colors = has_gradient
+            || has_local_colors
+            || (stroke.brush.dabs.enabled && stroke.brush.dab_color_variation.is_enabled());
         let key = (
             stroke.color.map(f32::to_bits),
             has_vertex_colors,
@@ -808,7 +813,7 @@ pub fn encode_with_images(
                     uses_unlit = true;
                     material["extensions"] = json!({"KHR_materials_unlit":{}});
                     material["emissiveFactor"] =
-                        json!(if has_local_colors || image_uses_source_color {
+                        json!(if has_vertex_colors || image_uses_source_color {
                             [1.0; 3]
                         } else {
                             stroke.color

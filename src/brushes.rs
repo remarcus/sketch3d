@@ -240,6 +240,36 @@ impl SketchApp {
                     1.0,
                     "°",
                 );
+                ui.collapsing("Color variation", |ui| {
+                    ui_style::slider_row(
+                        ui,
+                        "Hue",
+                        "dab-color-hue",
+                        &mut self.brush.dab_color_variation.hue_degrees,
+                        0.0..=180.0,
+                        1.0,
+                        "°",
+                    );
+                    ui_style::slider_row(
+                        ui,
+                        "Saturation",
+                        "dab-color-saturation",
+                        &mut self.brush.dab_color_variation.saturation,
+                        0.0..=1.0,
+                        100.0,
+                        "%",
+                    );
+                    ui_style::slider_row(
+                        ui,
+                        "Value",
+                        "dab-color-value",
+                        &mut self.brush.dab_color_variation.value,
+                        0.0..=1.0,
+                        100.0,
+                        "%",
+                    );
+                    ui.small("Each mark gets a repeatable HSV offset. Stroke gradients and local paint are sampled first; image tips keep their source colors and alpha while the brush tint varies.");
+                });
                 ui.checkbox(
                     &mut self.brush.dabs.pressure_size.enabled,
                     "Pressure controls dab size",
