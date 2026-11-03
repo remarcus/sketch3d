@@ -302,7 +302,7 @@ impl SketchApp {
                 .clone();
             assert!(sampled_stroke.fill.is_none());
             self.start_color_sampling();
-            self.pointer_action_with_tilt(line_pos, 0.7, rect, true, false, Some(Vec3::Y));
+            self.pointer_action_with_tilt(line_pos, Some(0.7), rect, true, false, Some(Vec3::Y));
             assert_eq!(self.color, sampled_stroke.color);
             assert_eq!(self.doc.strokes, original);
             self.sampling_contact = false;
@@ -331,7 +331,7 @@ impl SketchApp {
             self.doc.layers[layer_index].visible = true;
             self.doc.layers[layer_index].locked = true;
             self.start_color_sampling();
-            self.pointer_action_with_tilt(fill_pos, 1.0, rect, true, false, None);
+            self.pointer_action_with_tilt(fill_pos, Some(1.0), rect, true, false, None);
             assert_eq!(self.color, target_fill.color);
             assert_eq!(self.doc.strokes, original);
             self.sampling_contact = false;

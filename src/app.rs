@@ -2533,6 +2533,7 @@ impl SketchApp {
         self.commit_transform();
         let tail = self.stabilizer.finish();
         let flow_finish_time = self.current_flow_time_ms();
+        let stroke_finish_time = self.current_stroke_time_ms();
         if let Some(id) = self.active {
             if let Some(stroke) = self.doc.strokes.last_mut().filter(|s| s.id == id) {
                 for point in tail {
@@ -2564,6 +2565,11 @@ impl SketchApp {
                     if airbrush_vertex_budget_exceeded(stroke) {
                         stroke.points.pop();
                         self.status = "Airbrush reached its 8,192-deposit limit; the remaining contact was omitted.".into();
+                    }
+                }
+                if !stroke.brush.flow.enabled && stroke.brush.texture.dynamics.speed_enabled() {
+                    if let Some(last) = stroke.points.last_mut() {
+                        last.time_ms = last.time_ms.max(stroke_finish_time);
                     }
                 }
                 if stroke.brush.dabs.enabled && stroke.brush.dab_total_length == 0.0 {
@@ -2665,12 +2671,29 @@ impl SketchApp {
         {
             return 0;
         }
+        self.current_stroke_time_ms()
+    }
+
+    fn current_stroke_time_ms(&self) -> u32 {
         self.active_started_at.map_or(0, |started| {
             started
                 .elapsed()
                 .as_millis()
                 .min(crate::document::MAX_FLOW_DURATION_MS as u128) as u32
         })
+    }
+
+    fn current_texture_time_ms(&self) -> u32 {
+        if self
+            .doc
+            .strokes
+            .last()
+            .is_some_and(|stroke| stroke.brush.texture.dynamics.speed_enabled())
+        {
+            self.current_stroke_time_ms()
+        } else {
+            self.current_flow_time_ms()
+        }
     }
 
     fn tick_airbrush_contact(&mut self, ctx: &egui::Context) {
@@ -2755,6 +2778,18 @@ impl SketchApp {
         begin: bool,
         tilt: Option<Vec3>,
     ) {
+        self.add_point_with_tilt_source(position, pressure, false, rect, begin, tilt);
+    }
+
+    fn add_point_with_tilt_source(
+        &mut self,
+        position: Pos2,
+        pressure: f32,
+        pressure_samples_available: bool,
+        rect: Rect,
+        begin: bool,
+        tilt: Option<Vec3>,
+    ) {
         if begin {
             self.finish();
         }
@@ -2794,7 +2829,14 @@ impl SketchApp {
             return;
         }
         if self.doc.active_model_reference.is_some() {
-            self.add_model_point_with_tilt(position, pressure, rect, begin, tilt);
+            self.add_model_point_with_tilt(
+                position,
+                pressure,
+                pressure_samples_available,
+                rect,
+                begin,
+                tilt,
+            );
             return;
         }
         let ndc = glam::vec2(
@@ -2917,6 +2959,10 @@ impl SketchApp {
             } else {
                 self.brush.texture
             };
+            let texture = crate::texture::TextureSettings {
+                pressure_samples_available,
+                ..texture
+            };
             self.doc.strokes.push(Stroke {
                 model_surface: None,
                 curve: None,
@@ -2976,7 +3022,7 @@ impl SketchApp {
         };
         let pressure = pressure.clamp(0.0, 1.0);
         let world_per_pixel = self.camera.world_per_pixel(world, rect.height());
-        let point_time_ms = self.current_flow_time_ms();
+        let point_time_ms = self.current_texture_time_ms();
         let points = self.stabilizer.push(
             Point {
                 tilt,
@@ -2987,6 +3033,7 @@ impl SketchApp {
             self.stabilization * 24.0 * world_per_pixel,
         );
         if let Some(stroke) = self.doc.strokes.last_mut().filter(|s| s.id == id) {
+            stroke.brush.texture.pressure_samples_available |= pressure_samples_available;
             let mut over_geometry_limit = false;
             for point in points {
                 if stroke.points.last().is_none_or(|p| {
@@ -3019,6 +3066,7 @@ impl SketchApp {
         &mut self,
         position: Pos2,
         pressure: f32,
+        pressure_samples_available: bool,
         rect: Rect,
         begin: bool,
         tilt: Option<Vec3>,
@@ -3174,6 +3222,10 @@ impl SketchApp {
                         surface_target: None,
                         ..self.brush.dabs
                     },
+                    texture: crate::texture::TextureSettings {
+                        pressure_samples_available,
+                        ..self.brush.texture
+                    },
                     ..self.brush
                 },
                 points: Vec::new(),
@@ -3182,7 +3234,7 @@ impl SketchApp {
         let Some(stroke_id) = self.active else {
             return;
         };
-        let point_time_ms = self.current_flow_time_ms();
+        let point_time_ms = self.current_texture_time_ms();
         let point = Point {
             tilt,
             position: world,
@@ -3237,6 +3289,7 @@ impl SketchApp {
             .last_mut()
             .filter(|stroke| stroke.id == stroke_id)
         {
+            stroke.brush.texture.pressure_samples_available |= pressure_samples_available;
             if let (Some(surface), Some(contact)) =
                 (&mut stroke.model_surface, contact_patch.as_ref())
             {
@@ -5108,8 +5161,8 @@ impl SketchApp {
             self.camera.pitch = (self.camera.pitch + delta.y * 0.008).clamp(-1.55, 1.55);
         }
     }
-    fn pointer_action(&mut self, pos: Pos2, pressure: f32, rect: Rect, begin: bool, shift: bool) {
-        self.pointer_action_with_tilt(pos, pressure, rect, begin, shift, None);
+    fn pointer_action(&mut self, pos: Pos2, _pressure: f32, rect: Rect, begin: bool, shift: bool) {
+        self.pointer_action_with_tilt(pos, None, rect, begin, shift, None);
     }
 
     fn start_color_sampling(&mut self) {
@@ -5157,12 +5210,14 @@ impl SketchApp {
     fn pointer_action_with_tilt(
         &mut self,
         pos: Pos2,
-        pressure: f32,
+        pressure: Option<f32>,
         rect: Rect,
         begin: bool,
         shift: bool,
         tilt: Option<Vec3>,
     ) {
+        let pressure_samples_available = pressure.is_some();
+        let pressure = pressure.unwrap_or(1.0);
         if self.presentation.artwork {
             return;
         }
@@ -5228,7 +5283,14 @@ impl SketchApp {
                 self.fill_corner(pos, rect);
             }
         } else {
-            self.add_point_with_tilt(pos, pressure, rect, begin, tilt);
+            self.add_point_with_tilt_source(
+                pos,
+                pressure,
+                pressure_samples_available,
+                rect,
+                begin,
+                tilt,
+            );
         }
     }
     fn canvas_input(&mut self, ctx: &egui::Context, rect: Rect, mut pen: Vec<PenSample>) {
@@ -5459,7 +5521,7 @@ impl SketchApp {
                 } else {
                     self.pointer_action_with_tilt(
                         sample.position,
-                        sample.pressure.unwrap_or(1.0),
+                        sample.pressure,
                         rect,
                         sample.phase == Phase::Down,
                         shift,

@@ -566,6 +566,48 @@ pub fn arc_lengths(points: &[Point]) -> Vec<f32> {
     distances
 }
 
+/// Resolve captured pressure and average world-space speed at one arc-distance
+/// location. Speed comes only from stored centerline distance and timestamps;
+/// event cadence and render/update frequency never enter the calculation.
+pub fn texture_inputs_at_distance(
+    points: &[Point],
+    distances: &[f32],
+    distance: f32,
+) -> (f32, Option<f32>) {
+    if points.is_empty() || points.len() != distances.len() {
+        return (1.0, None);
+    }
+    if points.len() == 1 {
+        return (points[0].pressure, (points[0].time_ms > 0).then_some(0.0));
+    }
+    let total = distances.last().copied().unwrap_or(0.0);
+    let distance = if distance.is_finite() {
+        distance.clamp(0.0, total)
+    } else {
+        0.0
+    };
+    let upper = distances.partition_point(|value| *value < distance);
+    let segment = upper.saturating_sub(1).min(points.len() - 2);
+    let start_distance = distances[segment];
+    let end_distance = distances[segment + 1];
+    let segment_length = (end_distance - start_distance).max(0.0);
+    let length = end_distance - start_distance;
+    let amount = if length > 1.0e-8 {
+        ((distance - start_distance) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let a = points[segment];
+    let b = points[segment + 1];
+    let pressure = a.pressure + (b.pressure - a.pressure) * amount;
+    let speed = b
+        .time_ms
+        .checked_sub(a.time_ms)
+        .filter(|elapsed| *elapsed > 0)
+        .map(|elapsed| segment_length * 1000.0 / elapsed as f32);
+    (pressure, speed)
+}
+
 /// Windows tilt X/Y angles are relative to the screen normal; Y points down.
 /// Below one degree the azimuth is ill-conditioned, so use the manual angle.
 pub fn screen_tilt(tilt: [Option<f32>; 2], right: Vec3, up: Vec3) -> Option<Vec3> {

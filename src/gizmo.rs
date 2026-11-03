@@ -125,7 +125,8 @@ fn textured_surface_covered(
     origin: Vec3,
     direction: Vec3,
 ) -> Option<bool> {
-    let mut nearest: Option<(f32, [f32; 2], [f32; 2])> = None;
+    type SurfaceCoverageHit = (f32, [f32; 2], [f32; 2], [f32; 2]);
+    let mut nearest: Option<SurfaceCoverageHit> = None;
     for triangle in crate::geometry::stroke_mesh(stroke).as_chunks::<3>().0 {
         let a = Vec3::from(triangle[0].position);
         let b = Vec3::from(triangle[1].position);
@@ -149,7 +150,7 @@ fn textured_surface_covered(
             continue;
         }
         let distance = edge_ac.dot(q) * inverse;
-        if distance < 0.0 || nearest.is_some_and(|(best, _, _)| distance >= best) {
+        if distance < 0.0 || nearest.is_some_and(|(best, _, _, _)| distance >= best) {
             continue;
         }
         let w = 1.0 - u - v;
@@ -162,21 +163,19 @@ fn textured_surface_covered(
             triangle[0].grain_uv[0] * w + triangle[1].grain_uv[0] * u + triangle[2].grain_uv[0] * v,
             triangle[0].grain_uv[1] * w + triangle[1].grain_uv[1] * u + triangle[2].grain_uv[1] * v,
         ];
-        if stroke.brush.flow.enabled
-            && (opacity <= 0.001
-                || (stroke.brush.texture.kind != crate::texture::TextureKind::Solid
-                    && !crate::texture::covered_at_uv(stroke.brush.texture, uv)))
-        {
+        let grain_dynamics = std::array::from_fn(|axis| {
+            triangle[0].grain_dynamics[axis] * w
+                + triangle[1].grain_dynamics[axis] * u
+                + triangle[2].grain_dynamics[axis] * v
+        });
+        if stroke.brush.flow.enabled && opacity <= 0.001 {
             continue;
         }
-        nearest = Some((distance, uv, grain_uv));
+        nearest = Some((distance, uv, grain_uv, grain_dynamics));
     }
-    let Some((_, uv, grain_uv)) = nearest else {
+    let Some((_, uv, grain_uv, grain_dynamics)) = nearest else {
         return Some(false);
     };
-    if stroke.brush.flow.enabled && stroke.brush.texture.image.is_none() {
-        return Some(true);
-    }
     if stroke.brush.tip_asset_id != 0 {
         let tip_alpha = tip_asset
             .and_then(|asset| asset.alpha_at_uv(uv).ok())
@@ -188,16 +187,46 @@ fn textured_surface_covered(
         } else {
             crate::texture::alpha_at_uv(stroke.brush.texture, grain_uv)
         };
+        let grain_alpha = crate::texture::apply_dynamic_coverage(grain_alpha, grain_dynamics);
         return Some(tip_alpha * grain_alpha > 0.001);
     }
     if let Some(settings) = stroke.brush.texture.image {
+        let alpha = grain_asset
+            .and_then(|asset| asset.repeating_coverage_at_uv(settings, uv).ok())
+            .unwrap_or(0.0);
+        return Some(crate::texture::apply_dynamic_coverage(alpha, grain_dynamics) > 0.001);
+    }
+    if stroke.brush.flow.enabled && stroke.brush.texture.image.is_none() {
         return Some(
-            grain_asset
-                .and_then(|asset| asset.repeating_coverage_at_uv(settings, uv).ok())
-                .is_some_and(|coverage| coverage > 0.001),
+            if stroke.brush.texture.kind == crate::texture::TextureKind::Solid {
+                true
+            } else if grain_dynamics == [1.0, 1.0] {
+                crate::texture::covered_at_uv(stroke.brush.texture, uv)
+            } else {
+                crate::texture::apply_dynamic_coverage(
+                    crate::texture::alpha_at_uv(stroke.brush.texture, uv),
+                    grain_dynamics,
+                ) > 0.001
+            },
         );
     }
-    Some(crate::texture::covered_at_uv(stroke.brush.texture, uv))
+    if grain_dynamics == [1.0, 1.0]
+        && !stroke.brush.flow.enabled
+        && !stroke.brush.texture.kind.uses_continuous_alpha()
+    {
+        return Some(crate::texture::covered_at_uv(stroke.brush.texture, uv));
+    }
+    let alpha = crate::texture::apply_dynamic_coverage(
+        crate::texture::alpha_at_uv(stroke.brush.texture, uv),
+        grain_dynamics,
+    );
+    Some(
+        if stroke.brush.flow.enabled || stroke.brush.texture.kind.uses_continuous_alpha() {
+            alpha > 0.001
+        } else {
+            alpha >= 0.5
+        },
+    )
 }
 
 fn pick_filtered(

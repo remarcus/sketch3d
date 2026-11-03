@@ -14,6 +14,8 @@ pub struct Vertex {
     pub material: f32,
     /// Independent grain coordinates for image-tip stamps.
     pub grain_uv: [f32; 2],
+    /// Per-fragment texture-strength and contrast multipliers.
+    pub grain_dynamics: [f32; 2],
     /// Normalized centerline arc-length parameter used to resolve stroke gradients.
     pub gradient_t: f32,
 }
@@ -290,6 +292,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
             Vertex {
                 material: 0.0,
                 grain_uv: [0.0; 2],
+                grain_dynamics: [1.0; 2],
                 gradient_t: if total > 1.0e-8 {
                     (distances[i] / total).clamp(0.0, 1.0)
                 } else {
@@ -343,6 +346,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
                     out.push(Vertex {
                         material: 0.0,
                         grain_uv: [0.0; 2],
+                        grain_dynamics: [1.0; 2],
                         gradient_t: 0.0,
                         position: (p.position + normal * r).to_array(),
                         normal: normal.to_array(),
@@ -377,6 +381,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
             let center = Vertex {
                 material: 0.0,
                 grain_uv: [0.0; 2],
+                grain_dynamics: [1.0; 2],
                 gradient_t: if total > 1.0e-8 {
                     (distances[index] / total).clamp(0.0, 1.0)
                 } else {
@@ -736,6 +741,22 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
                 }
             }
         }
+        if evaluated_stroke.fill.is_none()
+            && texture_settings.dynamics.is_enabled()
+            && !evaluated_stroke.points.is_empty()
+        {
+            let distances = crate::dynamics::arc_lengths(&evaluated_stroke.points);
+            let total = distances.last().copied().unwrap_or(0.0);
+            for vertex in &mut generated {
+                let distance = vertex.gradient_t * total;
+                let (pressure, speed) = crate::dynamics::texture_inputs_at_distance(
+                    &evaluated_stroke.points,
+                    &distances,
+                    distance,
+                );
+                vertex.grain_dynamics = texture_settings.dynamic_factors(pressure, speed);
+            }
+        }
         if is_array
             && vertices
                 .len()
@@ -1035,6 +1056,7 @@ fn dab_mesh(stroke: &Stroke) -> Vec<Vertex> {
                         vertices.push(Vertex {
                             material: 0.0,
                             grain_uv: [0.0; 2],
+                            grain_dynamics: [1.0; 2],
                             gradient_t: dab.gradient_t,
                             position: position.to_array(),
                             normal: face_normal.to_array(),
@@ -1132,6 +1154,7 @@ fn surface_dab_mesh_with_projection(
     let center = Vertex {
         material: 0.0,
         grain_uv: [0.0; 2],
+        grain_dynamics: [1.0; 2],
         gradient_t: dab.gradient_t,
         position: dab.position.to_array(),
         normal: normal.to_array(),
@@ -1142,6 +1165,7 @@ fn surface_dab_mesh_with_projection(
     let mut rim = [Vertex {
         material: 0.0,
         grain_uv: [0.0; 2],
+        grain_dynamics: [1.0; 2],
         gradient_t: dab.gradient_t,
         position: [0.0; 3],
         normal: [0.0; 3],
@@ -1159,6 +1183,7 @@ fn surface_dab_mesh_with_projection(
         *vertex = Vertex {
             material: 0.0,
             grain_uv: [0.0; 2],
+            grain_dynamics: [1.0; 2],
             gradient_t: dab.gradient_t,
             position: position.to_array(),
             normal: normal.to_array(),
@@ -1932,6 +1957,7 @@ fn flat_triangle(
             .map(|((position, uv), opacity)| Vertex {
                 material: 0.0,
                 grain_uv: [0.0; 2],
+                grain_dynamics: [1.0; 2],
                 gradient_t: 0.0,
                 position: position.to_array(),
                 normal: normal.to_array(),
@@ -2221,6 +2247,7 @@ pub fn grid(plane: DrawingPlane) -> Vec<Vertex> {
                 vertices.push(Vertex {
                     material: 0.0,
                     grain_uv: [0.0; 2],
+                    grain_dynamics: [1.0; 2],
                     gradient_t: 0.0,
                     position: (origin + a * i as f32 * 0.5 + b * 6.0 * sign).to_array(),
                     normal: [0.0; 3],

@@ -134,6 +134,7 @@ impl Cylinder {
                 vertices.push(Vertex {
                     material: 0.0,
                     grain_uv: [0.0; 2],
+                    grain_dynamics: [1.0; 2],
                     gradient_t: 0.0,
                     position: p.to_array(),
                     normal: [0.0; 3],
@@ -222,6 +223,7 @@ impl SphereSurface {
                 vertices.push(Vertex {
                     material: 0.0,
                     grain_uv: [0.0; 2],
+                    grain_dynamics: [1.0; 2],
                     gradient_t: 0.0,
                     position: position.to_array(),
                     normal: [0.0; 3],
@@ -300,6 +302,7 @@ impl RingSurface {
                 vertices.push(Vertex {
                     material: 0.0,
                     grain_uv: [0.0; 2],
+                    grain_dynamics: [1.0; 2],
                     gradient_t: 0.0,
                     position: position.to_array(),
                     normal: [0.0; 3],
@@ -374,6 +377,7 @@ impl ConeSurface {
                 vertices.push(Vertex {
                     material: 0.0,
                     grain_uv: [0.0; 2],
+                    grain_dynamics: [1.0; 2],
                     gradient_t: 0.0,
                     position: position.to_array(),
                     normal: [0.0; 3],
@@ -436,6 +440,7 @@ impl GuidePreview {
                         vertices.push(Vertex {
                             material: 0.0,
                             grain_uv: [0.0; 2],
+                            grain_dynamics: [1.0; 2],
                             gradient_t: 0.0,
                             position: position.to_array(),
                             normal: [0.0; 3],
@@ -471,6 +476,7 @@ impl GuidePreview {
                         vertices.push(Vertex {
                             material: 0.0,
                             grain_uv: [0.0; 2],
+                            grain_dynamics: [1.0; 2],
                             gradient_t: 0.0,
                             position: position.to_array(),
                             normal: [0.0; 3],

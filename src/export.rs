@@ -130,6 +130,12 @@ fn stroke_mesh_internal(
     if stroke.fill.is_some() {
         crate::polygon::triangulate(stroke)?;
     }
+    if compose_grain && has_dynamic_grain(stroke) && stroke.brush.tip_asset_id == 0 {
+        return Err(format!(
+            "Stroke {} uses pressure/speed grain dynamics on non-tip geometry, which GLB/OBJ export cannot bake yet",
+            stroke.id
+        ));
+    }
     let mut source = geometry::stroke_mesh(stroke);
     if source.len() > MAX_TRIANGLE_VERTICES_PER_STROKE {
         return Err(format!(
@@ -252,6 +258,18 @@ pub(crate) fn has_independent_tip_grain(stroke: &Stroke) -> bool {
                 && stroke.brush.texture.strength > 0.0))
 }
 
+pub(crate) fn has_dynamic_grain(stroke: &Stroke) -> bool {
+    stroke.fill.is_none()
+        && stroke.brush.texture.dynamics.is_enabled()
+        && (stroke
+            .brush
+            .texture
+            .image
+            .is_some_and(|settings| settings.strength > 0.0)
+            || (stroke.brush.texture.kind != TextureKind::Solid
+                && stroke.brush.texture.strength > 0.0))
+}
+
 fn compose_tip_grain(
     stroke: &Stroke,
     tip: &crate::brush_tip::BrushTipAsset,
@@ -358,7 +376,7 @@ fn compose_tip_grain(
                     (x as f32 + 0.5) / tile_width as f32,
                     (y as f32 + 0.5) / tile_height as f32,
                 ];
-                let grain_uv = stamp_grain_uv(source, tip_uv)
+                let (grain_uv, grain_dynamics) = stamp_grain_uv(source, tip_uv)
                     .ok_or("Combined tip/grain export found invalid stamp coordinates")?;
                 let tip_rgba = sample_tip_linear(&tip_pixels, tip_uv);
                 let grain_alpha = if let Some(image) = &processed_grain {
@@ -370,6 +388,8 @@ fn compose_tip_grain(
                         grain_uv,
                     )
                 };
+                let grain_alpha =
+                    crate::texture::apply_dynamic_coverage(grain_alpha, grain_dynamics);
                 let index = ((y * tile_width + x) * 4) as usize;
                 for channel in 0..3 {
                     tile[index + channel] = (crate::presentation::linear_to_srgb(tip_rgba[channel])
@@ -415,7 +435,7 @@ fn compose_tip_grain(
     })
 }
 
-fn stamp_grain_uv(stamp: &[geometry::Vertex], uv: [f32; 2]) -> Option<[f32; 2]> {
+fn stamp_grain_uv(stamp: &[geometry::Vertex], uv: [f32; 2]) -> Option<([f32; 2], [f32; 2])> {
     for triangle in [&stamp[..3], &stamp[3..6]] {
         let a = glam::Vec2::from_array(triangle[0].uv);
         let b = glam::Vec2::from_array(triangle[1].uv);
@@ -429,11 +449,17 @@ fn stamp_grain_uv(stamp: &[geometry::Vertex], uv: [f32; 2]) -> Option<[f32; 2]> 
         let wc = (b - a).perp_dot(point - a) / area;
         let wa = 1.0 - wb - wc;
         if wa >= -1e-4 && wb >= -1e-4 && wc >= -1e-4 {
-            return Some(std::array::from_fn(|axis| {
+            let grain_uv = std::array::from_fn(|axis| {
                 triangle[0].grain_uv[axis] * wa
                     + triangle[1].grain_uv[axis] * wb
                     + triangle[2].grain_uv[axis] * wc
-            }));
+            });
+            let grain_dynamics = std::array::from_fn(|axis| {
+                triangle[0].grain_dynamics[axis] * wa
+                    + triangle[1].grain_dynamics[axis] * wb
+                    + triangle[2].grain_dynamics[axis] * wc
+            });
+            return Some((grain_uv, grain_dynamics));
         }
     }
     None
@@ -988,6 +1014,20 @@ pub fn encode_with_images(
                 "texture": "per_stamp_baked_atlas",
                 "atlasSize": composite_image.as_ref().map(|image| image.size),
             });
+            if has_dynamic_grain(stroke) {
+                node["extras"]["spatialSketchTextureDynamics"] = json!({
+                    "pressureSamplesAvailable": settings.pressure_samples_available,
+                    "manualPressureFallback": settings.dynamics.manual_pressure,
+                    "manualSpeedFallback": settings.dynamics.manual_speed,
+                    "speedRangeWorldUnitsPerSecond": [settings.dynamics.speed_minimum, settings.dynamics.speed_maximum],
+                    "pressureStrength": settings.dynamics.pressure_strength,
+                    "pressureContrast": settings.dynamics.pressure_contrast,
+                    "speedStrength": settings.dynamics.speed_strength,
+                    "speedContrast": settings.dynamics.speed_contrast,
+                    "combination": "pressure_and_speed_multipliers_multiply",
+                    "bake": "per_sample_values_baked_into_tip_atlas",
+                });
+            }
             if stroke.material == crate::document::StrokeMaterial::Emissive {
                 node["extras"]["spatialSketchEmissiveTipGrainFallback"] =
                     json!("baseColorTexture_and_COLOR_0_preserve_tip_and_composite_alpha; emissiveFactor_remains_uniform");

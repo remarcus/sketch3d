@@ -231,6 +231,72 @@ impl SketchApp {
                     }
                     ui.small("U/V scale and offsets use tile coordinates; repeat spacing uses document world units.");
                 }
+                if self.brush.texture.image.is_some()
+                    || self.brush.texture.kind != TextureKind::Solid
+                {
+                    egui::CollapsingHeader::new("Grain dynamics")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            let dynamics = &mut self.brush.texture.dynamics;
+                            texture_response_controls(
+                                ui,
+                                "Pressure → grain strength",
+                                &mut dynamics.pressure_strength,
+                                1.0,
+                            );
+                            texture_response_controls(
+                                ui,
+                                "Pressure → grain contrast",
+                                &mut dynamics.pressure_contrast,
+                                4.0,
+                            );
+                            texture_response_controls(
+                                ui,
+                                "Speed → grain strength",
+                                &mut dynamics.speed_strength,
+                                1.0,
+                            );
+                            texture_response_controls(
+                                ui,
+                                "Speed → grain contrast",
+                                &mut dynamics.speed_contrast,
+                                4.0,
+                            );
+                            if dynamics.speed_enabled() {
+                                ui.label("Speed is measured from stored world distance and elapsed contact time.");
+                                ui.add(egui::Slider::new(
+                                    &mut dynamics.speed_minimum,
+                                    0.0..=50.0,
+                                ).text("Slow speed (world units/s)"));
+                                ui.add(egui::Slider::new(
+                                    &mut dynamics.speed_maximum,
+                                    0.1..=100.0,
+                                ).text("Fast speed (world units/s)"));
+                                if dynamics.speed_maximum <= dynamics.speed_minimum {
+                                    dynamics.speed_maximum =
+                                        (dynamics.speed_minimum + 0.01).min(1000.0);
+                                }
+                            }
+                            if dynamics.pressure_strength.enabled
+                                || dynamics.pressure_contrast.enabled
+                            {
+                                ui.add(egui::Slider::new(
+                                    &mut dynamics.manual_pressure,
+                                    0.0..=1.0,
+                                ).text("Manual pressure fallback"));
+                            }
+                            if dynamics.speed_enabled() {
+                                ui.add(egui::Slider::new(
+                                    &mut dynamics.manual_speed,
+                                    0.0..=1.0,
+                                ).text("Manual speed fallback"));
+                            }
+                            ui.small("Pressure and speed affect grain only; width, opacity, and Airbrush flow remain independent. Missing input uses the manual fallback values.");
+                            if dynamics.is_enabled() && self.brush.tip_asset_id == 0 {
+                                ui.small("GLB/OBJ export currently blocks dynamic grain on ordinary brush geometry; image-tip strokes bake it into the atlas.");
+                            }
+                        });
+                }
             });
     }
     pub(super) fn load_textures(&mut self) {
@@ -439,6 +505,23 @@ impl SketchApp {
             _ => {}
         }
         self.texture_verification_frame = Some(frame + 1);
+    }
+}
+
+fn texture_response_controls(
+    ui: &mut egui::Ui,
+    label: &str,
+    response: &mut crate::texture::TextureResponse,
+    max_scale: f32,
+) {
+    ui.checkbox(&mut response.enabled, label);
+    if response.enabled {
+        ui.add(egui::Slider::new(&mut response.minimum, 0.0..=max_scale).text("Minimum scale"));
+        ui.add(egui::Slider::new(&mut response.maximum, 0.0..=max_scale).text("Maximum scale"));
+        if response.minimum > response.maximum {
+            std::mem::swap(&mut response.minimum, &mut response.maximum);
+        }
+        ui.add(egui::Slider::new(&mut response.curve, 0.25..=4.0).text("Response curve"));
     }
 }
 

@@ -108,6 +108,153 @@ pub struct ImageTextureSettings {
     pub strength: f32,
 }
 
+/// A bounded response from normalized input to a texture effect multiplier.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TextureResponse {
+    pub enabled: bool,
+    pub minimum: f32,
+    pub maximum: f32,
+    pub curve: f32,
+}
+
+impl Default for TextureResponse {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            minimum: 1.0,
+            maximum: 1.0,
+            curve: 1.0,
+        }
+    }
+}
+
+impl TextureResponse {
+    pub fn is_valid(self, maximum: f32) -> bool {
+        self.minimum.is_finite()
+            && self.maximum.is_finite()
+            && (0.0..=maximum).contains(&self.minimum)
+            && (0.0..=maximum).contains(&self.maximum)
+            && self.minimum <= self.maximum
+            && self.curve.is_finite()
+            && (0.25..=4.0).contains(&self.curve)
+    }
+
+    fn evaluate(self, input: f32) -> f32 {
+        if !self.enabled {
+            return 1.0;
+        }
+        self.minimum + (self.maximum - self.minimum) * input.clamp(0.0, 1.0).powf(self.curve)
+    }
+}
+
+/// Pressure and timestamp-derived speed responses for the repeating grain.
+/// The four response curves combine multiplicatively. Missing pressure or
+/// timestamps use the configured manual normalized inputs below.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TextureDynamics {
+    pub pressure_strength: TextureResponse,
+    pub pressure_contrast: TextureResponse,
+    pub speed_strength: TextureResponse,
+    pub speed_contrast: TextureResponse,
+    pub speed_minimum: f32,
+    pub speed_maximum: f32,
+    pub manual_pressure: f32,
+    pub manual_speed: f32,
+}
+
+impl Default for TextureDynamics {
+    fn default() -> Self {
+        Self {
+            pressure_strength: TextureResponse::default(),
+            pressure_contrast: TextureResponse::default(),
+            speed_strength: TextureResponse::default(),
+            speed_contrast: TextureResponse::default(),
+            speed_minimum: 0.0,
+            speed_maximum: 2.0,
+            manual_pressure: 0.5,
+            manual_speed: 0.5,
+        }
+    }
+}
+
+impl TextureDynamics {
+    pub fn is_valid(self) -> bool {
+        self.pressure_strength.is_valid(1.0)
+            && self.pressure_contrast.is_valid(4.0)
+            && self.speed_strength.is_valid(1.0)
+            && self.speed_contrast.is_valid(4.0)
+            && self.speed_minimum.is_finite()
+            && self.speed_maximum.is_finite()
+            && (0.0..=1000.0).contains(&self.speed_minimum)
+            && (0.01..=1000.0).contains(&self.speed_maximum)
+            && self.speed_minimum < self.speed_maximum
+            && self.manual_pressure.is_finite()
+            && (0.0..=1.0).contains(&self.manual_pressure)
+            && self.manual_speed.is_finite()
+            && (0.0..=1.0).contains(&self.manual_speed)
+    }
+
+    pub fn is_enabled(self) -> bool {
+        self.pressure_strength.enabled
+            || self.pressure_contrast.enabled
+            || self.speed_strength.enabled
+            || self.speed_contrast.enabled
+    }
+
+    pub fn speed_enabled(self) -> bool {
+        self.speed_strength.enabled || self.speed_contrast.enabled
+    }
+
+    /// Returns strength and contrast multipliers for a captured input sample.
+    /// `speed` is world units per second; `None` selects the manual fallback.
+    pub fn resolve(self, pressure: Option<f32>, speed: Option<f32>) -> [f32; 2] {
+        let pressure = pressure
+            .filter(|value| value.is_finite())
+            .unwrap_or(self.manual_pressure)
+            .clamp(0.0, 1.0);
+        let speed = speed
+            .filter(|value| value.is_finite())
+            .map(|value| {
+                ((value - self.speed_minimum) / (self.speed_maximum - self.speed_minimum))
+                    .clamp(0.0, 1.0)
+            })
+            .unwrap_or(self.manual_speed);
+        [
+            (self.pressure_strength.evaluate(pressure) * self.speed_strength.evaluate(speed))
+                .clamp(0.0, 1.0),
+            (self.pressure_contrast.evaluate(pressure) * self.speed_contrast.evaluate(speed))
+                .clamp(0.0, 4.0),
+        ]
+    }
+}
+
+/// Apply the resolved per-sample grain response to a sampled texture alpha.
+pub fn apply_dynamic_coverage(alpha: f32, factors: [f32; 2]) -> f32 {
+    let alpha = if alpha.is_finite() {
+        alpha.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let strength = if factors[0].is_finite() {
+        factors[0].clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let contrast = if factors[1].is_finite() {
+        factors[1].clamp(0.0, 4.0)
+    } else {
+        1.0
+    };
+    let adjusted = ((alpha - 0.5) * contrast + 0.5).clamp(0.0, 1.0);
+    1.0 - (1.0 - adjusted) * strength
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl ImageTextureSettings {
     pub fn cache_key(self) -> ImageTextureCacheKey {
         (
@@ -177,6 +324,12 @@ pub struct TextureSettings {
     pub scale_with_brush: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<ImageTextureSettings>,
+    #[serde(default)]
+    pub dynamics: TextureDynamics,
+    /// True only when this stroke captured a reported pressure axis. Older
+    /// files and pointer input use the explicit manual-pressure fallback.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pressure_samples_available: bool,
     pub kind: TextureKind,
     pub scale: f32,
     pub strength: f32,
@@ -197,6 +350,8 @@ impl Default for TextureSettings {
             frame: None,
             scale_with_brush: true,
             image: None,
+            dynamics: TextureDynamics::default(),
+            pressure_samples_available: false,
             kind: TextureKind::Solid,
             scale: 0.2,
             strength: 0.65,
@@ -211,6 +366,7 @@ impl TextureSettings {
         self.mapping.is_valid()
             && self.frame.is_none_or(TextureFrame::is_valid)
             && self.image.is_none_or(ImageTextureSettings::is_valid)
+            && self.dynamics.is_valid()
             && (self.image.is_none() || self.kind == TextureKind::Solid)
             && self.scale.is_finite()
             && (0.02..=10.0).contains(&self.scale)
@@ -220,6 +376,13 @@ impl TextureSettings {
             && (0.0..=0.95).contains(&self.threshold)
             && self.contrast.is_finite()
             && (0.0..=4.0).contains(&self.contrast)
+    }
+
+    pub fn dynamic_factors(&self, pressure: f32, speed: Option<f32>) -> [f32; 2] {
+        let pressure = self
+            .pressure_samples_available
+            .then_some(pressure.clamp(0.0, 1.0));
+        self.dynamics.resolve(pressure, speed)
     }
 }
 

@@ -5,9 +5,12 @@
 //! geometry back once and clears the stack.
 
 use crate::document::{Brush, Point, Stroke};
-use std::borrow::Cow;
 use std::path::Path;
 use std::time::Instant;
+use std::{
+    borrow::Cow,
+    hash::{Hash, Hasher},
+};
 
 pub const CURRENT_VERSION: u16 = 1;
 pub const MAX_MODIFIERS: usize = 16;
@@ -27,6 +30,9 @@ pub struct GeometryCacheKey {
     pub texture_anchor_mode: crate::texture::TextureAnchorMode,
     pub texture_frame: Option<crate::texture::TextureFrame>,
     pub texture_scale_with_brush: bool,
+    pub texture_dynamics: crate::texture::TextureDynamics,
+    pub texture_pressure_samples_available: bool,
+    pub texture_input_hash: u64,
     pub point_count: usize,
     pub point_thickness: Option<Vec<f32>>,
     pub point_colors: Option<Vec<Option<[f32; 3]>>>,
@@ -41,6 +47,9 @@ impl GeometryCacheKey {
             texture_anchor_mode: stroke.brush.texture.anchor_mode,
             texture_frame: stroke.brush.texture.frame,
             texture_scale_with_brush: stroke.brush.texture.scale_with_brush,
+            texture_dynamics: stroke.brush.texture.dynamics,
+            texture_pressure_samples_available: stroke.brush.texture.pressure_samples_available,
+            texture_input_hash: texture_input_hash(stroke),
             point_count: stroke.points.len(),
             point_thickness: stroke.point_thickness.clone(),
             point_colors: stroke.point_colors.clone(),
@@ -55,12 +64,30 @@ impl GeometryCacheKey {
             texture_anchor_mode: Default::default(),
             texture_frame: None,
             texture_scale_with_brush: true,
+            texture_dynamics: crate::texture::TextureDynamics::default(),
+            texture_pressure_samples_available: false,
+            texture_input_hash: 0,
             point_count,
             point_thickness: None,
             point_colors: None,
             modifiers: None,
         }
     }
+}
+
+fn texture_input_hash(stroke: &Stroke) -> u64 {
+    if !stroke.brush.texture.dynamics.is_enabled() {
+        return 0;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for point in &stroke.points {
+        point.position.x.to_bits().hash(&mut hasher);
+        point.position.y.to_bits().hash(&mut hasher);
+        point.position.z.to_bits().hash(&mut hasher);
+        point.pressure.to_bits().hash(&mut hasher);
+        point.time_ms.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

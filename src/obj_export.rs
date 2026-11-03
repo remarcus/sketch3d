@@ -378,6 +378,12 @@ pub fn write_obj_bundle(
     {
         mtl.push_str("# Image-tip and independent grain alpha are multiplied in a per-stamp atlas; large strokes use bounded atlas resolution.\n");
     }
+    if strokes
+        .iter()
+        .any(|stroke| export::has_dynamic_grain(stroke))
+    {
+        mtl.push_str("# Pressure/speed grain response is baked into the image-tip atlas using stored pressure and world-distance/time samples; missing inputs use saved manual fallbacks.\n");
+    }
     for material in &materials {
         writeln!(mtl, "newmtl {}", material.name).unwrap();
         if material.gradient_fallback {
