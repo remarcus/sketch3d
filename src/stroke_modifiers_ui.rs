@@ -28,11 +28,15 @@ impl SketchApp {
             });
             return;
         }
-        if !self.doc.editable(stroke)
-            || self.doc.has_linked_source(stroke_id)
+        if !self.doc.editable(stroke) || stroke.points.len() > crate::stroke_modifiers::MAX_POINTS {
+            return;
+        }
+        if self.doc.has_linked_source(stroke_id)
             || self.doc.linked_instance_for_stroke(stroke_id).is_some()
-            || stroke.points.len() > crate::stroke_modifiers::MAX_POINTS
         {
+            ui.collapsing("Non-destructive modifiers", |ui| {
+                ui.small("Linked strokes are edited from their source. Noise regenerates deterministically from the same seed and transformed stroke distance.");
+            });
             return;
         }
         let state_id = ui.make_persistent_id(("stroke-modifiers", stroke_id));
@@ -56,7 +60,7 @@ impl SketchApp {
         let mut close_draft = false;
 
         ui.collapsing("Non-destructive modifiers", |ui| {
-            ui.small("Thickness, taper and smooth are evaluated from the saved source points. Apply stores the ordered stack; Bake commits its evaluated geometry.");
+            ui.small("Thickness, taper, smooth, and Noise are evaluated in list order. Noise uses world XYZ offsets sampled by cycles per world unit along the stroke, anchored at its stored start; the camera does not affect it. Apply stores the ordered stack; Bake commits evaluated geometry.");
             if draft.is_none() {
                 start = ui.button("Edit modifiers…").clicked();
                 return;
@@ -102,6 +106,62 @@ impl SketchApp {
                                 .text("Passes"))
                                 .changed();
                         }
+                        crate::stroke_modifiers::ModifierKind::Noise {
+                            seed,
+                            amplitude,
+                            frequency,
+                            influence,
+                            thickness,
+                            preserve_endpoints,
+                        } => {
+                            ui.horizontal(|ui| {
+                                ui.label("Seed");
+                                stack_changed |= ui
+                                    .add(
+                                        egui::DragValue::new(seed)
+                                            .range(0..=u32::MAX)
+                                            .speed(1.0),
+                                    )
+                                    .changed();
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Offset amplitude (wu / axis)")
+                                    .on_hover_text("Maximum absolute displacement on each world-space axis.");
+                                stack_changed |= ui
+                                    .add(
+                                        egui::DragValue::new(amplitude)
+                                            .range(0.0..=crate::stroke_modifiers::MAX_NOISE_AMPLITUDE)
+                                            .speed(0.005),
+                                    )
+                                    .changed();
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Frequency (cycles / wu)");
+                                stack_changed |= ui
+                                    .add(
+                                        egui::DragValue::new(frequency)
+                                            .range(
+                                                crate::stroke_modifiers::MIN_NOISE_FREQUENCY
+                                                    ..=crate::stroke_modifiers::MAX_NOISE_FREQUENCY,
+                                            )
+                                            .speed(0.05),
+                                    )
+                                    .changed();
+                            });
+                            stack_changed |= ui
+                                .add(egui::Slider::new(influence, 0.0..=1.0).text("Influence"))
+                                .changed();
+                            stack_changed |= ui
+                                .add(
+                                    egui::Slider::new(thickness, 0.0..=1.0)
+                                        .text("Thickness variation"),
+                                )
+                                .on_hover_text("Maximum proportional thickness change, up to ±100%.")
+                                .changed();
+                            stack_changed |= ui
+                                .checkbox(preserve_endpoints, "Preserve endpoints")
+                                .changed();
+                        }
                     }
                 });
                 if modifier != working.modifiers[index] {
@@ -135,6 +195,28 @@ impl SketchApp {
                     working.modifiers.push(crate::stroke_modifiers::StrokeModifier {
                         enabled: true,
                         kind: crate::stroke_modifiers::ModifierKind::Thickness { factor: 1.25 },
+                    });
+                    stack_changed = true;
+                }
+                if ui
+                    .add_enabled(
+                        working.modifiers.len() < crate::stroke_modifiers::MAX_MODIFIERS
+                            && state.before[0].1.curve.is_none(),
+                        egui::Button::new("+ Noise"),
+                    )
+                    .on_hover_text("Noise is disabled for semantic curves. Bake or convert the curve before using this modifier.")
+                    .clicked()
+                {
+                    working.modifiers.push(crate::stroke_modifiers::StrokeModifier {
+                        enabled: true,
+                        kind: crate::stroke_modifiers::ModifierKind::Noise {
+                            seed: 1,
+                            amplitude: 0.02,
+                            frequency: 6.0,
+                            influence: 0.5,
+                            thickness: 0.2,
+                            preserve_endpoints: true,
+                        },
                     });
                     stack_changed = true;
                 }
@@ -278,6 +360,7 @@ fn modifier_name(kind: crate::stroke_modifiers::ModifierKind) -> &'static str {
         crate::stroke_modifiers::ModifierKind::Thickness { .. } => "Thickness",
         crate::stroke_modifiers::ModifierKind::Taper { .. } => "Taper",
         crate::stroke_modifiers::ModifierKind::Smooth { .. } => "Smooth",
+        crate::stroke_modifiers::ModifierKind::Noise { .. } => "Noise",
     }
 }
 

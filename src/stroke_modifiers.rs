@@ -13,6 +13,9 @@ pub const CURRENT_VERSION: u16 = 1;
 pub const MAX_MODIFIERS: usize = 16;
 pub const MAX_POINTS: usize = 65_536;
 pub const MAX_SMOOTH_ITERATIONS: u8 = 8;
+pub const MAX_NOISE_AMPLITUDE: f32 = 100.0;
+pub const MIN_NOISE_FREQUENCY: f32 = 0.01;
+pub const MAX_NOISE_FREQUENCY: f32 = 100.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeometryCacheKey {
@@ -48,9 +51,34 @@ impl GeometryCacheKey {
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ModifierKind {
-    Thickness { factor: f32 },
-    Taper { start: f32, end: f32 },
-    Smooth { amount: f32, iterations: u8 },
+    Thickness {
+        factor: f32,
+    },
+    Taper {
+        start: f32,
+        end: f32,
+    },
+    Smooth {
+        amount: f32,
+        iterations: u8,
+    },
+    /// Stable world-space centerline and thickness variation. Frequency uses
+    /// cycles per world unit; noise is anchored at distance zero from the
+    /// stored stroke start and sampled continuously, independent of point index.
+    Noise {
+        /// Seed for the stable one-dimensional noise field.
+        seed: u32,
+        /// Maximum absolute offset per world-space axis.
+        amplitude: f32,
+        /// Noise cycles per world unit along the evaluated stroke.
+        frequency: f32,
+        /// Blend from unchanged geometry (0) to the full configured effect (1).
+        influence: f32,
+        /// Maximum proportional thickness change; 1 permits variation up to ±100%.
+        thickness: f32,
+        /// Fade centerline and thickness changes to zero at both endpoints.
+        preserve_endpoints: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -100,6 +128,22 @@ impl StrokeModifierStack {
                         && (0.0..=1.0).contains(&amount)
                         && (1..=MAX_SMOOTH_ITERATIONS).contains(&iterations)
                 }
+                ModifierKind::Noise {
+                    amplitude,
+                    frequency,
+                    influence,
+                    thickness,
+                    ..
+                } => {
+                    amplitude.is_finite()
+                        && (0.0..=MAX_NOISE_AMPLITUDE).contains(&amplitude)
+                        && frequency.is_finite()
+                        && (MIN_NOISE_FREQUENCY..=MAX_NOISE_FREQUENCY).contains(&frequency)
+                        && influence.is_finite()
+                        && (0.0..=1.0).contains(&influence)
+                        && thickness.is_finite()
+                        && (0.0..=1.0).contains(&thickness)
+                }
             })
     }
 
@@ -109,7 +153,11 @@ impl StrokeModifierStack {
         }
         !stroke.curve.is_some()
             || !self.modifiers.iter().any(|modifier| {
-                modifier.enabled && matches!(modifier.kind, ModifierKind::Smooth { .. })
+                modifier.enabled
+                    && matches!(
+                        modifier.kind,
+                        ModifierKind::Smooth { .. } | ModifierKind::Noise { .. }
+                    )
             })
     }
 
@@ -180,6 +228,69 @@ impl StrokeModifierStack {
                     }
                     result.curve = None;
                 }
+                ModifierKind::Noise {
+                    seed,
+                    amplitude,
+                    frequency,
+                    influence,
+                    thickness,
+                    preserve_endpoints,
+                } => {
+                    if result.curve.is_some() {
+                        return Err(
+                            "Noise modifiers require an ordinary sampled stroke; bake or convert semantic curves first".into(),
+                        );
+                    }
+                    let distances = crate::dynamics::arc_lengths(&result.points);
+                    let total = distances.last().copied().unwrap_or(0.0);
+                    let fade_distance = if preserve_endpoints {
+                        (1.0 / frequency).min(total * 0.25)
+                    } else {
+                        0.0
+                    };
+                    let mut thickness_profile = if thickness > 0.0 {
+                        Some(
+                            result
+                                .point_thickness
+                                .get_or_insert_with(|| vec![1.0; result.points.len()]),
+                        )
+                    } else {
+                        None
+                    };
+                    for index in 0..result.points.len() {
+                        let distance = distances[index];
+                        let envelope = if preserve_endpoints {
+                            if total > 1.0e-8 {
+                                smoothstep((distance / fade_distance.max(1.0e-8)).clamp(0.0, 1.0))
+                                    * smoothstep(
+                                        ((total - distance) / fade_distance.max(1.0e-8))
+                                            .clamp(0.0, 1.0),
+                                    )
+                            } else {
+                                0.0
+                            }
+                        } else {
+                            1.0
+                        };
+                        let amount = influence * envelope;
+                        let displacement = glam::Vec3::new(
+                            value_noise(seed, distance, frequency, 0),
+                            value_noise(seed, distance, frequency, 1),
+                            value_noise(seed, distance, frequency, 2),
+                        ) * (amplitude * amount);
+                        let position = result.points[index].position + displacement;
+                        if !position.is_finite() || position.abs().max_element() > 10_000.0 {
+                            return Err("Noise modifier exceeds document bounds".into());
+                        }
+                        result.points[index].position = position;
+                        if let Some(profile) = thickness_profile.as_deref_mut() {
+                            let variation = value_noise(seed, distance, frequency, 3);
+                            profile[index] = (profile[index]
+                                * (1.0 + variation * thickness * amount))
+                                .clamp(0.05, 20.0);
+                        }
+                    }
+                }
             }
         }
         if result.point_thickness.as_ref().is_some_and(|profile| {
@@ -196,6 +307,30 @@ impl StrokeModifierStack {
 
 fn smoothstep(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
+}
+
+/// Continuous one-dimensional value noise. `distance * frequency` selects a
+/// stable lattice cell; independent channels use salted lattice hashes.
+fn value_noise(seed: u32, distance: f32, frequency: f32, channel: u64) -> f32 {
+    let coordinate = distance * frequency;
+    let cell = coordinate.floor() as i64;
+    let t = coordinate - coordinate.floor();
+    let t = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+    let a = lattice_value(seed, cell, channel);
+    let b = lattice_value(seed, cell.saturating_add(1), channel);
+    a + (b - a) * t
+}
+
+fn lattice_value(seed: u32, cell: i64, channel: u64) -> f32 {
+    let mut value = (seed as u64)
+        ^ (cell as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ channel.wrapping_mul(0xD1B5_4A32_D192_ED03);
+    value = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^= value >> 31;
+    let unit = ((value >> 40) as f32) / ((1_u32 << 24) - 1) as f32;
+    unit * 2.0 - 1.0
 }
 
 /// Bake the derived result while retaining source identity, style and layer.
@@ -268,6 +403,17 @@ pub fn benchmark(output: &Path) -> Result<(), String> {
                     iterations: 2,
                 },
             },
+            StrokeModifier {
+                enabled: true,
+                kind: ModifierKind::Noise {
+                    seed: 17,
+                    amplitude: 0.01,
+                    frequency: 4.0,
+                    influence: 0.6,
+                    thickness: 0.15,
+                    preserve_endpoints: true,
+                },
+            },
         ],
     });
     let stack = source.modifiers.as_ref().unwrap();
@@ -304,7 +450,13 @@ pub fn benchmark(output: &Path) -> Result<(), String> {
         GeometryCacheKey::for_stroke(&source) == GeometryCacheKey::for_stroke(&source);
     let json = serde_json::json!({
         "passed": true,
-        "fixture": {"points": point_count, "modifier_count": stack.modifiers.len(), "iterations": 2},
+        "fixture": {
+            "points": point_count,
+            "modifier_count": stack.modifiers.len(),
+            "noise_seed": 17,
+            "noise_frequency_cycles_per_world_unit": 4.0,
+            "iterations": 2
+        },
         "timings": {
             "stack_evaluation_median_us": eval_samples[eval_samples.len() / 2],
             "geometry_mesh_us": mesh_micros,
