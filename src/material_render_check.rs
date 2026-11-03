@@ -61,6 +61,7 @@ fn stroke_segment(
         model_surface: None,
         curve: None,
         point_thickness: None,
+        point_colors: None,
         modifiers: None,
         fill: None,
         material,

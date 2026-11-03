@@ -525,6 +525,7 @@ mod tests {
                 material: Default::default(),
                 id: 1,
                 point_thickness: None,
+                point_colors: None,
                 modifiers: None,
                 fill: None,
                 group_id: None,

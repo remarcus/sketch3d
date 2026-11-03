@@ -1012,6 +1012,7 @@ mod tests {
         Stroke {
             model_surface: None,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             material: StrokeMaterial::Shaded,

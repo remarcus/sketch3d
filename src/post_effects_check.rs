@@ -51,6 +51,7 @@ fn stroke(id: u64, material: StrokeMaterial, color: [f32; 3], points: Vec<Vec3>)
         model_surface: None,
         curve: None,
         point_thickness: None,
+        point_colors: None,
         modifiers: None,
         fill: None,
         material,

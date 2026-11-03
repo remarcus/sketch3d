@@ -781,6 +781,7 @@ mod linked_group_tests {
             curve: None,
             material: StrokeMaterial::Shaded,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             group_id: Some(group_id),

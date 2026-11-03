@@ -26,6 +26,7 @@ fn layer_fixture_stroke(
         curve: None,
         material,
         point_thickness: None,
+        point_colors: None,
         modifiers: None,
         fill: None,
         group_id: None,

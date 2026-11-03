@@ -1043,6 +1043,7 @@ mod ring_tests {
                 model_surface: None,
                 gradient: None,
                 point_thickness: None,
+                point_colors: None,
                 modifiers: None,
                 curve: None,
                 material: Default::default(),

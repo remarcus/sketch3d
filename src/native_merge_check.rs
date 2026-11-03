@@ -22,6 +22,7 @@ fn stroke(id: u64, color: [f32; 3], start_x: f32, end_x: f32) -> Stroke {
         model_surface: None,
         curve: None,
         point_thickness: None,
+        point_colors: None,
         modifiers: None,
         fill: None,
         material: Default::default(),

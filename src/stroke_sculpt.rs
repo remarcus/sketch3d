@@ -56,6 +56,61 @@ pub fn remap_thickness_profile(source: &Stroke, points: &[Point]) -> Option<Vec<
     Some(result)
 }
 
+/// Remap the sparse local color field onto ordered resampled points. Painted
+/// colors remain absolute resolved RGB values at inserted boundaries; samples
+/// without paint keep their underlying solid or gradient color behavior.
+pub fn remap_point_colors(source: &Stroke, points: &[Point]) -> Option<Vec<Option<[f32; 3]>>> {
+    let values = source.point_colors.as_ref()?;
+    if values.len() != source.points.len() || source.points.is_empty() {
+        return None;
+    }
+    let distances = crate::dynamics::arc_lengths(&source.points);
+    let total = distances.last().copied().unwrap_or(0.0);
+    if source.points.len() == 1 {
+        return Some(vec![values[0]; points.len()]);
+    }
+    let mut result = Vec::with_capacity(points.len());
+    let mut segment = 0usize;
+    for point in points {
+        while segment + 2 < source.points.len()
+            && point
+                .position
+                .distance_squared(source.points[segment + 1].position)
+                < point
+                    .position
+                    .distance_squared(source.points[segment].position)
+        {
+            segment += 1;
+        }
+        let start = source.points[segment].position;
+        let end = source.points[segment + 1].position;
+        let edge = end - start;
+        let length_sq = edge.length_squared();
+        let t = if length_sq > 1.0e-12 {
+            ((point.position - start).dot(edge) / length_sq).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if values[segment].is_none() && values[segment + 1].is_none() {
+            result.push(None);
+            continue;
+        }
+        let sample_t = |index: usize| {
+            if total > 1.0e-8 {
+                distances[index] / total
+            } else {
+                0.0
+            }
+        };
+        let a = source.point_color_at(segment, sample_t(segment));
+        let b = source.point_color_at(segment + 1, sample_t(segment + 1));
+        result.push(Some(std::array::from_fn(|channel| {
+            a[channel] + (b[channel] - a[channel]) * t
+        })));
+    }
+    Some(result)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {
     Smooth,
@@ -265,6 +320,7 @@ mod tests {
         Stroke {
             model_surface: None,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             material: Default::default(),

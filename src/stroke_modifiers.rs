@@ -19,6 +19,7 @@ pub struct GeometryCacheKey {
     pub texture_mapping: crate::texture::TextureMapping,
     pub point_count: usize,
     pub point_thickness: Option<Vec<f32>>,
+    pub point_colors: Option<Vec<Option<[f32; 3]>>>,
     pub modifiers: Option<StrokeModifierStack>,
 }
 
@@ -28,6 +29,7 @@ impl GeometryCacheKey {
             texture_mapping: stroke.brush.texture.mapping,
             point_count: stroke.points.len(),
             point_thickness: stroke.point_thickness.clone(),
+            point_colors: stroke.point_colors.clone(),
             modifiers: stroke.modifiers.clone(),
         }
     }
@@ -37,6 +39,7 @@ impl GeometryCacheKey {
             texture_mapping: Default::default(),
             point_count,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
         }
     }
@@ -240,6 +243,7 @@ pub fn benchmark(output: &Path) -> Result<(), String> {
             })
             .collect(),
         point_thickness: None,
+        point_colors: None,
         modifiers: None,
         curve: None,
     };
@@ -358,6 +362,7 @@ mod tests {
                 })
                 .collect(),
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             curve: None,
         }

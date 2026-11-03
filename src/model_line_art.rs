@@ -373,6 +373,7 @@ mod tests {
                 },
             ],
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             curve: None,
         };

@@ -494,6 +494,7 @@ fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> 
                 let mut fragment = stroke.clone();
                 fragment.point_thickness =
                     crate::stroke_sculpt::remap_thickness_profile(stroke, &points);
+                fragment.point_colors = crate::stroke_sculpt::remap_point_colors(stroke, &points);
                 fragment.points = points;
                 fragment.curve = None;
                 if let Some(patch) = &mut fragment.model_surface {
@@ -660,6 +661,7 @@ mod tests {
             brush,
             points,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             material: StrokeMaterial::Emissive,

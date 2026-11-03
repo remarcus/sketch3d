@@ -466,6 +466,7 @@ fn append_storefront_details(doc: &mut Document) {
             curve: None,
             material: Default::default(),
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: Some(crate::document::PlanarFill {
                 offset: 0.004,
@@ -488,6 +489,7 @@ fn append_storefront_details(doc: &mut Document) {
             curve: None,
             material: Default::default(),
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             group_id: None,

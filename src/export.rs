@@ -165,6 +165,7 @@ pub(crate) fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
                 vertex.uv[0],
                 vertex.uv[1],
                 if stroke.gradient.is_some()
+                    || stroke.has_local_colors()
                     || stroke.fill.and_then(|fill| fill.gradient).is_some()
                     || stroke.fill.and_then(|fill| fill.texture).is_some()
                 {
@@ -173,6 +174,7 @@ pub(crate) fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
                     1.0
                 },
                 if stroke.gradient.is_some()
+                    || stroke.has_local_colors()
                     || stroke.fill.and_then(|fill| fill.gradient).is_some()
                     || stroke.fill.and_then(|fill| fill.texture).is_some()
                 {
@@ -181,6 +183,7 @@ pub(crate) fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
                     1.0
                 },
                 if stroke.gradient.is_some()
+                    || stroke.has_local_colors()
                     || stroke.fill.and_then(|fill| fill.gradient).is_some()
                     || stroke.fill.and_then(|fill| fill.texture).is_some()
                 {
@@ -383,10 +386,12 @@ pub fn encode_with_images(
             || (stroke.brush.dynamics.opacity.enabled
                 && stroke.brush.dynamics.opacity.minimum < 1.0);
         let fill_gradient = stroke.fill.and_then(|fill| fill.gradient).is_some();
+        let has_local_colors = stroke.has_local_colors();
         let has_gradient = stroke.gradient.is_some() || fill_gradient;
+        let has_vertex_colors = has_gradient || has_local_colors;
         let key = (
             stroke.color.map(f32::to_bits),
-            has_gradient,
+            has_vertex_colors,
             double_sided,
             texture_key,
             tip_key,
@@ -403,7 +408,7 @@ pub fn encode_with_images(
             } else {
                 1.0
             };
-            let base_color = if has_gradient || fill_texture_key.is_some() {
+            let base_color = if has_vertex_colors || fill_texture_key.is_some() {
                 [1.0; 3]
             } else {
                 stroke.color
@@ -418,7 +423,11 @@ pub fn encode_with_images(
                 crate::document::StrokeMaterial::Emissive => {
                     uses_unlit = true;
                     material["extensions"] = json!({"KHR_materials_unlit":{}});
-                    material["emissiveFactor"] = json!(stroke.color);
+                    material["emissiveFactor"] = json!(if has_local_colors {
+                        [1.0; 3]
+                    } else {
+                        stroke.color
+                    });
                 }
                 crate::document::StrokeMaterial::Cutout => {}
             }
@@ -582,6 +591,13 @@ pub fn encode_with_images(
                 node["extras"]["spatialSketchEmissiveGradientFallback"] =
                     json!("COLOR_0_preserves_gradient_albedo; emissiveFactor_remains_uniform");
             }
+        }
+        if has_local_colors {
+            node["extras"]["spatialSketchLocalColorField"] = json!({
+                "colors": "absolute_linear_rgb_albedo_over_solid_or_gradient",
+                "interpolation": "linear_by_world_arc_length",
+                "material": "preserved",
+            });
         }
         if let Some(group) = stroke.group_id {
             node["extras"]["spatialSketchGroupId"] = json!(group.to_string());
@@ -974,6 +990,7 @@ mod tests {
             material: Default::default(),
             id,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             group_id: None,
@@ -2033,6 +2050,7 @@ mod obj_reference_export_tests {
             gradient: None,
             curve: None,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             material: Default::default(),

@@ -233,6 +233,7 @@ pub fn tessellate_stroke(
     }
     let mut stroke = prototype.clone();
     stroke.fill = None;
+    stroke.point_colors = crate::stroke_sculpt::remap_point_colors(prototype, &points);
     stroke.points = points;
     Ok(stroke)
 }
@@ -334,6 +335,7 @@ pub fn tessellate_cylinder_stroke(
     }
     let mut stroke = prototype.clone();
     stroke.fill = None;
+    stroke.point_colors = crate::stroke_sculpt::remap_point_colors(prototype, &points);
     stroke.points = points;
     Ok(stroke)
 }
@@ -547,6 +549,7 @@ mod tests {
             model_surface: None,
             gradient: None,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             curve: None,
             id: 42,

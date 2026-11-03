@@ -434,6 +434,12 @@ impl Draft {
         if self.preview.points.len() <= 2 || self.selected >= self.preview.points.len() {
             return Err("Keep at least two points.".into());
         }
+        if let Some(colors) = &mut self.preview.point_colors {
+            colors.remove(self.selected);
+            if colors.iter().all(Option::is_none) {
+                self.preview.point_colors = None;
+            }
+        }
         self.preview.points.remove(self.selected);
         self.selected = self.selected.min(self.preview.points.len() - 1);
         Ok(())
@@ -500,6 +506,7 @@ pub fn cleanup_stroke(
     }
     let mut preview = source.clone();
     preview.point_thickness = crate::stroke_sculpt::remap_thickness_profile(source, &points);
+    preview.point_colors = crate::stroke_sculpt::remap_point_colors(source, &points);
     preview.points = points;
     validate_geometry(&preview)?;
     let result_length = points_length(&preview.points);
@@ -774,6 +781,10 @@ pub fn split_stroke(
         first.point_thickness = Some(profile[..=point_index].to_vec());
         second.point_thickness = Some(profile[point_index..].to_vec());
     }
+    if let Some(profile) = &source.point_colors {
+        first.point_colors = Some(profile[..=point_index].to_vec());
+        second.point_colors = Some(profile[point_index..].to_vec());
+    }
     second.id = next_id;
     if let Some(gradient) = source.gradient {
         let t = if total_length > 1.0e-8 {
@@ -901,6 +912,17 @@ pub fn join_strokes(
         }
         _ => return Err("Both strokes must use the same gradient mode.".into()),
     };
+    if first.has_local_colors() || second.has_local_colors() {
+        let first_end = first.point_color_at(first.points.len() - 1, 1.0);
+        let second_start = second.point_color_at(0, 0.0);
+        if first_end
+            .iter()
+            .zip(second_start)
+            .any(|(left, right)| (left - right).abs() > JOIN_COLOR_EPSILON)
+        {
+            return Err("Painted colors must meet at the join endpoint.".into());
+        }
+    }
 
     if first.brush.dabs.enabled {
         if endpoint_gap > JOIN_DISTANCE_EPSILON {
@@ -936,6 +958,29 @@ pub fn join_strokes(
                     .skip(usize::from(duplicate_seam_sample))
                     .copied(),
             );
+        }
+    }
+    if first.point_colors.is_some() || second.point_colors.is_some() {
+        let first_profile = first
+            .point_colors
+            .clone()
+            .unwrap_or_else(|| vec![None; first.points.len()]);
+        let second_profile = second
+            .point_colors
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| vec![None; second.points.len()]);
+        joined.point_colors = Some(first_profile);
+        if let Some(joined_profile) = joined.point_colors.as_mut() {
+            joined_profile.extend(
+                second_profile
+                    .iter()
+                    .skip(usize::from(duplicate_seam_sample))
+                    .copied(),
+            );
+            if joined_profile.iter().all(Option::is_none) {
+                joined.point_colors = None;
+            }
         }
     }
     joined.points.extend(
@@ -1046,6 +1091,12 @@ pub fn edit_point(
             );
         }
         stroke.points.remove(index);
+        if let Some(colors) = &mut stroke.point_colors {
+            colors.remove(index);
+            if colors.iter().all(Option::is_none) {
+                stroke.point_colors = None;
+            }
+        }
     }
     if before == after {
         return Err("Point position is unchanged.".into());
@@ -1066,6 +1117,7 @@ mod tests {
             layer_id: 1,
             group_id: None,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             curve: None,

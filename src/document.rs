@@ -214,7 +214,42 @@ impl Stroke {
                     .all(|value| value.is_finite() && (0.05..=20.0).contains(value))
         })
     }
+
+    pub fn point_colors_are_valid(&self) -> bool {
+        self.point_colors.as_ref().is_none_or(|values| {
+            values.len() == self.points.len()
+                && self.points.len() <= MAX_LOCAL_COLOR_SAMPLES_PER_STROKE
+                && values
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .all(|component| component.is_finite() && (0.0..=1.0).contains(component))
+        })
+    }
+
+    pub fn has_local_colors(&self) -> bool {
+        self.point_colors
+            .as_ref()
+            .is_some_and(|values| values.iter().any(Option::is_some))
+    }
+
+    /// Base albedo at a normalized arc-length position, before local painting.
+    pub fn base_color_at(&self, t: f32) -> [f32; 3] {
+        self.gradient
+            .map_or(self.color, |gradient| gradient.sample(t))
+    }
+
+    /// Resolve one sample to its visible albedo over the solid/gradient base.
+    pub fn point_color_at(&self, index: usize, t: f32) -> [f32; 3] {
+        self.point_colors
+            .as_ref()
+            .and_then(|values| values.get(index))
+            .and_then(|value| *value)
+            .unwrap_or_else(|| self.base_color_at(t))
+    }
 }
+
+pub const MAX_LOCAL_COLOR_SAMPLES_PER_STROKE: usize = 65_536;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerBlendMode {
@@ -285,6 +320,11 @@ pub struct Stroke {
     /// legacy identity profile and preserves pre-profile documents exactly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub point_thickness: Option<Vec<f32>>,
+    /// Optional sparse per-sample color overrides. A painted sample stores its
+    /// final linear RGB albedo; empty entries use `color` or `gradient`.
+    /// Overrides preserve the stroke's existing material mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point_colors: Option<Vec<Option<[f32; 3]>>>,
     /// Optional ordered, versioned modifiers evaluated without rewriting the
     /// stored centerline. `None` preserves the legacy rendering path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1454,6 +1494,8 @@ impl Document {
                 || stroke.gradient.is_some_and(|gradient| !gradient.is_valid())
                 || stroke.points.iter().any(|p| !p.is_valid())
                 || !stroke.point_thickness_is_valid()
+                || !stroke.point_colors_are_valid()
+                || (stroke.fill.is_some() && stroke.has_local_colors())
                 || stroke.modifiers.as_ref().is_some_and(|stack| {
                     !stack.is_valid(stroke.points.len()) || !stack.is_compatible(stroke)
                 })
@@ -1477,6 +1519,7 @@ mod tests {
             model_surface: None,
             gradient: None,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             curve: None,
             material: Default::default(),
@@ -1893,6 +1936,7 @@ mod layer_tests {
             model_surface: None,
             gradient: None,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             curve: None,
             material: Default::default(),
@@ -1948,6 +1992,7 @@ mod layer_tests {
             model_surface: None,
             gradient: None,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             curve: None,
             material: Default::default(),
@@ -2005,6 +2050,7 @@ mod layer_tests {
                     model_surface: None,
                     gradient: None,
                     point_thickness: None,
+                    point_colors: None,
                     modifiers: None,
                     curve: None,
                     material: Default::default(),
@@ -2048,6 +2094,7 @@ mod saved_guide_document_tests {
             model_surface: None,
             gradient: None,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             curve: None,
             material: Default::default(),
@@ -2314,6 +2361,7 @@ mod group_tests {
             model_surface: None,
             gradient: None,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             curve: None,
             material: Default::default(),

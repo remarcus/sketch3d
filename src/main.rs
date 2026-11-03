@@ -25,6 +25,7 @@ mod image_planes;
 mod input;
 mod lighting;
 mod liquify;
+mod local_color;
 mod material_render_check;
 mod mirror;
 mod mixed_resources;

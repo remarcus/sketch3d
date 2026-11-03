@@ -60,6 +60,8 @@ mod line_checks;
 mod line_tool;
 #[path = "liquify_ui.rs"]
 mod liquify_ui;
+#[path = "local_color_ui.rs"]
+mod local_color_ui;
 #[path = "mirror_checks.rs"]
 mod mirror_checks;
 #[path = "mirror_ui.rs"]
@@ -290,6 +292,7 @@ pub struct SketchApp {
     stabilizer: SurfaceStabilizer,
     eraser: bool,
     partial_eraser: partial_eraser_ui::PartialEraserUi,
+    local_color_brush: local_color_ui::LocalColorUi,
     select_mode: bool,
     selected: HashSet<u64>,
     transform_mode: Mode,
@@ -1837,6 +1840,7 @@ impl SketchApp {
             stabilizer: SurfaceStabilizer::default(),
             eraser: false,
             partial_eraser: Default::default(),
+            local_color_brush: Default::default(),
             select_mode: false,
             selected: HashSet::new(),
             transform_mode: Mode::Move,
@@ -2480,6 +2484,8 @@ impl SketchApp {
             "select"
         } else if self.eraser {
             "eraser"
+        } else if self.local_color_brush.enabled {
+            "tint"
         } else if self.fills.enabled {
             "fill"
         } else if self.line.enabled {
@@ -2503,6 +2509,7 @@ impl SketchApp {
     fn finish(&mut self) {
         self.point_drag = None;
         self.finish_layer_properties_edit(true);
+        self.finish_local_color(true);
         let model_surface_stroke = self.model_stroke_contact.is_some();
         self.finish_appearance_edit(false);
         self.finish_partial_erase(true);
@@ -2705,6 +2712,7 @@ impl SketchApp {
         self.cancel_brush_selection();
         self.cancel_region_selection();
         self.cancel_partial_erase();
+        self.cancel_local_color();
         self.cancel_shape_draft();
         self.cancel_line();
         self.cancel_curve();
@@ -2837,6 +2845,7 @@ impl SketchApp {
                 curve: None,
                 material: Default::default(),
                 point_thickness: None,
+                point_colors: None,
                 modifiers: None,
                 fill: None,
                 group_id: None,
@@ -3068,6 +3077,7 @@ impl SketchApp {
                 curve: None,
                 material: Default::default(),
                 point_thickness: None,
+                point_colors: None,
                 modifiers: None,
                 fill: None,
                 group_id: None,
@@ -3594,6 +3604,7 @@ impl SketchApp {
                 curve: None,
                 material: Default::default(),
                 point_thickness: None,
+                point_colors: None,
                 modifiers: None,
                 fill: None,
                 group_id: None,
@@ -3616,6 +3627,10 @@ impl SketchApp {
             self.status = "The active image/saved guide currently accepts brush strokes. Switch to the temporary guide for line, fill, shape, or curve tools.".into();
             return;
         }
+        if tool != "Paint" && self.local_color_brush.enabled {
+            self.finish_local_color(true);
+            self.local_color_brush.enabled = false;
+        }
         match tool {
             "Brush" => {
                 self.finish();
@@ -3634,6 +3649,16 @@ impl SketchApp {
                 self.cancel_fill_tool();
                 self.eraser = true;
                 self.select_mode = false;
+            }
+            "Paint" => {
+                self.finish();
+                self.cancel_curve_tool();
+                self.shape_tool.mode = None;
+                self.cancel_line_tool();
+                self.cancel_fill_tool();
+                self.eraser = false;
+                self.select_mode = false;
+                self.local_color_brush.enabled = true;
             }
             "Select" => {
                 self.finish();
@@ -3690,6 +3715,7 @@ impl SketchApp {
                         "Brush",
                         "Brush [B]",
                         !self.eraser
+                            && !self.local_color_brush.enabled
                             && !self.select_mode
                             && !self.fills.enabled
                             && !self.line.enabled
@@ -3714,6 +3740,11 @@ impl SketchApp {
                     ),
                     ("Fill", "Fill [P]", self.fills.enabled && !self.select_mode),
                     ("Erase", "Erase [E]", self.eraser && !self.select_mode),
+                    (
+                        "Paint",
+                        "Tint [T]",
+                        self.local_color_brush.enabled && !self.select_mode,
+                    ),
                     ("Select", "Select [V]", self.select_mode),
                 ] {
                     if ui
@@ -3797,8 +3828,15 @@ impl SketchApp {
                 ui.label(RichText::new("Straight line").strong());
                 ui.label("Drag from start to end; release to commit");
             } else {
-                ui.label(RichText::new(if self.eraser { "Eraser" } else { "Brush" }).strong());
-                if !self.eraser {
+                let tool_label = if self.eraser {
+                    "Eraser"
+                } else if self.local_color_brush.enabled {
+                    "Tint brush"
+                } else {
+                    "Brush"
+                };
+                ui.label(RichText::new(tool_label).strong());
+                if !self.eraser && !self.local_color_brush.enabled {
                     let compact_width = (ui.available_width() * 0.30).clamp(250.0, 360.0);
                     let control_height = ui.spacing().interact_size.y;
                     ui.allocate_ui_with_layout(
@@ -3841,6 +3879,9 @@ impl SketchApp {
                             });
                         },
                     );
+                } else if self.local_color_brush.enabled {
+                    self.palette_ui
+                        .color_button(ui, ColorTarget::Brush, &self.color);
                 } else {
                     ui.label("Erase whole strokes");
                 }
@@ -3874,23 +3915,26 @@ impl SketchApp {
             self.selection_panel(ui);
         } else if !self.fills.enabled && self.shape_tool.mode.is_none() && !self.curve_tool.enabled
         {
-            if self.eraser {
+            if self.local_color_brush.enabled {
+                self.local_color_controls(ui);
+            } else if self.eraser {
                 self.partial_eraser_controls(ui);
+            } else {
+                self.tutorial_hint(ui, "Brush");
+                if !self.fills.enabled {
+                    self.brush_controls(ui);
+                }
+                ui.add(
+                    egui::Slider::new(&mut self.radius, 0.001..=1.0)
+                        .text(if self.brush.kind == BrushKind::Round {
+                            "Radius"
+                        } else {
+                            "Half width"
+                        })
+                        .logarithmic(true),
+                );
+                ui.add(egui::Slider::new(&mut self.stabilization, 0.0..=1.0).text("Stabilize").custom_formatter(|v, _| format!("{:.0}%", v*100.0))).on_hover_text("0% gives raw input. Higher values reduce jitter and let the line trail the pen. It catches up on release; pressure is preserved.");
             }
-            self.tutorial_hint(ui, "Brush");
-            if !self.fills.enabled {
-                self.brush_controls(ui);
-            }
-            ui.add(
-                egui::Slider::new(&mut self.radius, 0.001..=1.0)
-                    .text(if self.brush.kind == BrushKind::Round {
-                        "Radius"
-                    } else {
-                        "Half width"
-                    })
-                    .logarithmic(true),
-            );
-            ui.add(egui::Slider::new(&mut self.stabilization, 0.0..=1.0).text("Stabilize").custom_formatter(|v, _| format!("{:.0}%", v*100.0))).on_hover_text("0% gives raw input. Higher values reduce jitter and let the line trail the pen. It catches up on release; pressure is preserved.");
         }
         ui.add_space(12.0);
         ui.separator();
@@ -5081,6 +5125,8 @@ impl SketchApp {
             }
         } else if self.select_mode {
             self.select_pointer(pos, rect, begin, shift);
+        } else if self.local_color_brush.enabled {
+            self.local_color_input(pos, rect, begin);
         } else if self.eraser {
             self.eraser_input(pos, rect, begin);
         } else if self.shape_tool.mode.is_some() {
@@ -5186,6 +5232,7 @@ impl SketchApp {
             if blocked {
                 self.cancel_brush_selection();
                 self.cancel_partial_erase();
+                self.cancel_local_color();
                 self.cancel_shape_draft();
                 self.finish();
                 self.mouse_down = false;
@@ -5245,6 +5292,10 @@ impl SketchApp {
                     self.partial_erase_input(sample.position, rect, false);
                     self.finish_partial_erase(true);
                 }
+                if self.local_color_active() {
+                    self.local_color_input(sample.position, rect, false);
+                    self.finish_local_color(true);
+                }
                 if self.line.draft.is_some() {
                     if inside {
                         self.release_line(sample.position, rect);
@@ -5289,6 +5340,7 @@ impl SketchApp {
                 && self.region_select_drag.is_none()
                 && self.brush_select_drag.is_none()
                 && !self.partial_erase_active()
+                && !self.local_color_active()
                 && !self.shape_draft_active()
             {
                 self.finish();
@@ -5335,6 +5387,7 @@ impl SketchApp {
         if blocked {
             self.cancel_brush_selection();
             self.cancel_partial_erase();
+            self.cancel_local_color();
             self.cancel_shape_draft();
             self.mouse_down = false;
             self.pen_previous = None;
@@ -5400,6 +5453,7 @@ impl SketchApp {
                                     || self.region_select_drag.is_some()
                                     || self.brush_select_drag.is_some()
                                     || self.partial_erase_active()
+                                    || self.local_color_active()
                                     || self.shape_draft_active())
                                     && !rect.contains(pos))
                             {
@@ -5408,6 +5462,7 @@ impl SketchApp {
                                 self.mouse_down = false;
                                 self.cancel_brush_selection();
                                 self.cancel_partial_erase();
+                                self.cancel_local_color();
                                 self.finish();
                             }
                         }
@@ -5460,6 +5515,9 @@ impl SketchApp {
                             if self.partial_erase_active() {
                                 self.partial_erase_input(pos, rect, false);
                                 self.finish_partial_erase(true);
+                            } else if self.local_color_active() {
+                                self.local_color_input(pos, rect, false);
+                                self.finish_local_color(true);
                             } else if self.shape_draft_active() {
                                 if inside_canvas(pos) {
                                     self.release_shape(pos, 1.0, rect);
@@ -5502,6 +5560,7 @@ impl SketchApp {
                             self.cancel_multi_point_region();
                             self.cancel_region_selection();
                             self.cancel_partial_erase();
+                            self.cancel_local_color();
                             self.cancel_shape_draft();
                             self.cancel_curve();
                             self.finish();
@@ -5653,6 +5712,7 @@ impl eframe::App for SketchApp {
             self.status = "Loft preview cancelled.".into();
         }
         self.partial_eraser_shortcuts(ctx);
+        self.local_color_shortcuts(ctx);
         self.shape_shortcuts(ctx);
         self.tick_camera_sequence(ctx);
         if self.liquify_active() && ctx.input(|input| input.key_pressed(Key::Escape)) {
@@ -5773,13 +5833,14 @@ impl eframe::App for SketchApp {
             {
                 self.selection_shortcuts(ctx);
             }
-            let (mods, b, e, f, i_key, z, y, s, o, n) = ctx.input(|i| {
+            let (mods, b, e, f, i_key, t_key, z, y, s, o, n) = ctx.input(|i| {
                 (
                     i.modifiers,
                     i.key_pressed(Key::B),
                     i.key_pressed(Key::E),
                     i.key_pressed(Key::F),
                     i.key_pressed(Key::I),
+                    i.key_pressed(Key::T),
                     i.key_pressed(Key::Z),
                     i.key_pressed(Key::Y),
                     i.key_pressed(Key::S),
@@ -5817,6 +5878,7 @@ impl eframe::App for SketchApp {
                     self.finish();
                     self.eraser = false;
                     self.select_mode = false;
+                    self.local_color_brush.enabled = false;
                 }
                 if e {
                     self.cancel_line_tool();
@@ -5824,6 +5886,10 @@ impl eframe::App for SketchApp {
                     self.finish();
                     self.eraser = true;
                     self.select_mode = false;
+                    self.local_color_brush.enabled = false;
+                }
+                if t_key {
+                    self.choose_tool("Paint");
                 }
                 if f {
                     self.finish();
@@ -8158,6 +8224,7 @@ mod native_merge_apply_tests {
             gradient: None,
             curve: None,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             material: Default::default(),

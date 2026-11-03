@@ -774,13 +774,60 @@ fn stroke_mesh_unmapped(stroke: &Stroke) -> Vec<Vertex> {
             mesh
         }
     };
+    if stroke.fill.is_none() {
+        if let Some(point_colors) = stroke
+            .point_colors
+            .as_ref()
+            .filter(|colors| colors.len() == stroke.points.len())
+        {
+            let distances = crate::dynamics::arc_lengths(&stroke.points);
+            let total = distances.last().copied().unwrap_or(0.0);
+            let colors: Vec<[f32; 3]> = point_colors
+                .iter()
+                .enumerate()
+                .map(|(index, painted)| {
+                    let t = if total > 1.0e-8 {
+                        distances[index] / total
+                    } else {
+                        0.0
+                    };
+                    painted.unwrap_or_else(|| stroke.base_color_at(t))
+                })
+                .collect();
+            for vertex in &mut vertices {
+                vertex.color = sample_color_profile(&distances, &colors, total, vertex.gradient_t);
+            }
+        }
+    }
     for vertex in &mut vertices {
         vertex.material = material;
-        if let Some(gradient) = stroke.gradient {
-            vertex.color = gradient.sample(vertex.gradient_t);
+        if stroke.point_colors.is_none() {
+            if let Some(gradient) = stroke.gradient {
+                vertex.color = gradient.sample(vertex.gradient_t);
+            }
         }
     }
     vertices
+}
+
+fn sample_color_profile(distances: &[f32], colors: &[[f32; 3]], total: f32, t: f32) -> [f32; 3] {
+    if colors.len() <= 1 || total <= 1.0e-8 || distances.len() != colors.len() {
+        return colors.first().copied().unwrap_or([1.0; 3]);
+    }
+    let distance = t.clamp(0.0, 1.0) * total;
+    let end = distances
+        .partition_point(|value| *value < distance)
+        .min(colors.len() - 1);
+    let start = end.saturating_sub(1);
+    let length = distances[end] - distances[start];
+    let amount = if length > 1.0e-8 {
+        ((distance - distances[start]) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    std::array::from_fn(|channel| {
+        colors[start][channel] + (colors[end][channel] - colors[start][channel]) * amount
+    })
 }
 
 fn tip_mesh(stroke: &Stroke) -> Vec<Vertex> {
@@ -2137,6 +2184,7 @@ mod tests {
             material: Default::default(),
             id: 1,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             group_id: None,
@@ -2188,6 +2236,7 @@ mod tests {
             material: Default::default(),
             id: 1,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             group_id: None,
@@ -2244,6 +2293,7 @@ mod curve_regression {
             material: Default::default(),
             id: 1,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             group_id: None,
@@ -2339,6 +2389,7 @@ mod brush_tests {
             material: Default::default(),
             id: 7,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             group_id: None,
@@ -2917,6 +2968,7 @@ mod dynamics_tests {
             material: Default::default(),
             id: 100,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             group_id: None,
@@ -3056,6 +3108,7 @@ mod dynamics_boundary_tests {
                 material: Default::default(),
                 id: 101,
                 point_thickness: None,
+                point_colors: None,
                 modifiers: None,
                 fill: None,
                 group_id: None,
@@ -3153,6 +3206,7 @@ mod seam_dynamics_tests {
                 material: Default::default(),
                 id: 1,
                 point_thickness: None,
+                point_colors: None,
                 modifiers: None,
                 fill: None,
                 group_id: None,
@@ -3209,6 +3263,7 @@ mod texture_uv_tests {
             material: Default::default(),
             id: 1,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             group_id: None,

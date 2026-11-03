@@ -56,6 +56,7 @@ fn material_stroke(id: u64, material: StrokeMaterial) -> Stroke {
         curve: None,
         material,
         point_thickness: None,
+        point_colors: None,
         modifiers: None,
         fill: None,
         group_id: None,
@@ -179,17 +180,21 @@ pub fn write_obj_bundle(
                 name: format!("material_{index:05}"),
                 diffuse: stroke.fill.and_then(|fill| fill.texture).map_or_else(
                     || {
-                        stroke.gradient.map_or_else(
-                            || {
-                                stroke
-                                    .fill
-                                    .and_then(|fill| fill.gradient)
-                                    .map_or(stroke.color, |gradient| {
-                                        gradient.sample(glam::Vec2::splat(0.5))
-                                    })
-                            },
-                            |gradient| gradient.sample(0.5),
-                        )
+                        if stroke.has_local_colors() {
+                            local_color_fallback(stroke)
+                        } else {
+                            stroke.gradient.map_or_else(
+                                || {
+                                    stroke
+                                        .fill
+                                        .and_then(|fill| fill.gradient)
+                                        .map_or(stroke.color, |gradient| {
+                                            gradient.sample(glam::Vec2::splat(0.5))
+                                        })
+                                },
+                                |gradient| gradient.sample(0.5),
+                            )
+                        }
                     },
                     |texture| {
                         let base = stroke
@@ -200,7 +205,8 @@ pub fn write_obj_bundle(
                     },
                 ),
                 gradient_fallback: stroke.gradient.is_some()
-                    || stroke.fill.and_then(|fill| fill.gradient).is_some(),
+                    || stroke.fill.and_then(|fill| fill.gradient).is_some()
+                    || stroke.has_local_colors(),
                 opacity: if stroke.material == StrokeMaterial::Cutout {
                     0.0
                 } else {
@@ -256,10 +262,13 @@ pub fn write_obj_bundle(
             "# OBJ/MTL cannot store per-vertex color; stroke and fill gradients use their evaluated midpoint color.\n",
         );
     }
+    if strokes.iter().any(|stroke| stroke.has_local_colors()) {
+        mtl.push_str("# OBJ/MTL cannot store per-vertex color; locally painted strokes use a length-weighted average of their resolved sample colors.\n");
+    }
     for material in &materials {
         writeln!(mtl, "newmtl {}", material.name).unwrap();
         if material.gradient_fallback {
-            mtl.push_str("# Two-stop gradient approximated by its linear RGB midpoint; radial fills sample normalized center.\n");
+            mtl.push_str("# Two-stop gradients use their linear RGB midpoint; radial fills sample normalized center; locally painted strokes use their length-weighted average color.\n");
         }
         writeln!(
             mtl,
@@ -527,17 +536,21 @@ fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
     let fill_texture = stroke.fill.and_then(|fill| fill.texture);
     let diffuse = fill_texture.map_or_else(
         || {
-            stroke.gradient.map_or_else(
-                || {
-                    stroke
-                        .fill
-                        .and_then(|fill| fill.gradient)
-                        .map_or(stroke.color, |gradient| {
-                            gradient.sample(glam::Vec2::splat(0.5))
-                        })
-                },
-                |gradient| gradient.sample(0.5),
-            )
+            if stroke.has_local_colors() {
+                local_color_fallback(stroke)
+            } else {
+                stroke.gradient.map_or_else(
+                    || {
+                        stroke
+                            .fill
+                            .and_then(|fill| fill.gradient)
+                            .map_or(stroke.color, |gradient| {
+                                gradient.sample(glam::Vec2::splat(0.5))
+                            })
+                    },
+                    |gradient| gradient.sample(0.5),
+                )
+            }
         },
         |texture| {
             let base = stroke
@@ -561,6 +574,43 @@ fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
         fill_texture.map_or(0, |texture| texture.asset_id),
         fill_texture.is_none_or(|texture| texture.repeat),
     )
+}
+
+fn local_color_fallback(stroke: &Stroke) -> [f32; 3] {
+    let distances = crate::dynamics::arc_lengths(&stroke.points);
+    if stroke.points.is_empty() {
+        return stroke.color;
+    }
+    let total = distances.last().copied().unwrap_or(0.0);
+    let colors: Vec<_> = distances
+        .iter()
+        .enumerate()
+        .map(|(index, distance)| {
+            stroke.point_color_at(
+                index,
+                if total > 1.0e-8 {
+                    distance / total
+                } else {
+                    0.0
+                },
+            )
+        })
+        .collect();
+    if total > 1.0e-8 {
+        let mut weighted = [0.0; 3];
+        for index in 0..colors.len().saturating_sub(1) {
+            let length = distances[index + 1] - distances[index];
+            for channel in 0..3 {
+                weighted[channel] +=
+                    (colors[index][channel] + colors[index + 1][channel]) * 0.5 * length;
+            }
+        }
+        weighted.map(|component| component / total)
+    } else {
+        std::array::from_fn(|channel| {
+            colors.iter().map(|color| color[channel]).sum::<f32>() / colors.len() as f32
+        })
+    }
 }
 
 fn tip_alpha_png(asset: &crate::brush_tip::BrushTipAsset) -> Result<Vec<u8>, String> {

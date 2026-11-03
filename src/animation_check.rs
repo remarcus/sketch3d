@@ -25,6 +25,7 @@ pub fn run(report_path: &Path) -> Result<(), String> {
         group_id: None,
         gradient: None,
         point_thickness: None,
+        point_colors: None,
         modifiers: None,
         curve: None,
     };

@@ -1602,6 +1602,7 @@ mod tests {
                 group_id: None,
                 material: Default::default(),
                 point_thickness: None,
+                point_colors: None,
                 modifiers: None,
                 fill: None,
                 color: [0.3, 0.6, 0.9],

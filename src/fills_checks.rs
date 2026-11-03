@@ -151,6 +151,7 @@ impl SketchApp {
                 curve: None,
                 material: Default::default(),
                 point_thickness: None,
+                point_colors: None,
                 modifiers: None,
                 fill: Some(PlanarFill {
                     offset: 0.003,
@@ -185,6 +186,7 @@ impl SketchApp {
             curve: None,
             material: Default::default(),
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             group_id: None,

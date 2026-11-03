@@ -1675,6 +1675,7 @@ mod guide_bend_tests {
         let stroke = Stroke {
             model_surface: None,
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             material: Default::default(),
@@ -1778,6 +1779,7 @@ mod loft_ui_tests {
             curve: None,
             material: Default::default(),
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             group_id: None,
@@ -2185,6 +2187,7 @@ mod planar_target_tests {
             curve: None,
             material: StrokeMaterial::default(),
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: Some(crate::document::PlanarFill {
                 offset: 0.01,
@@ -2259,6 +2262,7 @@ mod planar_target_tests {
             curve: None,
             material: StrokeMaterial::default(),
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             group_id: None,

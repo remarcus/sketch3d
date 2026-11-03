@@ -344,6 +344,7 @@ pub fn study() -> crate::document::Document {
             curve: None,
             material: Default::default(),
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: Some(PlanarFill {
                 offset: 0.003,
@@ -370,6 +371,7 @@ pub fn study() -> crate::document::Document {
             curve: None,
             material: Default::default(),
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: None,
             group_id: None,
@@ -469,6 +471,7 @@ mod tests {
             curve: None,
             material: Default::default(),
             point_thickness: None,
+            point_colors: None,
             modifiers: None,
             fill: Some(PlanarFill {
                 offset: 0.003,
