@@ -306,6 +306,7 @@ mod tests {
     fn document() -> Document {
         Document {
             strokes: vec![Stroke {
+                model_surface: None,
                 fill: None,
                 material: Default::default(),
                 group_id: None,

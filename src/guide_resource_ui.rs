@@ -1673,6 +1673,7 @@ mod guide_bend_tests {
         // Existing artwork remains world-space. A new stroke sampled on the
         // bent centerline is ordinary editable/exportable ink.
         let stroke = Stroke {
+            model_surface: None,
             point_thickness: None,
             modifiers: None,
             fill: None,
@@ -1772,6 +1773,7 @@ mod loft_ui_tests {
 
     fn line(id: u64, start: Vec3, end: Vec3) -> Stroke {
         Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             material: Default::default(),
@@ -2178,6 +2180,7 @@ mod planar_target_tests {
             origin - u * 0.5 + v * 0.25,
         ];
         let fill = Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             material: StrokeMaterial::default(),
@@ -2251,6 +2254,7 @@ mod planar_target_tests {
             .any(|point| !target.contains(point.position)));
 
         let prototype = Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             material: StrokeMaterial::default(),

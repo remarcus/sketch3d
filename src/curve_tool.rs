@@ -254,6 +254,7 @@ impl SketchApp {
                 };
                 let (u, _, normal) = plane.basis();
                 let stroke = Stroke {
+                    model_surface: None,
                     curve: None,
                     material: Default::default(),
                     point_thickness: None,

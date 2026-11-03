@@ -826,6 +826,26 @@ fn tip_mesh(stroke: &Stroke) -> Vec<Vertex> {
                 continue;
             }
             positions = projected;
+        } else if let Some(patch) = &stroke.model_surface {
+            let mut projected = [Vec3::ZERO; 4];
+            let mut valid = true;
+            for (index, position) in positions.iter().copied().enumerate() {
+                if let Some((point, _)) = patch.offset_tangent(
+                    dab.position,
+                    dab.normal,
+                    position - dab.position,
+                    stroke.radius * 0.75 + 1.0e-4,
+                ) {
+                    projected[index] = point;
+                } else {
+                    valid = false;
+                    break;
+                }
+            }
+            if !valid {
+                continue;
+            }
+            positions = projected;
         }
         let opacity = vertex_opacity(stroke, dab.pressure, dab.normal, dab.normal);
         flat_quad_gradient(
@@ -855,6 +875,10 @@ fn dab_mesh(stroke: &Stroke) -> Vec<Vertex> {
     for dab in dabs {
         if let Some(surface) = surface_target {
             surface_dab_mesh(stroke, dab, surface, &mut vertices);
+            continue;
+        }
+        if let Some(patch) = &stroke.model_surface {
+            model_surface_dab_mesh(stroke, dab, patch, &mut vertices);
             continue;
         }
         let tangent = dab.tangent.try_normalize().unwrap_or(Vec3::Y);
@@ -922,10 +946,53 @@ fn surface_dab_mesh(
     surface: crate::surface::Surface,
     out: &mut Vec<Vertex>,
 ) {
-    const SECTORS: usize = 8;
     let Some(normal) = surface.normal_at(dab.position) else {
         return;
     };
+    surface_dab_mesh_with_projection(
+        stroke,
+        dab,
+        normal,
+        |offset| {
+            let position = surface.offset_tangent(dab.position, offset)?;
+            Some((position, surface.normal_at(position)?))
+        },
+        out,
+    );
+}
+
+fn model_surface_dab_mesh(
+    stroke: &Stroke,
+    dab: crate::dab_placement::ResolvedDab,
+    patch: &crate::document::ModelSurfacePatch,
+    out: &mut Vec<Vertex>,
+) {
+    let Some((center, normal, _, _)) = patch.project(dab.position, stroke.radius * 0.75 + 1e-4)
+    else {
+        return;
+    };
+    let dab = crate::dab_placement::ResolvedDab {
+        position: center,
+        normal,
+        ..dab
+    };
+    surface_dab_mesh_with_projection(
+        stroke,
+        dab,
+        normal,
+        |offset| patch.offset_tangent(center, normal, offset, stroke.radius * 0.75 + 1e-4),
+        out,
+    );
+}
+
+fn surface_dab_mesh_with_projection(
+    stroke: &Stroke,
+    dab: crate::dab_placement::ResolvedDab,
+    normal: Vec3,
+    mut project_offset: impl FnMut(Vec3) -> Option<(Vec3, Vec3)>,
+    out: &mut Vec<Vertex>,
+) {
+    const SECTORS: usize = 8;
     let tangent = (dab.tangent - normal * dab.tangent.dot(normal))
         .try_normalize()
         .unwrap_or_else(|| perpendicular(normal));
@@ -966,10 +1033,7 @@ fn surface_dab_mesh(
         let theta = index as f32 / SECTORS as f32 * std::f32::consts::TAU;
         let offset =
             width_axis * (width_radius * theta.cos()) + length_axis * (length_radius * theta.sin());
-        let Some(position) = surface.offset_tangent(dab.position, offset) else {
-            return;
-        };
-        let Some(normal) = surface.normal_at(position) else {
+        let Some((position, normal)) = project_offset(offset) else {
             return;
         };
         *vertex = Vertex {
@@ -2067,6 +2131,7 @@ mod tests {
     #[test]
     fn pressure_geometry() {
         let make = |pressure| Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             material: Default::default(),
@@ -2102,6 +2167,56 @@ mod tests {
         assert!(Vec3::from(high[0].position).length() > Vec3::from(low[0].position).length() * 5.0);
         assert!(high.iter().all(|v| Vec3::from(v.position).is_finite()));
     }
+
+    #[test]
+    fn model_surface_dab_and_tip_meshes_stay_on_captured_triangles() {
+        let surface = crate::document::ModelSurfacePatch {
+            triangles: vec![crate::document::ModelSurfaceTriangle {
+                source_id: 0,
+                positions: [
+                    Vec3::new(-2.0, -2.0, 0.0),
+                    Vec3::new(2.0, -2.0, 0.0),
+                    Vec3::new(0.0, 2.0, 0.0),
+                ],
+                normal: Vec3::Z,
+            }],
+        };
+        let mut stroke = Stroke {
+            model_surface: Some(surface),
+            gradient: None,
+            curve: None,
+            material: Default::default(),
+            id: 1,
+            point_thickness: None,
+            modifiers: None,
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            color: [0.5; 3],
+            radius: 0.1,
+            brush: Default::default(),
+            points: vec![Point {
+                tilt: None,
+                position: Vec3::ZERO,
+                pressure: 1.0,
+                time_ms: 0,
+            }],
+        };
+        stroke.brush.dabs.enabled = true;
+        stroke.brush.dabs.scatter = 0.4;
+        let dab_vertices = stroke_mesh(&stroke);
+        assert!(!dab_vertices.is_empty());
+        assert!(dab_vertices
+            .iter()
+            .all(|vertex| Vec3::from(vertex.position).z.abs() < 1.0e-5));
+
+        stroke.brush.tip_asset_id = 1;
+        let tip_vertices = stroke_mesh(&stroke);
+        assert!(!tip_vertices.is_empty());
+        assert!(tip_vertices
+            .iter()
+            .all(|vertex| Vec3::from(vertex.position).z.abs() < 1.0e-5));
+    }
 }
 
 #[cfg(test)]
@@ -2123,6 +2238,7 @@ mod curve_regression {
             })
             .collect();
         let stroke = Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             material: Default::default(),
@@ -2217,6 +2333,7 @@ mod brush_tests {
 
     fn mark(kind: BrushKind, positions: &[Vec3]) -> Stroke {
         Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             material: Default::default(),
@@ -2794,6 +2911,7 @@ mod dynamics_tests {
 
     fn line(kind: BrushKind, xs: &[f32]) -> Stroke {
         Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             material: Default::default(),
@@ -2932,6 +3050,7 @@ mod dynamics_boundary_tests {
     fn zero_pressure_dimensions_and_tilt_azimuth_wrap_stay_finite() {
         for kind in [BrushKind::Round, BrushKind::Ribbon, BrushKind::Chisel] {
             let mut stroke = Stroke {
+                model_surface: None,
                 gradient: None,
                 curve: None,
                 material: Default::default(),
@@ -3028,6 +3147,7 @@ mod seam_dynamics_tests {
                     && p.tilt == Some(Vec3::Y)
             }));
             let mut stroke = Stroke {
+                model_surface: None,
                 gradient: None,
                 curve: None,
                 material: Default::default(),
@@ -3083,6 +3203,7 @@ mod texture_uv_tests {
         brush.texture.kind = TextureKind::Grain;
         brush.texture.scale = 0.2;
         Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             material: Default::default(),

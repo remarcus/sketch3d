@@ -214,6 +214,7 @@ pub fn evaluated_stroke(source: &Stroke) -> Result<Cow<'_, Stroke>, String> {
 pub fn benchmark(output: &Path) -> Result<(), String> {
     let point_count = 4096usize;
     let mut source = Stroke {
+        model_surface: None,
         fill: None,
         material: Default::default(),
         group_id: None,
@@ -334,6 +335,7 @@ mod tests {
 
     fn stroke() -> Stroke {
         Stroke {
+            model_surface: None,
             fill: None,
             material: Default::default(),
             group_id: None,

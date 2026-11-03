@@ -32,6 +32,7 @@ impl SketchApp {
             dabs: crate::dynamics::DabSettings {
                 enabled: true,
                 spacing: 0.5,
+                scatter: 0.25,
                 ..Default::default()
             },
             ..Brush::default()
@@ -96,6 +97,23 @@ impl SketchApp {
         let first_dabs = crate::dab_placement::sample(first).unwrap();
         assert!(!first_dabs.is_empty());
         assert!(first_dabs.iter().all(|dab| dab.position.z.abs() < 0.0001));
+        assert!(
+            first.model_surface.is_some(),
+            "model dabs retain their surface patch"
+        );
+        assert_eq!(
+            first_dabs,
+            crate::dab_placement::sample(first).unwrap(),
+            "seeded model scatter is deterministic"
+        );
+        let first_mesh = crate::geometry::stroke_mesh(first);
+        assert!(
+            !first_mesh.is_empty(),
+            "model dabs produce resolved geometry"
+        );
+        assert!(first_mesh
+            .iter()
+            .all(|vertex| vertex.position[2].abs() < 0.0001));
         let adjacent_strokes = self.doc.strokes.clone();
         assert_eq!(self.undo.len(), 1, "model stroke creates one history edit");
         self.undo();
@@ -189,16 +207,28 @@ impl SketchApp {
             "redo restores both split runs"
         );
 
-        let before_rejected_scatter = self.doc.strokes.clone();
-        let history_before_rejected_scatter = self.undo.len();
-        self.brush.dabs.scatter = 0.25;
-        self.pointer_action(left_run[0], 0.5, rect, true, false);
-        assert!(
-            self.active.is_none(),
-            "model-surface scatter is rejected before drawing"
+        for stroke in &self.doc.strokes {
+            assert!(stroke.model_surface.is_some());
+            let dabs = crate::dab_placement::sample(stroke).unwrap();
+            assert!(!dabs.is_empty());
+            assert!(
+                if stroke.points[0].position.x < 0.0 {
+                    dabs.iter().all(|dab| dab.position.x < -1.0)
+                } else {
+                    dabs.iter().all(|dab| dab.position.x > 1.0)
+                },
+                "scattered model dabs do not bridge disconnected components"
+            );
+            assert!(crate::geometry::stroke_mesh(stroke)
+                .iter()
+                .all(|vertex| vertex.position[2].abs() < 0.0001));
+        }
+        let serialized = serde_json::to_string(&self.doc).unwrap();
+        let reopened = Document::from_json(&serialized).unwrap();
+        assert_eq!(
+            reopened.strokes, self.doc.strokes,
+            "model patches survive native save/reload"
         );
-        assert_eq!(self.doc.strokes, before_rejected_scatter);
-        assert_eq!(self.undo.len(), history_before_rejected_scatter);
 
         self.status = "Model-surface pointer checks passed.".into();
         self.dirty = false;

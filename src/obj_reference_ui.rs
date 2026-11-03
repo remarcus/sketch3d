@@ -131,6 +131,7 @@ impl SketchApp {
                     .into_iter()
                     .map(|line| {
                         let stroke = crate::document::Stroke {
+                            model_surface: None,
                             fill: None,
                             material: crate::document::StrokeMaterial::Unlit,
                             group_id: None,

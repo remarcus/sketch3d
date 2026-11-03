@@ -462,6 +462,7 @@ fn append_storefront_details(doc: &mut Document) {
             ..Default::default()
         };
         doc.strokes.push(Stroke {
+            model_surface: None,
             curve: None,
             material: Default::default(),
             point_thickness: None,
@@ -483,6 +484,7 @@ fn append_storefront_details(doc: &mut Document) {
         let mut outline = points;
         outline.push(outline[0]);
         doc.strokes.push(Stroke {
+            model_surface: None,
             curve: None,
             material: Default::default(),
             point_thickness: None,

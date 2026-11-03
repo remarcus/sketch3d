@@ -496,6 +496,17 @@ fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> 
                     crate::stroke_sculpt::remap_thickness_profile(stroke, &points);
                 fragment.points = points;
                 fragment.curve = None;
+                if let Some(patch) = &mut fragment.model_surface {
+                    let stamp_extent = if fragment.brush.tip_asset_id != 0 {
+                        fragment.radius / fragment.brush.tip_aspect
+                    } else {
+                        0.0
+                    };
+                    let margin = fragment.radius
+                        * (1.0 + fragment.brush.dabs.scatter + fragment.brush.dabs.size_variation)
+                        + stamp_extent;
+                    patch.retain_near_points(&fragment.points, margin);
+                }
                 if let Some(gradient) = stroke.gradient.filter(|_| original_length > 1.0e-8) {
                     let start = ((origin - stroke.brush.dab_distance_origin) / original_length)
                         .clamp(0.0, 1.0);
@@ -640,6 +651,7 @@ mod tests {
         brush.texture.kind = crate::texture::TextureKind::Pattern;
         brush.texture.seed = 29;
         Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             id: 5,
@@ -682,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn scattered_dab_pick_and_partial_erase_follow_visible_marks_and_gaps() {
+    fn scattered_model_surface_dabs_pick_erase_and_stay_on_the_mesh() {
         let camera = front_camera();
         let canvas = canvas();
         let mut source = line([Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)]);
@@ -696,6 +708,28 @@ mod tests {
         source.brush.dabs.scatter = 3.5;
         source.brush.dabs.size_variation = 0.0;
         source.brush.dab_seed = 733;
+        source.model_surface = Some(crate::document::ModelSurfacePatch {
+            triangles: vec![
+                crate::document::ModelSurfaceTriangle {
+                    source_id: 0,
+                    positions: [
+                        Vec3::new(-2.0, -2.0, 0.0),
+                        Vec3::new(2.0, -2.0, 0.0),
+                        Vec3::new(0.0, 2.0, 0.0),
+                    ],
+                    normal: Vec3::Z,
+                },
+                crate::document::ModelSurfaceTriangle {
+                    source_id: 1,
+                    positions: [
+                        Vec3::new(100.0, 100.0, 0.0),
+                        Vec3::new(101.0, 100.0, 0.0),
+                        Vec3::new(100.0, 101.0, 0.0),
+                    ],
+                    normal: Vec3::Z,
+                },
+            ],
+        });
 
         let dabs = crate::dab_placement::sample(&source).unwrap();
         let scattered = dabs
@@ -721,6 +755,22 @@ mod tests {
         let mut erased = document.clone();
         plan.edit.apply(&mut erased, true);
         assert!(erased.strokes.len() >= 2);
+        assert!(erased
+            .strokes
+            .iter()
+            .all(|stroke| stroke.model_surface.is_some()));
+        assert!(erased
+            .strokes
+            .iter()
+            .all(|stroke| { stroke.model_surface.as_ref().unwrap().triangles.len() == 1 }));
+        assert!(erased.strokes.iter().all(|stroke| {
+            crate::geometry::stroke_mesh(stroke)
+                .iter()
+                .all(|vertex| Vec3::from(vertex.position).z.abs() < 1.0e-5)
+        }));
+        let reopened =
+            crate::document::Document::from_json(&serde_json::to_string(&erased).unwrap()).unwrap();
+        assert_eq!(reopened.strokes, erased.strokes);
         let surviving_dabs: Vec<_> = erased
             .strokes
             .iter()

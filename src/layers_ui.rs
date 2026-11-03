@@ -22,6 +22,7 @@ fn layer_fixture_stroke(
         (Vec3::new(0.0, -1.2, z), Vec3::new(0.0, 1.2, z), Vec3::Y)
     };
     Stroke {
+        model_surface: None,
         curve: None,
         material,
         point_thickness: None,
@@ -576,7 +577,7 @@ impl SketchApp {
                 assert!(editing::layer_edit(&self.doc, LayerAction::Delete(1)).is_err());
                 let loaded =
                     Document::from_json(&serde_json::to_string(&self.doc).unwrap()).unwrap();
-                assert_eq!(loaded.version, 25);
+                assert_eq!(loaded.version, 26);
                 assert_eq!(loaded.layers, self.doc.layers);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.verify_layer_compositing();

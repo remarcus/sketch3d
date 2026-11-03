@@ -242,13 +242,20 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> Option<ResolvedDab
         .dabs
         .surface_target
         .map(|target| target.surface());
+    let mut model_normal = None;
     let center = if let Some(surface) = target {
         surface.project_to_surface(center)?
+    } else if let Some(patch) = &stroke.model_surface {
+        let (projected, normal, _, _) = patch.project(center, stroke.radius * 0.75 + 1.0e-4)?;
+        model_normal = Some(normal);
+        projected
     } else {
         center
     };
     let normal = if let Some(surface) = target {
         surface.normal_at(center)?
+    } else if let Some(normal) = model_normal {
+        normal
     } else {
         (stroke.brush.normal - tangent * stroke.brush.normal.dot(tangent))
             .try_normalize()
@@ -286,6 +293,11 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> Option<ResolvedDab
             * scatter_radius;
         if let Some(surface) = target {
             surface.offset_tangent(center, offset)? - center
+        } else if let Some(patch) = &stroke.model_surface {
+            patch
+                .offset_tangent(center, normal, offset, stroke.radius * 0.75 + 1.0e-4)?
+                .0
+                - center
         } else {
             offset
         }
@@ -381,6 +393,7 @@ mod tests {
             ..Default::default()
         };
         Stroke {
+            model_surface: None,
             id: 17,
             curve: None,
             material: Default::default(),

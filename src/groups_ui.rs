@@ -627,7 +627,7 @@ impl SketchApp {
                 assert_eq!(self.doc.group_members(copy_group), copies);
                 let loaded =
                     Document::from_json(&serde_json::to_string(&self.doc).unwrap()).unwrap();
-                assert_eq!(loaded.version, 25);
+                assert_eq!(loaded.version, 26);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.apply_layer_action(editing::LayerAction::Lock(1, true));
                 assert!(self
@@ -777,6 +777,7 @@ mod linked_group_tests {
 
     fn source_stroke(id: u64, group_id: u64, y: f32) -> Stroke {
         Stroke {
+            model_surface: None,
             curve: None,
             material: StrokeMaterial::Shaded,
             point_thickness: None,
@@ -885,7 +886,7 @@ mod linked_group_tests {
         let output = tempfile::tempdir().unwrap();
         let report = linked_group_portability_report(&document, output.path()).unwrap();
         assert_eq!(report["passed"], true);
-        assert_eq!(report["native"]["version"], 25);
+        assert_eq!(report["native"]["version"], 26);
         assert_eq!(report["native"]["instances"], 2);
         assert_eq!(report["recovery"]["fresh_reader"], true);
         assert_eq!(report["merge"]["undo_redo"], true);

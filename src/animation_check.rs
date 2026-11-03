@@ -8,6 +8,7 @@ use std::{collections::HashSet, path::Path};
 pub fn run(report_path: &Path) -> Result<(), String> {
     let mut document = Document::default();
     let stroke = |x: f32| Stroke {
+        model_surface: None,
         id: 1,
         layer_id: document.active_layer,
         points: vec![Point {
@@ -109,7 +110,7 @@ pub fn run(report_path: &Path) -> Result<(), String> {
         .remove("animation");
     legacy["version"] = serde_json::json!(24);
     let upgraded = Document::from_json(&legacy.to_string())?;
-    if !upgraded.animation.is_empty() || upgraded.version != 25 {
+    if !upgraded.animation.is_empty() || upgraded.version != 26 {
         return Err(
             "Version 24 native migration did not create an empty version 1 animation track".into(),
         );

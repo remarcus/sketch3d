@@ -2,15 +2,19 @@
   "checks": [
     "synthetic pointer samples cross a shared manifold triangle edge in one model-surface stroke",
     "world-space samples remain on the OBJ surface",
+    "seeded model-surface scatter is deterministic and projected",
+    "generated dab mesh remains on the captured OBJ surface",
     "model-surface commit creates one ordinary undo edit",
     "undo and redo preserve exact model-surface samples",
     "a pointer miss commits the first surface run",
     "recontact after a miss starts a second surface run without bridging the gap",
-    "split model-surface runs undo and redo independently"
+    "scattered placements remain within disconnected model components",
+    "split model-surface runs undo and redo independently",
+    "captured model patches survive native save/reload"
   ],
-  "gpu": "test GPU / Vulkan",
+  "gpu": "NVIDIA GeForce RTX 4070 Ti / Vulkan",
   "passed": true,
   "physical_tablet_tested": false,
-  "point_count": 12,
+  "point_count": 13,
   "stroke_count": 2
 }

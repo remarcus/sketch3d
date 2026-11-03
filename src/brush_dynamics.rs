@@ -11,6 +11,7 @@ fn airbrush_stroke(
     points: impl IntoIterator<Item = (u32, glam::Vec3, f32)>,
 ) -> Stroke {
     Stroke {
+        model_surface: None,
         curve: None,
         material: Default::default(),
         point_thickness: None,
@@ -308,7 +309,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 25);
+                assert_eq!(loaded.version, 26);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.load_dynamics();
                 self.brush.dynamics = Default::default();
@@ -1005,6 +1006,7 @@ fn opacity_test_stroke(
         curve: 1.0,
     };
     Stroke {
+        model_surface: None,
         curve: None,
         material: Default::default(),
         point_thickness: None,

@@ -28,7 +28,7 @@ impl SketchApp {
                 "PNG image stamp · aspect {:.2} · source alpha kept · brush color tints RGB",
                 aspect
             ));
-            ui.small("Surface-projected stamps place quad corners on saved curved guides; there is no depth offset. Model targets are rejected.");
+            ui.small("Stamps project quad corners onto saved guides or captured OBJ surface patches. They have no depth offset; marks at edges or steep turns are skipped.");
             ui_style::slider_row(
                 ui,
                 "Angle",
@@ -221,7 +221,7 @@ impl SketchApp {
                     100.0,
                     "× radius",
                 )
-                .on_hover_text("Scatter is available on planes and saved curved guides. Model surfaces remain unsupported; curved placements are projected to the surface and omitted at edges or steep turns.");
+                .on_hover_text("Scatter is available on planes, saved curved guides, and captured OBJ surface patches. Curved/model placements are projected onto the surface and omitted at edges or steep turns.");
                 ui_style::slider_row(
                     ui,
                     "Size variation",
@@ -428,7 +428,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 25);
+                assert_eq!(loaded.version, 26);
                 assert_eq!(loaded.strokes, original);
                 self.verify_stipple_spray(rect);
                 self.verify_image_stamps(rect);
@@ -466,6 +466,7 @@ impl SketchApp {
             let mut brush = preset.brush;
             brush.dab_seed = crate::dab_placement::seed_for_stroke(id);
             Stroke {
+                model_surface: None,
                 curve: None,
                 material: Default::default(),
                 id,
@@ -735,6 +736,7 @@ impl SketchApp {
                     .collect()
             };
             Stroke {
+                model_surface: None,
                 curve: None,
                 material: Default::default(),
                 id,
@@ -1191,6 +1193,7 @@ impl SketchApp {
         let bristle = preset("Bristle Fan");
         let dry = preset("Dry Brush");
         let make_stroke = |preset: &crate::presets::Preset, id: u64, y: f32| Stroke {
+            model_surface: None,
             curve: None,
             material: Default::default(),
             id,
@@ -1448,6 +1451,7 @@ impl SketchApp {
             .iter()
             .enumerate()
             .map(|(index, preset)| Stroke {
+                model_surface: None,
                 curve: None,
                 material: Default::default(),
                 id: 78_001 + index as u64,

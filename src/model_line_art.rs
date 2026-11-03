@@ -348,6 +348,7 @@ mod tests {
     fn baked_line_art_roundtrips_and_appears_in_glb_and_obj_exports() {
         use crate::document::{Brush, Document, Point, Stroke, StrokeMaterial};
         let baked = Stroke {
+            model_surface: None,
             fill: None,
             material: StrokeMaterial::Unlit,
             group_id: None,

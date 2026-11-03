@@ -379,6 +379,7 @@ mod tests {
 
     fn prototype() -> Stroke {
         Stroke {
+            model_surface: None,
             gradient: None,
             point_thickness: None,
             modifiers: None,

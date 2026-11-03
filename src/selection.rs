@@ -2277,6 +2277,7 @@ impl SketchApp {
             let original_mouse_down = app.mouse_down;
             let original_status = app.status.clone();
             let source = Stroke {
+                model_surface: None,
                 curve: None,
                 material: Default::default(),
                 point_thickness: None,
@@ -2430,6 +2431,7 @@ impl SketchApp {
             let original_brush_select_radius = app.brush_select_radius;
             let original_brush_select_through = app.brush_select_through;
             let make_stroke = |id, y| Stroke {
+                model_surface: None,
                 curve: None,
                 material: Default::default(),
                 point_thickness: None,

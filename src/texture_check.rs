@@ -18,6 +18,7 @@ pub fn run() -> Result<(), String> {
             TextureKind::Charcoal,
         ] {
             let mut stroke = Stroke {
+                model_surface: None,
                 curve: None,
                 material: Default::default(),
                 id: 1,

@@ -2576,13 +2576,18 @@ impl SketchApp {
     }
 
     fn dab_scatter_supported(&self) -> bool {
-        self.doc.active_model_reference.is_none()
-            && self.saved_guide_geometry().map_or(true, |geometry| {
-                matches!(
-                    geometry,
-                    crate::document::guide_resources::GuideGeometry::Plane { .. }
-                ) || dab_target_from_geometry(geometry).is_some()
-            })
+        if let Some(model_id) = self.doc.active_model_reference {
+            return self.obj_reference_models.contains_key(&model_id)
+                && self.doc.model_references.iter().any(|resource| {
+                    resource.id == model_id && resource.visible && !resource.locked
+                });
+        }
+        self.saved_guide_geometry().is_none_or(|geometry| {
+            matches!(
+                geometry,
+                crate::document::guide_resources::GuideGeometry::Plane { .. }
+            ) || dab_target_from_geometry(geometry).is_some()
+        })
     }
 
     fn captured_dab_surface(
@@ -2744,9 +2749,9 @@ impl SketchApp {
             self.finish();
             self.resume_ink = begin;
             self.status = if self.brush.tip_asset_id != 0 {
-                "Image stamps support planes and projected marks on saved curved guides; model surfaces are unsupported.".into()
+                "Image stamps support planes, saved curved guides, and captured OBJ surface patches.".into()
             } else {
-                "Dab scatter supports planes and saved curved guides. Turn scatter off for model surfaces.".into()
+                "Dab scatter supports planes, saved curved guides, and captured OBJ surface patches.".into()
             };
             return;
         }
@@ -2828,6 +2833,7 @@ impl SketchApp {
                 Surface::Plane
             });
             self.doc.strokes.push(Stroke {
+                model_surface: None,
                 curve: None,
                 material: Default::default(),
                 point_thickness: None,
@@ -3002,6 +3008,31 @@ impl SketchApp {
             self.resume_ink = true;
             return;
         }
+        let capture_model_surface = self.brush.tip_asset_id != 0 || self.brush.dabs.enabled;
+        let contact_patch = if capture_model_surface {
+            match self
+                .obj_surface_indices
+                .get(&id)
+                .expect("model surface index was built")
+                .surface_contact_patch(
+                    model,
+                    hit.triangle_index,
+                    resource.center,
+                    resource.rotation,
+                    resource.scale,
+                ) {
+                Ok(patch) => Some(patch),
+                Err(error) => {
+                    self.finish();
+                    self.model_stroke_contact = None;
+                    self.resume_ink = true;
+                    self.status = format!("Cannot capture OBJ dab surface: {error}");
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let connected = self.model_stroke_contact.is_some_and(
             |(previous_id, previous_triangle, previous_screen)| {
                 previous_id == id
@@ -3032,6 +3063,8 @@ impl SketchApp {
             let view_right = self.camera.basis().0;
             let tangent = (view_right - normal * view_right.dot(normal)).normalize_or_zero();
             self.doc.strokes.push(Stroke {
+                model_surface: capture_model_surface
+                    .then(crate::document::ModelSurfacePatch::default),
                 curve: None,
                 material: Default::default(),
                 point_thickness: None,
@@ -3049,6 +3082,10 @@ impl SketchApp {
                     dab_seed: crate::dab_placement::seed_for_stroke(id),
                     dab_distance_origin: 0.0,
                     dab_total_length: 0.0,
+                    dabs: crate::dynamics::DabSettings {
+                        surface_target: None,
+                        ..self.brush.dabs
+                    },
                     ..self.brush
                 },
                 points: Vec::new(),
@@ -3064,12 +3101,61 @@ impl SketchApp {
             pressure: pressure.clamp(0.0, 1.0),
             time_ms: point_time_ms,
         };
+        let active_patch = self
+            .doc
+            .strokes
+            .last()
+            .filter(|stroke| stroke.id == stroke_id)
+            .and_then(|stroke| stroke.model_surface.as_ref());
+        let new_patch_triangles = contact_patch.as_ref().map_or(0, |contact| {
+            contact
+                .iter()
+                .filter(|triangle| {
+                    !active_patch.is_some_and(|patch| {
+                        patch
+                            .triangles
+                            .binary_search_by_key(&triangle.source_id, |item| item.source_id)
+                            .is_ok()
+                    })
+                })
+                .count()
+        });
+        let document_patch_triangles = if new_patch_triangles == 0 {
+            0
+        } else {
+            self.doc
+                .strokes
+                .iter()
+                .filter_map(|stroke| stroke.model_surface.as_ref())
+                .map(|patch| patch.triangles.len())
+                .sum()
+        };
+        let patch_limit_reached = active_patch.is_some_and(|patch| {
+            patch.triangles.len().saturating_add(new_patch_triangles)
+                > crate::document::MAX_MODEL_SURFACE_TRIANGLES_PER_STROKE
+        }) || document_patch_triangles
+            .saturating_add(new_patch_triangles)
+            > crate::document::MAX_MODEL_SURFACE_TRIANGLES_PER_DOCUMENT;
+        if patch_limit_reached {
+            self.status = "Model dab target reached its per-stroke or document triangle limit; further input was ignored.".into();
+            self.finish();
+            self.resume_ink = true;
+            self.model_stroke_contact = None;
+            return;
+        }
         if let Some(stroke) = self
             .doc
             .strokes
             .last_mut()
             .filter(|stroke| stroke.id == stroke_id)
         {
+            if let (Some(surface), Some(contact)) =
+                (&mut stroke.model_surface, contact_patch.as_ref())
+            {
+                for triangle in contact {
+                    let _ = surface.insert(*triangle);
+                }
+            }
             if stroke.points.last().is_none_or(|last| {
                 last.position.distance(point.position) > 0.001
                     || (last.pressure - point.pressure).abs() > 0.025
@@ -3504,6 +3590,7 @@ impl SketchApp {
                 });
             }
             self.doc.strokes.push(Stroke {
+                model_surface: None,
                 curve: None,
                 material: Default::default(),
                 point_thickness: None,
@@ -7654,7 +7741,7 @@ impl SketchApp {
             } else if self.ring_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["Add ring action creates and activates a saved torus at the camera target","active ring camera alignment faces the torus hole","synthetic pointer samples draw on the saved ring surface","a center-hole miss splits the drawing into two surface strokes","ring strokes remain on the torus instead of cutting through its hole","cancel removes an in-progress ring stroke without history","undo and redo preserve split ring strokes","ring strokes export to GLB"],"guide_count":self.doc.guide_resources.len(),"stroke_count":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.model_surface_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic pointer samples cross a shared manifold triangle edge in one model-surface stroke","world-space samples remain on the OBJ surface","model-surface commit creates one ordinary undo edit","undo and redo preserve exact model-surface samples","a pointer miss commits the first surface run","recontact after a miss starts a second surface run without bridging the gap","split model-surface runs undo and redo independently"],"stroke_count":self.doc.strokes.len(),"point_count":self.doc.strokes.iter().map(|stroke|stroke.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic pointer samples cross a shared manifold triangle edge in one model-surface stroke","world-space samples remain on the OBJ surface","seeded model-surface scatter is deterministic and projected","generated dab mesh remains on the captured OBJ surface","model-surface commit creates one ordinary undo edit","undo and redo preserve exact model-surface samples","a pointer miss commits the first surface run","recontact after a miss starts a second surface run without bridging the gap","scattered placements remain within disconnected model components","split model-surface runs undo and redo independently","captured model patches survive native save/reload"],"stroke_count":self.doc.strokes.len(),"point_count":self.doc.strokes.iter().map(|stroke|stroke.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.obj_reference_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["OBJ References window displays its import control","synthetic pointer move, press, and release clicks the window's import control","canceling the picker leaves the document, history, and dirty state unchanged and keeps the source fixture available","the clicked control invokes the production import handler with an injected file-picker result","the imported drawing-local bundle reloads","imported model is registered with the scene renderer","synthetic viewport selection picks the imported OBJ","selected-model bounds match the normalized OBJ bounds","production Preview button creates detached line art","Update button recomputes line art for the current camera","Bake button creates ordinary strokes in one undo edit","undo and redo remove and restore the baked batch","removing the source model leaves baked strokes intact"],"native_file_picker_tested":false,"model_count":self.doc.model_references.len(),"triangle_count":self.obj_reference_models.values().map(|model|model.triangles.len()).sum::<usize>(),"stroke_count":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.liquify_brush_verification_frame.is_some() {
@@ -7670,11 +7757,11 @@ impl SketchApp {
             } else if self.preset_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["preset application captures resolved settings","create duplicate rename update delete and defaults","restart persistence","live GPU previews","library edits preserve existing ink and export","corrupt library fallback and explicit repair backup"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.texture_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","Chalk/Graphite/Charcoal sampler includes pressure and width variation","Graphite and Charcoal world-grain scale and UVs remain stable under uniform transform","Graphite and Charcoal visible coverage is pickable and erases as one undoable stroke","front and orbit renders at 640x360, 1280x720, and 2560x1440","stroke duplication and undo","textured drawing and erasing at an alpha-covered point","version 25 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","Chalk/Graphite/Charcoal sampler includes pressure and width variation","Graphite and Charcoal world-grain scale and UVs remain stable under uniform transform","Graphite and Charcoal visible coverage is pickable and erases as one undoable stroke","front and orbit renders at 640x360, 1280x720, and 2560x1440","stroke duplication and undo","textured drawing and erasing at an alpha-covered point","version 26 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.dynamics_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 25 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 26 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 25 save/reload","GPU brush sampler","Stipple spacing and Spray density/spread sampler","scattered dab picking and partial erase","dab placement, render geometry, and GLB budgets","front/orbit Stipple and Spray renders at three output sizes","Leaf/Grass/Star image-tip taps and drags","transparent-edge image-tip picking and misses","image-tip native roundtrip","GLB original tip images, UVs, tint and alpha","OBJ diffuse and alpha companions","image-tip export sizes and CPU timings","front/orbit image-stamp renders at three output sizes","Rake and Bristle Fan strand geometry against Dry Brush","strand-aware picking and partial-erase fragments","native strand settings roundtrip","GLB and OBJ strand meshes parsed and budgeted","front/orbit strand renders at three output sizes","Square, Triangular, and Star Tube pressure/taper profiles","profiled mesh picking and native roundtrip","GLB and OBJ profile normals and faces parsed and budgeted","front/orbit profile renders at three output sizes"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 26 save/reload","GPU brush sampler","Stipple spacing and Spray density/spread sampler","scattered dab picking and partial erase","dab placement, render geometry, and GLB budgets","front/orbit Stipple and Spray renders at three output sizes","Leaf/Grass/Star image-tip taps and drags","transparent-edge image-tip picking and misses","image-tip native roundtrip","GLB original tip images, UVs, tint and alpha","OBJ diffuse and alpha companions","image-tip export sizes and CPU timings","front/orbit image-stamp renders at three output sizes","Rake and Bristle Fan strand geometry against Dry Brush","strand-aware picking and partial-erase fragments","native strand settings roundtrip","GLB and OBJ strand meshes parsed and budgeted","front/orbit strand renders at three output sizes","Square, Triangular, and Star Tube pressure/taper profiles","profiled mesh picking and native roundtrip","GLB and OBJ profile normals and faces parsed and budgeted","front/orbit profile renders at three output sizes"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {
@@ -8055,6 +8142,7 @@ mod native_merge_apply_tests {
 
     fn stroke(id: u64, layer_id: u64, x: f32) -> Stroke {
         Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             point_thickness: None,

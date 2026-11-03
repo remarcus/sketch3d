@@ -582,6 +582,16 @@ pub fn transformed_with_scale(
                 return Err("Transform exceeds document bounds");
             }
         }
+        if let Some(patch) = &mut stroke.model_surface {
+            for triangle in &mut patch.triangles {
+                triangle.positions = triangle
+                    .positions
+                    .map(|point| pivot + linear * (point - pivot) + translation);
+                triangle.normal = (normal_matrix * triangle.normal)
+                    .try_normalize()
+                    .ok_or("Model surface transform collapsed a captured face")?;
+            }
+        }
         if let Some(curve) = &mut stroke.curve {
             let old_origin = curve.frame_origin;
             let old_normal = curve.frame_normal;
@@ -636,6 +646,7 @@ mod tests {
     use crate::document::{Brush, BrushKind, Point};
     fn stroke(id: u64, x: f32) -> Stroke {
         Stroke {
+            model_surface: None,
             gradient: None,
             point_thickness: None,
             modifiers: None,
@@ -1355,6 +1366,7 @@ mod layer_tests {
         Document {
             linked_stroke_groups: Default::default(),
             strokes: vec![Stroke {
+                model_surface: None,
                 gradient: None,
                 point_thickness: None,
                 modifiers: None,
@@ -1822,6 +1834,7 @@ mod group_tests {
             linked_stroke_groups: Default::default(),
             strokes: (1..=3)
                 .map(|id| Stroke {
+                    model_surface: None,
                     gradient: None,
                     point_thickness: None,
                     modifiers: None,
@@ -1932,6 +1945,7 @@ mod large_group_tests {
             linked_stroke_groups: Default::default(),
             strokes: (1..=10000)
                 .map(|id| Stroke {
+                    model_surface: None,
                     gradient: None,
                     point_thickness: None,
                     modifiers: None,
@@ -1986,6 +2000,7 @@ mod appearance_tests {
 
     fn sample_document() -> Document {
         let first = Stroke {
+            model_surface: None,
             gradient: None,
             point_thickness: None,
             modifiers: None,

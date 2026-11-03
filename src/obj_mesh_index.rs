@@ -264,6 +264,48 @@ impl ObjMeshIndex {
         })
     }
 
+    pub fn surface_contact_patch(
+        &self,
+        model: &ObjModel,
+        triangle: u32,
+        center: Vec3,
+        rotation: glam::Quat,
+        scale: f32,
+    ) -> Result<Vec<crate::document::ModelSurfaceTriangle>, String> {
+        if !center.is_finite()
+            || !rotation.is_finite()
+            || (rotation.length_squared() - 1.0).abs() > 1.0e-3
+            || !scale.is_finite()
+            || scale <= 0.0
+        {
+            return Err("Model surface transform is invalid".into());
+        }
+        let mut ids = vec![triangle];
+        if let Some(neighbors) = self.triangle_neighbors(triangle) {
+            ids.extend(neighbors.into_iter().flatten());
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        let mut output = Vec::with_capacity(ids.len());
+        for id in ids {
+            let source = model
+                .triangles
+                .get(id as usize)
+                .ok_or("Model contact refers to a missing triangle")?;
+            let vertices = model.render_vertices(source)?;
+            let positions = vertices.map(|vertex| center + rotation * (vertex.position * scale));
+            let normal = (rotation * source.face_normal)
+                .try_normalize()
+                .ok_or("Model contact has an invalid surface normal")?;
+            output.push(crate::document::ModelSurfaceTriangle {
+                source_id: id,
+                positions,
+                normal,
+            });
+        }
+        Ok(output)
+    }
+
     /// Whether two pointer contacts may continue one model-surface stroke.
     /// A large screen-space gap or disconnected mesh edge starts a new stroke.
     pub fn stroke_contacts_connect(

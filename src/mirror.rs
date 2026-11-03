@@ -128,6 +128,14 @@ pub fn mirror_stroke(
             return Err("Reflected stroke exceeds document point limits".into());
         }
     }
+    if let Some(patch) = &mut mirrored.model_surface {
+        for triangle in &mut patch.triangles {
+            for position in &mut triangle.positions {
+                *position = plane.reflect_point(*position)?;
+            }
+            triangle.normal = plane.reflect_vector(triangle.normal)?;
+        }
+    }
     mirrored.brush.normal = plane.reflect_vector(source.brush.normal)?;
     mirrored.brush.tangent = plane.reflect_vector(source.brush.tangent)?;
     mirrored.brush.angle_degrees = -source.brush.angle_degrees;
@@ -273,6 +281,14 @@ pub fn rotate_stroke(
             return Err("Rotated stroke exceeds document point limits".into());
         }
     }
+    if let Some(patch) = &mut repeated.model_surface {
+        for triangle in &mut patch.triangles {
+            triangle.positions = triangle
+                .positions
+                .map(|position| center + rotation * (position - center));
+            triangle.normal = (rotation * triangle.normal).normalize_or_zero();
+        }
+    }
     repeated.brush.normal = rotation * source.brush.normal;
     repeated.brush.tangent = rotation * source.brush.tangent;
     if !repeated.brush.is_valid() {
@@ -388,6 +404,7 @@ mod tests {
             ..Brush::default()
         };
         Stroke {
+            model_surface: None,
             gradient: None,
             point_thickness: None,
             modifiers: None,

@@ -536,6 +536,7 @@ mod tests {
             ..Brush::default()
         };
         Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             id,
@@ -565,6 +566,7 @@ mod tests {
         fs::create_dir_all(&asset_root).unwrap();
         let mut source = Document::default();
         source.strokes.push(Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             id: 1,
@@ -999,6 +1001,7 @@ mod tests {
             end: [0.6, 1.0, 0.0],
         };
         let source_stroke = Stroke {
+            model_surface: None,
             gradient: Some(gradient),
             curve: None,
             id: 7,
@@ -1064,6 +1067,7 @@ mod tests {
         };
         let source = Document {
             strokes: vec![Stroke {
+                model_surface: None,
                 fill: None,
                 material: Default::default(),
                 group_id: None,

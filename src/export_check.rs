@@ -14,6 +14,7 @@ pub fn pressure_fixture() -> Document {
         version: 7,
         strokes: vec![
             Stroke {
+                model_surface: None,
                 curve: None,
                 material: Default::default(),
                 id: 1001,
@@ -48,6 +49,7 @@ pub fn pressure_fixture() -> Document {
                 ],
             },
             Stroke {
+                model_surface: None,
                 curve: None,
                 material: Default::default(),
                 id: 1002,
@@ -68,6 +70,7 @@ pub fn pressure_fixture() -> Document {
                 }],
             },
             Stroke {
+                model_surface: None,
                 curve: None,
                 material: Default::default(),
                 id: 1003,
@@ -121,6 +124,7 @@ pub fn brush_fixture() -> Document {
         let color = [[0.17, 0.82, 0.74], [0.94, 0.35, 0.14], [0.35, 0.45, 0.9]][row];
         let y = 1.2 - row as f32 * 1.2;
         doc.strokes.push(Stroke {
+            model_surface: None,
             curve: None,
             material: Default::default(),
             id: 2001 + row as u64 * 2,
@@ -152,6 +156,7 @@ pub fn brush_fixture() -> Document {
         let dot_rotation =
             glam::Quat::from_rotation_arc(Vec3::Z, Vec3::new(0.3, 0.2, 1.0).normalize());
         doc.strokes.push(Stroke {
+            model_surface: None,
             curve: None,
             material: Default::default(),
             id: 2002 + row as u64 * 2,
@@ -221,6 +226,7 @@ pub fn dynamics_fixture() -> Document {
         ][row];
         let y = 1.8 - row as f32 * 1.2;
         doc.strokes.push(Stroke {
+            model_surface: None,
             curve: None,
             material: Default::default(),
             id: 3001 + row as u64 * 2,
@@ -251,6 +257,7 @@ pub fn dynamics_fixture() -> Document {
                 .collect(),
         });
         doc.strokes.push(Stroke {
+            model_surface: None,
             curve: None,
             material: Default::default(),
             id: 3002 + row as u64 * 2,
@@ -339,6 +346,7 @@ pub fn textured_fixture() -> Document {
             _ => 0.18,
         };
         doc.strokes.push(Stroke {
+            model_surface: None,
             curve: None,
             material: Default::default(),
             id: 4001 + row as u64 * 3,
@@ -369,6 +377,7 @@ pub fn textured_fixture() -> Document {
                 .collect(),
         });
         doc.strokes.push(Stroke {
+            model_surface: None,
             curve: None,
             material: Default::default(),
             id: 4002 + row as u64 * 3,
@@ -390,6 +399,7 @@ pub fn textured_fixture() -> Document {
         });
         // A short depth-oriented round companion exercises circumference UV seams.
         doc.strokes.push(Stroke {
+            model_surface: None,
             curve: None,
             material: Default::default(),
             id: 4003 + row as u64 * 3,
@@ -465,6 +475,7 @@ pub fn vase_fixture() -> Document {
             })
             .collect();
         doc.strokes.push(Stroke {
+            model_surface: None,
             curve: None,
             material: Default::default(),
             id: 6001 + doc.strokes.len() as u64,

@@ -231,7 +231,7 @@ pub fn encode_with_images(
     selected: Option<&HashSet<u64>>,
     image_root: Option<&Path>,
 ) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=25) {
+    if !matches!(doc.version, 1..=26) {
         return Err("Unsupported source document version".into());
     }
     crate::brush_tip::validate_catalog(&doc.brush_tip_assets)?;
@@ -968,6 +968,7 @@ mod tests {
     use crate::document::{Point, StrokeGradient, StrokeMaterial};
     fn stroke(id: u64, color: [f32; 3]) -> Stroke {
         Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             material: Default::default(),
@@ -1071,7 +1072,7 @@ mod tests {
             .find_map(|line| line.strip_prefix("mtllib "))
             .unwrap();
         let mtl = std::fs::read_to_string(root.path().join(mtl_name)).unwrap();
-        assert!(mtl.contains("gradient strokes use their midpoint color"));
+        assert!(mtl.contains("stroke and fill gradients use their evaluated midpoint color"));
         assert!(mtl.contains("Two-stop gradient approximated by its linear RGB midpoint"));
         assert!(mtl.contains("Kd 0.350000 0.600000 0.400000"));
     }
@@ -1478,7 +1479,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 25);
+        assert_eq!(loaded.version, 26);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -1793,7 +1794,7 @@ mod group_export_tests {
     fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
         let doc = crate::export_check::grouped_fixture();
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-        assert_eq!(loaded.version, 25);
+        assert_eq!(loaded.version, 26);
         assert_eq!(loaded.strokes, doc.strokes);
         let encoded = encode(&doc, None).unwrap();
         let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
@@ -2028,6 +2029,7 @@ mod obj_reference_export_tests {
 
     fn sample_stroke() -> Stroke {
         Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             point_thickness: None,

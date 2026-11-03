@@ -2749,6 +2749,7 @@ mod tests {
             },
         ];
         let stroke = crate::document::Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             point_thickness: None,
@@ -2955,6 +2956,7 @@ mod tests {
 
     fn reveal_stroke(id: u64, layer_id: u64) -> crate::document::Stroke {
         crate::document::Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             point_thickness: None,

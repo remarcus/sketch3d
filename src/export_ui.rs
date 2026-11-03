@@ -348,6 +348,7 @@ mod tests {
 
     fn stroke(id: u64) -> Stroke {
         Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             point_thickness: None,

@@ -60,9 +60,15 @@ space between dabs.
   transform both the stroke and its captured guide. Non-uniform/reflected
   selection transforms are rejected for these marks, and mirror-copy is
   unavailable, so the stored surface cannot silently detach from the stroke.
-  Planar output is unchanged. Mesh-target image tips
-  and scatter remain disabled until strokes can retain per-contact triangle
-  data and use it consistently for rendering, picking, edits, and export.
+  Planar output is unchanged.
+- Model-target strokes capture the contact triangle and its manifold edge
+  neighbors as a bounded world-space patch on each sample. The patch is
+  serialized with the stroke, capped at 16,384 triangles per stroke and
+  200,000 per document. Seeded scatter and image-stamp corners project onto
+  only the captured patch; misses, disconnected components, edges, and steep
+  turns are omitted. The saved patch drives generated meshes for rendering,
+  picking, partial erase, undo/recovery, GLB, and OBJ without requiring the
+  model to remain active.
 - Size and angle variation, pressure response, and taper are resolved from the
   saved stroke. The random stream is SplitMix64 keyed by the stroke seed, dab
   index, and value channel, so editing a preset cannot change old artwork.
@@ -75,16 +81,16 @@ space between dabs.
   scatter bound overlaps the gesture.
 - Stipple and spray presets use this same saved geometry path. Stipple uses
   regular spacing with no scatter; spray uses a bounded uniform-area offset in
-  the captured plane or analytic surface. Model-target scatter remains disabled.
-  Taps remain one dab, and
+  the captured plane, analytic guide, or captured model patch. Taps remain one dab, and
   dabs are ordinary selectable, erasable, transformable, and exportable mesh
   geometry.
 
 ## Versioning and budgets
 
 SKETCH-071 introduced native schema version 14. Current drawings use schema
-version 20, which adds bounded tube profiles. Version 19 added timestamped
-airbrush flow settings. Version 18 added bounded bristle/rake strand settings.
+version 26, which adds captured model-surface patches for image stamps and
+scattered dabs. Earlier versions added bounded tube profiles, timestamped
+airbrush flow, and bounded bristle/rake strand settings.
 Version 17 added
 the resolved image-tip aspect ratio used by stamp geometry; version 16 added
 bounded embedded brush-tip PNG assets; version 15 added captured tilt magnitude

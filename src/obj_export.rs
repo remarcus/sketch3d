@@ -52,6 +52,7 @@ pub fn write_material_verification_bundle(directory: &Path) -> Result<(), String
 
 fn material_stroke(id: u64, material: StrokeMaterial) -> Stroke {
     Stroke {
+        model_surface: None,
         curve: None,
         material,
         point_thickness: None,

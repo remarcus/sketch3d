@@ -261,6 +261,10 @@ pub fn layers_default() -> Vec<Layer> {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stroke {
+    /// Bounded world-space triangle patch captured for image-tip and scattered
+    /// dab placement on an imported model surface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_surface: Option<ModelSurfacePatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<PlanarFill>,
     #[serde(default)]
@@ -289,6 +293,194 @@ pub struct Stroke {
     /// The sampled points remain authoritative for rendering and export.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve: Option<CurveData>,
+}
+
+pub const MAX_MODEL_SURFACE_TRIANGLES_PER_STROKE: usize = 16_384;
+pub const MAX_MODEL_SURFACE_TRIANGLES_PER_DOCUMENT: usize = 200_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelSurfaceTriangle {
+    pub source_id: u32,
+    pub positions: [Vec3; 3],
+    pub normal: Vec3,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelSurfacePatch {
+    pub triangles: Vec<ModelSurfaceTriangle>,
+}
+
+impl ModelSurfacePatch {
+    pub fn insert(&mut self, triangle: ModelSurfaceTriangle) -> Result<bool, String> {
+        match self
+            .triangles
+            .binary_search_by_key(&triangle.source_id, |item| item.source_id)
+        {
+            Ok(_) => Ok(false),
+            Err(index) => {
+                if self.triangles.len() >= MAX_MODEL_SURFACE_TRIANGLES_PER_STROKE {
+                    return Err("Model dab target exceeds the per-stroke triangle limit".into());
+                }
+                self.triangles.insert(index, triangle);
+                Ok(true)
+            }
+        }
+    }
+
+    pub fn project(&self, point: Vec3, max_distance: f32) -> Option<(Vec3, Vec3, u32, f32)> {
+        if !point.is_finite() || !max_distance.is_finite() || max_distance < 0.0 {
+            return None;
+        }
+        self.triangles
+            .iter()
+            .filter_map(|triangle| {
+                let nearest = closest_point_on_triangle(point, triangle.positions)?;
+                let distance = nearest.distance(point);
+                (distance <= max_distance).then_some((
+                    nearest,
+                    triangle.normal,
+                    triangle.source_id,
+                    distance,
+                ))
+            })
+            .min_by(|a, b| a.3.total_cmp(&b.3))
+    }
+
+    /// Drop captured triangles that cannot contribute to marks near a retained
+    /// stroke fragment. Keeping patches local prevents repeated partial erases
+    /// from multiplying unrelated model geometry into every fragment.
+    pub fn retain_near_points(&mut self, points: &[Point], margin: f32) {
+        if points.is_empty() || !margin.is_finite() || margin < 0.0 || self.triangles.len() <= 1 {
+            return;
+        }
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for point in points {
+            min = min.min(point.position);
+            max = max.max(point.position);
+        }
+        min -= Vec3::splat(margin);
+        max += Vec3::splat(margin);
+        let retained: Vec<_> = self
+            .triangles
+            .iter()
+            .copied()
+            .filter(|triangle| {
+                let triangle_min = triangle.positions[0]
+                    .min(triangle.positions[1])
+                    .min(triangle.positions[2]);
+                let triangle_max = triangle.positions[0]
+                    .max(triangle.positions[1])
+                    .max(triangle.positions[2]);
+                (0..3)
+                    .all(|axis| triangle_max[axis] >= min[axis] && triangle_min[axis] <= max[axis])
+            })
+            .collect();
+        if !retained.is_empty() {
+            self.triangles = retained;
+        }
+    }
+
+    pub fn offset_tangent(
+        &self,
+        origin: Vec3,
+        normal: Vec3,
+        offset: Vec3,
+        max_distance: f32,
+    ) -> Option<(Vec3, Vec3)> {
+        if !origin.is_finite()
+            || !normal.is_finite()
+            || !offset.is_finite()
+            || !max_distance.is_finite()
+            || max_distance <= 0.0
+        {
+            return None;
+        }
+        let normal = normal.try_normalize()?;
+        let query = origin + offset;
+        let ray_origin = query + normal * max_distance;
+        let direction = -normal;
+        self.triangles
+            .iter()
+            .filter_map(|triangle| {
+                if triangle.normal.dot(normal) < 0.5 {
+                    return None;
+                }
+                let distance = ray_triangle_distance(ray_origin, direction, triangle.positions)?;
+                if !(0.0..=max_distance * 2.0).contains(&distance) {
+                    return None;
+                }
+                let position = ray_origin + direction * distance;
+                Some((position, triangle.normal, (distance - max_distance).abs()))
+            })
+            .min_by(|a, b| a.2.total_cmp(&b.2))
+            .map(|(position, normal, _)| (position, normal))
+    }
+}
+
+fn ray_triangle_distance(origin: Vec3, direction: Vec3, triangle: [Vec3; 3]) -> Option<f32> {
+    let edge_a = triangle[1] - triangle[0];
+    let edge_b = triangle[2] - triangle[0];
+    let p = direction.cross(edge_b);
+    let determinant = edge_a.dot(p);
+    if determinant.abs() < 1e-8 {
+        return None;
+    }
+    let inverse = determinant.recip();
+    let from_vertex = origin - triangle[0];
+    let u = from_vertex.dot(p) * inverse;
+    let q = from_vertex.cross(edge_a);
+    let v = direction.dot(q) * inverse;
+    if u < -1e-5 || v < -1e-5 || u + v > 1.0 + 1e-5 {
+        return None;
+    }
+    let distance = edge_b.dot(q) * inverse;
+    (distance.is_finite() && distance >= 0.0).then_some(distance)
+}
+
+fn closest_point_on_triangle(point: Vec3, triangle: [Vec3; 3]) -> Option<Vec3> {
+    let [a, b, c] = triangle;
+    let ab = b - a;
+    let ac = c - a;
+    let ap = point - a;
+    let d1 = ab.dot(ap);
+    let d2 = ac.dot(ap);
+    let result = if d1 <= 0.0 && d2 <= 0.0 {
+        a
+    } else {
+        let bp = point - b;
+        let d3 = ab.dot(bp);
+        let d4 = ac.dot(bp);
+        if d3 >= 0.0 && d4 <= d3 {
+            b
+        } else {
+            let vc = d1 * d4 - d3 * d2;
+            if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+                a + ab * (d1 / (d1 - d3))
+            } else {
+                let cp = point - c;
+                let d5 = ab.dot(cp);
+                let d6 = ac.dot(cp);
+                if d6 >= 0.0 && d5 <= d6 {
+                    c
+                } else {
+                    let vb = d5 * d2 - d1 * d6;
+                    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+                        a + ac * (d2 / (d2 - d6))
+                    } else {
+                        let va = d3 * d6 - d5 * d4;
+                        if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+                            b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)))
+                        } else {
+                            let denominator = 1.0 / (va + vb + vc);
+                            a + ab * (vb * denominator) + ac * (vc * denominator)
+                        }
+                    }
+                }
+            }
+        }
+    };
+    result.is_finite().then_some(result)
 }
 
 /// Optional two-stop stroke color ramp. Colors use linear RGB and are
@@ -556,7 +748,7 @@ impl Default for Document {
         Self {
             layers: layers_default(),
             active_layer: 1,
-            version: 25,
+            version: 26,
             strokes: Vec::new(),
             image_planes: Vec::new(),
             active_image_plane: None,
@@ -885,7 +1077,7 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=25)) {
+        if !matches!(version, Some(1..=26)) {
             return Err("Unsupported document version".into());
         }
         if matches!(version, Some(1..=6)) {
@@ -969,7 +1161,7 @@ impl Document {
                 }
             }
         }
-        doc.version = 25;
+        doc.version = 26;
         doc.refresh_linked_instances()?;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
@@ -1035,6 +1227,7 @@ impl Document {
         let mut ids = std::collections::HashSet::new();
         let mut total = 0;
         let mut total_dabs = 0usize;
+        let mut total_model_surface_triangles = 0usize;
         let mut groups = std::collections::HashMap::new();
         for stroke in &doc.strokes {
             if let Some(group) = stroke.group_id {
@@ -1075,6 +1268,34 @@ impl Document {
                     .ok_or("Dab placement count overflow")?;
                 if total_dabs > crate::dab_placement::MAX_DOCUMENT_DABS {
                     return Err("Document exceeds the dab geometry budget".into());
+                }
+            }
+            if let Some(patch) = &stroke.model_surface {
+                total_model_surface_triangles = total_model_surface_triangles
+                    .checked_add(patch.triangles.len())
+                    .ok_or("Model surface triangle count overflow")?;
+                if patch.triangles.is_empty()
+                    || patch.triangles.len() > MAX_MODEL_SURFACE_TRIANGLES_PER_STROKE
+                    || total_model_surface_triangles > MAX_MODEL_SURFACE_TRIANGLES_PER_DOCUMENT
+                    || (!stroke.brush.dabs.enabled && stroke.brush.tip_asset_id == 0)
+                    || stroke.brush.dabs.surface_target.is_some()
+                    || patch
+                        .triangles
+                        .windows(2)
+                        .any(|pair| pair[0].source_id >= pair[1].source_id)
+                    || patch.triangles.iter().any(|triangle| {
+                        !triangle.normal.is_finite()
+                            || (triangle.normal.length_squared() - 1.0).abs() > 1e-3
+                            || triangle.positions.iter().any(|point| {
+                                !point.is_finite() || point.abs().max_element() > 10_000.0
+                            })
+                            || (triangle.positions[1] - triangle.positions[0])
+                                .cross(triangle.positions[2] - triangle.positions[0])
+                                .length_squared()
+                                <= 1e-12
+                    })
+                {
+                    return Err("Invalid or oversized model dab surface patch".into());
                 }
             }
             if total > 2_000_000
@@ -1141,6 +1362,7 @@ mod tests {
     use super::*;
     fn stroke() -> Stroke {
         Stroke {
+            model_surface: None,
             gradient: None,
             point_thickness: None,
             modifiers: None,
@@ -1206,7 +1428,7 @@ mod tests {
                 animation: Default::default(),
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-            assert_eq!(loaded.version, 25);
+            assert_eq!(loaded.version, 26);
             assert_eq!(loaded.strokes, doc.strokes);
         }
     }
@@ -1233,7 +1455,7 @@ mod tests {
         // a new shape, or prevent an otherwise valid legacy file from opening.
         old["strokes"][0]["brush"] = serde_json::json!({"kind": "future_brush"});
         let loaded = Document::from_json(&old.to_string()).unwrap();
-        assert_eq!(loaded.version, 25);
+        assert_eq!(loaded.version, 26);
         assert_eq!(loaded.strokes, vec![original]);
         old["strokes"][0].as_object_mut().unwrap().remove("brush");
         let without_extension = Document::from_json(&old.to_string()).unwrap();
@@ -1262,7 +1484,7 @@ mod tests {
             .remove("opacity");
 
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 25);
+        assert_eq!(loaded.version, 26);
         assert_eq!(loaded.strokes[0].brush.opacity, 1.0);
         assert_eq!(loaded.strokes[0].brush.softness, 0.0);
         assert_eq!(
@@ -1272,7 +1494,7 @@ mod tests {
 
         let saved = serde_json::to_string(&loaded).unwrap();
         let reopened = Document::from_json(&saved).unwrap();
-        assert_eq!(reopened.version, 25);
+        assert_eq!(reopened.version, 26);
         assert_eq!(reopened.strokes, loaded.strokes);
     }
     #[test]
@@ -1414,7 +1636,7 @@ mod tests {
         value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
         value["strokes"][0]["points"][0]["tilt"] = serde_json::json!("unknown extension");
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 25);
+        assert_eq!(loaded.version, 26);
         assert_eq!(loaded.strokes, vec![original]);
     }
     #[test]
@@ -1517,7 +1739,7 @@ mod tests {
         legacy["strokes"][0]["brush"]["texture"] = serde_json::json!({"kind":"future_pattern"});
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
         mark.brush.texture = TextureSettings::default();
-        assert_eq!(loaded.version, 25);
+        assert_eq!(loaded.version, 26);
         assert_eq!(loaded.strokes, vec![mark]);
     }
     #[test]
@@ -1556,6 +1778,7 @@ mod layer_tests {
     #[test]
     fn version_four_migration_preserves_all_resolved_ink() {
         let mut stroke = Stroke {
+            model_surface: None,
             gradient: None,
             point_thickness: None,
             modifiers: None,
@@ -1592,7 +1815,7 @@ mod layer_tests {
         value["active_layer"] = serde_json::json!(99);
         value["strokes"][0]["layer_id"] = serde_json::json!("unknown");
         let migrated = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(migrated.version, 25);
+        assert_eq!(migrated.version, 26);
         assert_eq!(migrated.strokes, vec![original]);
         assert_eq!(migrated.layers, layers_default());
         assert_eq!(migrated.active_layer, 1);
@@ -1610,6 +1833,7 @@ mod layer_tests {
         });
         doc.active_layer = 2;
         let stroke = Stroke {
+            model_surface: None,
             gradient: None,
             point_thickness: None,
             modifiers: None,
@@ -1666,6 +1890,7 @@ mod layer_tests {
                 "blank_name" => doc.layers[0].name = " ".into(),
                 "active_missing" => doc.active_layer = 2,
                 "orphan" => doc.strokes.push(Stroke {
+                    model_surface: None,
                     gradient: None,
                     point_thickness: None,
                     modifiers: None,
@@ -1708,6 +1933,7 @@ mod saved_guide_document_tests {
 
     fn sample_stroke() -> Stroke {
         Stroke {
+            model_surface: None,
             gradient: None,
             point_thickness: None,
             modifiers: None,
@@ -1961,7 +2187,7 @@ mod saved_guide_document_tests {
         legacy.as_object_mut().unwrap().remove("guide_resources");
         legacy.as_object_mut().unwrap().remove("active_guide");
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
-        assert_eq!(loaded.version, 25);
+        assert_eq!(loaded.version, 26);
         assert!(loaded.guide_resources.is_empty());
         assert_eq!(loaded.active_guide, None);
         assert_eq!(loaded.strokes, doc.strokes);
@@ -1973,6 +2199,7 @@ mod group_tests {
     use super::*;
     fn mark(id: u64) -> Stroke {
         Stroke {
+            model_surface: None,
             gradient: None,
             point_thickness: None,
             modifiers: None,
@@ -1993,6 +2220,30 @@ mod group_tests {
                 time_ms: 0,
             }],
         }
+    }
+
+    #[test]
+    fn model_surface_patch_roundtrips_and_rejects_invalid_triangles() {
+        let mut stroke = mark(1);
+        stroke.brush.dabs.enabled = true;
+        stroke.model_surface = Some(ModelSurfacePatch {
+            triangles: vec![ModelSurfaceTriangle {
+                source_id: 4,
+                positions: [Vec3::ZERO, Vec3::X, Vec3::Y],
+                normal: Vec3::Z,
+            }],
+        });
+        let doc = Document {
+            strokes: vec![stroke],
+            ..Default::default()
+        };
+        let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(reopened.strokes, doc.strokes);
+        assert_eq!(reopened.version, 26);
+
+        let mut invalid = doc;
+        invalid.strokes[0].model_surface.as_mut().unwrap().triangles[0].normal = Vec3::ZERO;
+        assert!(Document::from_json(&serde_json::to_string(&invalid).unwrap()).is_err());
     }
     #[test]
     fn legacy_five_preserves_resolved_ink_and_layers_but_ignores_group_extensions() {
@@ -2022,7 +2273,7 @@ mod group_tests {
             s.group_id = None;
         }
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 25);
+        assert_eq!(loaded.version, 26);
         assert_eq!(loaded.strokes, doc.strokes);
         assert_eq!(loaded.layers, doc.layers);
     }

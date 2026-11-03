@@ -194,6 +194,7 @@ mod tests {
     use crate::document::{Brush, BrushKind, PlanarFill, Point, Stroke};
     fn panel(id: u64, z: f32) -> Stroke {
         Stroke {
+            model_surface: None,
             gradient: None,
             curve: None,
             material: Default::default(),
