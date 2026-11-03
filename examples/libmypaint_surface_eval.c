@@ -1,6 +1,6 @@
 /*
  * Standalone bounded libmypaint 1.6.1 evaluation. No application integration.
- * Build/run instructions and measured limits are recorded in TASKS.md.
+ * Build/run instructions and measured limits are recorded in docs/LIBMYPAINT_EVALUATION.md.
  */
 #define _POSIX_C_SOURCE 200809L
 #include <mypaint-brush.h>
