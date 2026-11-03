@@ -23,6 +23,10 @@ pub const MAX_ARRAY_EXPANDED_VERTICES: usize = 1_000_000;
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeometryCacheKey {
     pub texture_mapping: crate::texture::TextureMapping,
+    pub texture_scale: f32,
+    pub texture_anchor_mode: crate::texture::TextureAnchorMode,
+    pub texture_frame: Option<crate::texture::TextureFrame>,
+    pub texture_scale_with_brush: bool,
     pub point_count: usize,
     pub point_thickness: Option<Vec<f32>>,
     pub point_colors: Option<Vec<Option<[f32; 3]>>>,
@@ -33,6 +37,10 @@ impl GeometryCacheKey {
     pub fn for_stroke(stroke: &Stroke) -> Self {
         Self {
             texture_mapping: stroke.brush.texture.mapping,
+            texture_scale: stroke.brush.texture.scale,
+            texture_anchor_mode: stroke.brush.texture.anchor_mode,
+            texture_frame: stroke.brush.texture.frame,
+            texture_scale_with_brush: stroke.brush.texture.scale_with_brush,
             point_count: stroke.points.len(),
             point_thickness: stroke.point_thickness.clone(),
             point_colors: stroke.point_colors.clone(),
@@ -43,6 +51,10 @@ impl GeometryCacheKey {
     pub fn identity(point_count: usize) -> Self {
         Self {
             texture_mapping: Default::default(),
+            texture_scale: crate::texture::TextureSettings::default().scale,
+            texture_anchor_mode: Default::default(),
+            texture_frame: None,
+            texture_scale_with_brush: true,
             point_count,
             point_thickness: None,
             point_colors: None,

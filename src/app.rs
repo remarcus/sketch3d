@@ -2777,6 +2777,22 @@ impl SketchApp {
             };
             return;
         }
+        if self.brush.texture.anchor_mode == crate::texture::TextureAnchorMode::CapturedPlanar
+            && self.brush.tip_asset_id != 0
+        {
+            self.finish();
+            self.resume_ink = false;
+            self.status = "Captured planar texture anchoring is unavailable for image-tip brushes; use stroke-following mapping.".into();
+            return;
+        }
+        if self.brush.texture.anchor_mode == crate::texture::TextureAnchorMode::CapturedPlanar
+            && self.doc.active_model_reference.is_some()
+        {
+            self.finish();
+            self.resume_ink = false;
+            self.status = "Captured planar texture anchoring supports flat work, saved planes, and image planes; use stroke-following mapping on OBJ surfaces.".into();
+            return;
+        }
         if self.doc.active_model_reference.is_some() {
             self.add_model_point_with_tilt(position, pressure, rect, begin, tilt);
             return;
@@ -2795,11 +2811,32 @@ impl SketchApp {
         });
         let image_hit = self.image_plane_hit(origin, direction);
         let saved_geometry = self.saved_guide_geometry().cloned();
+        let saved_planar_frame = saved_geometry.as_ref().and_then(|geometry| match geometry {
+            crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } => {
+                Some(crate::texture::TextureFrame::from_plane(*origin, *rotation))
+            }
+            _ => None,
+        });
         let saved_guide_hit = saved_geometry
             .as_ref()
             .and_then(|geometry| geometry.clone().hit(origin, direction));
         let saved_surface = self.saved_guide_surface();
         let saved_guide_frame = saved_guide_hit.and_then(|world| self.saved_guide_frame(world));
+        let unsupported_texture_surface = if self.doc.active_guide.is_some() {
+            saved_planar_frame.is_none()
+        } else if self.doc.active_image_plane.is_some() {
+            active_image_plane.is_none()
+        } else {
+            self.use_cylinder || self.use_revolved
+        };
+        if self.brush.texture.anchor_mode == crate::texture::TextureAnchorMode::CapturedPlanar
+            && unsupported_texture_surface
+        {
+            self.finish();
+            self.resume_ink = false;
+            self.status = "Captured planar texture anchoring supports flat work, saved planes, and drawable image planes; use stroke-following mapping on curved surfaces.".into();
+            return;
+        }
         let hit = if self.doc.active_guide.is_some() {
             saved_guide_hit
         } else if self.doc.active_image_plane.is_some() {
@@ -2854,6 +2891,32 @@ impl SketchApp {
             } else {
                 Surface::Plane
             });
+            let texture = if self.brush.texture.anchor_mode
+                == crate::texture::TextureAnchorMode::CapturedPlanar
+            {
+                let current_frame = active_image_plane
+                    .and_then(|(image_plane_id, rotation)| {
+                        self.doc
+                            .image_planes
+                            .iter()
+                            .find(|plane| plane.id == image_plane_id)
+                            .map(|plane| {
+                                crate::texture::TextureFrame::from_plane(plane.origin, rotation)
+                            })
+                    })
+                    .or(saved_planar_frame)
+                    .unwrap_or_else(|| {
+                        crate::texture::TextureFrame::from_drawing_plane(self.guide)
+                    });
+                let frame = self.brush.texture.frame.unwrap_or(current_frame);
+                self.brush.texture.frame = Some(frame);
+                crate::texture::TextureSettings {
+                    frame: Some(frame),
+                    ..self.brush.texture
+                }
+            } else {
+                self.brush.texture
+            };
             self.doc.strokes.push(Stroke {
                 model_surface: None,
                 curve: None,
@@ -2902,6 +2965,7 @@ impl SketchApp {
                         surface_target: self.captured_dab_surface(saved_geometry.as_ref()),
                         ..self.brush.dabs
                     },
+                    texture,
                     ..self.brush
                 },
                 points: Vec::new(),
@@ -7876,11 +7940,11 @@ impl SketchApp {
             } else if self.preset_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["preset application captures resolved settings","create duplicate rename update delete and defaults","restart persistence","live GPU previews","library edits preserve existing ink and export","corrupt library fallback and explicit repair backup"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.texture_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","Chalk/Graphite/Charcoal sampler includes pressure and width variation","Graphite and Charcoal world-grain scale and UVs remain stable under uniform transform","Graphite and Charcoal visible coverage is pickable and erases as one undoable stroke","front and orbit renders at 640x360, 1280x720, and 2560x1440","stroke duplication and undo","textured drawing and erasing at an alpha-covered point","version 28 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["masked GPU rendering","selection retains coverage","Chalk/Graphite/Charcoal sampler includes pressure and width variation","Graphite and Charcoal world-grain scale and UVs remain stable under uniform transform","Graphite and Charcoal visible coverage is pickable and erases as one undoable stroke","front and orbit renders at 640x360, 1280x720, and 2560x1440","stroke duplication and undo","textured drawing and erasing at an alpha-covered point","version 29 save/reload","original procedural mask sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.dynamics_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 28 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["synthetic Windows Ink contact and tilt","independent pressure settings","pressure-to-opacity capture","soft-edge geometry coverage","overlap compositing independent of document order","camera-orbit stability","opaque-surface occlusion","stabilized release tail","cancellation discards dynamics","missing tilt fallback","captured settings","version 29 save/reload","GPU dynamics sampler"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.brush_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 28 save/reload","GPU brush sampler","Stipple spacing and Spray density/spread sampler","scattered dab picking and partial erase","dab placement, render geometry, and GLB budgets","front/orbit Stipple and Spray renders at three output sizes","Leaf/Grass/Star image-tip taps and drags","transparent-edge image-tip picking and misses","image-tip native roundtrip","GLB original tip images, UVs, tint and alpha","OBJ diffuse and alpha companions","image-tip export sizes and CPU timings","front/orbit image-stamp renders at three output sizes","Rake and Bristle Fan strand geometry against Dry Brush","strand-aware picking and partial-erase fragments","native strand settings roundtrip","GLB and OBJ strand meshes parsed and budgeted","front/orbit strand renders at three output sizes","Square, Triangular, and Star Tube pressure/taper profiles","profiled mesh picking and native roundtrip","GLB and OBJ profile normals and faces parsed and budgeted","front/orbit profile renders at three output sizes"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["all brush types through drawing input","captured guide orientation","camera orbit preserves mesh","shape-aware picking and erasing","duplication","scale and rotation preserve brush shape","cylinder frames and stabilized release tails","undo/redo","version 29 save/reload","GPU brush sampler","Stipple spacing and Spray density/spread sampler","scattered dab picking and partial erase","dab placement, render geometry, and GLB budgets","front/orbit Stipple and Spray renders at three output sizes","Leaf/Grass/Star image-tip taps and drags","transparent-edge image-tip picking and misses","image-tip native roundtrip","GLB original tip images, UVs, tint and alpha","OBJ diffuse and alpha companions","image-tip export sizes and CPU timings","front/orbit image-stamp renders at three output sizes","Rake and Bristle Fan strand geometry against Dry Brush","strand-aware picking and partial-erase fragments","native strand settings roundtrip","GLB and OBJ strand meshes parsed and budgeted","front/orbit strand renders at three output sizes","Square, Triangular, and Star Tube pressure/taper profiles","profiled mesh picking and native roundtrip","GLB and OBJ profile normals and faces parsed and budgeted","front/orbit profile renders at three output sizes"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","seam-crossing cylinder curves preview across camera orbit and cancel cleanly","committed cylinder curves remain on their captured surface after native reload","cylinder curve edit remains on the captured surface and applies as one undo/redo step","cylinder ellipse preview, cancel, commit, semantic reopen, and undo/redo","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {

@@ -907,7 +907,7 @@ impl Default for Document {
         Self {
             layers: layers_default(),
             active_layer: 1,
-            version: 28,
+            version: 29,
             strokes: Vec::new(),
             image_planes: Vec::new(),
             active_image_plane: None,
@@ -1246,7 +1246,7 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=28)) {
+        if !matches!(version, Some(1..=29)) {
             return Err("Unsupported document version".into());
         }
         if matches!(version, Some(1..=6)) {
@@ -1330,7 +1330,7 @@ impl Document {
                 }
             }
         }
-        doc.version = 28;
+        doc.version = 29;
         doc.refresh_linked_instances()?;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
@@ -1434,6 +1434,11 @@ impl Document {
                 if !image_texture.is_valid() || !tip_assets.contains_key(&image_texture.asset_id) {
                     return Err("Invalid or missing repeating brush texture image".into());
                 }
+            }
+            if stroke.brush.texture.anchor_mode == crate::texture::TextureAnchorMode::CapturedPlanar
+                && stroke.brush.texture.frame.is_none()
+            {
+                return Err("Planar-anchored stroke texture is missing its captured frame".into());
             }
             total += stroke.points.len();
             if stroke.brush.dabs.enabled {
@@ -1599,7 +1604,7 @@ mod tests {
                 animation: Default::default(),
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-            assert_eq!(loaded.version, 28);
+            assert_eq!(loaded.version, 29);
             assert_eq!(loaded.strokes, doc.strokes);
         }
     }
@@ -1626,7 +1631,7 @@ mod tests {
         // a new shape, or prevent an otherwise valid legacy file from opening.
         old["strokes"][0]["brush"] = serde_json::json!({"kind": "future_brush"});
         let loaded = Document::from_json(&old.to_string()).unwrap();
-        assert_eq!(loaded.version, 28);
+        assert_eq!(loaded.version, 29);
         assert_eq!(loaded.strokes, vec![original]);
         old["strokes"][0].as_object_mut().unwrap().remove("brush");
         let without_extension = Document::from_json(&old.to_string()).unwrap();
@@ -1655,7 +1660,7 @@ mod tests {
             .remove("opacity");
 
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 28);
+        assert_eq!(loaded.version, 29);
         assert_eq!(loaded.strokes[0].brush.opacity, 1.0);
         assert_eq!(loaded.strokes[0].brush.softness, 0.0);
         assert_eq!(
@@ -1665,7 +1670,7 @@ mod tests {
 
         let saved = serde_json::to_string(&loaded).unwrap();
         let reopened = Document::from_json(&saved).unwrap();
-        assert_eq!(reopened.version, 28);
+        assert_eq!(reopened.version, 29);
         assert_eq!(reopened.strokes, loaded.strokes);
     }
     #[test]
@@ -1807,7 +1812,7 @@ mod tests {
         value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
         value["strokes"][0]["points"][0]["tilt"] = serde_json::json!("unknown extension");
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 28);
+        assert_eq!(loaded.version, 29);
         assert_eq!(loaded.strokes, vec![original]);
     }
     #[test]
@@ -1887,6 +1892,7 @@ mod tests {
             mapping: Default::default(),
             strength: 0.82,
             seed: 1234,
+            ..TextureSettings::default()
         };
         let doc = Document {
             linked_stroke_groups: Default::default(),
@@ -1910,7 +1916,7 @@ mod tests {
         legacy["strokes"][0]["brush"]["texture"] = serde_json::json!({"kind":"future_pattern"});
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
         mark.brush.texture = TextureSettings::default();
-        assert_eq!(loaded.version, 28);
+        assert_eq!(loaded.version, 29);
         assert_eq!(loaded.strokes, vec![mark]);
     }
     #[test]
@@ -1987,7 +1993,7 @@ mod layer_tests {
         value["active_layer"] = serde_json::json!(99);
         value["strokes"][0]["layer_id"] = serde_json::json!("unknown");
         let migrated = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(migrated.version, 28);
+        assert_eq!(migrated.version, 29);
         assert_eq!(migrated.strokes, vec![original]);
         assert_eq!(migrated.layers, layers_default());
         assert_eq!(migrated.active_layer, 1);
@@ -2362,7 +2368,7 @@ mod saved_guide_document_tests {
         legacy.as_object_mut().unwrap().remove("guide_resources");
         legacy.as_object_mut().unwrap().remove("active_guide");
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
-        assert_eq!(loaded.version, 28);
+        assert_eq!(loaded.version, 29);
         assert!(loaded.guide_resources.is_empty());
         assert_eq!(loaded.active_guide, None);
         assert_eq!(loaded.strokes, doc.strokes);
@@ -2415,7 +2421,7 @@ mod group_tests {
         };
         let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
         assert_eq!(reopened.strokes, doc.strokes);
-        assert_eq!(reopened.version, 28);
+        assert_eq!(reopened.version, 29);
 
         let mut invalid = doc;
         invalid.strokes[0].model_surface.as_mut().unwrap().triangles[0].normal = Vec3::ZERO;
@@ -2449,7 +2455,7 @@ mod group_tests {
             s.group_id = None;
         }
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 28);
+        assert_eq!(loaded.version, 29);
         assert_eq!(loaded.strokes, doc.strokes);
         assert_eq!(loaded.layers, doc.layers);
     }

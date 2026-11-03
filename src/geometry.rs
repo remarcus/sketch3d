@@ -706,9 +706,29 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
     for evaluated_stroke in evaluated {
         let evaluated_stroke = evaluated_stroke.as_ref();
         let mut generated = stroke_mesh_unmapped_evaluated(evaluated_stroke);
-        if evaluated_stroke.fill.is_none() && evaluated_stroke.brush.tip_asset_id == 0 {
-            for vertex in &mut generated {
-                vertex.uv = evaluated_stroke.brush.texture.mapping.map(vertex.uv);
+        let texture_settings = evaluated_stroke.brush.texture;
+        let has_fill_texture = evaluated_stroke
+            .fill
+            .and_then(|fill| fill.texture)
+            .is_some();
+        if evaluated_stroke.brush.tip_asset_id == 0 && !has_fill_texture {
+            match texture_settings.anchor_mode {
+                crate::texture::TextureAnchorMode::StrokeFollowing => {
+                    if evaluated_stroke.fill.is_none() {
+                        for vertex in &mut generated {
+                            vertex.uv = texture_settings.mapping.map(vertex.uv);
+                        }
+                    }
+                }
+                crate::texture::TextureAnchorMode::CapturedPlanar => {
+                    if let Some(frame) = texture_settings.frame {
+                        for vertex in &mut generated {
+                            let position = Vec3::from(vertex.position);
+                            let uv = frame.project(position, texture_settings.scale);
+                            vertex.uv = texture_settings.mapping.map(uv);
+                        }
+                    }
+                }
             }
         }
         if is_array

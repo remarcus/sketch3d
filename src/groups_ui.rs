@@ -627,7 +627,7 @@ impl SketchApp {
                 assert_eq!(self.doc.group_members(copy_group), copies);
                 let loaded =
                     Document::from_json(&serde_json::to_string(&self.doc).unwrap()).unwrap();
-                assert_eq!(loaded.version, 28);
+                assert_eq!(loaded.version, 29);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.apply_layer_action(editing::LayerAction::Lock(1, true));
                 assert!(self
@@ -887,7 +887,7 @@ mod linked_group_tests {
         let output = tempfile::tempdir().unwrap();
         let report = linked_group_portability_report(&document, output.path()).unwrap();
         assert_eq!(report["passed"], true);
-        assert_eq!(report["native"]["version"], 28);
+        assert_eq!(report["native"]["version"], 29);
         assert_eq!(report["native"]["instances"], 2);
         assert_eq!(report["recovery"]["fresh_reader"], true);
         assert_eq!(report["merge"]["undo_redo"], true);

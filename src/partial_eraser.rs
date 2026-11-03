@@ -497,7 +497,11 @@ fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> 
                 fragment.point_colors = crate::stroke_sculpt::remap_point_colors(stroke, &points);
                 fragment.points = points;
                 fragment.curve = None;
-                if fragment.brush.texture.image.is_some() && !fragment.brush.dabs.enabled {
+                if fragment.brush.texture.image.is_some()
+                    && fragment.brush.texture.anchor_mode
+                        == crate::texture::TextureAnchorMode::StrokeFollowing
+                    && !fragment.brush.dabs.enabled
+                {
                     let local_start = (origin - stroke.brush.dab_distance_origin).max(0.0)
                         / fragment.brush.texture.scale;
                     let mapping = fragment.brush.texture.mapping;

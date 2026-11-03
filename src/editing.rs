@@ -583,7 +583,9 @@ pub fn transformed_with_scale(
             fill.offset *= normal_factor.recip();
         }
         stroke.radius *= width_scale;
-        stroke.brush.texture.scale *= average_scale;
+        if stroke.brush.texture.scale_with_brush {
+            stroke.brush.texture.scale *= average_scale;
+        }
         stroke.brush.dynamics.taper_start *= average_scale;
         stroke.brush.dynamics.taper_end *= average_scale;
         stroke.brush.dab_distance_origin *= average_scale;

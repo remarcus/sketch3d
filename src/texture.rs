@@ -37,6 +37,63 @@ pub enum ImageMaskSource {
     LuminanceTimesAlpha,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextureAnchorMode {
+    /// UVs follow the stroke path and its cross section.
+    #[default]
+    StrokeFollowing,
+    /// UVs use the captured plane frame shared by brush strokes until reanchored.
+    CapturedPlanar,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextureFrame {
+    pub origin: [f32; 3],
+    pub axis_u: [f32; 3],
+    pub axis_v: [f32; 3],
+}
+
+impl TextureFrame {
+    pub fn from_drawing_plane(plane: crate::geometry::DrawingPlane) -> Self {
+        let (axis_u, axis_v, _) = plane.basis();
+        Self {
+            origin: plane.origin().to_array(),
+            axis_u: axis_u.to_array(),
+            axis_v: axis_v.to_array(),
+        }
+    }
+
+    pub fn from_plane(origin: glam::Vec3, rotation: glam::Quat) -> Self {
+        Self {
+            origin: origin.to_array(),
+            axis_u: (rotation * glam::Vec3::X).to_array(),
+            axis_v: (rotation * glam::Vec3::Y).to_array(),
+        }
+    }
+
+    pub fn is_valid(self) -> bool {
+        let origin = glam::Vec3::from_array(self.origin);
+        let axis_u = glam::Vec3::from_array(self.axis_u);
+        let axis_v = glam::Vec3::from_array(self.axis_v);
+        origin.is_finite()
+            && origin.abs().max_element() <= 10_000.0
+            && axis_u.is_finite()
+            && axis_v.is_finite()
+            && (axis_u.length_squared() - 1.0).abs() <= 0.001
+            && (axis_v.length_squared() - 1.0).abs() <= 0.001
+            && axis_u.dot(axis_v).abs() <= 0.001
+    }
+
+    pub fn project(self, position: glam::Vec3, period: f32) -> [f32; 2] {
+        let offset = position - glam::Vec3::from_array(self.origin);
+        [
+            offset.dot(glam::Vec3::from_array(self.axis_u)) / period,
+            offset.dot(glam::Vec3::from_array(self.axis_v)) / period,
+        ]
+    }
+}
+
 /// Settings are stored on stroke textures; image bytes live in the shared,
 /// content-addressed document image catalog.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -111,6 +168,13 @@ impl TextureKind {
 pub struct TextureSettings {
     #[serde(default)]
     pub mapping: TextureMapping,
+    #[serde(default)]
+    pub anchor_mode: TextureAnchorMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<TextureFrame>,
+    /// Legacy documents default to scaling the repeat period with the brush.
+    #[serde(default = "scale_with_brush_default")]
+    pub scale_with_brush: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<ImageTextureSettings>,
     pub kind: TextureKind,
@@ -118,10 +182,16 @@ pub struct TextureSettings {
     pub strength: f32,
     pub seed: u32,
 }
+fn scale_with_brush_default() -> bool {
+    true
+}
 impl Default for TextureSettings {
     fn default() -> Self {
         Self {
             mapping: TextureMapping::default(),
+            anchor_mode: TextureAnchorMode::StrokeFollowing,
+            frame: None,
+            scale_with_brush: true,
             image: None,
             kind: TextureKind::Solid,
             scale: 0.2,
@@ -133,6 +203,7 @@ impl Default for TextureSettings {
 impl TextureSettings {
     pub fn is_valid(self) -> bool {
         self.mapping.is_valid()
+            && self.frame.is_none_or(TextureFrame::is_valid)
             && self.image.is_none_or(ImageTextureSettings::is_valid)
             && (self.image.is_none() || self.kind == TextureKind::Solid)
             && self.scale.is_finite()

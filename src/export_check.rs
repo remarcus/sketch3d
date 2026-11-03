@@ -315,6 +315,7 @@ pub fn textured_fixture() -> Document {
                 strength: 0.8,
                 seed: 42 + row as u32,
                 mapping: Default::default(),
+                ..TextureSettings::default()
             },
             ..Brush::default()
         };

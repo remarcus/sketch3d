@@ -111,7 +111,7 @@ pub fn run(report_path: &Path) -> Result<(), String> {
         .remove("animation");
     legacy["version"] = serde_json::json!(24);
     let upgraded = Document::from_json(&legacy.to_string())?;
-    if !upgraded.animation.is_empty() || upgraded.version != 28 {
+    if !upgraded.animation.is_empty() || upgraded.version != 29 {
         return Err(
             "Version 24 native migration did not create an empty version 1 animation track".into(),
         );

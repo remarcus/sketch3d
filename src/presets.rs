@@ -18,7 +18,7 @@ const FIRST_PERSONAL_ID: u64 = 100;
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_PACKAGE_BYTES: u64 = 1024 * 1024;
 const PACKAGE_FORMAT: &str = "spatial-sketch-brush";
-const LIBRARY_VERSION: u32 = 6;
+const LIBRARY_VERSION: u32 = 7;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Preset {
@@ -31,8 +31,8 @@ pub struct Preset {
 }
 
 /// Portable, self-contained brush definition. Version 1 is settings-only;
-/// version 2 can carry a PNG stamp tip; version 3 can also carry a repeating
-/// image texture as a separately role-tagged asset.
+/// version 2 can carry a PNG stamp tip; version 3 adds repeating image
+/// textures; version 4 adds captured texture anchors and scale behavior.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushPackage {
     pub format: String,
@@ -68,7 +68,9 @@ impl BrushPackage {
     ) -> Self {
         Self {
             format: PACKAGE_FORMAT.into(),
-            version: if repeating_texture_asset.is_some() {
+            version: if texture_needs_v4(preset.brush.texture) {
+                4
+            } else if repeating_texture_asset.is_some() {
                 3
             } else if tip_asset.is_some() {
                 2
@@ -154,16 +156,18 @@ impl BrushPackage {
         if self.format != PACKAGE_FORMAT {
             return Err("This is not a Sketch3D brush package".into());
         }
-        if !matches!(self.version, 1 | 2 | 3) {
+        if !matches!(self.version, 1 | 2 | 3 | 4) {
             return Err("Unsupported brush package version".into());
         }
         match self.version {
             1 if self.tip_asset.is_none()
                 && self.repeating_texture_asset.is_none()
                 && self.preset.brush.tip_asset_id == 0
-                && self.preset.brush.texture.image.is_none() => {}
+                && self.preset.brush.texture.image.is_none()
+                && !texture_needs_v4(self.preset.brush.texture) => {}
             2 if self.repeating_texture_asset.is_none()
-                && self.preset.brush.texture.image.is_none() =>
+                && self.preset.brush.texture.image.is_none()
+                && !texture_needs_v4(self.preset.brush.texture) =>
             {
                 match (&self.tip_asset, self.preset.brush.tip_asset_id) {
                     (None, 0) => {}
@@ -186,6 +190,35 @@ impl BrushPackage {
                 self.preset.brush.tip_asset_id,
                 self.preset.brush.texture.image,
             ) {
+                (None, Some(asset), 0, Some(settings))
+                    if settings.asset_id == asset.id
+                        && !texture_needs_v4(self.preset.brush.texture) =>
+                {
+                    asset.validate()?;
+                    if !settings.is_valid() || self.preset.brush.texture.kind != TextureKind::Solid
+                    {
+                        return Err("Brush package repeating-texture settings are invalid".into());
+                    }
+                }
+                _ => {
+                    return Err(
+                        "Brush package image asset reference is missing or inconsistent".into(),
+                    )
+                }
+            },
+            4 => match (
+                &self.tip_asset,
+                &self.repeating_texture_asset,
+                self.preset.brush.tip_asset_id,
+                self.preset.brush.texture.image,
+            ) {
+                (None, None, 0, None) => {}
+                (Some(asset), None, id, None) if id == asset.id => {
+                    asset.validate()?;
+                    if !valid_tip_settings(&self.preset.brush, asset) {
+                        return Err("Brush package image-tip settings are invalid".into());
+                    }
+                }
                 (None, Some(asset), 0, Some(settings)) if settings.asset_id == asset.id => {
                     asset.validate()?;
                     if !settings.is_valid() || self.preset.brush.texture.kind != TextureKind::Solid
@@ -291,6 +324,12 @@ fn valid_tip_settings(brush: &Brush, asset: &crate::brush_tip::BrushTipAsset) ->
         && !brush.dynamics.tilt_orientation
         && !brush.dynamics.tilt_shading
         && (brush.tip_aspect - asset.size[0] as f32 / asset.size[1] as f32).abs() <= 1e-4
+}
+
+fn texture_needs_v4(texture: TextureSettings) -> bool {
+    texture.anchor_mode != crate::texture::TextureAnchorMode::StrokeFollowing
+        || texture.frame.is_some()
+        || !texture.scale_with_brush
 }
 
 impl Preset {
@@ -794,7 +833,7 @@ impl Library {
         }
         let mut library: Self =
             serde_json::from_str(text).map_err(|e| format!("Cannot read brush library: {e}"))?;
-        if matches!(library.version, 1..=5) {
+        if matches!(library.version, 1..=6) {
             let previous_version = library.version;
             let defaults = Library::default();
             let first_new_id = match previous_version {

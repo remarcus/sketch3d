@@ -13,6 +13,41 @@ impl SketchApp {
         egui::CollapsingHeader::new("Surface texture")
             .default_open(true)
             .show(ui, |ui| {
+                let mut anchor_mode = self.brush.texture.anchor_mode;
+                egui::ComboBox::from_label("Texture anchor")
+                    .selected_text(match anchor_mode {
+                        crate::texture::TextureAnchorMode::StrokeFollowing => "Stroke following",
+                        crate::texture::TextureAnchorMode::CapturedPlanar => "Captured planar surface",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut anchor_mode,
+                            crate::texture::TextureAnchorMode::StrokeFollowing,
+                            "Stroke following",
+                        );
+                        ui.selectable_value(
+                            &mut anchor_mode,
+                            crate::texture::TextureAnchorMode::CapturedPlanar,
+                            "Captured planar surface",
+                        );
+                    });
+                if anchor_mode != self.brush.texture.anchor_mode {
+                    self.brush.texture.anchor_mode = anchor_mode;
+                    self.brush.texture.frame = None;
+                }
+                ui.checkbox(
+                    &mut self.brush.texture.scale_with_brush,
+                    "Scale texture with brush",
+                );
+                if self.brush.texture.anchor_mode
+                    == crate::texture::TextureAnchorMode::CapturedPlanar
+                {
+                    ui.small("Strokes from this brush share a captured flat plane frame. Reanchor when drawing on a different plane; curved and OBJ surfaces are unsupported.");
+                    ui.small("Captured grain stays on its world-space plane when strokes move or rotate. Scale texture with brush changes its repeat period during stroke scaling.");
+                    if ui.button("Reanchor next stroke to current plane").clicked() {
+                        self.brush.texture.frame = None;
+                    }
+                }
                 if self.brush.texture.image.is_none() {
                     ui_style::field_row(ui, "Pattern", |ui| {
                         ui.horizontal_wrapped(|ui| {
@@ -118,6 +153,7 @@ impl SketchApp {
                     ui.add(egui::Slider::new(&mut self.brush.texture.mapping.rotation_degrees, -180.0..=180.0).text("Texture rotation"));
                     for axis in 0..2 {
                         ui.add(egui::Slider::new(&mut self.brush.texture.mapping.scale[axis], 0.05..=20.0).logarithmic(true).text(if axis == 0 { "Texture U scale" } else { "Texture V scale" }));
+                        ui.add(egui::DragValue::new(&mut self.brush.texture.mapping.offset[axis]).speed(0.01).range(-1000.0..=1000.0).prefix(if axis == 0 { "U offset " } else { "V offset " }));
                     }
                     if ui.button("Reset texture mapping").clicked() {
                         self.brush.texture.mapping = Default::default();
@@ -160,6 +196,7 @@ impl SketchApp {
                         self.brush.texture.kind = TextureKind::Solid;
                     }
                     ui.small("Image colors repeat along the stroke. Transparent texels leave open gaps.");
+                    ui.small("Repeat spacing uses document world units; U/V scale and offsets use tile coordinates.");
                 } else if self.brush.texture.kind != TextureKind::Solid {
                     ui.add(egui::Slider::new(&mut self.brush.texture.scale, 0.02..=10.0).logarithmic(true).text("Spacing"));
                     ui.add(egui::Slider::new(&mut self.brush.texture.strength, 0.0..=1.0).text("Strength"));
@@ -175,6 +212,7 @@ impl SketchApp {
                     } else {
                         ui.small("Spacing is in world units. Gaps remain part of the selectable stroke footprint.");
                     }
+                    ui.small("U/V scale and offsets use tile coordinates; repeat spacing uses document world units.");
                 }
             });
     }
@@ -294,7 +332,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 28);
+                assert_eq!(loaded.version, 29);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.load_textures();
                 self.brush.texture = TextureSettings {
