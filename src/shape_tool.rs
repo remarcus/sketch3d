@@ -391,11 +391,12 @@ impl SketchApp {
             .is_some_and(|draft| draft.editing_stroke_id.is_some());
         ui.strong(format!("{} TOOL", mode.label().to_ascii_uppercase()));
         ui.label("Shapes follow the active plane or cylinder and use uniform start pressure.");
-        if self.shape_tool.draft.is_none() && self.has_selected_curved_shape() {
-            if ui.button("Edit selected cylinder shape").clicked() {
-                self.open_selected_curved_shape();
-                return;
-            }
+        if self.shape_tool.draft.is_none()
+            && self.has_selected_curved_shape()
+            && ui.button("Edit selected cylinder shape").clicked()
+        {
+            self.open_selected_curved_shape();
+            return;
         }
         let mut dimensions_changed = false;
         if !editing {

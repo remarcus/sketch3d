@@ -1030,7 +1030,7 @@ impl SketchApp {
                     });
             let mut textured_mesh =
                 preview_texture.map(|(_, _, texture)| egui::Mesh::with_texture(texture.id()));
-            for tri in vertices.chunks_exact(3) {
+            for tri in vertices.as_chunks::<3>().0 {
                 let projected_triangle = tri
                     .iter()
                     .map(|vertex| {

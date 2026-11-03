@@ -2020,16 +2020,16 @@ if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete
                 painter.add(egui::Shape::convex_polygon(
                     path.clone(),
                     self.ui_style_selection_color(48),
-                    egui::Stroke::new(1.5, accent),
+                    egui::Stroke::new(1.5_f32, accent),
                 ));
             } else {
                 for pair in path.windows(2) {
-                    painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, accent));
+                    painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5_f32, accent));
                 }
                 if path.len() >= 3 {
                     painter.line_segment(
                         [*path.last().unwrap(), path[0]],
-                        egui::Stroke::new(1.5, accent),
+                        egui::Stroke::new(1.5_f32, accent),
                     );
                 }
             }

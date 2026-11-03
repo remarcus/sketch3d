@@ -340,6 +340,7 @@ pub fn tessellate_cylinder_stroke(
     Ok(stroke)
 }
 
+#[allow(clippy::too_many_arguments)] // Recursive subdivision carries the parameter interval and bounded output state.
 fn flatten_cylinder(
     curve: CubicBezier,
     cylinder: crate::surface::Cylinder,

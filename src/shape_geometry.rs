@@ -727,11 +727,13 @@ mod tests {
             reopened.strokes
         );
 
-        let mut camera = crate::geometry::Camera::default();
-        camera.yaw = std::f32::consts::PI;
-        camera.pitch = 0.0;
-        camera.target = cylinder.center;
-        camera.distance = 5.0;
+        let camera = crate::geometry::Camera {
+            yaw: std::f32::consts::PI,
+            pitch: 0.0,
+            target: cylinder.center,
+            distance: 5.0,
+            ..Default::default()
+        };
         let canvas = Rect::from_min_size(Pos2::ZERO, eframe::egui::vec2(500.0, 400.0));
         let screen = crate::gizmo::project(&camera, canvas, ellipse.points[0].position)
             .unwrap()

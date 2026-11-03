@@ -71,6 +71,7 @@ pub struct DabSettings {
 /// Model meshes and freeform guides remain unsupported by this dab stage.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // Captured targets stay Copy for the high-frequency dab placement path.
 pub enum DabSurfaceTarget {
     Cylinder {
         center: Vec3,

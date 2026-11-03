@@ -91,7 +91,7 @@ impl BrushTipAsset {
             return Err("Repeating texture settings do not match the image asset".into());
         }
         let mut decoded = self.decoded()?;
-        for pixel in decoded.pixels.chunks_exact_mut(4) {
+        for pixel in decoded.pixels.as_chunks_mut::<4>().0 {
             let alpha = f32::from(pixel[3]) / 255.0;
             let luminance = (0.2126 * f32::from(pixel[0])
                 + 0.7152 * f32::from(pixel[1])

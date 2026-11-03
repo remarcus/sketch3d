@@ -291,7 +291,7 @@ impl SketchApp {
                     crate::gizmo::project(&self.camera, rect, pair[0].position),
                     crate::gizmo::project(&self.camera, rect, pair[1].position),
                 ) {
-                    painter.line_segment([a, b], egui::Stroke::new(1.5, accent));
+                    painter.line_segment([a, b], egui::Stroke::new(1.5_f32, accent));
                 }
             }
             for (index, point) in stroke.points.iter().enumerate() {
@@ -320,12 +320,12 @@ impl SketchApp {
                 drag.path.clone()
             };
             for pair in path.windows(2) {
-                painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, accent));
+                painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5_f32, accent));
             }
             if drag.shape == crate::app::selection::RegionSelectionShape::Box && path.len() == 4 {
                 painter.line_segment(
                     [*path.last().unwrap(), path[0]],
-                    egui::Stroke::new(1.5, accent),
+                    egui::Stroke::new(1.5_f32, accent),
                 );
             }
         }

@@ -156,7 +156,7 @@ impl BrushPackage {
         if self.format != PACKAGE_FORMAT {
             return Err("This is not a Sketch3D brush package".into());
         }
-        if !matches!(self.version, 1 | 2 | 3 | 4) {
+        if !matches!(self.version, 1..=4) {
             return Err("Unsupported brush package version".into());
         }
         match self.version {

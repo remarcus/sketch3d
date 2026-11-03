@@ -103,7 +103,7 @@ pub fn paint(
         None
     };
     let linked_ids = doc.linked_generated_ids();
-    let spacing = settings.radius_px.min(4.0).max(1.0);
+    let spacing = settings.radius_px.clamp(1.0, 4.0);
     let mut before: Snapshot = Vec::new();
     let mut after: Snapshot = Vec::new();
     let mut document_point_count: usize =

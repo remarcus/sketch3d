@@ -213,7 +213,7 @@ impl SketchApp {
                     crate::gizmo::project(&self.camera, rect, pair[0].position),
                     crate::gizmo::project(&self.camera, rect, pair[1].position),
                 ) {
-                    painter.line_segment([a, b], egui::Stroke::new(2.0, color));
+                    painter.line_segment([a, b], egui::Stroke::new(2.0_f32, color));
                 }
             }
         }
