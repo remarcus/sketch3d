@@ -31,6 +31,22 @@ pub(super) struct BrushSelectionDrag {
     path: Vec<Pos2>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum RegionSelectionShape {
+    #[default]
+    Box,
+    Lasso,
+}
+
+pub(super) struct RegionSelectionDrag {
+    starting_selection: HashSet<u64>,
+    path: Vec<Pos2>,
+    shape: RegionSelectionShape,
+    operation: crate::brush_selection::RegionSelectionOperation,
+    fully_contained: bool,
+    through: bool,
+}
+
 impl BrushSelectionDrag {
     pub(super) fn path_len(&self) -> usize {
         self.path.len()
@@ -145,6 +161,25 @@ pub(super) struct RepeatState {
 const MAX_REPEAT_COPIES: usize = 100;
 const MAX_DOCUMENT_STROKES: usize = 100_000;
 const MAX_DOCUMENT_POINTS: usize = 2_000_000;
+
+fn region_polygon(drag: &RegionSelectionDrag) -> Vec<Pos2> {
+    if drag.shape == RegionSelectionShape::Box {
+        let Some(end) = drag.path.last().copied() else {
+            return Vec::new();
+        };
+        let start = drag.path[0];
+        if start.distance(end) < 2.0 {
+            return Vec::new();
+        }
+        return vec![
+            Pos2::new(start.x.min(end.x), start.y.min(end.y)),
+            Pos2::new(start.x.max(end.x), start.y.min(end.y)),
+            Pos2::new(start.x.max(end.x), start.y.max(end.y)),
+            Pos2::new(start.x.min(end.x), start.y.max(end.y)),
+        ];
+    }
+    drag.path.clone()
+}
 
 impl SketchApp {
     fn begin_appearance_edit(&mut self) {
@@ -262,6 +297,58 @@ impl SketchApp {
         }
     }
 
+    pub(super) fn update_region_selection(&mut self, pos: Pos2, rect: Rect) {
+        let Some(drag) = self.region_select_drag.as_mut() else {
+            return;
+        };
+        if drag
+            .path
+            .last()
+            .is_none_or(|last| last.distance(pos) >= 2.0)
+            && drag.path.len() < crate::brush_selection::MAX_REGION_VERTICES
+        {
+            drag.path.push(pos);
+        }
+        let region = region_polygon(drag);
+        if region.len() < 3 {
+            return;
+        }
+        match crate::brush_selection::region_hit_ids(
+            &self.doc,
+            &self.camera,
+            rect,
+            &region,
+            drag.fully_contained,
+            drag.through,
+            self.individual_selection,
+        ) {
+            Ok(hits) => {
+                self.selected = crate::brush_selection::apply_region_selection(
+                    &drag.starting_selection,
+                    &hits,
+                    drag.operation,
+                );
+            }
+            Err(error) => self.status = error.into(),
+        }
+    }
+
+    pub(super) fn commit_region_selection(&mut self) {
+        if self.region_select_drag.take().is_some() {
+            self.status = format!(
+                "Region selection finished: {} stroke(s) selected.",
+                self.selected.len()
+            );
+        }
+    }
+
+    pub(super) fn cancel_region_selection(&mut self) {
+        if let Some(drag) = self.region_select_drag.take() {
+            self.selected = drag.starting_selection;
+            self.status = "Region selection cancelled.".into();
+        }
+    }
+
     pub(super) fn commit_brush_selection(&mut self) {
         if self.brush_select_drag.take().is_some() {
             self.status = format!(
@@ -352,11 +439,40 @@ impl SketchApp {
         }
     }
     pub(super) fn select_pointer(&mut self, pos: Pos2, rect: Rect, begin: bool, shift: bool) {
+        if self.reprojection_draft.is_some() {
+            return;
+        }
+        if self.point_multi_draft.is_some() {
+            self.multi_point_pointer(pos, rect, begin);
+            return;
+        }
         if self.point_draft.is_some() {
             self.canvas_point_pointer(pos, rect, begin);
             return;
         }
         if self.appearance_draft.is_some() {
+            return;
+        }
+        if begin && self.region_select_enabled {
+            self.finish();
+            let operation = if shift {
+                crate::brush_selection::RegionSelectionOperation::Add
+            } else {
+                self.region_select_operation
+            };
+            self.region_select_drag = Some(RegionSelectionDrag {
+                starting_selection: self.selected.clone(),
+                path: vec![pos],
+                shape: self.region_select_shape,
+                operation,
+                fully_contained: self.region_select_contained,
+                through: self.brush_select_through,
+            });
+            self.update_region_selection(pos, rect);
+            return;
+        }
+        if self.region_select_drag.is_some() {
+            self.update_region_selection(pos, rect);
             return;
         }
         if begin && self.brush_select_enabled {
@@ -1270,6 +1386,16 @@ impl SketchApp {
             }
             return;
         }
+        if self.point_multi_draft.is_some() {
+            if escape {
+                if self.point_multi_drag.is_some() {
+                    self.cancel_multi_point_region();
+                } else {
+                    self.finish_multi_point_edit(false);
+                }
+            }
+            return;
+        }
         if mods.command {
             if a {
                 self.cancel_line_tool();
@@ -1314,7 +1440,9 @@ impl SketchApp {
                     self.delete_selected();
                 }
                 if escape {
-                    if self.brush_select_drag.is_some() {
+                    if self.region_select_drag.is_some() {
+                        self.cancel_region_selection();
+                    } else if self.brush_select_drag.is_some() {
                         self.cancel_brush_selection();
                     } else if self.drag.is_some() {
                         self.cancel_transform();
@@ -1549,6 +1677,14 @@ impl SketchApp {
 
     pub(super) fn selection_panel(&mut self, ui: &mut egui::Ui) {
         self.sync_canvas_point_edit();
+        if self.reprojection_draft.is_some() {
+            self.reprojection_controls(ui);
+            return;
+        }
+        if self.point_multi_draft.is_some() {
+            self.multi_point_controls(ui);
+            return;
+        }
         if self.point_draft.is_some() {
             self.canvas_point_controls(ui);
             return;
@@ -1560,6 +1696,24 @@ impl SketchApp {
         }
         if self.appearance_draft.is_none() {
             self.point_edit_controls(ui);
+            let can_multi_edit = self.selected_model_reference.is_none()
+                && !self.selected.is_empty()
+                && self.selected.len() <= crate::point_edit::MAX_MULTI_STROKES;
+            if ui
+                .add_enabled(can_multi_edit, egui::Button::new("Edit multiple points…"))
+                .clicked()
+            {
+                self.begin_multi_point_edit();
+            }
+            if ui
+                .add_enabled(
+                    !self.selected.is_empty() && self.selected_model_reference.is_none(),
+                    egui::Button::new("Reproject strokes…"),
+                )
+                .clicked()
+            {
+                self.begin_reprojection();
+            }
             self.stroke_modifier_controls(ui);
             self.stroke_join_controls(ui);
             if ui
@@ -1708,8 +1862,50 @@ impl SketchApp {
             }
         });
         ui.separator();
+        if ui
+            .checkbox(&mut self.region_select_enabled, "Drag box/lasso selection")
+            .changed()
+            && self.region_select_enabled
+        {
+            self.brush_select_enabled = false;
+        }
+        if self.region_select_enabled {
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut self.region_select_shape,
+                    RegionSelectionShape::Box,
+                    "Box",
+                );
+                ui.selectable_value(
+                    &mut self.region_select_shape,
+                    RegionSelectionShape::Lasso,
+                    "Lasso",
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut self.region_select_operation,
+                    crate::brush_selection::RegionSelectionOperation::Replace,
+                    "Replace",
+                );
+                ui.selectable_value(
+                    &mut self.region_select_operation,
+                    crate::brush_selection::RegionSelectionOperation::Add,
+                    "Add",
+                );
+                ui.selectable_value(
+                    &mut self.region_select_operation,
+                    crate::brush_selection::RegionSelectionOperation::Subtract,
+                    "Subtract",
+                );
+            });
+            ui.checkbox(&mut self.region_select_contained, "Fully contained strokes");
+            ui.checkbox(&mut self.brush_select_through, "Select through occlusion");
+            ui.small("Stroke-only selection. Hidden and locked layers are excluded. Shift-drag adds. Escape cancels.");
+        }
         ui.checkbox(&mut self.brush_select_enabled, "Drag brush selection");
         if self.brush_select_enabled {
+            self.region_select_enabled = false;
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.brush_select_deselect, false, "Select");
                 ui.selectable_value(&mut self.brush_select_deselect, true, "Deselect");
@@ -1777,6 +1973,14 @@ if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete
         ui.label(RichText::new("One drag = one undo step. Escape cancels a drag.").small());
     }
     pub(super) fn selection_overlay(&self, ui: &egui::Ui, rect: Rect) {
+        if self.reprojection_draft.is_some() {
+            self.reprojection_overlay(ui, rect);
+            return;
+        }
+        if self.point_multi_draft.is_some() {
+            self.multi_point_overlay(ui, rect);
+            return;
+        }
         if self.point_draft.is_some() {
             self.canvas_point_overlay(ui, rect);
             return;
@@ -1785,6 +1989,27 @@ if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete
             return;
         }
         let painter = ui.painter().with_clip_rect(rect);
+        if let Some(region) = &self.region_select_drag {
+            let path = region_polygon(region);
+            let accent = self.ui_style_selection_color(240);
+            if region.shape == RegionSelectionShape::Box && path.len() == 4 {
+                painter.add(egui::Shape::convex_polygon(
+                    path.clone(),
+                    self.ui_style_selection_color(48),
+                    egui::Stroke::new(1.5, accent),
+                ));
+            } else {
+                for pair in path.windows(2) {
+                    painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, accent));
+                }
+                if path.len() >= 3 {
+                    painter.line_segment(
+                        [*path.last().unwrap(), path[0]],
+                        egui::Stroke::new(1.5, accent),
+                    );
+                }
+            }
+        }
         if let Some(brush) = &self.brush_select_drag {
             let accent = self.ui_style_selection_color(255);
             for pair in brush.path.windows(2) {

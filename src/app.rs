@@ -112,6 +112,8 @@ mod recovery_ui;
 mod reference_board;
 #[path = "reference_export_checks.rs"]
 mod reference_export_checks;
+#[path = "reprojection_ui.rs"]
+mod reprojection_ui;
 #[path = "revolved_ui.rs"]
 mod revolved_ui;
 #[path = "ring_checks.rs"]
@@ -303,9 +305,18 @@ pub struct SketchApp {
     brush_select_through: bool,
     brush_select_deselect: bool,
     brush_select_drag: Option<selection::BrushSelectionDrag>,
+    region_select_enabled: bool,
+    region_select_shape: selection::RegionSelectionShape,
+    region_select_operation: crate::brush_selection::RegionSelectionOperation,
+    region_select_contained: bool,
+    region_select_drag: Option<selection::RegionSelectionDrag>,
     appearance_draft: Option<selection::AppearanceDraft>,
     point_draft: Option<crate::point_edit::Draft>,
     point_drag: Option<point_edit_ui::PointDrag>,
+    point_multi_draft: Option<crate::point_edit::MultiDraft>,
+    point_multi_drag: Option<point_edit_ui::MultiPointRegionDrag>,
+    reprojection_draft: Option<crate::reprojection::Draft>,
+    last_canvas_rect: Rect,
     point_verification_frame: Option<u32>,
     active: Option<u64>,
     active_started_at: Option<Instant>,
@@ -1759,9 +1770,18 @@ impl SketchApp {
             brush_select_through: false,
             brush_select_deselect: false,
             brush_select_drag: None,
+            region_select_enabled: false,
+            region_select_shape: selection::RegionSelectionShape::Box,
+            region_select_operation: crate::brush_selection::RegionSelectionOperation::Replace,
+            region_select_contained: false,
+            region_select_drag: None,
             appearance_draft: None,
             point_draft: None,
             point_drag: None,
+            point_multi_draft: None,
+            point_multi_drag: None,
+            reprojection_draft: None,
+            last_canvas_rect: Rect::NOTHING,
             point_verification_frame: std::env::args()
                 .any(|arg| arg == "--verify-point-edit")
                 .then_some(0),
@@ -2567,7 +2587,12 @@ impl SketchApp {
     }
     fn cancel(&mut self) {
         self.finish_canvas_point_edit(false);
+        self.finish_multi_point_edit(false);
+        self.cancel_multi_point_region();
+        self.finish_reprojection(false);
+        self.finish_fill_contour_edit(false);
         self.cancel_brush_selection();
+        self.cancel_region_selection();
         self.cancel_partial_erase();
         self.cancel_shape_draft();
         self.cancel_line();
@@ -3072,7 +3097,10 @@ impl SketchApp {
             self.status = "Set or update the current artwork keyframe before saving.".into();
             return false;
         }
-        if self.point_draft.is_some() {
+        if self.point_draft.is_some()
+            || self.point_multi_draft.is_some()
+            || self.reprojection_draft.is_some()
+        {
             self.status = "Apply or cancel point editing before saving.".into();
             return false;
         }
@@ -3549,6 +3577,18 @@ impl SketchApp {
                     .clicked()
                 {
                     self.begin_canvas_point_edit();
+                }
+                let editable_fill = self.selected.len() == 1
+                    && self.doc.strokes.iter().any(|stroke| {
+                        self.selected.contains(&stroke.id)
+                            && stroke.fill.is_some()
+                            && self.doc.editable(stroke)
+                    });
+                if ui
+                    .add_enabled(editable_fill, egui::Button::new("Edit fill contour…"))
+                    .clicked()
+                {
+                    self.begin_fill_contour_edit();
                 }
             } else if self.fills.enabled {
                 ui.label(RichText::new("Planar fill").strong());
@@ -4606,7 +4646,12 @@ impl SketchApp {
                         self.presentation.schedule_layout_save();
                     }
                     if ui
-                        .add_enabled(self.point_draft.is_none(), egui::Button::new("Hide"))
+                        .add_enabled(
+                            self.point_draft.is_none()
+                                && self.point_multi_draft.is_none()
+                                && self.reprojection_draft.is_none(),
+                            egui::Button::new("Hide"),
+                        )
                         .on_hover_text("Hide inspector")
                         .clicked()
                     {
@@ -4622,6 +4667,10 @@ impl SketchApp {
                     ui.add_enabled_ui(enabled, |ui| {
                         if self.point_draft.is_some() {
                             self.canvas_point_controls(ui);
+                        } else if self.point_multi_draft.is_some() {
+                            self.multi_point_controls(ui);
+                        } else if self.reprojection_draft.is_some() {
+                            self.reprojection_controls(ui);
                         } else if self.mixed_resource_preview_active()
                             && self.presentation.preferences.layout.inspector_tab
                                 != crate::presentation::InspectorTab::Properties
@@ -4820,6 +4869,15 @@ impl SketchApp {
             }
             return;
         }
+        if self
+            .fills
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.original.is_some())
+        {
+            self.fill_contour_pointer(pos, rect, begin);
+            return;
+        }
         if self.placement.active {
             if begin {
                 self.pick_placement(pos, rect);
@@ -4952,6 +5010,28 @@ impl SketchApp {
                 continue;
             }
             if sample.phase == Phase::Up {
+                if self.point_multi_drag.is_some() {
+                    self.multi_point_pointer(sample.position, rect, false);
+                    self.finish_multi_point_region();
+                    continue;
+                }
+                if self.region_select_drag.is_some() {
+                    self.select_pointer(sample.position, rect, false, shift);
+                    self.commit_region_selection();
+                    continue;
+                }
+                if self
+                    .fills
+                    .draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.original.is_some())
+                {
+                    self.fill_contour_pointer(sample.position, rect, false);
+                    if let Some(draft) = &mut self.fills.draft {
+                        draft.drag = None;
+                    }
+                    continue;
+                }
                 if self.point_draft.is_some() {
                     self.canvas_point_pointer(sample.position, rect, false);
                     self.point_drag = None;
@@ -5002,6 +5082,13 @@ impl SketchApp {
             if !inside
                 && self.drag.is_none()
                 && self.point_drag.is_none()
+                && self.point_multi_drag.is_none()
+                && !self
+                    .fills
+                    .draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.drag.is_some())
+                && self.region_select_drag.is_none()
                 && self.brush_select_drag.is_none()
                 && !self.partial_erase_active()
                 && !self.shape_draft_active()
@@ -5106,6 +5193,13 @@ impl SketchApp {
                             } else if inside_canvas(pos)
                                 || ((self.drag.is_some()
                                     || self.point_drag.is_some()
+                                    || self.point_multi_drag.is_some()
+                                    || self
+                                        .fills
+                                        .draft
+                                        .as_ref()
+                                        .is_some_and(|draft| draft.drag.is_some())
+                                    || self.region_select_drag.is_some()
                                     || self.brush_select_drag.is_some()
                                     || self.partial_erase_active()
                                     || self.shape_draft_active())
@@ -5133,9 +5227,28 @@ impl SketchApp {
                             if !self.mouse_down {
                                 continue;
                             }
+                            if self.point_multi_drag.is_some() {
+                                self.multi_point_pointer(pos, rect, false);
+                                self.finish_multi_point_region();
+                                self.mouse_down = false;
+                                continue;
+                            }
                             if self.point_draft.is_some() {
                                 self.canvas_point_pointer(pos, rect, false);
                                 self.point_drag = None;
+                                self.mouse_down = false;
+                                continue;
+                            }
+                            if self
+                                .fills
+                                .draft
+                                .as_ref()
+                                .is_some_and(|draft| draft.original.is_some())
+                            {
+                                self.fill_contour_pointer(pos, rect, false);
+                                if let Some(draft) = &mut self.fills.draft {
+                                    draft.drag = None;
+                                }
                                 self.mouse_down = false;
                                 continue;
                             }
@@ -5154,9 +5267,13 @@ impl SketchApp {
                                 } else {
                                     self.cancel_shape_draft();
                                 }
-                            } else if self.drag.is_some() || self.brush_select_drag.is_some() {
+                            } else if self.drag.is_some()
+                                || self.brush_select_drag.is_some()
+                                || self.region_select_drag.is_some()
+                            {
                                 self.select_pointer(pos, rect, false, shift);
                             }
+                            self.commit_region_selection();
                             self.commit_brush_selection();
                             self.mouse_down = false;
                             if self.line.draft.is_some() {
@@ -5183,6 +5300,8 @@ impl SketchApp {
                             }
                             self.sampling_contact = false;
                             self.cancel_brush_selection();
+                            self.cancel_multi_point_region();
+                            self.cancel_region_selection();
                             self.cancel_partial_erase();
                             self.cancel_shape_draft();
                             self.cancel_curve();
@@ -5391,6 +5510,8 @@ impl eframe::App for SketchApp {
             && !self.close_after_recovery
             && !self.liquify_active()
             && self.point_draft.is_none()
+            && self.point_multi_draft.is_none()
+            && self.reprojection_draft.is_none()
             && !self.mixed_resource_preview_active()
             && self.camera_playback.is_none()
             && self.repeat.is_none()
@@ -5410,6 +5531,8 @@ impl eframe::App for SketchApp {
             && !self.close_after_recovery
             && !self.liquify_active()
             && self.point_draft.is_none()
+            && self.point_multi_draft.is_none()
+            && self.reprojection_draft.is_none()
             && !self.mixed_resource_preview_active()
             && self.camera_playback.is_none()
             && self.repeat.is_none()
@@ -5433,6 +5556,8 @@ impl eframe::App for SketchApp {
             && !self.close_after_recovery
             && !self.liquify_active()
             && self.point_draft.is_none()
+            && self.point_multi_draft.is_none()
+            && self.reprojection_draft.is_none()
             && !self.mixed_resource_preview_active()
             && self.camera_playback.is_none()
             && self.repeat.is_none()
@@ -5522,15 +5647,24 @@ impl eframe::App for SketchApp {
                 && !self.mixed_resource_preview_active();
             egui::TopBottomPanel::top("menu-bar").show(ctx, |ui| {
                 ui.add_enabled_ui(enabled, |ui| {
-                    ui.add_enabled_ui(self.point_draft.is_none(), |ui| {
-                        egui::menu::bar(ui, |ui| self.menu_bar(ui, ctx));
-                    });
+                    ui.add_enabled_ui(
+                        self.point_draft.is_none()
+                            && self.point_multi_draft.is_none()
+                            && self.reprojection_draft.is_none(),
+                        |ui| {
+                            egui::menu::bar(ui, |ui| self.menu_bar(ui, ctx));
+                        },
+                    );
                 });
             });
             egui::TopBottomPanel::top("context-options").show(ctx, |ui| {
-                ui.add_enabled_ui(enabled && self.point_draft.is_none(), |ui| {
-                    self.contextual_options(ui)
-                });
+                ui.add_enabled_ui(
+                    enabled
+                        && self.point_draft.is_none()
+                        && self.point_multi_draft.is_none()
+                        && self.reprojection_draft.is_none(),
+                    |ui| self.contextual_options(ui),
+                );
             });
             self.artwork_animation_timeline(ctx);
             egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -5559,9 +5693,13 @@ impl eframe::App for SketchApp {
             egui::SidePanel::left("tool-rail")
                 .exact_width(116.0)
                 .show(ctx, |ui| {
-                    ui.add_enabled_ui(enabled && self.point_draft.is_none(), |ui| {
-                        self.tool_rail(ui)
-                    });
+                    ui.add_enabled_ui(
+                        enabled
+                            && self.point_draft.is_none()
+                            && self.point_multi_draft.is_none()
+                            && self.reprojection_draft.is_none(),
+                        |ui| self.tool_rail(ui),
+                    );
                 });
             self.inspector(ctx, enabled || self.mixed_resource_preview_active());
         } else {
@@ -5635,6 +5773,7 @@ impl eframe::App for SketchApp {
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
+                self.last_canvas_rect = rect;
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
                 let appearance_state = self
                     .appearance_layout_verification

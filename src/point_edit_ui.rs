@@ -1,5 +1,12 @@
 use super::*;
 
+pub(super) struct MultiPointRegionDrag {
+    pub start: Pos2,
+    pub path: Vec<Pos2>,
+    pub original_selection: HashSet<crate::point_edit::PointRef>,
+    pub shape: crate::selection::RegionSelectionShape,
+}
+
 pub(super) struct PointDrag {
     origin: Vec3,
     start: Vec3,
@@ -15,7 +22,315 @@ impl PointDrag {
     }
 }
 
+fn point_in_screen_polygon(point: Pos2, polygon: &[Pos2]) -> bool {
+    let mut inside = false;
+    for i in 0..polygon.len() {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % polygon.len()];
+        if (a.y > point.y) != (b.y > point.y)
+            && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x
+        {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
 impl SketchApp {
+    pub(super) fn begin_multi_point_edit(&mut self) {
+        if self.point_multi_draft.is_some() {
+            return;
+        }
+        if self.selected_model_reference.is_some() {
+            self.status =
+                "Multi-point editing does not accept a mixed stroke and OBJ selection.".into();
+            return;
+        }
+        match crate::point_edit::MultiDraft::new(&self.doc, &self.selected) {
+            Ok(draft) => {
+                self.finish();
+                self.point_multi_draft = Some(draft);
+                self.point_multi_drag = None;
+                self.select_mode = true;
+                self.brush_select_enabled = false;
+                self.region_select_enabled = false;
+                self.presentation.preferences.layout.inspector_open = true;
+                self.presentation.preferences.layout.inspector_tab =
+                    crate::presentation::InspectorTab::Properties;
+                self.status = format!("Multi-point edit: drag a {} region around sample handles, then choose a transform.", if self.region_select_shape == crate::selection::RegionSelectionShape::Box { "box" } else { "lasso" });
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    pub(super) fn multi_point_pointer(&mut self, pos: Pos2, rect: Rect, begin: bool) {
+        let Some(draft) = self.point_multi_draft.as_mut() else {
+            return;
+        };
+        if begin {
+            self.point_multi_drag = Some(MultiPointRegionDrag {
+                start: pos,
+                path: vec![pos],
+                original_selection: draft.selected.clone(),
+                shape: self.region_select_shape,
+            });
+            return;
+        }
+        let Some(drag) = self.point_multi_drag.as_mut() else {
+            return;
+        };
+        if drag
+            .path
+            .last()
+            .is_none_or(|last| last.distance(pos) >= 2.0)
+            && drag.path.len() < crate::brush_selection::MAX_REGION_VERTICES
+        {
+            drag.path.push(pos);
+        }
+        let region = if drag.shape == crate::selection::RegionSelectionShape::Box {
+            let end = *drag.path.last().unwrap();
+            if drag.start.distance(end) < 2.0 {
+                return;
+            }
+            vec![
+                Pos2::new(drag.start.x.min(end.x), drag.start.y.min(end.y)),
+                Pos2::new(drag.start.x.max(end.x), drag.start.y.min(end.y)),
+                Pos2::new(drag.start.x.max(end.x), drag.start.y.max(end.y)),
+                Pos2::new(drag.start.x.min(end.x), drag.start.y.max(end.y)),
+            ]
+        } else {
+            drag.path.clone()
+        };
+        if region.len() < 3 {
+            return;
+        }
+        let camera = self.camera;
+        let selected: HashSet<_> = draft
+            .original
+            .iter()
+            .flat_map(|stroke| {
+                stroke
+                    .points
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, point)| {
+                        crate::gizmo::project(&camera, rect, point.position)
+                            .filter(|(screen, _)| point_in_screen_polygon(*screen, &region))
+                            .map(|_| crate::point_edit::PointRef {
+                                stroke_id: stroke.id,
+                                index,
+                            })
+                    })
+            })
+            .collect();
+        if selected.len() > crate::point_edit::MAX_MULTI_POINTS {
+            self.status = "Point region exceeds the 4,096-sample selection limit.".into();
+            return;
+        }
+        draft.select_points(selected);
+        if let Err(error) = draft.rebuild(camera.basis().0, camera.basis().1) {
+            self.status = error;
+        }
+    }
+
+    pub(super) fn finish_multi_point_region(&mut self) {
+        self.point_multi_drag = None;
+    }
+
+    pub(super) fn cancel_multi_point_region(&mut self) {
+        if let Some(drag) = self.point_multi_drag.take() {
+            if let Some(draft) = &mut self.point_multi_draft {
+                draft.select_points(drag.original_selection);
+                let view = self.camera.basis();
+                let _ = draft.rebuild(view.0, view.1);
+            }
+        }
+    }
+
+    pub(super) fn finish_multi_point_edit(&mut self, apply: bool) {
+        self.point_multi_drag = None;
+        let Some(draft) = self.point_multi_draft.take() else {
+            return;
+        };
+        if !apply {
+            self.status = "Multi-point preview cancelled; the drawing is unchanged.".into();
+            return;
+        }
+        match draft.edit(&self.doc) {
+            Ok(edit) => {
+                let ids: HashSet<_> = draft.original.iter().map(|stroke| stroke.id).collect();
+                edit.apply(&mut self.doc, true);
+                self.undo.push(edit);
+                self.redo.clear();
+                self.renderer.invalidate_ids(&ids);
+                self.dirty = true;
+                self.record_recovery_edit();
+                self.status = "Multi-point transform applied as one undo step.".into();
+            }
+            Err(error) => self.status = error,
+        }
+        self.select_mode = true;
+    }
+
+    pub(super) fn multi_point_controls(&mut self, ui: &mut egui::Ui) {
+        let view = self.camera.basis();
+        ui.horizontal(|ui| {
+            ui.label("Point region");
+            ui.selectable_value(
+                &mut self.region_select_shape,
+                crate::selection::RegionSelectionShape::Box,
+                "Box",
+            );
+            ui.selectable_value(
+                &mut self.region_select_shape,
+                crate::selection::RegionSelectionShape::Lasso,
+                "Lasso",
+            );
+        });
+        let mut changed = false;
+        let mut apply = false;
+        let mut cancel = false;
+        {
+            let Some(draft) = self.point_multi_draft.as_mut() else {
+                return;
+            };
+            ui.collapsing("Multi-point edit", |ui| {
+                ui.small("Drag a box or lasso around sample handles on the canvas. Transform previews rebuild from the original samples.");
+                ui.label(format!("{} strokes · {} samples · {} selected", draft.original.len(), draft.original.iter().map(|stroke| stroke.points.len()).sum::<usize>(), draft.selected.len()));
+                ui.horizontal(|ui| {
+                    if ui.button("Select all samples").clicked() {
+                        draft.selected = draft.original.iter().flat_map(|stroke| stroke.points.iter().enumerate().map(move |(index, _)| crate::point_edit::PointRef { stroke_id: stroke.id, index })).collect();
+                        changed = true;
+                    }
+                    if ui.button("Clear point selection").clicked() {
+                        draft.selected.clear();
+                        changed = true;
+                    }
+                });
+                let previous_transform = draft.transform;
+                ui.horizontal(|ui| {
+                    changed |= ui.selectable_value(&mut draft.transform, crate::point_edit::PointTransform::Move, "Move").changed();
+                    changed |= ui.selectable_value(&mut draft.transform, crate::point_edit::PointTransform::Rotate, "Rotate").changed();
+                    changed |= ui.selectable_value(&mut draft.transform, crate::point_edit::PointTransform::Scale, "Scale").changed();
+                });
+                if previous_transform != draft.transform {
+                    draft.values = if draft.transform == crate::point_edit::PointTransform::Scale { Vec3::ONE } else { Vec3::ZERO };
+                    changed = true;
+                }
+                if draft.transform == crate::point_edit::PointTransform::Move {
+                    ui.horizontal(|ui| {
+                    ui.label("Constraint");
+                    egui::ComboBox::from_id_salt("point-multi-constraint")
+                        .selected_text(match draft.constraint { crate::point_edit::PointConstraint::Free => "Free", crate::point_edit::PointConstraint::X => "World X", crate::point_edit::PointConstraint::Y => "World Y", crate::point_edit::PointConstraint::Z => "World Z", crate::point_edit::PointConstraint::ViewPlane => "View plane" })
+                        .show_ui(ui, |ui| {
+                            for (value,label) in [(crate::point_edit::PointConstraint::Free,"Free"),(crate::point_edit::PointConstraint::X,"World X"),(crate::point_edit::PointConstraint::Y,"World Y"),(crate::point_edit::PointConstraint::Z,"World Z"),(crate::point_edit::PointConstraint::ViewPlane,"View plane")] { changed |= ui.selectable_value(&mut draft.constraint,value,label).changed(); }
+                        });
+                    });
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Pivot");
+                    egui::ComboBox::from_id_salt("point-multi-pivot")
+                        .selected_text(match draft.pivot_mode { crate::point_edit::PointPivot::SelectionCenter => "Selection center", crate::point_edit::PointPivot::WorldOrigin => "World origin", crate::point_edit::PointPivot::Custom => "Custom" })
+                        .show_ui(ui, |ui| {
+                            for (value,label) in [(crate::point_edit::PointPivot::SelectionCenter,"Selection center"),(crate::point_edit::PointPivot::WorldOrigin,"World origin"),(crate::point_edit::PointPivot::Custom,"Custom")] { changed |= ui.selectable_value(&mut draft.pivot_mode,value,label).changed(); }
+                        });
+                });
+                if draft.pivot_mode == crate::point_edit::PointPivot::Custom {
+                    for (axis, label) in ["Pivot X", "Pivot Y", "Pivot Z"].into_iter().enumerate() {
+                        changed |= super::ui_style::numeric_row(ui, label, ("multi-point-pivot", axis), &mut draft.custom_pivot[axis], Some(-10000.0..=10000.0), "wu").changed();
+                    }
+                }
+                if draft.transform == crate::point_edit::PointTransform::Scale && draft.values == Vec3::ZERO { draft.values = Vec3::ONE; changed = true; }
+                let unit = match draft.transform { crate::point_edit::PointTransform::Move => "wu", crate::point_edit::PointTransform::Rotate => "°", crate::point_edit::PointTransform::Scale => "×" };
+                for (axis, label) in ["X", "Y", "Z"].into_iter().enumerate() {
+                    let range = match draft.transform { crate::point_edit::PointTransform::Move => Some(-10000.0..=10000.0), crate::point_edit::PointTransform::Rotate => Some(-3600.0..=3600.0), crate::point_edit::PointTransform::Scale => Some(0.01..=100.0) };
+                    changed |= super::ui_style::numeric_row(ui, label, ("multi-point-value", axis), &mut draft.values[axis], range, unit).changed();
+                }
+                changed |= ui.checkbox(&mut draft.proportional, "Proportional editing").changed();
+                if draft.proportional {
+                    changed |= ui.add(egui::Slider::new(&mut draft.radius, 0.001..=1000.0).logarithmic(true).text("Radius (wu)")).changed();
+                    ui.horizontal(|ui| {
+                        changed |= ui.selectable_value(&mut draft.neighborhood, crate::point_edit::ProportionalNeighborhood::AlongStroke, "Along stroke").changed();
+                        changed |= ui.selectable_value(&mut draft.neighborhood, crate::point_edit::ProportionalNeighborhood::Spatial, "Spatial").changed();
+                    });
+                    ui.horizontal(|ui| {
+                        changed |= ui.selectable_value(&mut draft.falloff, crate::point_edit::PointFalloff::Linear, "Linear").changed();
+                        changed |= ui.selectable_value(&mut draft.falloff, crate::point_edit::PointFalloff::Smooth, "Smooth").changed();
+                    });
+                }
+                ui.horizontal(|ui| {
+                    apply = ui.add_enabled(!changed && draft.preview != draft.original && !draft.selected.is_empty(), egui::Button::new("Apply transform")).clicked();
+                    cancel = ui.button("Cancel multi-point edit").clicked();
+                });
+            });
+        }
+        if changed {
+            if let Some(draft) = self.point_multi_draft.as_mut() {
+                if let Err(error) = draft.rebuild(view.0, view.1) {
+                    self.status = error;
+                }
+            }
+        }
+        if apply || cancel {
+            self.finish_multi_point_edit(apply);
+        }
+    }
+
+    pub(super) fn multi_point_overlay(&self, ui: &egui::Ui, rect: Rect) {
+        let Some(draft) = &self.point_multi_draft else {
+            return;
+        };
+        let painter = ui.painter().with_clip_rect(rect);
+        let accent = super::ui_style::canvas_selection_accent(
+            self.presentation.preferences.background,
+            self.presentation.preferences.background_image.is_some(),
+        );
+        for stroke in &draft.preview {
+            for pair in stroke.points.windows(2) {
+                if let (Some((a, _)), Some((b, _))) = (
+                    crate::gizmo::project(&self.camera, rect, pair[0].position),
+                    crate::gizmo::project(&self.camera, rect, pair[1].position),
+                ) {
+                    painter.line_segment([a, b], egui::Stroke::new(1.5, accent));
+                }
+            }
+            for (index, point) in stroke.points.iter().enumerate() {
+                if let Some((screen, _)) = crate::gizmo::project(&self.camera, rect, point.position)
+                {
+                    let selected = draft.selected.contains(&crate::point_edit::PointRef {
+                        stroke_id: stroke.id,
+                        index,
+                    });
+                    if selected && rect.contains(screen) {
+                        painter.circle_filled(screen, 4.5, accent);
+                    }
+                }
+            }
+        }
+        if let Some(drag) = &self.point_multi_drag {
+            let path = if drag.shape == crate::selection::RegionSelectionShape::Box {
+                let end = *drag.path.last().unwrap();
+                vec![
+                    Pos2::new(drag.start.x.min(end.x), drag.start.y.min(end.y)),
+                    Pos2::new(drag.start.x.max(end.x), drag.start.y.min(end.y)),
+                    Pos2::new(drag.start.x.max(end.x), drag.start.y.max(end.y)),
+                    Pos2::new(drag.start.x.min(end.x), drag.start.y.max(end.y)),
+                ]
+            } else {
+                drag.path.clone()
+            };
+            for pair in path.windows(2) {
+                painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, accent));
+            }
+            if drag.shape == crate::selection::RegionSelectionShape::Box && path.len() == 4 {
+                painter.line_segment(
+                    [*path.last().unwrap(), path[0]],
+                    egui::Stroke::new(1.5, accent),
+                );
+            }
+        }
+    }
+
     pub(super) fn preview_selected_cleanup(&mut self, spacing: f32, max_error: f32) {
         if self.selected.len() != 1 {
             self.status = "Select one ordinary stroke to preview cleanup.".into();
@@ -38,6 +353,50 @@ impl SketchApp {
     }
 
     pub(super) fn canvas_point_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.reprojection_draft.is_some() {
+            let (escape, enter) = ctx.input(|input| {
+                (
+                    input.key_pressed(Key::Escape),
+                    input.key_pressed(Key::Enter),
+                )
+            });
+            if escape {
+                self.finish_reprojection(false);
+                ctx.input_mut(|input| {
+                    input.consume_key(egui::Modifiers::NONE, Key::Escape);
+                });
+            } else if enter {
+                self.finish_reprojection(true);
+                ctx.input_mut(|input| {
+                    input.consume_key(egui::Modifiers::NONE, Key::Enter);
+                });
+            }
+            return;
+        }
+        if self.point_multi_draft.is_some() {
+            let (escape, enter) = ctx.input(|input| {
+                (
+                    input.key_pressed(Key::Escape),
+                    input.key_pressed(Key::Enter),
+                )
+            });
+            if escape {
+                if self.point_multi_drag.is_some() {
+                    self.cancel_multi_point_region();
+                } else {
+                    self.finish_multi_point_edit(false);
+                }
+                ctx.input_mut(|input| {
+                    input.consume_key(egui::Modifiers::NONE, Key::Escape);
+                });
+            } else if enter {
+                self.finish_multi_point_edit(true);
+                ctx.input_mut(|input| {
+                    input.consume_key(egui::Modifiers::NONE, Key::Enter);
+                });
+            }
+            return;
+        }
         if self.point_draft.is_some() && ctx.input(|input| input.key_pressed(Key::Escape)) {
             self.finish_canvas_point_edit(false);
             ctx.input_mut(|input| {

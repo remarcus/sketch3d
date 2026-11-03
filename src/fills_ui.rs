@@ -5,10 +5,29 @@ use crate::{document::PlanarFill, polygon};
 pub(super) struct FillDraft {
     pub mark: Stroke,
     target: PlanarTarget,
+    original: Option<Stroke>,
+    selected: usize,
+    drag: Option<FillPointDrag>,
+}
+struct FillPointDrag {
+    index: usize,
+    origin: Vec3,
+    start: Vec3,
+    normal: Vec3,
+    camera: Camera,
+    rect: Rect,
+}
+impl FillPointDrag {
+    fn position(&self, pos: Pos2) -> Option<Vec3> {
+        crate::gizmo::plane_hit(&self.camera, self.rect, pos, self.origin, self.normal)
+            .map(|hit| self.origin + hit - self.start)
+    }
 }
 pub(super) struct FillUi {
     pub enabled: bool,
     pub offset: f32,
+    pub region_mode: bool,
+    pub gap_tolerance: f32,
     pub draft: Option<FillDraft>,
     pub verification_frame: Option<u32>,
 }
@@ -17,26 +36,304 @@ impl Default for FillUi {
         Self {
             enabled: false,
             offset: 0.003,
+            region_mode: false,
+            gap_tolerance: 0.0,
             draft: None,
             verification_frame: None,
         }
     }
 }
 impl SketchApp {
+    pub(super) fn begin_fill_contour_edit(&mut self) {
+        if self.fills.draft.is_some() || self.selected.len() != 1 {
+            return;
+        }
+        let id = *self.selected.iter().next().unwrap();
+        let Some(source) = self
+            .doc
+            .strokes
+            .iter()
+            .find(|stroke| stroke.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        if source.fill.is_none() || !self.doc.editable(&source) {
+            self.status = "Select one visible, unlocked planar fill to edit its contour.".into();
+            return;
+        }
+        if let Err(error) = polygon::triangulate(&source) {
+            self.status = error;
+            return;
+        }
+        let Some(target) = PlanarTarget::from_curve_frame(
+            source.points[0].position,
+            source.brush.normal,
+            source.brush.tangent,
+            None,
+        ) else {
+            self.status = "The fill's captured plane frame is invalid.".into();
+            return;
+        };
+        self.finish();
+        self.fills.enabled = false;
+        self.fills.draft = Some(FillDraft {
+            mark: source.clone(),
+            target,
+            original: Some(source),
+            selected: 0,
+            drag: None,
+        });
+        self.select_mode = false;
+        self.brush_select_enabled = false;
+        self.presentation.preferences.layout.inspector_open = true;
+        self.presentation.preferences.layout.inspector_tab =
+            crate::presentation::InspectorTab::Properties;
+        self.status = "Edit fill contour: drag handles or use numeric coordinates. Apply commits one edit; Escape cancels.".into();
+    }
+
+    fn fill_contour_controls(&mut self, ui: &mut egui::Ui) {
+        let Some(draft) = self.fills.draft.as_mut() else {
+            return;
+        };
+        ui.heading("Edit fill contour");
+        ui.small("Move vertices in the fill's captured plane. Insert adds a midpoint after the selected vertex; the contour must remain simple and nondegenerate.");
+        let count = draft.mark.points.len();
+        ui.horizontal(|ui| {
+            ui.label("Vertex (0-based)");
+            ui.add(egui::DragValue::new(&mut draft.selected).range(0..=count - 1));
+        });
+        let mut coordinates = draft.mark.points[draft.selected].position.to_array();
+        let mut changed = false;
+        for (axis, label) in ["X", "Y", "Z"].into_iter().enumerate() {
+            changed |= super::ui_style::numeric_row(
+                ui,
+                label,
+                ("fill-contour", axis),
+                &mut coordinates[axis],
+                Some(-10000.0..=10000.0),
+                "wu",
+            )
+            .changed();
+        }
+        let selected = draft.selected;
+        let original = draft.original.as_ref().unwrap().clone();
+        let apply_enabled = draft.mark != original;
+        let mut apply = false;
+        let mut cancel = false;
+        let mut insert = false;
+        let mut remove = false;
+        ui.horizontal(|ui| {
+            insert = ui.button("Insert midpoint after vertex").clicked();
+            remove = ui
+                .add_enabled(count > 3, egui::Button::new("Remove vertex"))
+                .clicked();
+        });
+        ui.horizontal(|ui| {
+            apply = ui
+                .add_enabled(apply_enabled, egui::Button::new("Apply contour edits"))
+                .clicked();
+            cancel = ui.button("Cancel contour edits").clicked();
+        });
+        let _ = draft;
+        if changed {
+            self.update_fill_vertex(selected, Vec3::from_array(coordinates));
+        }
+        if insert {
+            self.insert_fill_vertex();
+        }
+        if remove {
+            self.remove_fill_vertex();
+        }
+        if apply || cancel {
+            self.finish_fill_contour_edit(apply);
+        }
+    }
+
+    fn update_fill_vertex(&mut self, index: usize, position: Vec3) {
+        let Some(draft) = self.fills.draft.as_mut() else {
+            return;
+        };
+        if draft.original.is_none() || index >= draft.mark.points.len() {
+            return;
+        }
+        let previous = draft.mark.points[index];
+        draft.mark.points[index].position = position;
+        if let Err(error) = polygon::triangulate(&draft.mark) {
+            draft.mark.points[index] = previous;
+            self.status = error;
+        }
+    }
+
+    fn insert_fill_vertex(&mut self) {
+        let Some(draft) = self.fills.draft.as_mut() else {
+            return;
+        };
+        if draft.original.is_none() || draft.mark.points.len() >= polygon::MAX_CORNERS {
+            return;
+        }
+        let index = draft.selected;
+        let next = (index + 1) % draft.mark.points.len();
+        let mut point = draft.mark.points[index];
+        point.position = (point.position + draft.mark.points[next].position) * 0.5;
+        point.time_ms = 0;
+        draft.mark.points.insert(index + 1, point);
+        if let Err(error) = polygon::triangulate(&draft.mark) {
+            draft.mark.points.remove(index + 1);
+            self.status = error;
+        } else {
+            draft.selected = index + 1;
+        }
+    }
+
+    fn remove_fill_vertex(&mut self) {
+        let Some(draft) = self.fills.draft.as_mut() else {
+            return;
+        };
+        if draft.original.is_none() || draft.mark.points.len() <= 3 {
+            return;
+        }
+        let previous = draft.mark.points.remove(draft.selected);
+        if let Err(error) = polygon::triangulate(&draft.mark) {
+            draft.mark.points.insert(draft.selected, previous);
+            self.status = error;
+        } else {
+            draft.selected = draft.selected.min(draft.mark.points.len() - 1);
+        }
+    }
+
+    pub(super) fn finish_fill_contour_edit(&mut self, apply: bool) {
+        let Some(draft) = self.fills.draft.take() else {
+            return;
+        };
+        let Some(original) = draft.original.as_ref().cloned() else {
+            self.fills.draft = Some(draft);
+            return;
+        };
+        if !apply {
+            self.select_mode = true;
+            self.status = "Fill contour edit cancelled; the drawing is unchanged.".into();
+            return;
+        }
+        if draft.mark == original {
+            self.select_mode = true;
+            self.status = "No contour changes to apply.".into();
+            return;
+        }
+        if !self.doc.editable(&original)
+            || !self.doc.strokes.iter().any(|stroke| stroke == &original)
+        {
+            self.select_mode = true;
+            self.status =
+                "The fill changed or its layer is now protected; contour edit cancelled.".into();
+            return;
+        }
+        if let Err(error) = polygon::triangulate(&draft.mark) {
+            self.fills.draft = Some(draft);
+            self.status = error;
+            return;
+        }
+        let before = crate::editing::snapshot(&self.doc, &HashSet::from([original.id]));
+        let mut after = before.clone();
+        after[0].1 = draft.mark;
+        let edit = Edit::Change { before, after };
+        edit.apply(&mut self.doc, true);
+        self.undo.push(edit);
+        self.redo.clear();
+        self.dirty = true;
+        self.record_recovery_edit();
+        self.renderer.invalidate_ids(&self.selected);
+        self.select_mode = true;
+        self.status = "Fill contour edits applied as one undo step.".into();
+    }
+
+    pub(super) fn fill_contour_pointer(&mut self, pos: Pos2, rect: Rect, begin: bool) {
+        let Some(draft) = self
+            .fills
+            .draft
+            .as_mut()
+            .filter(|draft| draft.original.is_some())
+        else {
+            return;
+        };
+        if begin {
+            let mut nearest = None;
+            let mut distance = 10.0_f32;
+            for (index, point) in draft.mark.points.iter().enumerate() {
+                if let Some((screen, _)) = crate::gizmo::project(&self.camera, rect, point.position)
+                {
+                    let d = screen.distance(pos);
+                    if d < distance {
+                        distance = d;
+                        nearest = Some((index, point.position));
+                    }
+                }
+            }
+            let Some((index, origin)) = nearest else {
+                return;
+            };
+            let normal = draft.mark.brush.normal;
+            let Some(start) = crate::gizmo::plane_hit(&self.camera, rect, pos, origin, normal)
+            else {
+                return;
+            };
+            draft.selected = index;
+            draft.drag = Some(FillPointDrag {
+                index,
+                origin,
+                start,
+                normal,
+                camera: self.camera,
+                rect,
+            });
+        } else if let Some(drag) = &draft.drag {
+            if let Some(position) = drag.position(pos) {
+                let previous = draft.mark.points[drag.index];
+                draft.mark.points[drag.index].position = position;
+                if let Err(error) = polygon::triangulate(&draft.mark) {
+                    draft.mark.points[drag.index] = previous;
+                    self.status = error;
+                }
+            }
+        }
+    }
+
     pub(super) fn cancel_fill_tool(&mut self) {
         self.fills.draft = None;
         self.fills.enabled = false;
     }
     pub(super) fn fill_controls(&mut self, ui: &mut egui::Ui) {
+        if self
+            .fills
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.original.is_some())
+        {
+            self.fill_contour_controls(ui);
+            return;
+        }
         if !self.fills.enabled {
             return;
         }
         ui.strong("PLANAR FILL");
         ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.fills.region_mode, true, "Enclosed region");
+            ui.selectable_value(&mut self.fills.region_mode, false, "Trace contour");
+        });
+        ui.horizontal(|ui| {
             ui.label("Fill color");
             ui.color_edit_button_rgb(&mut self.color);
         });
-        ui.label("Click corners on a plane. Click the first corner or press Enter to close and fill. Backspace removes a corner; Escape cancels.");
+        if self.fills.region_mode {
+            ui.label("Click inside a closed outline to preview its fill. Press Enter to commit or Escape to cancel.");
+            ui.add(
+                egui::Slider::new(&mut self.fills.gap_tolerance, 0.0..=0.05)
+                    .text("Close outline gaps (wu)"),
+            );
+            ui.small("Visible coplanar strokes define boundaries, including strokes on locked layers. Hidden and non-coplanar strokes are ignored. Crossing strokes split regions; nested outlines choose the smallest region. Holes are unsupported.");
+        } else {
+            ui.label("Click corners on a plane. Click the first corner or press Enter to close and fill. Backspace removes a corner; Escape cancels.");
+        }
         ui.add(egui::Slider::new(&mut self.fills.offset, 0.0..=0.05).text("Paint behind plane"));
         ui.small("Offset follows the captured plane normal and is saved/exported. Zero may cause z-fighting. Fill uses solid color; pressure and brush textures do not apply.");
         let count = self.fills.draft.as_ref().map_or(0, |d| d.mark.points.len());
@@ -46,13 +343,19 @@ impl SketchApp {
         ));
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(count >= 3, egui::Button::new("Close & fill"))
+                .add_enabled(
+                    count >= 3 && !self.fills.region_mode,
+                    egui::Button::new("Close & fill"),
+                )
                 .clicked()
             {
                 self.commit_fill();
             }
             if ui
-                .add_enabled(count > 0, egui::Button::new("Undo corner"))
+                .add_enabled(
+                    count > 0 && !self.fills.region_mode,
+                    egui::Button::new("Undo corner"),
+                )
                 .clicked()
             {
                 self.remove_fill_corner();
@@ -89,6 +392,72 @@ impl SketchApp {
             self.status = "Choose a visible unlocked layer for a fill.".into();
             return;
         }
+        if self.fills.region_mode && self.fills.draft.is_none() {
+            let (o, d) = crate::gizmo::ray(&self.camera, rect, pos);
+            let Some(world) = target.hit(o, d) else {
+                self.status =
+                    "Plane is edge-on or the click is outside the active image plane.".into();
+                return;
+            };
+            match crate::region_fill::find_region(
+                &self.doc,
+                target.plane,
+                world,
+                self.fills.gap_tolerance,
+                target.half_extent(),
+            ) {
+                Ok(points) => {
+                    let mut mark = Stroke {
+                        curve: None,
+                        material: Default::default(),
+                        point_thickness: None,
+                        modifiers: None,
+                        fill: Some(PlanarFill {
+                            offset: self.fills.offset,
+                        }),
+                        group_id: None,
+                        layer_id: self.doc.active_layer,
+                        id: 0,
+                        color: self.color,
+                        gradient: None,
+                        radius: 0.025,
+                        brush: Brush {
+                            normal: target.plane.basis().2,
+                            tangent: target.plane.basis().0,
+                            ..Default::default()
+                        },
+                        points: points
+                            .into_iter()
+                            .map(|position| Point {
+                                position,
+                                pressure: 1.0,
+                                tilt: None,
+                                time_ms: 0,
+                            })
+                            .collect(),
+                    };
+                    if let Err(error) = polygon::triangulate(&mark) {
+                        self.status = error;
+                        return;
+                    }
+                    self.fills.draft = Some(FillDraft {
+                        mark,
+                        target,
+                        original: None,
+                        selected: 0,
+                        drag: None,
+                    });
+                    self.status = "Region preview ready. Enter commits; Escape cancels.".into();
+                }
+                Err(error) => self.status = error,
+            }
+            return;
+        }
+        if self.fills.region_mode && self.fills.draft.is_some() {
+            self.status =
+                "Region preview is active. Press Enter to commit or Escape to cancel.".into();
+            return;
+        }
         if let Some(draft) = &self.fills.draft {
             if draft.mark.points.len() >= 3
                 && crate::gizmo::project(&self.camera, rect, draft.mark.points[0].position)
@@ -119,6 +488,9 @@ impl SketchApp {
         }
         let draft = self.fills.draft.get_or_insert_with(|| FillDraft {
             target,
+            original: None,
+            selected: 0,
+            drag: None,
             mark: Stroke {
                 curve: None,
                 material: Default::default(),
@@ -159,6 +531,15 @@ impl SketchApp {
             "Fill draft: add corners, then Enter or click the first corner. Escape cancels.".into();
     }
     pub(super) fn commit_fill(&mut self) {
+        if self
+            .fills
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.original.is_some())
+        {
+            self.finish_fill_contour_edit(true);
+            return;
+        }
         let Some(draft) = &self.fills.draft else {
             return;
         };
@@ -210,6 +591,20 @@ impl SketchApp {
                 i.key_pressed(Key::Escape),
             )
         });
+        if self
+            .fills
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.original.is_some())
+        {
+            if enter {
+                self.finish_fill_contour_edit(true);
+            }
+            if escape {
+                self.finish_fill_contour_edit(false);
+            }
+            return;
+        }
         if p && !ctx.input(|i| i.modifiers.command || i.modifiers.alt)
             && self.planar_drawing_target().is_none()
         {
@@ -226,7 +621,7 @@ impl SketchApp {
             if enter {
                 self.commit_fill();
             }
-            if back {
+            if back && !self.fills.region_mode {
                 self.remove_fill_corner();
             }
             if escape {
@@ -249,6 +644,22 @@ impl SketchApp {
             .iter()
             .map(|p| crate::gizmo::project(&self.camera, rect, p.position))
             .collect();
+        if draft.mark.fill.is_some() {
+            if let Ok(triangles) = polygon::triangulate(&draft.mark) {
+                let preview = color.gamma_multiply(0.22);
+                for [a, b, c] in triangles {
+                    if let (Some((a, _)), Some((b, _)), Some((c, _))) =
+                        (projected[a], projected[b], projected[c])
+                    {
+                        painter.add(egui::Shape::convex_polygon(
+                            vec![a, b, c],
+                            preview,
+                            egui::Stroke::NONE,
+                        ));
+                    }
+                }
+            }
+        }
         for pair in projected.windows(2) {
             if let (Some((a, _)), Some((b, _))) = (pair[0], pair[1]) {
                 painter.line_segment([a, b], egui::Stroke::new(2.0_f32, color));
@@ -268,6 +679,24 @@ impl SketchApp {
                     egui::FontId::proportional(12.0),
                     color,
                 );
+            }
+        }
+        if draft.original.is_some() {
+            for (index, point) in projected.iter().enumerate() {
+                if let Some((position, _)) = point {
+                    if rect.contains(*position) {
+                        painter.circle_filled(
+                            *position,
+                            if index == draft.selected { 6.0 } else { 4.0 },
+                            if index == draft.selected {
+                                color
+                            } else {
+                                Color32::WHITE
+                            },
+                        );
+                        painter.circle_stroke(*position, 6.0, egui::Stroke::new(1.0, color));
+                    }
+                }
             }
         }
     }

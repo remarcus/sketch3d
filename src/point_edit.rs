@@ -1,8 +1,319 @@
 //! Bounded edits to sampled strokes; semantic curves retain their own editor.
 use crate::document::{Document, Stroke};
 use crate::editing::{snapshot, Edit};
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use std::collections::HashSet;
+
+pub const MAX_MULTI_STROKES: usize = 64;
+pub const MAX_MULTI_POINTS: usize = 4096;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct PointRef {
+    pub stroke_id: u64,
+    pub index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PointTransform {
+    #[default]
+    Move,
+    Rotate,
+    Scale,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PointConstraint {
+    #[default]
+    Free,
+    X,
+    Y,
+    Z,
+    ViewPlane,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PointPivot {
+    #[default]
+    SelectionCenter,
+    WorldOrigin,
+    Custom,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProportionalNeighborhood {
+    #[default]
+    AlongStroke,
+    Spatial,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PointFalloff {
+    Linear,
+    #[default]
+    Smooth,
+}
+
+/// Detached multi-stroke point preview. Each update is rebuilt from `original`.
+pub struct MultiDraft {
+    pub original: Vec<Stroke>,
+    pub preview: Vec<Stroke>,
+    pub selected: HashSet<PointRef>,
+    pub transform: PointTransform,
+    pub constraint: PointConstraint,
+    pub pivot_mode: PointPivot,
+    pub custom_pivot: Vec3,
+    pub values: Vec3,
+    pub proportional: bool,
+    pub radius: f32,
+    pub neighborhood: ProportionalNeighborhood,
+    pub falloff: PointFalloff,
+}
+
+impl MultiDraft {
+    pub fn new(doc: &Document, ids: &HashSet<u64>) -> Result<Self, String> {
+        if ids.is_empty() || ids.len() > MAX_MULTI_STROKES {
+            return Err(format!(
+                "Select 1–{MAX_MULTI_STROKES} strokes for multi-point editing."
+            ));
+        }
+        let source: Vec<_> = doc
+            .strokes
+            .iter()
+            .filter(|stroke| ids.contains(&stroke.id))
+            .cloned()
+            .collect();
+        if source.len() != ids.len()
+            || source.iter().any(|stroke| {
+                !doc.editable(stroke)
+                    || stroke.fill.is_some()
+                    || stroke.curve.is_some()
+                    || doc.has_linked_source(stroke.id)
+                    || doc.linked_instance_for_stroke(stroke.id).is_some()
+                    || stroke.points.is_empty()
+            })
+        {
+            return Err("Multi-point editing supports selected editable sampled strokes only; fills, semantic curves, and linked artwork are excluded.".into());
+        }
+        let count: usize = source.iter().map(|stroke| stroke.points.len()).sum();
+        if count > MAX_MULTI_POINTS {
+            return Err(format!("Multi-point editing is limited to {MAX_MULTI_POINTS} samples across the selection."));
+        }
+        if source
+            .iter()
+            .any(|stroke| !stroke.points.iter().all(|point| point.is_valid()))
+        {
+            return Err("Selected strokes contain invalid point data.".into());
+        }
+        Ok(Self {
+            preview: source.clone(),
+            original: source,
+            selected: HashSet::new(),
+            transform: PointTransform::Move,
+            constraint: PointConstraint::Free,
+            pivot_mode: PointPivot::SelectionCenter,
+            custom_pivot: Vec3::ZERO,
+            values: Vec3::ZERO,
+            proportional: false,
+            radius: 1.0,
+            neighborhood: ProportionalNeighborhood::AlongStroke,
+            falloff: PointFalloff::Smooth,
+        })
+    }
+
+    pub fn select_points(&mut self, selected: HashSet<PointRef>) {
+        self.selected = selected;
+        if self.selected.is_empty() {
+            self.preview = self.original.clone();
+        }
+    }
+
+    pub fn rebuild(&mut self, view_right: Vec3, view_up: Vec3) -> Result<(), String> {
+        match self.rebuild_inner(view_right, view_up) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.preview = self.original.clone();
+                Err(error)
+            }
+        }
+    }
+
+    fn rebuild_inner(&mut self, view_right: Vec3, view_up: Vec3) -> Result<(), String> {
+        if self.selected.is_empty() {
+            self.preview = self.original.clone();
+            return Ok(());
+        }
+        if !self.values.is_finite() || !self.custom_pivot.is_finite() {
+            return Err("Transform values and pivot must be finite.".into());
+        }
+        if self.proportional
+            && (!self.radius.is_finite() || !(0.001..=1000.0).contains(&self.radius))
+        {
+            return Err("Proportional radius must be 0.001–1000 world units.".into());
+        }
+        let point_count: usize = self.original.iter().map(|stroke| stroke.points.len()).sum();
+        if self.proportional
+            && self.neighborhood == ProportionalNeighborhood::Spatial
+            && point_count.saturating_mul(self.selected.len()) > 4_000_000
+        {
+            return Err(
+                "Spatial proportional edit exceeds the 4,000,000 distance-check budget.".into(),
+            );
+        }
+        let selected_positions: Vec<_> = self
+            .original
+            .iter()
+            .flat_map(|stroke| {
+                stroke
+                    .points
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, point)| {
+                        self.selected
+                            .contains(&PointRef {
+                                stroke_id: stroke.id,
+                                index,
+                            })
+                            .then_some((stroke.id, index, point.position))
+                    })
+            })
+            .collect();
+        if selected_positions.is_empty() {
+            return Err("Select one or more sample points first.".into());
+        }
+        let center = selected_positions.iter().map(|entry| entry.2).sum::<Vec3>()
+            / selected_positions.len() as f32;
+        let pivot = match self.pivot_mode {
+            PointPivot::SelectionCenter => center,
+            PointPivot::WorldOrigin => Vec3::ZERO,
+            PointPivot::Custom => self.custom_pivot,
+        };
+        let delta = match self.constraint {
+            PointConstraint::Free => self.values,
+            PointConstraint::X => Vec3::X * self.values.x,
+            PointConstraint::Y => Vec3::Y * self.values.y,
+            PointConstraint::Z => Vec3::Z * self.values.z,
+            PointConstraint::ViewPlane => view_right * self.values.x + view_up * self.values.y,
+        };
+        let rotation = Quat::from_euler(
+            glam::EulerRot::XYZ,
+            self.values.x.to_radians(),
+            self.values.y.to_radians(),
+            self.values.z.to_radians(),
+        );
+        if !rotation.is_finite() {
+            return Err("Rotation values are invalid.".into());
+        }
+        let scale = self.values.clamp(Vec3::splat(0.01), Vec3::splat(100.0));
+        let mut result = self.original.clone();
+        let mut work = 0usize;
+        for stroke in &mut result {
+            let source = self
+                .original
+                .iter()
+                .find(|source| source.id == stroke.id)
+                .unwrap();
+            let cumulative = cumulative_lengths(&source.points);
+            let selected_along: Vec<_> = selected_positions
+                .iter()
+                .filter(|entry| entry.0 == stroke.id)
+                .map(|entry| cumulative[entry.1])
+                .collect();
+            for (index, point) in stroke.points.iter_mut().enumerate() {
+                let reference = PointRef {
+                    stroke_id: stroke.id,
+                    index,
+                };
+                let weight = if self.selected.contains(&reference) {
+                    1.0
+                } else if !self.proportional {
+                    0.0
+                } else {
+                    work += selected_positions.len();
+                    if work > 4_000_000 {
+                        return Err(
+                            "Proportional edit exceeds the 4,000,000 influence-check budget."
+                                .into(),
+                        );
+                    }
+                    let distance = match self.neighborhood {
+                        ProportionalNeighborhood::Spatial => selected_positions
+                            .iter()
+                            .map(|entry| point.position.distance(entry.2))
+                            .fold(f32::INFINITY, f32::min),
+                        ProportionalNeighborhood::AlongStroke => selected_along
+                            .iter()
+                            .map(|position| (cumulative[index] - position).abs())
+                            .fold(f32::INFINITY, f32::min),
+                    };
+                    if distance >= self.radius {
+                        0.0
+                    } else {
+                        let t = 1.0 - distance / self.radius;
+                        match self.falloff {
+                            PointFalloff::Linear => t,
+                            PointFalloff::Smooth => t * t * (3.0 - 2.0 * t),
+                        }
+                    }
+                };
+                if weight == 0.0 {
+                    continue;
+                }
+                let position = match self.transform {
+                    PointTransform::Move => point.position + delta * weight,
+                    PointTransform::Rotate => point
+                        .position
+                        .lerp(pivot + rotation * (point.position - pivot), weight),
+                    PointTransform::Scale => point
+                        .position
+                        .lerp(pivot + (point.position - pivot) * scale, weight),
+                };
+                if !position.is_finite() || position.abs().max_element() > 10000.0 {
+                    return Err(
+                        "Transform moves a sample outside the ±10000 world-unit bound.".into(),
+                    );
+                }
+                point.position = position;
+            }
+        }
+        self.preview = result;
+        Ok(())
+    }
+
+    pub fn edit(&self, doc: &Document) -> Result<Edit, String> {
+        if self.preview == self.original {
+            return Err("No multi-point changes to apply.".into());
+        }
+        for source in &self.original {
+            if !doc.editable(source) || !doc.strokes.iter().any(|stroke| stroke == source) {
+                return Err(
+                    "A source stroke changed or became protected; reopen multi-point editing."
+                        .into(),
+                );
+            }
+        }
+        let ids: HashSet<_> = self.original.iter().map(|stroke| stroke.id).collect();
+        let before = snapshot(doc, &ids);
+        let mut after = before.clone();
+        for (_, stroke) in &mut after {
+            if let Some(preview) = self.preview.iter().find(|preview| preview.id == stroke.id) {
+                *stroke = preview.clone();
+            }
+        }
+        Ok(Edit::Change { before, after })
+    }
+}
+
+fn cumulative_lengths(points: &[crate::document::Point]) -> Vec<f32> {
+    let mut total = 0.0;
+    let mut values = Vec::with_capacity(points.len());
+    for (index, point) in points.iter().enumerate() {
+        if index > 0 {
+            total += point.position.distance(points[index - 1].position);
+        }
+        values.push(total);
+    }
+    values
+}
 
 pub const MAX_CANVAS_POINTS: usize = 4096;
 pub const MAX_JOIN_TOLERANCE: f32 = 100.0;

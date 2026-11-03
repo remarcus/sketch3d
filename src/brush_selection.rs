@@ -10,6 +10,8 @@ use crate::{document::Document, geometry::Camera, gizmo};
 use eframe::egui::{Pos2, Rect};
 use std::collections::HashSet;
 
+pub const MAX_REGION_VERTICES: usize = 4096;
+
 /// The operation a brush gesture performs on its hit set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BrushSelectionOperation {
@@ -17,6 +19,177 @@ pub enum BrushSelectionOperation {
     Select,
     /// Remove every hit stroke (and its selection group) from the current set.
     Deselect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegionSelectionOperation {
+    Replace,
+    Add,
+    Subtract,
+}
+
+/// Find strokes intersecting a screen-space polygon, or entirely contained by it.
+pub fn region_hit_ids(
+    doc: &Document,
+    camera: &Camera,
+    canvas: Rect,
+    region: &[Pos2],
+    fully_contained: bool,
+    through_selection: bool,
+    individual: bool,
+) -> Result<HashSet<u64>, &'static str> {
+    const MAX_VERTICES: usize = 4096;
+    const MAX_WORK: usize = 5_000_000;
+    if !(3..=MAX_VERTICES).contains(&region.len())
+        || region.iter().any(|p| !p.x.is_finite() || !p.y.is_finite())
+        || canvas.width() <= 0.0
+        || canvas.height() <= 0.0
+    {
+        return Err("Selection region needs 3–4096 finite vertices on a visible canvas");
+    }
+    let mut hits = HashSet::new();
+    let mut work = 0usize;
+    for stroke in doc.strokes.iter().filter(|stroke| doc.editable(stroke)) {
+        if stroke.points.is_empty() {
+            continue;
+        }
+        work = work.saturating_add(stroke.points.len());
+        if work > MAX_WORK {
+            return Err("Selection query exceeded its 5,000,000 geometry budget");
+        }
+        let projected: Option<Vec<_>> = stroke
+            .points
+            .iter()
+            .map(|point| {
+                gizmo::project(camera, canvas, point.position)
+                    .map(|(screen, _)| (screen, point.position))
+            })
+            .collect();
+        let Some(projected) = projected else {
+            continue;
+        };
+        let contour: Vec<_> = projected.iter().map(|entry| entry.0).collect();
+        let extent = crate::geometry::stroke_extent(stroke);
+        let mut witnesses = Vec::new();
+
+        if stroke.fill.is_some() {
+            let contained = contour.iter().all(|p| point_in_polygon(*p, region));
+            if fully_contained {
+                if contained {
+                    witnesses.extend(contour.iter().copied());
+                }
+            } else {
+                witnesses.extend(
+                    contour
+                        .iter()
+                        .copied()
+                        .filter(|p| point_in_polygon(*p, region)),
+                );
+                witnesses.extend(
+                    region
+                        .iter()
+                        .copied()
+                        .filter(|p| point_in_polygon(*p, &contour)),
+                );
+                for i in 0..contour.len() {
+                    for j in 0..region.len() {
+                        work += 1;
+                        if work > MAX_WORK {
+                            return Err(
+                                "Selection query exceeded its 5,000,000 intersection budget",
+                            );
+                        }
+                        let hit = closest_segments(
+                            contour[i],
+                            contour[(i + 1) % contour.len()],
+                            region[j],
+                            region[(j + 1) % region.len()],
+                        );
+                        if hit.0 <= 0.01 {
+                            witnesses.push(hit.1);
+                        }
+                    }
+                }
+            }
+        } else if fully_contained {
+            let all_inside = contour.iter().all(|p| point_in_polygon(*p, region));
+            if all_inside {
+                witnesses.extend(contour.iter().copied());
+            }
+        } else {
+            let edge_count = region.len();
+            if projected.len() == 1 {
+                let radius_px = extent
+                    / camera
+                        .world_per_pixel(projected[0].1, canvas.height())
+                        .max(1e-6);
+                if point_in_polygon(contour[0], region)
+                    || (0..region.len()).any(|edge| {
+                        closest_point(region[edge], region[(edge + 1) % region.len()], contour[0]).0
+                            <= radius_px
+                    })
+                {
+                    witnesses.push(contour[0]);
+                }
+            } else {
+                for pair in projected.windows(2) {
+                    let world_per_pixel =
+                        camera.world_per_pixel(pair[0].1, canvas.height()).max(1e-6);
+                    let radius_px = extent / world_per_pixel;
+                    if point_in_polygon(pair[0].0, region) {
+                        witnesses.push(pair[0].0);
+                    }
+                    for edge in 0..edge_count {
+                        work += 1;
+                        if work > MAX_WORK {
+                            return Err(
+                                "Selection query exceeded its 5,000,000 intersection budget",
+                            );
+                        }
+                        let closest = closest_segments(
+                            pair[0].0,
+                            pair[1].0,
+                            region[edge],
+                            region[(edge + 1) % edge_count],
+                        );
+                        if closest.0 <= radius_px {
+                            witnesses.push(closest.1);
+                        }
+                    }
+                }
+                if point_in_polygon(*contour.last().unwrap(), region) {
+                    witnesses.push(*contour.last().unwrap());
+                }
+            }
+        }
+        let witness = witnesses.into_iter().find(|point| {
+            through_selection || gizmo::pick(doc, camera, canvas, *point) == Some(stroke.id)
+        });
+        let Some(witness) = witness else {
+            continue;
+        };
+        let _ = witness;
+        if individual {
+            hits.insert(stroke.id);
+        } else {
+            hits.extend(doc.selection_for_stroke(stroke.id, false));
+        }
+    }
+    Ok(hits)
+}
+
+pub fn apply_region_selection(
+    starting: &HashSet<u64>,
+    hits: &HashSet<u64>,
+    operation: RegionSelectionOperation,
+) -> HashSet<u64> {
+    let mut result = starting.clone();
+    match operation {
+        RegionSelectionOperation::Replace => result = hits.clone(),
+        RegionSelectionOperation::Add => result.extend(hits.iter().copied()),
+        RegionSelectionOperation::Subtract => result.retain(|id| !hits.contains(id)),
+    }
+    result
 }
 
 /// Find editable strokes intersected by a screen-space brush path.
