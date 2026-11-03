@@ -133,7 +133,7 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
     let mut out = Vec::with_capacity(count);
     if local_length <= DISTANCE_EPSILON {
         let point = stroke.points[0];
-        out.push(resolve_dab(
+        if let Some(dab) = resolve_dab(
             stroke,
             DabParameters {
                 center: point.position,
@@ -146,7 +146,9 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
                 point_thickness: stroke.point_thickness_scale(0),
                 index: 0,
             },
-        ));
+        ) {
+            out.push(dab);
+        }
         return Ok(out);
     }
     let first = first_dab_index(origin, step) as u64;
@@ -155,7 +157,7 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
         let global_distance = index as f32 * step;
         let local_distance = (global_distance - origin).clamp(0.0, local_length);
         let (position, pressure, tangent, tilt) = sample_path(stroke, &distances, local_distance);
-        out.push(resolve_dab(
+        if let Some(dab) = resolve_dab(
             stroke,
             DabParameters {
                 center: position,
@@ -172,7 +174,9 @@ pub fn sample(stroke: &Stroke) -> Result<Vec<ResolvedDab>, String> {
                 point_thickness: point_thickness_at_distance(stroke, &distances, local_distance),
                 index,
             },
-        ));
+        ) {
+            out.push(dab);
+        }
     }
     Ok(out)
 }
@@ -221,7 +225,7 @@ fn sample_path(
     )
 }
 
-fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> ResolvedDab {
+fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> Option<ResolvedDab> {
     let DabParameters {
         center,
         tangent,
@@ -238,20 +242,21 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> ResolvedDab {
         .dabs
         .surface_target
         .map(|target| target.surface());
-    let center = target
-        .and_then(|surface| surface.project_to_surface(center))
-        .unwrap_or(center);
-    let normal = target
-        .and_then(|surface| surface.normal_at(center))
-        .or_else(|| {
-            (stroke.brush.normal - tangent * stroke.brush.normal.dot(tangent))
-                .try_normalize()
-                .or_else(|| {
-                    (stroke.brush.tangent - tangent * stroke.brush.tangent.dot(tangent))
-                        .try_normalize()
-                })
-        })
-        .unwrap_or(Vec3::Z);
+    let center = if let Some(surface) = target {
+        surface.project_to_surface(center)?
+    } else {
+        center
+    };
+    let normal = if let Some(surface) = target {
+        surface.normal_at(center)?
+    } else {
+        (stroke.brush.normal - tangent * stroke.brush.normal.dot(tangent))
+            .try_normalize()
+            .or_else(|| {
+                (stroke.brush.tangent - tangent * stroke.brush.tangent.dot(tangent)).try_normalize()
+            })
+            .unwrap_or(Vec3::Z)
+    };
     let tangent = (tangent - normal * tangent.dot(normal))
         .try_normalize()
         .unwrap_or(stroke.brush.tangent);
@@ -280,7 +285,7 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> ResolvedDab {
         let offset = (plane_tangent * scatter_angle.cos() + plane_side * scatter_angle.sin())
             * scatter_radius;
         if let Some(surface) = target {
-            surface.offset_tangent(center, offset).unwrap_or(center) - center
+            surface.offset_tangent(center, offset)? - center
         } else {
             offset
         }
@@ -301,7 +306,7 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> ResolvedDab {
         stroke.brush.dynamics.taper_end,
     );
     let angle = (angle_random * 2.0 - 1.0) * stroke.brush.dabs.angle_variation_degrees;
-    ResolvedDab {
+    Some(ResolvedDab {
         position: center + scatter,
         tangent,
         normal,
@@ -315,7 +320,7 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> ResolvedDab {
             * point_thickness,
         angle_degrees: angle,
         gradient_t,
-    }
+    })
 }
 
 fn point_thickness_at_distance(stroke: &Stroke, distances: &[f32], distance: f32) -> f32 {

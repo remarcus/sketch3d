@@ -644,6 +644,11 @@ impl Surface {
         if !projected.is_finite() {
             return None;
         }
+        let base_normal = self.normal_at(world)?;
+        let projected_normal = self.normal_at(projected)?;
+        if base_normal.dot(projected_normal) < 0.5 {
+            return None;
+        }
         Some(projected)
     }
 
