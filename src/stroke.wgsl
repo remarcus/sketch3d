@@ -7,6 +7,8 @@ struct Scene {
 @group(1) @binding(1) var brush_sampler: sampler;
 @group(2) @binding(0) var shadow_depth: texture_depth_2d;
 @group(2) @binding(1) var shadow_sampler: sampler_comparison;
+@group(3) @binding(0) var grain_mask: texture_2d<f32>;
+@group(3) @binding(1) var grain_sampler: sampler;
 fn apply_grain(color: vec3<f32>, position: vec2<f32>) -> vec3<f32> {
     let amount = scene.camera.w;
     if amount <= 0.0 { return color; }
@@ -16,13 +18,17 @@ fn apply_grain(color: vec3<f32>, position: vec2<f32>) -> vec3<f32> {
 }
 struct Output {
     @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32>,
-    @location(1) color: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) world: vec3<f32>,
-    @location(4) opacity: f32, @location(5) material: f32,
+    @location(1) color: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) grain_uv: vec2<f32>,
+    @location(4) world: vec3<f32>, @location(5) opacity: f32, @location(6) material: f32,
 }
-@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) color: vec3<f32>, @location(3) uv: vec2<f32>, @location(4) opacity: f32, @location(5) material: f32) -> Output {
+@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) color: vec3<f32>, @location(3) uv: vec2<f32>, @location(4) opacity: f32, @location(5) material: f32, @location(6) grain_uv: vec2<f32>) -> Output {
     var out: Output;
     out.position=scene.view_projection*vec4<f32>(position,1.0);
-    out.normal=normal; out.color=color; out.uv=uv; out.world=position; out.opacity=opacity; out.material=material; return out;
+    out.normal=normal; out.color=color; out.uv=uv; out.grain_uv=grain_uv; out.world=position; out.opacity=opacity; out.material=material; return out;
+}
+fn grain_coverage(in: Output) -> f32 {
+    if in.material < 4.0 { return 1.0; }
+    return textureSampleLevel(grain_mask, grain_sampler, in.grain_uv, 0.0).a;
 }
 fn visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     if scene.settings.y<0.5 { return 1.0; }
@@ -59,7 +65,7 @@ fn material_output(in: Output, alpha: f32, sampled_color: vec3<f32>) -> Fragment
 @fragment fn fs_main(in: Output) -> FragmentOutput {
     if length(in.normal)<0.1 { return material_output(in, 1.0, vec3<f32>(1.0)); }
     let sampled_texture=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0);
-    let mask_alpha=sampled_texture.a;
+    let mask_alpha=sampled_texture.a*grain_coverage(in);
     var coverage=mask_alpha;
     if scene.shadow.z<0.5 {
         if mask_alpha<0.5 { discard; }
@@ -68,13 +74,13 @@ fn material_output(in: Output, alpha: f32, sampled_color: vec3<f32>) -> Fragment
     return material_output(in, coverage, sampled_texture.rgb);
 }
 @fragment fn fs_cutout(in: Output) -> FragmentOutput {
-    let mask_alpha=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a;
+    let mask_alpha=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a*grain_coverage(in);
     if mask_alpha*in.opacity<0.5 { discard; }
     return FragmentOutput(scene.background,vec4<f32>(0.0));
 }
 fn transparent_output(in: Output) -> FragmentOutput {
     let sampled_texture=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0);
-    let mask_alpha=sampled_texture.a;
+    let mask_alpha=sampled_texture.a*grain_coverage(in);
     if mask_alpha<0.001 { discard; }
     return material_output(in, in.opacity*mask_alpha, sampled_texture.rgb);
 }

@@ -266,6 +266,7 @@ pub fn mesh(stroke: &Stroke) -> Vec<crate::geometry::Vertex> {
         }
         crate::geometry::Vertex {
             material: 0.0,
+            grain_uv: [0.0; 2],
             gradient_t: 0.0,
             position: (position - offset).to_array(),
             normal: stroke.brush.normal.to_array(),

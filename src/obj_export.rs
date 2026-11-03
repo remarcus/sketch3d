@@ -18,7 +18,7 @@ type MaterialKey = (
     u32,
     u32,
     u32,
-    (TextureKind, u32, u32),
+    texture::TextureCacheKey,
     StrokeMaterial,
     u64,
     u32,
@@ -141,12 +141,25 @@ pub fn write_obj_bundle(
     }
     if strokes.iter().any(|stroke| {
         stroke.brush.texture.image.is_some_and(|settings| {
-            !settings.is_valid()
-                || !tip_assets.contains_key(&settings.asset_id)
-                || stroke.brush.tip_asset_id != 0
+            !settings.is_valid() || !tip_assets.contains_key(&settings.asset_id)
         })
     }) {
         return Err("An exported stroke refers to an invalid repeating image texture".into());
+    }
+    if strokes.iter().any(|stroke| {
+        stroke.brush.tip_asset_id != 0
+            && (stroke
+                .brush
+                .texture
+                .image
+                .is_some_and(|settings| settings.strength > 0.0)
+                || (stroke.brush.texture.kind != TextureKind::Solid
+                    && stroke.brush.texture.strength > 0.0))
+    }) {
+        return Err(
+            "OBJ export does not support multiplying image-tip alpha by independent grain coverage"
+                .into(),
+        );
     }
     if strokes.is_empty() {
         return Err("No visible strokes to export".into());

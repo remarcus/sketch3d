@@ -40,6 +40,8 @@ pub struct ResolvedDab {
     /// Includes pressure response, taper, and deterministic size variation.
     pub size_scale: f32,
     pub angle_degrees: f32,
+    /// Global centerline distance from the original stroke start.
+    pub distance: f32,
     /// Normalized centerline distance for stroke color ramps.
     pub gradient_t: f32,
 }
@@ -331,6 +333,7 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> Option<ResolvedDab
             * taper
             * point_thickness,
         angle_degrees: angle,
+        distance: global_distance,
         gradient_t,
     })
 }

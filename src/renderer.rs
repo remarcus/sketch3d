@@ -1,6 +1,6 @@
 use crate::lighting::{self, Lighting, SHADOW_SIZE};
 use crate::surface::GuidePreview;
-use crate::texture::{self, TextureKind, TextureSettings};
+use crate::texture::{self, TextureSettings};
 use crate::{
     document::{BrushKind, Document, LayerBlendMode, Stroke, StrokeMaterial},
     geometry::{self, Camera, Vertex},
@@ -316,7 +316,7 @@ pub struct SceneRenderer {
     bind: wgpu::BindGroup,
     texture_layout: wgpu::BindGroupLayout,
     image_plane_layout: wgpu::BindGroupLayout,
-    textures: HashMap<(TextureKind, u32, u32), wgpu::BindGroup>,
+    textures: HashMap<texture::TextureCacheKey, wgpu::BindGroup>,
     meshes: HashMap<u64, Mesh>,
     image_plane_meshes: HashMap<u64, ImagePlaneMesh>,
     image_plane_textures: HashMap<u64, ImagePlaneTexture>,
@@ -478,7 +478,7 @@ impl SceneRenderer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&layout, &texture_layout, &shadow_layout],
+            bind_group_layouts: &[&layout, &texture_layout, &shadow_layout, &texture_layout],
             push_constant_ranges: &[],
         });
         let sample_count = canvas_sample_count(&state.adapter);
@@ -545,7 +545,7 @@ impl SceneRenderer {
             };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:Some("3D strokes"),layout:Some(&pipeline_layout),
-            vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32]}]},
+            vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32,6=>Float32x2]}]},
             fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some(entry_point),compilation_options:Default::default(),targets:&[
                 Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:color_blend,write_mask:wgpu::ColorWrites::ALL}),
                 Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8Unorm,blend:Some(wgpu::BlendState {color:wgpu::BlendComponent {src_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},dst_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},operation:wgpu::BlendOperation::Add},alpha:wgpu::BlendComponent {src_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},dst_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},operation:wgpu::BlendOperation::Add}}),write_mask:wgpu::ColorWrites::ALL})
@@ -1222,6 +1222,16 @@ impl SceneRenderer {
             .map(|texture| &texture.bind)
             .unwrap_or(&self.textures[&texture::key(stroke.brush.texture)])
     }
+
+    fn grain_texture(&self, stroke: &Stroke) -> &wgpu::BindGroup {
+        stroke
+            .brush
+            .texture
+            .image
+            .and_then(|settings| self.image_textures.get(&settings.cache_key()))
+            .map(|texture| &texture.bind)
+            .unwrap_or(&self.textures[&texture::key(stroke.brush.texture)])
+    }
     pub fn invalidate(&mut self) {
         self.meshes.clear();
     }
@@ -1485,6 +1495,7 @@ impl SceneRenderer {
                 }
                 target.push(Vertex {
                     material: 0.0,
+                    grain_uv: [0.0; 2],
                     gradient_t: 0.0,
                     position: position.to_array(),
                     normal: (rotation * source.normal).normalize_or_zero().to_array(),
@@ -2049,6 +2060,7 @@ impl SceneRenderer {
                 uv: [0.0; 2],
                 opacity: 1.0,
                 material: 0.0,
+                grain_uv: [0.0; 2],
                 gradient_t: 0.0,
             })
             .collect();
@@ -2154,6 +2166,7 @@ impl SceneRenderer {
             ) {
                 if let Some(mesh) = self.meshes.get(&stroke.id) {
                     pass.set_bind_group(1, self.brush_texture(stroke), &[]);
+                    pass.set_bind_group(3, self.grain_texture(stroke), &[]);
                     pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                     pass.draw(0..mesh.count, 0..1);
                 }
@@ -2276,6 +2289,7 @@ impl SceneRenderer {
                         triangles
                     });
                     pass.set_bind_group(1, self.brush_texture(stroke), &[]);
+                    pass.set_bind_group(3, self.grain_texture(stroke), &[]);
                     pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                     pass.draw(0..mesh.count, 0..1);
                 }
@@ -2305,6 +2319,7 @@ impl SceneRenderer {
                 };
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
+                pass.set_bind_group(3, self.grain_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
@@ -2319,6 +2334,7 @@ impl SceneRenderer {
                 };
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
+                pass.set_bind_group(3, self.grain_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
@@ -2704,6 +2720,7 @@ impl SceneRenderer {
                 doc,
             ) {
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
+                pass.set_bind_group(3, self.grain_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
@@ -2797,6 +2814,7 @@ impl SceneRenderer {
                     triangles
                 });
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
+                pass.set_bind_group(3, self.grain_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
@@ -2828,6 +2846,7 @@ impl SceneRenderer {
                 };
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
+                pass.set_bind_group(3, self.grain_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }

@@ -121,10 +121,11 @@ pub fn pick_region_visible(
 fn textured_surface_covered(
     stroke: &crate::document::Stroke,
     tip_asset: Option<&crate::brush_tip::BrushTipAsset>,
+    grain_asset: Option<&crate::brush_tip::BrushTipAsset>,
     origin: Vec3,
     direction: Vec3,
 ) -> Option<bool> {
-    let mut nearest: Option<(f32, [f32; 2])> = None;
+    let mut nearest: Option<(f32, [f32; 2], [f32; 2])> = None;
     for triangle in crate::geometry::stroke_mesh(stroke).as_chunks::<3>().0 {
         let a = Vec3::from(triangle[0].position);
         let b = Vec3::from(triangle[1].position);
@@ -148,7 +149,7 @@ fn textured_surface_covered(
             continue;
         }
         let distance = edge_ac.dot(q) * inverse;
-        if distance < 0.0 || nearest.is_some_and(|(best, _)| distance >= best) {
+        if distance < 0.0 || nearest.is_some_and(|(best, _, _)| distance >= best) {
             continue;
         }
         let w = 1.0 - u - v;
@@ -157,6 +158,10 @@ fn textured_surface_covered(
             triangle[0].uv[1] * w + triangle[1].uv[1] * u + triangle[2].uv[1] * v,
         ];
         let opacity = triangle[0].opacity * w + triangle[1].opacity * u + triangle[2].opacity * v;
+        let grain_uv = [
+            triangle[0].grain_uv[0] * w + triangle[1].grain_uv[0] * u + triangle[2].grain_uv[0] * v,
+            triangle[0].grain_uv[1] * w + triangle[1].grain_uv[1] * u + triangle[2].grain_uv[1] * v,
+        ];
         if stroke.brush.flow.enabled
             && (opacity <= 0.001
                 || (stroke.brush.texture.kind != crate::texture::TextureKind::Solid
@@ -164,24 +169,30 @@ fn textured_surface_covered(
         {
             continue;
         }
-        nearest = Some((distance, uv));
+        nearest = Some((distance, uv, grain_uv));
     }
-    let Some((_, uv)) = nearest else {
+    let Some((_, uv, grain_uv)) = nearest else {
         return Some(false);
     };
     if stroke.brush.flow.enabled && stroke.brush.texture.image.is_none() {
         return Some(true);
     }
     if stroke.brush.tip_asset_id != 0 {
-        return Some(
-            tip_asset
-                .and_then(|asset| asset.alpha_at_uv(uv).ok())
-                .is_some_and(|alpha| alpha > 0.001),
-        );
+        let tip_alpha = tip_asset
+            .and_then(|asset| asset.alpha_at_uv(uv).ok())
+            .unwrap_or(0.0);
+        let grain_alpha = if let Some(settings) = stroke.brush.texture.image {
+            grain_asset
+                .and_then(|asset| asset.repeating_coverage_at_uv(settings, grain_uv).ok())
+                .unwrap_or(0.0)
+        } else {
+            crate::texture::alpha_at_uv(stroke.brush.texture, grain_uv)
+        };
+        return Some(tip_alpha * grain_alpha > 0.001);
     }
     if let Some(settings) = stroke.brush.texture.image {
         return Some(
-            tip_asset
+            grain_asset
                 .and_then(|asset| asset.repeating_coverage_at_uv(settings, uv).ok())
                 .is_some_and(|coverage| coverage > 0.001),
         );
@@ -247,16 +258,18 @@ fn pick_filtered(
                             .min(camera.world_per_pixel(pair[1].position, rect.height()));
                     distance(pos, a, b).0 <= pick_slop_px + width
                 });
-                let tip_asset = doc.brush_tip_assets.iter().find(|asset| {
-                    asset.id
-                        == if stroke.brush.tip_asset_id != 0 {
-                            stroke.brush.tip_asset_id
-                        } else {
-                            stroke.brush.texture.image.map_or(0, |image| image.asset_id)
-                        }
+                let tip_asset = doc
+                    .brush_tip_assets
+                    .iter()
+                    .find(|asset| asset.id == stroke.brush.tip_asset_id);
+                let grain_asset = stroke.brush.texture.image.and_then(|settings| {
+                    doc.brush_tip_assets
+                        .iter()
+                        .find(|asset| asset.id == settings.asset_id)
                 });
                 if !close
-                    || textured_surface_covered(stroke, tip_asset, origin, direction) == Some(false)
+                    || textured_surface_covered(stroke, tip_asset, grain_asset, origin, direction)
+                        == Some(false)
                 {
                     continue;
                 }
@@ -656,7 +669,7 @@ mod tests {
                 / 3.0;
             let screen = project(&camera, rect, position).unwrap().0;
             let (origin, direction) = ray(&camera, rect, screen);
-            match textured_surface_covered(&mark, None, origin, direction) {
+            match textured_surface_covered(&mark, None, None, origin, direction) {
                 Some(false) => {
                     transparent_pick |= pick(&doc, &camera, rect, screen) == Some(behind.id);
                 }

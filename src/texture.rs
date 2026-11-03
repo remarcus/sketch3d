@@ -180,6 +180,10 @@ pub struct TextureSettings {
     pub kind: TextureKind,
     pub scale: f32,
     pub strength: f32,
+    /// Raises or lowers the grain alpha cutoff before coverage is multiplied.
+    pub threshold: f32,
+    /// Remaps grain alpha; 1.0 preserves the original texture.
+    pub contrast: f32,
     pub seed: u32,
 }
 fn scale_with_brush_default() -> bool {
@@ -196,6 +200,8 @@ impl Default for TextureSettings {
             kind: TextureKind::Solid,
             scale: 0.2,
             strength: 0.65,
+            threshold: 0.0,
+            contrast: 1.0,
             seed: 1,
         }
     }
@@ -210,6 +216,10 @@ impl TextureSettings {
             && (0.02..=10.0).contains(&self.scale)
             && self.strength.is_finite()
             && (0.0..=1.0).contains(&self.strength)
+            && self.threshold.is_finite()
+            && (0.0..=0.95).contains(&self.threshold)
+            && self.contrast.is_finite()
+            && (0.0..=4.0).contains(&self.contrast)
     }
 }
 
@@ -257,11 +267,19 @@ impl TextureMapping {
 }
 
 /// Scale affects UVs only and therefore does not create another mask image.
-pub fn key(settings: TextureSettings) -> (TextureKind, u32, u32) {
+pub type TextureCacheKey = (TextureKind, u32, u32, u32, u32);
+
+pub fn key(settings: TextureSettings) -> TextureCacheKey {
     if settings.image.is_some() || settings.kind == TextureKind::Solid || settings.strength == 0.0 {
-        (TextureKind::Solid, 0, 0)
+        (TextureKind::Solid, 0, 0, 0, 0)
     } else {
-        (settings.kind, settings.strength.to_bits(), settings.seed)
+        (
+            settings.kind,
+            settings.strength.to_bits(),
+            settings.seed,
+            settings.threshold.to_bits(),
+            settings.contrast.to_bits(),
+        )
     }
 }
 
@@ -289,16 +307,16 @@ pub fn rgba(settings: TextureSettings) -> Vec<u8> {
 
 /// Match the nearest, repeating texture sampler used by the renderer.
 pub fn covered_at_uv(settings: TextureSettings, uv: [f32; 2]) -> bool {
+    alpha_at_uv(settings, uv) >= 0.5
+}
+
+pub fn alpha_at_uv(settings: TextureSettings, uv: [f32; 2]) -> f32 {
     if !uv.into_iter().all(f32::is_finite) {
-        return false;
+        return 0.0;
     }
     let x = (uv[0].rem_euclid(1.0) * SIZE as f32).floor() as u32;
     let y = (uv[1].rem_euclid(1.0) * SIZE as f32).floor() as u32;
-    texel_covered(settings, x.min(SIZE - 1), y.min(SIZE - 1))
-}
-
-fn texel_covered(settings: TextureSettings, x: u32, y: u32) -> bool {
-    texel_alpha(settings, x, y) >= 128
+    f32::from(texel_alpha(settings, x.min(SIZE - 1), y.min(SIZE - 1))) / 255.0
 }
 
 fn texel_alpha(settings: TextureSettings, x: u32, y: u32) -> u8 {
@@ -362,7 +380,9 @@ fn texel_alpha(settings: TextureSettings, x: u32, y: u32) -> u8 {
             1.0 - settings.strength * (1.0 - (0.06 + density * 0.94))
         }
     };
-    (alpha.clamp(0.0, 1.0) * 255.0).round() as u8
+    let alpha = ((alpha - settings.threshold) / (1.0 - settings.threshold)).clamp(0.0, 1.0);
+    let alpha = ((alpha - 0.5) * settings.contrast + 0.5).clamp(0.0, 1.0);
+    (alpha * 255.0).round() as u8
 }
 
 fn periodic_value_noise(x: u32, y: u32, seed: u32, period: u32) -> f32 {
@@ -648,7 +668,7 @@ mod tests {
         assert_eq!(key(scaled), key(original));
         assert_eq!(
             key(settings(TextureKind::Solid)),
-            (TextureKind::Solid, 0, 0)
+            (TextureKind::Solid, 0, 0, 0, 0)
         );
     }
     #[test]

@@ -408,6 +408,6 @@ mod tests {
         legacy["version"] = serde_json::json!(24);
         let legacy = Document::from_json(&legacy.to_string()).unwrap();
         assert!(legacy.animation.is_empty());
-        assert_eq!(legacy.version, 29);
+        assert_eq!(legacy.version, 30);
     }
 }

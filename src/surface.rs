@@ -133,6 +133,7 @@ impl Cylinder {
             for p in [a, b] {
                 vertices.push(Vertex {
                     material: 0.0,
+                    grain_uv: [0.0; 2],
                     gradient_t: 0.0,
                     position: p.to_array(),
                     normal: [0.0; 3],
@@ -220,6 +221,7 @@ impl SphereSurface {
             for position in [a, b] {
                 vertices.push(Vertex {
                     material: 0.0,
+                    grain_uv: [0.0; 2],
                     gradient_t: 0.0,
                     position: position.to_array(),
                     normal: [0.0; 3],
@@ -297,6 +299,7 @@ impl RingSurface {
             for position in [a, b] {
                 vertices.push(Vertex {
                     material: 0.0,
+                    grain_uv: [0.0; 2],
                     gradient_t: 0.0,
                     position: position.to_array(),
                     normal: [0.0; 3],
@@ -370,6 +373,7 @@ impl ConeSurface {
             for position in [a, b] {
                 vertices.push(Vertex {
                     material: 0.0,
+                    grain_uv: [0.0; 2],
                     gradient_t: 0.0,
                     position: position.to_array(),
                     normal: [0.0; 3],
@@ -431,6 +435,7 @@ impl GuidePreview {
                     for position in [a, b] {
                         vertices.push(Vertex {
                             material: 0.0,
+                            grain_uv: [0.0; 2],
                             gradient_t: 0.0,
                             position: position.to_array(),
                             normal: [0.0; 3],
@@ -465,6 +470,7 @@ impl GuidePreview {
                     for position in [a, b] {
                         vertices.push(Vertex {
                             material: 0.0,
+                            grain_uv: [0.0; 2],
                             gradient_t: 0.0,
                             position: position.to_array(),
                             normal: [0.0; 3],

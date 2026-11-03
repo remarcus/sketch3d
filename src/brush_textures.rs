@@ -197,9 +197,15 @@ impl SketchApp {
                     }
                     ui.small("Image colors repeat along the stroke. Transparent texels leave open gaps.");
                     ui.small("Repeat spacing uses document world units; U/V scale and offsets use tile coordinates.");
+                    if self.brush.tip_asset_id != 0 && image.strength > 0.0 {
+                        ui.small("Image-tip alpha and repeating image coverage multiply; tip color and tint stay intact. GLB/OBJ export currently rejects this combination.");
+                    }
                 } else if self.brush.texture.kind != TextureKind::Solid {
                     ui.add(egui::Slider::new(&mut self.brush.texture.scale, 0.02..=10.0).logarithmic(true).text("Spacing"));
                     ui.add(egui::Slider::new(&mut self.brush.texture.strength, 0.0..=1.0).text("Strength"));
+                    ui.add(egui::Slider::new(&mut self.brush.texture.threshold, 0.0..=0.95).text("Threshold"));
+                    ui.add(egui::Slider::new(&mut self.brush.texture.contrast, 0.0..=4.0).text("Contrast"));
+                    ui.small("Threshold clears lower coverage values; contrast reshapes the remaining grain alpha.");
                     ui.add(egui::Slider::new(&mut self.brush.texture.mapping.rotation_degrees, -180.0..=180.0).text("Texture rotation"));
                     for axis in 0..2 {
                         ui.add(egui::Slider::new(&mut self.brush.texture.mapping.scale[axis], 0.05..=20.0).logarithmic(true).text(if axis == 0 { "Texture U scale" } else { "Texture V scale" }));
@@ -211,6 +217,9 @@ impl SketchApp {
                         ui.small("Soft alpha grain stays fixed in world space. Pressure controls coverage; reported tilt broadens graphite/charcoal. Mouse or missing tilt uses the No-tilt fallback width.");
                     } else {
                         ui.small("Spacing is in world units. Gaps remain part of the selectable stroke footprint.");
+                    }
+                    if self.brush.tip_asset_id != 0 && self.brush.texture.strength > 0.0 {
+                        ui.small("Image-tip alpha and grain coverage multiply; tip color and tint stay intact. GLB/OBJ export currently rejects this combination.");
                     }
                     ui.small("U/V scale and offsets use tile coordinates; repeat spacing uses document world units.");
                 }
@@ -332,7 +341,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 29);
+                assert_eq!(loaded.version, 30);
                 assert_eq!(loaded.strokes, self.doc.strokes);
                 self.load_textures();
                 self.brush.texture = TextureSettings {

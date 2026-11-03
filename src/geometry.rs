@@ -12,6 +12,8 @@ pub struct Vertex {
     pub opacity: f32,
     /// Encoded material mode: shaded=0, unlit=1, emissive=2.
     pub material: f32,
+    /// Independent grain coordinates for image-tip stamps.
+    pub grain_uv: [f32; 2],
     /// Normalized centerline arc-length parameter used to resolve stroke gradients.
     pub gradient_t: f32,
 }
@@ -287,6 +289,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
             let normal = a * angle.cos() + b * angle.sin();
             Vertex {
                 material: 0.0,
+                grain_uv: [0.0; 2],
                 gradient_t: if total > 1.0e-8 {
                     (distances[i] / total).clamp(0.0, 1.0)
                 } else {
@@ -339,6 +342,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
                     let normal = frame * local;
                     out.push(Vertex {
                         material: 0.0,
+                        grain_uv: [0.0; 2],
                         gradient_t: 0.0,
                         position: (p.position + normal * r).to_array(),
                         normal: normal.to_array(),
@@ -372,6 +376,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
         for (index, ring) in [(0, &rings[0]), (rings.len() - 1, rings.last().unwrap())] {
             let center = Vertex {
                 material: 0.0,
+                grain_uv: [0.0; 2],
                 gradient_t: if total > 1.0e-8 {
                     (distances[index] / total).clamp(0.0, 1.0)
                 } else {
@@ -934,6 +939,7 @@ fn tip_mesh(stroke: &Stroke) -> Vec<Vertex> {
             positions = projected;
         }
         let opacity = vertex_opacity(stroke, dab.pressure, dab.normal, dab.normal);
+        let grain_start = vertices.len();
         flat_quad_gradient(
             &mut vertices,
             positions,
@@ -944,6 +950,31 @@ fn tip_mesh(stroke: &Stroke) -> Vec<Vertex> {
             0.0,
             [dab.gradient_t; 4],
         );
+        for vertex in &mut vertices[grain_start..] {
+            let position = Vec3::from_array(vertex.position);
+            let uv = match stroke.brush.texture.anchor_mode {
+                crate::texture::TextureAnchorMode::StrokeFollowing => {
+                    let offset = position - dab.position;
+                    [
+                        (dab.distance + offset.dot(tangent)) / stroke.brush.texture.scale,
+                        offset.dot(side) / stroke.brush.texture.scale,
+                    ]
+                }
+                crate::texture::TextureAnchorMode::CapturedPlanar => stroke
+                    .brush
+                    .texture
+                    .frame
+                    .map(|frame| frame.project(position, stroke.brush.texture.scale))
+                    .unwrap_or_else(|| {
+                        let offset = position - dab.position;
+                        [
+                            (dab.distance + offset.dot(tangent)) / stroke.brush.texture.scale,
+                            offset.dot(side) / stroke.brush.texture.scale,
+                        ]
+                    }),
+            };
+            vertex.grain_uv = stroke.brush.texture.mapping.map(uv);
+        }
     }
     vertices
 }
@@ -1003,6 +1034,7 @@ fn dab_mesh(stroke: &Stroke) -> Vec<Vertex> {
                         let offset = position - dab.position;
                         vertices.push(Vertex {
                             material: 0.0,
+                            grain_uv: [0.0; 2],
                             gradient_t: dab.gradient_t,
                             position: position.to_array(),
                             normal: face_normal.to_array(),
@@ -1099,6 +1131,7 @@ fn surface_dab_mesh_with_projection(
     let length_radius = stroke.radius * dab.size_scale;
     let center = Vertex {
         material: 0.0,
+        grain_uv: [0.0; 2],
         gradient_t: dab.gradient_t,
         position: dab.position.to_array(),
         normal: normal.to_array(),
@@ -1108,6 +1141,7 @@ fn surface_dab_mesh_with_projection(
     };
     let mut rim = [Vertex {
         material: 0.0,
+        grain_uv: [0.0; 2],
         gradient_t: dab.gradient_t,
         position: [0.0; 3],
         normal: [0.0; 3],
@@ -1124,6 +1158,7 @@ fn surface_dab_mesh_with_projection(
         };
         *vertex = Vertex {
             material: 0.0,
+            grain_uv: [0.0; 2],
             gradient_t: dab.gradient_t,
             position: position.to_array(),
             normal: normal.to_array(),
@@ -1896,6 +1931,7 @@ fn flat_triangle(
             .zip(opacity)
             .map(|((position, uv), opacity)| Vertex {
                 material: 0.0,
+                grain_uv: [0.0; 2],
                 gradient_t: 0.0,
                 position: position.to_array(),
                 normal: normal.to_array(),
@@ -2184,6 +2220,7 @@ pub fn grid(plane: DrawingPlane) -> Vec<Vertex> {
             for sign in [-1.0, 1.0] {
                 vertices.push(Vertex {
                     material: 0.0,
+                    grain_uv: [0.0; 2],
                     gradient_t: 0.0,
                     position: (origin + a * i as f32 * 0.5 + b * 6.0 * sign).to_array(),
                     normal: [0.0; 3],

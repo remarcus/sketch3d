@@ -244,7 +244,7 @@ pub fn encode_with_images(
     selected: Option<&HashSet<u64>>,
     image_root: Option<&Path>,
 ) -> Result<EncodedGlb, String> {
-    if !matches!(doc.version, 1..=29) {
+    if !matches!(doc.version, 1..=30) {
         return Err("Unsupported source document version".into());
     }
     crate::brush_tip::validate_catalog(&doc.brush_tip_assets)?;
@@ -325,8 +325,17 @@ pub fn encode_with_images(
         let layer_opacity = doc.layer_opacity(stroke.layer_id);
         let settings = stroke.brush.texture;
         let image_settings = settings.image;
+        if stroke.brush.tip_asset_id != 0
+            && (image_settings.is_some_and(|settings| settings.strength > 0.0)
+                || (settings.kind != crate::texture::TextureKind::Solid && settings.strength > 0.0))
+        {
+            return Err(format!(
+                "Stroke {} combines image-tip alpha with independent grain coverage, which GLB export does not support",
+                stroke.id
+            ));
+        }
         if let Some(settings) = image_settings {
-            if !settings.is_valid() || stroke.brush.tip_asset_id != 0 {
+            if !settings.is_valid() {
                 return Err(format!(
                     "Stroke {} has invalid or conflicting repeating texture settings",
                     stroke.id
@@ -1582,7 +1591,7 @@ mod tests {
         let text = serde_json::to_string(&source).unwrap();
         let loaded = Document::from_json(&text).unwrap();
         assert_eq!(loaded.strokes, source.strokes);
-        assert_eq!(loaded.version, 29);
+        assert_eq!(loaded.version, 30);
         let exported = encode(&loaded, None).unwrap();
         let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
         assert_eq!(gltf.meshes().count(), 8);
@@ -1897,7 +1906,7 @@ mod group_export_tests {
     fn group_metadata_roundtrips_without_merging_or_reinterpreting_strokes() {
         let doc = crate::export_check::grouped_fixture();
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-        assert_eq!(loaded.version, 29);
+        assert_eq!(loaded.version, 30);
         assert_eq!(loaded.strokes, doc.strokes);
         let encoded = encode(&doc, None).unwrap();
         let parsed = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
