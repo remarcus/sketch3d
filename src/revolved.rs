@@ -1,13 +1,14 @@
 //! Open surfaces of revolution built from a strictly ordered piecewise-linear profile.
 use crate::geometry::{DrawingPlane, Vertex};
 use glam::{Quat, Vec3};
+use serde::{Deserialize, Serialize};
 use std::f32::consts::{PI, TAU};
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProfilePoint {
     pub height: f32,
     pub radius: f32,
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Revolved {
     pub center: Vec3,
     pub rotation_degrees: Vec3,

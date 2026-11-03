@@ -238,6 +238,9 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> ResolvedDab {
         .dabs
         .surface_target
         .map(|target| target.surface());
+    let center = target
+        .and_then(|surface| surface.project_to_surface(center))
+        .unwrap_or(center);
     let normal = target
         .and_then(|surface| surface.normal_at(center))
         .or_else(|| {

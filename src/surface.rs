@@ -488,6 +488,61 @@ pub enum Surface {
     Loft(LoftSurface),
 }
 impl Surface {
+    fn parameter_in_domain(self, parameter: Vec3) -> bool {
+        match self {
+            Self::Cylinder(cylinder) => parameter.y.abs() <= cylinder.height * 0.5,
+            Self::Revolved(revolved) => {
+                (0.0..=*revolved.meridian_knots().last().unwrap_or(&0.0)).contains(&parameter.y)
+            }
+            Self::Sphere(sphere) => {
+                parameter.y.abs() <= sphere.radius * std::f32::consts::FRAC_PI_2
+            }
+            Self::Cone(cone) => {
+                let slant = (1.0 + (cone.radius / cone.height).powi(2)).sqrt();
+                (0.0..=cone.height * slant).contains(&parameter.y)
+            }
+            _ => true,
+        }
+    }
+
+    pub fn project_to_surface(self, world: Vec3) -> Option<Vec3> {
+        if !world.is_finite() {
+            return None;
+        }
+        let parameter = self.encode(world, None);
+        if !self.parameter_in_domain(parameter) {
+            return None;
+        }
+        let projected = self
+            .decode(Point {
+                position: parameter,
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 0,
+            })
+            .position;
+        if !projected.is_finite() {
+            return None;
+        }
+        match self {
+            Self::Revolved(revolved) => {
+                let local = revolved.to_local(projected);
+                (local.y >= revolved.min_height() && local.y <= revolved.max_height())
+                    .then_some(projected)
+            }
+            Self::Cylinder(cylinder)
+                if cylinder.to_local(projected).y.abs() > cylinder.height * 0.5 =>
+            {
+                None
+            }
+            Self::Cone(cone) => {
+                let local = cone.rotation.inverse() * (projected - cone.center);
+                (local.y >= 0.0 && local.y <= cone.height).then_some(projected)
+            }
+            _ => Some(projected),
+        }
+    }
+
     pub fn normal_at(self, world: Vec3) -> Option<Vec3> {
         let parameter = self.encode(world, None);
         let epsilon = 1.0e-3;
@@ -572,6 +627,9 @@ impl Surface {
             (a * y - b * x) / determinant,
             0.0,
         );
+        if !self.parameter_in_domain(parameter + delta) {
+            return None;
+        }
         let projected = self
             .decode(Point {
                 position: parameter + delta,
@@ -583,18 +641,7 @@ impl Surface {
         if !projected.is_finite() {
             return None;
         }
-        match self {
-            Self::Cylinder(cylinder)
-                if cylinder.to_local(projected).y.abs() > cylinder.height * 0.5 =>
-            {
-                None
-            }
-            Self::Cone(cone) => {
-                let y = cone.rotation.inverse() * (projected - cone.center);
-                (y.y >= 0.0 && y.y <= cone.height).then_some(projected)
-            }
-            _ => Some(projected),
-        }
+        Some(projected)
     }
 
     fn encode(self, world: Vec3, previous: Option<Vec3>) -> Vec3 {

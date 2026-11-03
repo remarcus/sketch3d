@@ -28,7 +28,7 @@ impl SketchApp {
                 "PNG image stamp · aspect {:.2} · source alpha kept · brush color tints RGB",
                 aspect
             ));
-            ui.small("Surface-projected stamps place quad corners on cylinder, sphere, torus, and cone guides; there is no depth offset. Revolved, freeform, loft, and model targets are rejected.");
+            ui.small("Surface-projected stamps place quad corners on analytic curved guides; there is no depth offset. Freeform, loft, and model targets are rejected.");
             ui_style::slider_row(
                 ui,
                 "Angle",

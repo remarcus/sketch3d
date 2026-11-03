@@ -95,6 +95,9 @@ pub enum DabSurfaceTarget {
         radius: f32,
         height: f32,
     },
+    Revolved {
+        surface: crate::revolved::Revolved,
+    },
 }
 
 impl DabSurfaceTarget {
@@ -140,6 +143,7 @@ impl DabSurfaceTarget {
                     && major_radius > minor_radius
                     && minor_radius > 0.0
             }
+            Self::Revolved { surface } => surface.valid(),
         }
     }
 
@@ -191,6 +195,7 @@ impl DabSurfaceTarget {
                 radius,
                 height,
             }),
+            Self::Revolved { surface } => Surface::Revolved(surface),
         }
     }
 }

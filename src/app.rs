@@ -1606,6 +1606,31 @@ fn dab_target_from_geometry(
             radius: *radius,
             height: *height,
         },
+        GuideGeometry::Revolved {
+            center,
+            rotation,
+            profile,
+        } => {
+            let (z, y, x) = rotation.to_euler(glam::EulerRot::ZYX);
+            let mut points = [crate::revolved::ProfilePoint {
+                height: 0.0,
+                radius: 1.0,
+            }; 8];
+            for (destination, point) in points.iter_mut().zip(profile) {
+                *destination = crate::revolved::ProfilePoint {
+                    height: point.height,
+                    radius: point.radius,
+                };
+            }
+            crate::dynamics::DabSurfaceTarget::Revolved {
+                surface: crate::revolved::Revolved {
+                    center: *center,
+                    rotation_degrees: glam::Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI),
+                    profile: points,
+                    count: profile.len(),
+                },
+            }
+        }
         _ => return None,
     })
 }
@@ -2546,29 +2571,35 @@ impl SketchApp {
 
     fn dab_scatter_supported(&self) -> bool {
         self.doc.active_model_reference.is_none()
-            && self
-                .saved_guide_geometry()
-                .map_or(!self.use_revolved, |geometry| {
-                    matches!(
-                        geometry,
-                        crate::document::guide_resources::GuideGeometry::Plane { .. }
-                    ) || dab_target_from_geometry(geometry).is_some()
-                })
+            && self.saved_guide_geometry().map_or(true, |geometry| {
+                matches!(
+                    geometry,
+                    crate::document::guide_resources::GuideGeometry::Plane { .. }
+                ) || dab_target_from_geometry(geometry).is_some()
+            })
     }
 
     fn captured_dab_surface(
         &self,
         geometry: Option<&crate::document::guide_resources::GuideGeometry>,
     ) -> Option<crate::dynamics::DabSurfaceTarget> {
-        geometry.and_then(dab_target_from_geometry).or_else(|| {
-            self.use_cylinder
-                .then(|| crate::dynamics::DabSurfaceTarget::Cylinder {
-                    center: self.cylinder.center,
-                    rotation: self.cylinder.rotation(),
-                    radius: self.cylinder.radius,
-                    height: self.cylinder.height,
-                })
-        })
+        if let Some(geometry) = geometry {
+            return dab_target_from_geometry(geometry);
+        }
+        if self.use_cylinder {
+            Some(crate::dynamics::DabSurfaceTarget::Cylinder {
+                center: self.cylinder.center,
+                rotation: self.cylinder.rotation(),
+                radius: self.cylinder.radius,
+                height: self.cylinder.height,
+            })
+        } else if self.use_revolved {
+            Some(crate::dynamics::DabSurfaceTarget::Revolved {
+                surface: self.revolved,
+            })
+        } else {
+            None
+        }
     }
 
     fn commit_model_surface_stroke(&mut self, stroke: Stroke, duration_ms: u64) {
@@ -2707,9 +2738,9 @@ impl SketchApp {
             self.finish();
             self.resume_ink = begin;
             self.status = if self.brush.tip_asset_id != 0 {
-                "Image stamps support planes and projected marks on cylinder, sphere, torus, and cone guides; revolved, freeform, loft, and model surfaces are unsupported.".into()
+                "Image stamps support planes and projected marks on analytic curved guides; freeform, loft, and model surfaces are unsupported.".into()
             } else {
-                "Dab scatter supports planes and analytic cylinder, sphere, torus, and cone guides. Turn scatter off for revolved, freeform, loft, and model surfaces.".into()
+                "Dab scatter supports planes and analytic curved guides. Turn scatter off for freeform, loft, and model surfaces.".into()
             };
             return;
         }
