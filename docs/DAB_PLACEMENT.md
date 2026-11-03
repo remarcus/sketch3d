@@ -29,17 +29,31 @@ space between dabs.
   duplicate samples do not add placements. A tap gets one dab, short strokes do
   not force an endpoint dab, and stabilized release points add only ordinary
   spacing landmarks that they cross.
-- Zero-scatter curved-guide and model-surface strokes interpolate the captured
+- Zero-scatter curved-guide and model-surface paths interpolate the captured
   world-space centerline. This is chordal interpolation between saved samples,
-  not geodesic travel or projection back onto the surface; denser stabilized
-  samples reduce chord error. Surface misses and large discontinuities create
-  separate strokes, so dabs do not bridge an absent surface region.
-- Scatter is uniform in area in the captured guide plane, bounded by
-  `stroke radius × scatter`. Input rejects scatter on curved guides and model
-  surfaces, where an offset would move the center off the hit surface. With
-  scatter set to zero, curved-guide seams and segmented misses retain their
-  existing surface sampling behavior; missed runs are separate strokes and do
-  not bridge. Model-surface dabs remain on their sampled mesh path.
+  not geodesic travel; denser stabilized samples reduce chord error. Surface
+  misses and large discontinuities create separate strokes, so dabs do not
+  bridge an absent surface region.
+- On analytic curved guides, scatter angle and radius are sampled with the
+  existing seeded uniform-area rule, then mapped through the captured surface's
+  local metric. Dab orientation follows the local surface normal and projected
+  path tangent. Centers are reprojected from chordal interpolation onto the
+  captured surface. A placement is omitted if it leaves a finite guide domain,
+  reaches a singular frame, or turns the surface normal by more than 60 degrees.
+- PNG image stamps on analytic guides are surface-projected tangent decals:
+  the four quad corners are mapped onto the guide and the usual two triangles
+  connect those corners. This has zero depth offset and does not subdivide the
+  interior of the quad into a conforming curved mesh. A stamp is omitted when
+  any corner leaves the finite domain, has a singular frame, or exceeds the
+  60-degree normal-turn limit. Periodic parameterization carries placements
+  across cylinder, sphere-longitude, and torus seams without a world-space
+  seam jump.
+- Saved cylinder, sphere, torus, cone, revolved, freeform, and loft guides are
+  captured as validated surface snapshots in dab settings. Spacing remains
+  measured along the saved world-space centerline; scatter and projection use
+  the surface-local metric. Planar output is unchanged. Mesh-target image tips
+  and scatter remain disabled until strokes can retain per-contact triangle
+  data and use it consistently for rendering, picking, edits, and export.
 - Size and angle variation, pressure response, and taper are resolved from the
   saved stroke. The random stream is SplitMix64 keyed by the stroke seed, dab
   index, and value channel, so editing a preset cannot change old artwork.
@@ -52,8 +66,8 @@ space between dabs.
   scatter bound overlaps the gesture.
 - Stipple and spray presets use this same saved geometry path. Stipple uses
   regular spacing with no scatter; spray uses a bounded uniform-area offset in
-  the captured plane. Scatter is rejected for curved guides and model targets,
-  so spray does not detach marks from those surfaces. Taps remain one dab, and
+  the captured plane or analytic surface. Model-target scatter remains disabled.
+  Taps remain one dab, and
   dabs are ordinary selectable, erasable, transformable, and exportable mesh
   geometry.
 
