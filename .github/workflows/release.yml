@@ -96,9 +96,22 @@ jobs:
       - name: Create SHA-256 checksums
         working-directory: dist
         run: sha256sum *.zip *.tar.gz > SHA256SUMS.txt
+      # Avoid appending a second generated notes body when a release run is retried.
+      - name: Check whether release notes already exist
+        id: release_notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          body="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""' 2>/dev/null || true)"
+          if [[ -n "$body" ]]; then
+            echo "generate=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "generate=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: softprops/action-gh-release@v3
         with:
-          generate_release_notes: true
+          generate_release_notes: ${{ steps.release_notes.outputs.generate }}
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/*.zip
