@@ -321,6 +321,7 @@ pub struct SceneRenderer {
     image_plane_meshes: HashMap<u64, ImagePlaneMesh>,
     image_plane_textures: HashMap<u64, ImagePlaneTexture>,
     tip_textures: HashMap<u64, ImagePlaneTexture>,
+    tip_atlases: HashMap<Vec<u64>, ImagePlaneTexture>,
     image_textures: HashMap<texture::ImageTextureCacheKey, ImagePlaneTexture>,
     fill_textures: HashMap<(u64, bool), ImagePlaneTexture>,
     screen_background: Option<ScreenBackgroundTexture>,
@@ -933,6 +934,7 @@ impl SceneRenderer {
             image_plane_meshes: HashMap::new(),
             image_plane_textures: HashMap::new(),
             tip_textures: HashMap::new(),
+            tip_atlases: HashMap::new(),
             image_textures: HashMap::new(),
             fill_textures: HashMap::new(),
             screen_background: None,
@@ -1115,19 +1117,21 @@ impl SceneRenderer {
     }
 
     fn prepare_tip_textures(&mut self, doc: &Document) {
-        let mut needed: HashSet<u64> = doc
+        let mut needed = HashSet::new();
+        let mut atlas_needed = HashSet::new();
+        for stroke in doc
             .strokes
             .iter()
             .filter(|stroke| doc.visible(stroke))
-            .map(|stroke| stroke.brush.tip_asset_id)
-            .filter(|id| *id != 0)
-            .collect();
-        needed.extend(
-            self.repeat_preview
-                .iter()
-                .map(|(stroke, _)| stroke.brush.tip_asset_id)
-                .filter(|id| *id != 0),
-        );
+            .chain(self.repeat_preview.iter().map(|(stroke, _)| stroke))
+        {
+            let ids = stroke.brush.tip_variant_ids();
+            if ids.len() > 1 {
+                atlas_needed.insert(ids.clone());
+            } else {
+                needed.extend(ids);
+            }
+        }
         self.tip_textures.retain(|id, _| needed.contains(id));
         for id in needed {
             if self.tip_textures.contains_key(&id) {
@@ -1138,6 +1142,26 @@ impl SceneRenderer {
             };
             if let Ok(texture) = self.create_tip_texture(asset) {
                 self.tip_textures.insert(id, texture);
+            }
+        }
+        self.tip_atlases.retain(|ids, _| atlas_needed.contains(ids));
+        for ids in atlas_needed {
+            if self.tip_atlases.contains_key(&ids) {
+                continue;
+            }
+            let assets: Option<Vec<_>> = ids
+                .iter()
+                .map(|id| doc.brush_tip_assets.iter().find(|asset| asset.id == *id))
+                .collect();
+            let Some(assets) = assets else {
+                continue;
+            };
+            if let Ok(atlas) = crate::brush_tip::build_tip_atlas(&assets) {
+                if let Ok(texture) =
+                    self.create_image_texture(&atlas, false, "Multiple brush-tip variants")
+                {
+                    self.tip_atlases.insert(ids, texture);
+                }
             }
         }
         let mut image_needed: HashMap<
@@ -1207,11 +1231,16 @@ impl SceneRenderer {
     }
 
     fn brush_texture(&self, stroke: &Stroke) -> &wgpu::BindGroup {
+        let tip_texture = if stroke.brush.uses_tip_atlas() {
+            self.tip_atlases.get(&stroke.brush.tip_variant_ids())
+        } else {
+            self.tip_textures.get(&stroke.brush.tip_asset_id)
+        };
         stroke
             .fill
             .and_then(|fill| fill.texture)
             .and_then(|texture| self.fill_textures.get(&(texture.asset_id, texture.repeat)))
-            .or_else(|| self.tip_textures.get(&stroke.brush.tip_asset_id))
+            .or(tip_texture)
             .or_else(|| {
                 stroke
                     .brush

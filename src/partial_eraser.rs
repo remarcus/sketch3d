@@ -513,7 +513,7 @@ fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> 
                 }
                 if let Some(patch) = &mut fragment.model_surface {
                     let stamp_extent = if fragment.brush.tip_asset_id != 0 {
-                        fragment.radius / fragment.brush.tip_aspect
+                        fragment.radius * fragment.brush.max_tip_inverse_aspect()
                     } else {
                         0.0
                     };

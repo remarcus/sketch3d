@@ -61,9 +61,22 @@ pub fn pick(doc: &Document, origin: Vec3, direction: Vec3) -> Option<SurfaceHit>
     let mut best: Option<(f64, SurfaceHit)> = None;
     let mut masks = HashMap::new();
     let mut tip_images = HashMap::new();
+    let mut tip_atlases = HashMap::new();
     for stroke in doc.strokes.iter().filter(|s| doc.visible(s)) {
         let vertices = geometry::stroke_mesh(stroke);
-        let tip_image = if stroke.brush.tip_asset_id != 0 {
+        let tip_image = if stroke.brush.uses_tip_atlas() {
+            let ids = stroke.brush.tip_variant_ids();
+            tip_atlases
+                .entry(ids.clone())
+                .or_insert_with(|| {
+                    let assets: Option<Vec<_>> = ids
+                        .iter()
+                        .map(|id| doc.brush_tip_assets.iter().find(|asset| asset.id == *id))
+                        .collect();
+                    assets.and_then(|assets| crate::brush_tip::build_tip_atlas(&assets).ok())
+                })
+                .as_ref()
+        } else if stroke.brush.tip_asset_id != 0 {
             let image = tip_images
                 .entry(stroke.brush.tip_asset_id)
                 .or_insert_with(|| {

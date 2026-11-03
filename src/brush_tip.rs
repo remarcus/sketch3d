@@ -9,6 +9,31 @@ pub const MAX_ASSETS: usize = 64;
 pub const MAX_CATALOG_BYTES: usize = 16 * 1024 * 1024;
 /// Four bytes per texel keeps worst-case decoded RGBA memory at 16 MiB.
 pub const MAX_CATALOG_PIXELS: u64 = MAX_CATALOG_BYTES as u64 / 4;
+pub const TIP_ATLAS_COLUMNS: u32 = 3;
+pub const TIP_ATLAS_GUTTER: u32 = 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TipAtlasLayout {
+    pub cell_size: u32,
+    pub size: [u32; 2],
+}
+
+pub fn tip_atlas_layout(sizes: &[[u32; 2]]) -> Result<TipAtlasLayout, String> {
+    if !(2..=crate::document::MAX_BRUSH_TIP_VARIANTS).contains(&sizes.len())
+        || sizes.iter().any(|size| {
+            size[0] == 0 || size[0] > MAX_DIMENSION || size[1] == 0 || size[1] > MAX_DIMENSION
+        })
+    {
+        return Err("A tip atlas requires 2–8 valid image variants".into());
+    }
+    let longest = sizes.iter().flatten().copied().max().unwrap_or(0);
+    let cell_size = longest + TIP_ATLAS_GUTTER * 2;
+    let rows = sizes.len().div_ceil(TIP_ATLAS_COLUMNS as usize) as u32;
+    Ok(TipAtlasLayout {
+        cell_size,
+        size: [TIP_ATLAS_COLUMNS * cell_size, rows * cell_size],
+    })
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushTipAsset {
@@ -214,6 +239,58 @@ impl BrushTipAsset {
     pub fn file_name(&self) -> String {
         format!("brush-tip-{:016x}.png", self.id)
     }
+}
+
+/// Pack up to eight original tip images into a fixed, guttered atlas. Source
+/// pixels are copied without resampling; `atlas_uv` maps each dab into its
+/// own pixel-centered cell so linear filtering cannot reach a neighboring tip.
+pub fn build_tip_atlas(
+    assets: &[&BrushTipAsset],
+) -> Result<crate::image_planes::ImageAsset, String> {
+    let layout = tip_atlas_layout(&assets.iter().map(|asset| asset.size).collect::<Vec<_>>())?;
+    let [width, height] = layout.size;
+    let mut pixels = vec![0; (width * height * 4) as usize];
+    for (variant_index, asset) in assets.iter().enumerate() {
+        let decoded = asset.decoded()?;
+        let cell_x =
+            (variant_index as u32 % TIP_ATLAS_COLUMNS) * layout.cell_size + TIP_ATLAS_GUTTER;
+        let cell_y =
+            (variant_index as u32 / TIP_ATLAS_COLUMNS) * layout.cell_size + TIP_ATLAS_GUTTER;
+        for y in 0..decoded.size[1] {
+            let source_start = (y * decoded.size[0] * 4) as usize;
+            let source_end = source_start + (decoded.size[0] * 4) as usize;
+            let target_start = ((cell_y + y) * width * 4 + cell_x * 4) as usize;
+            let target_end = target_start + (decoded.size[0] * 4) as usize;
+            pixels[target_start..target_end]
+                .copy_from_slice(&decoded.pixels[source_start..source_end]);
+        }
+    }
+    Ok(crate::image_planes::ImageAsset {
+        size: layout.size,
+        pixels,
+    })
+}
+
+/// Map source tip UVs to one atlas cell, preserving each asset's original
+/// dimensions and optional axis flips.
+pub fn atlas_uv(
+    layout: TipAtlasLayout,
+    variant_index: usize,
+    size: [u32; 2],
+    uv: [f32; 2],
+    flip_x: bool,
+    flip_y: bool,
+) -> [f32; 2] {
+    let column = variant_index as u32 % TIP_ATLAS_COLUMNS;
+    let row = variant_index as u32 / TIP_ATLAS_COLUMNS;
+    let cell_x = column * layout.cell_size + TIP_ATLAS_GUTTER;
+    let cell_y = row * layout.cell_size + TIP_ATLAS_GUTTER;
+    let u = if flip_x { 1.0 - uv[0] } else { uv[0] }.clamp(0.0, 1.0);
+    let v = if flip_y { 1.0 - uv[1] } else { uv[1] }.clamp(0.0, 1.0);
+    [
+        (cell_x as f32 + 0.5 + u * size[0].saturating_sub(1) as f32) / layout.size[0] as f32,
+        (cell_y as f32 + 0.5 + v * size[1].saturating_sub(1) as f32) / layout.size[1] as f32,
+    ]
 }
 
 pub fn validate_catalog(assets: &[BrushTipAsset]) -> Result<(), String> {

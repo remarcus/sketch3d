@@ -16,7 +16,7 @@ const MAX_PERSONAL_PRESETS: usize = 250;
 const MAX_PRESETS: usize = MAX_PERSONAL_PRESETS + BUILTIN_PRESET_COUNT;
 const FIRST_PERSONAL_ID: u64 = 100;
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_PACKAGE_BYTES: u64 = 1024 * 1024;
+const MAX_PACKAGE_BYTES: u64 = (crate::brush_tip::MAX_CATALOG_BYTES + 1024 * 1024) as u64;
 const PACKAGE_FORMAT: &str = "spatial-sketch-brush";
 const LIBRARY_VERSION: u32 = 9;
 
@@ -34,7 +34,8 @@ pub struct Preset {
 /// version 2 can carry a PNG stamp tip; version 3 adds repeating image
 /// textures; version 4 adds captured texture anchors and scale behavior;
 /// version 5 adds independent tip grain and threshold/contrast controls;
-/// version 6 adds deterministic per-dab color variation.
+/// version 6 adds deterministic per-dab color variation; version 7 carries
+/// multiple image-tip variants.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushPackage {
     pub format: String,
@@ -44,6 +45,8 @@ pub struct BrushPackage {
     pub tip_asset: Option<crate::brush_tip::BrushTipAsset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeating_texture_asset: Option<crate::brush_tip::BrushTipAsset>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tip_variant_assets: Vec<crate::brush_tip::BrushTipAsset>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -68,9 +71,25 @@ impl BrushPackage {
         tip_asset: Option<crate::brush_tip::BrushTipAsset>,
         repeating_texture_asset: Option<crate::brush_tip::BrushTipAsset>,
     ) -> Self {
+        Self::from_preset_with_variant_assets(
+            preset,
+            tip_asset,
+            repeating_texture_asset,
+            Vec::new(),
+        )
+    }
+
+    pub fn from_preset_with_variant_assets(
+        preset: &Preset,
+        tip_asset: Option<crate::brush_tip::BrushTipAsset>,
+        repeating_texture_asset: Option<crate::brush_tip::BrushTipAsset>,
+        tip_variant_assets: Vec<crate::brush_tip::BrushTipAsset>,
+    ) -> Self {
         Self {
             format: PACKAGE_FORMAT.into(),
-            version: if preset.brush.dab_color_variation.is_enabled() {
+            version: if preset.brush.uses_tip_atlas() {
+                7
+            } else if preset.brush.dab_color_variation.is_enabled() {
                 6
             } else if texture_needs_v5(preset.brush.texture, preset.brush.tip_asset_id != 0)
                 || (tip_asset.is_some() && repeating_texture_asset.is_some())
@@ -94,15 +113,17 @@ impl BrushPackage {
             },
             tip_asset,
             repeating_texture_asset,
+            tip_variant_assets,
         }
     }
 
     pub fn to_json(&self) -> Result<String, String> {
         let preset = self.as_preset()?;
-        let canonical = Self::from_preset_with_assets(
+        let canonical = Self::from_preset_with_variant_assets(
             &preset,
             self.tip_asset.clone(),
             self.repeating_texture_asset.clone(),
+            self.tip_variant_assets.clone(),
         );
         let text = serde_json::to_string_pretty(&canonical).map_err(|e| e.to_string())?;
         if text.len() as u64 > MAX_PACKAGE_BYTES {
@@ -164,8 +185,17 @@ impl BrushPackage {
         if self.format != PACKAGE_FORMAT {
             return Err("This is not a Sketch3D brush package".into());
         }
-        if !matches!(self.version, 1..=6) {
+        if !matches!(self.version, 1..=7) {
             return Err("Unsupported brush package version".into());
+        }
+        if self.version != 7 && !self.tip_variant_assets.is_empty() {
+            return Err("Tip variant assets require brush package v7".into());
+        }
+        if self.version != 7 && self.preset.brush.uses_tip_atlas() {
+            return Err("Multiple tip variants require brush package v7".into());
+        }
+        if self.tip_variant_assets.len() >= crate::document::MAX_BRUSH_TIP_VARIANTS {
+            return Err("A brush package can carry at most 7 additional tip variants".into());
         }
         match self.version {
             1 if self.tip_asset.is_none()
@@ -252,7 +282,7 @@ impl BrushPackage {
                     }
                 }
             }
-            5 | 6 => {
+            5..=7 => {
                 match (&self.tip_asset, self.preset.brush.tip_asset_id) {
                     (None, 0) => {}
                     (Some(asset), id) if id == asset.id => {
@@ -288,6 +318,51 @@ impl BrushPackage {
                         )
                     }
                 }
+                if self.version == 7 {
+                    if !self.preset.brush.uses_tip_atlas() {
+                        return Err("Brush package v7 requires multiple tip variants".into());
+                    }
+                    let expected = self
+                        .preset
+                        .brush
+                        .explicit_tip_variants()
+                        .skip(1)
+                        .map(|variant| variant.asset_id)
+                        .collect::<Vec<_>>();
+                    if expected.len() != self.tip_variant_assets.len()
+                        || expected
+                            .iter()
+                            .zip(&self.tip_variant_assets)
+                            .any(|(id, asset)| *id != asset.id)
+                    {
+                        return Err(
+                            "Brush package tip variant assets are missing or out of order".into(),
+                        );
+                    }
+                    for asset in &self.tip_variant_assets {
+                        asset.validate()?;
+                    }
+                    let mut catalog: Vec<crate::brush_tip::BrushTipAsset> = Vec::new();
+                    for asset in self
+                        .tip_asset
+                        .iter()
+                        .chain(self.repeating_texture_asset.iter())
+                        .chain(self.tip_variant_assets.iter())
+                    {
+                        if let Some(existing) =
+                            catalog.iter().find(|existing| existing.id == asset.id)
+                        {
+                            if existing.png != asset.png {
+                                return Err("Brush package asset identity collision".into());
+                            }
+                        } else {
+                            catalog.push(asset.clone());
+                        }
+                    }
+                    crate::brush_tip::validate_catalog(&catalog)?;
+                } else if !self.tip_variant_assets.is_empty() {
+                    return Err("Older brush package versions cannot carry tip variants".into());
+                }
             }
             _ => return Err("Brush package asset references are missing or inconsistent".into()),
         }
@@ -313,6 +388,9 @@ impl BrushPackage {
         if let Some(asset) = &self.tip_asset {
             changed.add_image_asset(asset.clone())?;
             preset.brush.tip_asset_id = asset.id;
+        }
+        for asset in &self.tip_variant_assets {
+            changed.add_image_asset(asset.clone())?;
         }
         if let Some(asset) = &self.repeating_texture_asset {
             changed.add_image_asset(asset.clone())?;
@@ -385,6 +463,19 @@ fn valid_tip_settings_current(brush: &Brush, asset: &crate::brush_tip::BrushTipA
         && !brush.dynamics.tilt_orientation
         && !brush.dynamics.tilt_shading
         && (brush.tip_aspect - asset.size[0] as f32 / asset.size[1] as f32).abs() <= 1e-4
+}
+
+fn tip_variant_from_asset(
+    asset: &crate::brush_tip::BrushTipAsset,
+) -> crate::document::BrushTipVariant {
+    crate::document::BrushTipVariant {
+        asset_id: asset.id,
+        size: asset.size,
+        aspect: asset.size[0] as f32 / asset.size[1] as f32,
+        weight: 1,
+        flip_x: false,
+        flip_y: false,
+    }
 }
 
 fn texture_needs_v5(texture: TextureSettings, has_tip: bool) -> bool {
@@ -800,6 +891,14 @@ impl Library {
                     );
                 }
             }
+            for variant in preset.brush.explicit_tip_variants() {
+                let asset = tip_assets
+                    .get(&variant.asset_id)
+                    .ok_or("Preset refers to a missing brush tip variant")?;
+                if asset.size != variant.size {
+                    return Err("Preset tip variant dimensions do not match its PNG".into());
+                }
+            }
             if let Some(settings) = preset.brush.texture.image {
                 let asset = tip_assets
                     .get(&settings.asset_id)
@@ -854,6 +953,7 @@ impl Library {
             .ok_or("Selected brush preset no longer exists")?;
         preset.brush.tip_asset_id = asset.id;
         preset.brush.tip_aspect = asset.size[0] as f32 / asset.size[1] as f32;
+        preset.brush.tip_variants = [None; crate::document::MAX_BRUSH_TIP_VARIANTS];
         preset.brush.strands.enabled = false;
         preset.brush.flow.enabled = false;
         preset.brush.dabs.enabled = true;
@@ -861,6 +961,78 @@ impl Library {
         preset.brush.texture = TextureSettings::default();
         preset.brush.dynamics.tilt_orientation = false;
         preset.brush.dynamics.tilt_shading = false;
+        changed.validate()?;
+        *self = changed;
+        Ok(())
+    }
+
+    pub fn assign_tip_variant_asset(
+        &mut self,
+        preset_id: u64,
+        asset: crate::brush_tip::BrushTipAsset,
+    ) -> Result<(), String> {
+        asset.validate()?;
+        let mut changed = self.clone();
+        changed.add_image_asset(asset.clone())?;
+        let primary_id = changed
+            .presets
+            .iter()
+            .find(|preset| preset.id == preset_id)
+            .ok_or("Selected brush preset no longer exists")?
+            .brush
+            .tip_asset_id;
+        let primary_asset = changed.tip_asset(primary_id).cloned();
+        let preset = changed
+            .presets
+            .iter_mut()
+            .find(|preset| preset.id == preset_id)
+            .ok_or("Selected brush preset no longer exists")?;
+        if preset.brush.tip_asset_id == 0 {
+            preset.brush.tip_asset_id = asset.id;
+            preset.brush.tip_aspect = asset.size[0] as f32 / asset.size[1] as f32;
+            preset.brush.dabs.enabled = true;
+            preset.brush.dabs.spacing = 0.55;
+            preset.brush.strands.enabled = false;
+            preset.brush.flow.enabled = false;
+            preset.brush.texture = TextureSettings::default();
+            preset.brush.dynamics.tilt_orientation = false;
+            preset.brush.dynamics.tilt_shading = false;
+        } else {
+            let variant_count = preset.brush.tip_variant_count();
+            if variant_count >= crate::document::MAX_BRUSH_TIP_VARIANTS {
+                return Err("A brush can contain at most 8 image-tip variants".into());
+            }
+            if preset.brush.tip_variant_ids().contains(&asset.id) {
+                return Err("This image is already in the tip variant set".into());
+            }
+            if variant_count == 1 {
+                let primary = primary_asset
+                    .as_ref()
+                    .ok_or("Preset primary tip asset is missing")?;
+                preset.brush.tip_variants[0] = Some(tip_variant_from_asset(primary));
+            }
+            preset.brush.tip_variants[variant_count] = Some(tip_variant_from_asset(&asset));
+        }
+        changed.validate()?;
+        *self = changed;
+        Ok(())
+    }
+
+    pub fn set_tip_variant_settings(
+        &mut self,
+        preset_id: u64,
+        variants: [Option<crate::document::BrushTipVariant>;
+            crate::document::MAX_BRUSH_TIP_VARIANTS],
+        mode: crate::document::TipSelectionMode,
+    ) -> Result<(), String> {
+        let mut changed = self.clone();
+        let preset = changed
+            .presets
+            .iter_mut()
+            .find(|preset| preset.id == preset_id)
+            .ok_or("Selected brush preset no longer exists")?;
+        preset.brush.tip_variants = variants;
+        preset.brush.tip_selection_mode = mode;
         changed.validate()?;
         *self = changed;
         Ok(())
@@ -877,9 +1049,6 @@ impl Library {
             .iter_mut()
             .find(|preset| preset.id == preset_id)
             .ok_or("Selected brush preset no longer exists")?;
-        if preset.brush.tip_asset_id != 0 {
-            return Err("A brush cannot combine a stamp tip and repeating texture".into());
-        }
         preset.brush.texture = TextureSettings {
             image: Some(crate::texture::ImageTextureSettings {
                 asset_id: asset.id,

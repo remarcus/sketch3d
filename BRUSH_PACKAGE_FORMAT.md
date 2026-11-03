@@ -2,9 +2,10 @@
 
 Sketch3D imports and exports one native brush definition per `.brush.json`
 file. Version 1 is a self-contained JSON package for brush settings. Version 2
-can embed one bounded PNG tip. Packages never contain scripts or external file
-references. Built-in brush shapes and procedural texture kinds are represented
-by the app's native brush model.
+can embed one bounded PNG tip; version 7 can carry a weighted set of up to eight
+tips. Packages never contain scripts or external file references. Built-in
+brush shapes and procedural texture kinds are represented by the app's native
+brush model.
 
 Both versions preserve graphite and charcoal texture settings, continuous-alpha
 texture masks, Crosshatch, and optional stroke UV mapping (rotation in degrees,
@@ -26,6 +27,14 @@ stroke does not reshuffle colors. Stroke gradients and local painted colors are
 sampled before variation. For image tips, variation changes the brush tint;
 the embedded source RGB and alpha remain unchanged. Older readers may ignore
 these settings or reject version 6.
+
+Version 7 adds `tip_variant_assets` for the additional PNG tips in a preset.
+The brush's ordered `tip_variants` records each content ID, source dimensions,
+aspect ratio, relative weight, and optional horizontal or vertical flip. The
+first variant must match the legacy `tip_asset_id` and `tip_aspect` fields.
+Seeded-random selection uses the stable dab index and brush seed; sequential
+selection cycles through weighted slots. Single-tip brushes keep the legacy
+fields and default behavior.
 
 The top-level object contains `format: "spatial-sketch-brush"`, `version`, and
 a `preset` object with `name`, `brush`, `radius`, `color`, and `stabilization`.
@@ -50,7 +59,7 @@ RGBA for preview and rendering. Each PNG is at most 512 KiB and 512 × 512
 pixels. A drawing's shared portable PNG catalog (brush tips and fill textures)
 holds at most 64 unique assets, 16 MiB of encoded PNG bytes, and 4,194,304 total
 pixels (16 MiB worst-case decoded RGBA). A brush library uses the same limits
-for its tip assets. The complete package is limited to 1 MiB and the local
+for its tip assets. The complete package is limited to 17 MiB and the local
 library file to 32 MiB.
 These limits are checked before committing an import or document edit.
 

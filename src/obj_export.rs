@@ -13,20 +13,20 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-type MaterialKey = (
-    u32,
-    u32,
-    u32,
-    u32,
-    texture::TextureCacheKey,
-    StrokeMaterial,
-    u64,
-    u64,
-    u32,
-    u64,
-    bool,
-    Option<crate::texture::ImageTextureCacheKey>,
-);
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct MaterialKey {
+    diffuse: [u32; 3],
+    opacity: u32,
+    texture: texture::TextureCacheKey,
+    material: StrokeMaterial,
+    primary_tip: u64,
+    tip_variants: Vec<u64>,
+    grain_stroke: u64,
+    layer_opacity: u32,
+    fill_texture: u64,
+    fill_repeat: bool,
+    image_texture: Option<crate::texture::ImageTextureCacheKey>,
+}
 
 /// Write a compact OBJ/MTL fixture with one stroke for each material mode.
 pub fn write_material_verification_bundle(directory: &Path) -> Result<(), String> {
@@ -132,7 +132,11 @@ pub fn write_obj_bundle(
         .map(|asset| (asset.id, asset))
         .collect();
     if strokes.iter().any(|stroke| {
-        stroke.brush.tip_asset_id != 0 && !tip_assets.contains_key(&stroke.brush.tip_asset_id)
+        stroke
+            .brush
+            .tip_variant_ids()
+            .iter()
+            .any(|id| !tip_assets.contains_key(id))
     }) {
         return Err("An exported stroke refers to a missing brush tip".into());
     }
@@ -166,31 +170,41 @@ pub fn write_obj_bundle(
     let mut material_ids = HashMap::<MaterialKey, usize>::new();
     let mut prepared_meshes = HashMap::<u64, export::Mesh>::new();
     for stroke in &strokes {
-        let tip_asset = tip_assets.get(&stroke.brush.tip_asset_id).copied();
+        let tip_assets_for_stroke = stroke
+            .brush
+            .tip_variant_ids()
+            .iter()
+            .map(|id| {
+                tip_assets
+                    .get(id)
+                    .copied()
+                    .ok_or("An exported stroke refers to a missing tip variant")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let grain_asset = stroke
             .brush
             .texture
             .image
             .and_then(|settings| tip_assets.get(&settings.asset_id).copied());
-        let (prepared_mesh, composite_image) =
-            export::stroke_mesh_with_grain(stroke, tip_asset, grain_asset)?;
-        if composite_image.is_some() {
+        let (prepared_mesh, composite_image, tip_atlas) =
+            export::stroke_mesh_with_grain(stroke, &tip_assets_for_stroke, grain_asset)?;
+        if composite_image.is_some() || tip_atlas.is_some() {
             prepared_meshes.insert(stroke.id, prepared_mesh);
         }
         let layer_opacity = doc.layer_opacity(stroke.layer_id);
         let key = material_key(stroke, layer_opacity);
         let has_tip = stroke.brush.tip_asset_id != 0;
         let image_settings = stroke.brush.texture.image;
-        let textured = !has_tip && image_settings.is_none() && (key.4).0 != TextureKind::Solid;
+        let textured = !has_tip && image_settings.is_none() && key.texture.0 != TextureKind::Solid;
         if let std::collections::hash_map::Entry::Vacant(entry) = material_ids.entry(key) {
             if materials.len() >= 65_536 {
                 return Err("OBJ export exceeds the 65,536 material limit".into());
             }
             let index = materials.len();
             let mask_file = textured.then(|| format!("mask-{index:05}.png"));
-            let tip_file = (has_tip && composite_image.is_none())
+            let tip_file = (has_tip && composite_image.is_none() && tip_atlas.is_none())
                 .then(|| format!("tip-{:016x}.png", stroke.brush.tip_asset_id));
-            let tip_alpha_file = (has_tip && composite_image.is_none())
+            let tip_alpha_file = (has_tip && composite_image.is_none() && tip_atlas.is_none())
                 .then(|| format!("tip-alpha-{:016x}.png", stroke.brush.tip_asset_id));
             let fill_texture_id = stroke
                 .fill
@@ -241,27 +255,39 @@ pub fn write_obj_bundle(
                         crate::brush_tip::content_id(png)
                     )
                 });
-            let composite_texture_png = composite_image
+            let baked_tip_png = composite_image.as_ref().or(tip_atlas.as_ref());
+            let composite_texture_png = baked_tip_png
                 .as_ref()
-                .map(encode_image_asset)
+                .map(|image| encode_image_asset(image))
                 .transpose()?;
-            let composite_texture_alpha_png = composite_image
+            let composite_texture_alpha_png = baked_tip_png
                 .as_ref()
-                .map(encode_image_alpha)
+                .map(|image| encode_image_alpha(image))
                 .transpose()?;
             let composite_texture_file = composite_texture_png.as_ref().map(|png| {
-                format!(
-                    "tip-grain-{:016x}-{:016x}.png",
-                    stroke.id,
-                    crate::brush_tip::content_id(png)
-                )
+                if tip_atlas.is_some() {
+                    format!("tip-atlas-{:016x}.png", crate::brush_tip::content_id(png))
+                } else {
+                    format!(
+                        "tip-grain-{:016x}-{:016x}.png",
+                        stroke.id,
+                        crate::brush_tip::content_id(png)
+                    )
+                }
             });
             let composite_texture_alpha_file = composite_texture_alpha_png.as_ref().map(|png| {
-                format!(
-                    "tip-grain-alpha-{:016x}-{:016x}.png",
-                    stroke.id,
-                    crate::brush_tip::content_id(png)
-                )
+                if tip_atlas.is_some() {
+                    format!(
+                        "tip-atlas-alpha-{:016x}.png",
+                        crate::brush_tip::content_id(png)
+                    )
+                } else {
+                    format!(
+                        "tip-grain-alpha-{:016x}-{:016x}.png",
+                        stroke.id,
+                        crate::brush_tip::content_id(png)
+                    )
+                }
             });
             let image_uses_source_color = composite_image.is_none()
                 && image_settings.is_some_and(|settings| {
@@ -384,6 +410,9 @@ pub fn write_obj_bundle(
         .any(|stroke| export::has_independent_tip_grain(stroke))
     {
         mtl.push_str("# Image-tip and independent grain alpha are multiplied in a per-stamp atlas; large strokes use bounded atlas resolution.\n");
+    }
+    if strokes.iter().any(|stroke| stroke.brush.uses_tip_atlas()) {
+        mtl.push_str("# Multiple source-resolution tip images are copied into an atlas; stable dab UVs select each chosen tip.\n");
     }
     if strokes
         .iter()
@@ -753,28 +782,28 @@ fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
             std::array::from_fn(|i| base[i] * texture.tint[i])
         },
     );
-    (
-        diffuse[0].to_bits(),
-        diffuse[1].to_bits(),
-        diffuse[2].to_bits(),
-        (stroke.brush.opacity * fill_texture.map_or(1.0, |texture| texture.opacity)).to_bits(),
+    MaterialKey {
+        diffuse: diffuse.map(f32::to_bits),
+        opacity: (stroke.brush.opacity * fill_texture.map_or(1.0, |texture| texture.opacity))
+            .to_bits(),
         texture,
-        stroke.material,
-        stroke.brush.tip_asset_id,
-        if export::has_independent_tip_grain(stroke) {
+        material: stroke.material,
+        primary_tip: stroke.brush.tip_asset_id,
+        tip_variants: stroke.brush.tip_variant_ids(),
+        grain_stroke: if export::has_independent_tip_grain(stroke) {
             stroke.id
         } else {
             0
         },
-        layer_opacity.to_bits(),
-        fill_texture.map_or(0, |texture| texture.asset_id),
-        fill_texture.is_none_or(|texture| texture.repeat),
-        stroke
+        layer_opacity: layer_opacity.to_bits(),
+        fill_texture: fill_texture.map_or(0, |texture| texture.asset_id),
+        fill_repeat: fill_texture.is_none_or(|texture| texture.repeat),
+        image_texture: stroke
             .brush
             .texture
             .image
             .map(|settings| settings.cache_key()),
-    )
+    }
 }
 
 fn local_color_fallback(stroke: &Stroke) -> [f32; 3] {

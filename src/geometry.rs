@@ -639,7 +639,7 @@ fn stroke_extent_evaluated(stroke: &Stroke) -> f32 {
         stroke.radius
             * (settings.spread * (1.0 + settings.tilt_spread) + if dot { 0.65 } else { 0.0 })
     } else if stroke.brush.tip_asset_id != 0 {
-        stroke.radius * (1.0 + stroke.brush.tip_aspect.recip().powi(2)).sqrt()
+        stroke.radius * (1.0 + stroke.brush.max_tip_inverse_aspect().powi(2)).sqrt()
     } else {
         match stroke.brush.kind {
             BrushKind::Chisel => {
@@ -900,6 +900,19 @@ fn tip_mesh(stroke: &Stroke) -> Vec<Vertex> {
     let Ok(dabs) = crate::dab_placement::sample(stroke) else {
         return Vec::new();
     };
+    let tip_atlas_layout = if stroke.brush.uses_tip_atlas() {
+        let sizes: Vec<_> = stroke
+            .brush
+            .explicit_tip_variants()
+            .map(|variant| variant.size)
+            .collect();
+        let Ok(layout) = crate::brush_tip::tip_atlas_layout(&sizes) else {
+            return Vec::new();
+        };
+        Some(layout)
+    } else {
+        None
+    };
     let colors = dab_colors(stroke, &dabs);
     let mut vertices = Vec::with_capacity(dabs.len().saturating_mul(6));
     for (dab, color) in dabs.into_iter().zip(colors) {
@@ -913,7 +926,8 @@ fn tip_mesh(stroke: &Stroke) -> Vec<Vertex> {
             .try_normalize()
             .unwrap_or(side);
         let half_width = stroke.radius * dab.size_scale;
-        let half_height = half_width / stroke.brush.tip_aspect;
+        let tip = dab.tip_variant;
+        let half_height = half_width / tip.map_or(stroke.brush.tip_aspect, |tip| tip.aspect);
         let mut positions = [
             dab.position - along * half_width + across * half_height,
             dab.position + along * half_width + across * half_height,
@@ -962,11 +976,32 @@ fn tip_mesh(stroke: &Stroke) -> Vec<Vertex> {
             positions = projected;
         }
         let opacity = vertex_opacity(stroke, dab.pressure, dab.normal, dab.normal);
+        let source_uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let uvs = if stroke.brush.uses_tip_atlas() {
+            let Some(tip) = tip else {
+                continue;
+            };
+            let Some(layout) = tip_atlas_layout else {
+                continue;
+            };
+            source_uvs.map(|uv| {
+                crate::brush_tip::atlas_uv(
+                    layout,
+                    dab.tip_variant_index as usize,
+                    tip.size,
+                    uv,
+                    tip.flip_x,
+                    tip.flip_y,
+                )
+            })
+        } else {
+            source_uvs
+        };
         let grain_start = vertices.len();
         flat_quad_gradient(
             &mut vertices,
             positions,
-            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            uvs,
             dab.normal,
             color,
             [opacity; 4],

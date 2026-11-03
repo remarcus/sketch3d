@@ -55,6 +55,48 @@ pub enum StrokeMaterial {
     Cutout,
 }
 
+pub const MAX_BRUSH_TIP_VARIANTS: usize = 8;
+
+/// One content-addressed image in an optional multi-tip brush set.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BrushTipVariant {
+    pub asset_id: u64,
+    pub size: [u32; 2],
+    pub aspect: f32,
+    #[serde(default = "default_tip_variant_weight")]
+    pub weight: u8,
+    #[serde(default)]
+    pub flip_x: bool,
+    #[serde(default)]
+    pub flip_y: bool,
+}
+
+fn default_tip_variant_weight() -> u8 {
+    1
+}
+
+impl BrushTipVariant {
+    pub fn is_valid(self) -> bool {
+        self.asset_id != 0
+            && self.size[0] > 0
+            && self.size[0] <= crate::brush_tip::MAX_DIMENSION
+            && self.size[1] > 0
+            && self.size[1] <= crate::brush_tip::MAX_DIMENSION
+            && self.aspect.is_finite()
+            && (1.0 / 512.0..=512.0).contains(&self.aspect)
+            && (self.aspect - self.size[0] as f32 / self.size[1] as f32).abs() <= 1e-4
+            && (1..=100).contains(&self.weight)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TipSelectionMode {
+    #[default]
+    SeededRandom,
+    Sequential,
+}
+
 /// Brush orientation is captured in world space when the stroke begins.
 /// Thickness is a fraction of width, so uniform scaling only changes radius.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -93,6 +135,12 @@ pub struct Brush {
     /// Width-to-height ratio captured from the assigned tip image.
     #[serde(default = "default_tip_aspect")]
     pub tip_aspect: f32,
+    /// Optional ordered set of image-tip variants. Empty retains the legacy
+    /// single `tip_asset_id` representation.
+    #[serde(default)]
+    pub tip_variants: [Option<BrushTipVariant>; MAX_BRUSH_TIP_VARIANTS],
+    #[serde(default)]
+    pub tip_selection_mode: TipSelectionMode,
     /// Arc-length phase retained by fragments created through partial erasing.
     #[serde(default)]
     pub dab_distance_origin: f32,
@@ -122,6 +170,8 @@ impl Default for Brush {
             dab_seed: 0,
             tip_asset_id: 0,
             tip_aspect: 1.0,
+            tip_variants: [None; MAX_BRUSH_TIP_VARIANTS],
+            tip_selection_mode: TipSelectionMode::SeededRandom,
             dab_distance_origin: 0.0,
             dab_total_length: 0.0,
             texture: TextureSettings::default(),
@@ -154,6 +204,7 @@ impl Brush {
             && self.texture.is_valid()
             && self.tip_aspect.is_finite()
             && (1.0 / 512.0..=512.0).contains(&self.tip_aspect)
+            && self.tip_variants_are_valid()
             && (self.tip_asset_id == 0 || self.dabs.enabled)
             && (!self.strands.enabled || (!self.dabs.enabled && self.tip_asset_id == 0))
             && (!self.flow.enabled
@@ -171,6 +222,64 @@ impl Brush {
             && self.tangent.is_finite()
             && (self.tangent.length_squared() - 1.0).abs() <= 0.001
             && self.normal.dot(self.tangent).abs() <= 0.001
+    }
+
+    pub fn tip_variant_count(&self) -> usize {
+        let explicit = self.tip_variants.iter().flatten().count();
+        if explicit > 0 {
+            explicit
+        } else {
+            usize::from(self.tip_asset_id != 0)
+        }
+    }
+
+    pub fn explicit_tip_variants(&self) -> impl Iterator<Item = BrushTipVariant> + '_ {
+        self.tip_variants.iter().flatten().copied()
+    }
+
+    pub fn tip_variant_ids(&self) -> Vec<u64> {
+        if self.tip_variants[0].is_some() {
+            self.explicit_tip_variants()
+                .map(|variant| variant.asset_id)
+                .collect()
+        } else if self.tip_asset_id != 0 {
+            vec![self.tip_asset_id]
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn uses_tip_atlas(&self) -> bool {
+        self.tip_variant_count() > 1
+    }
+
+    pub fn max_tip_inverse_aspect(&self) -> f32 {
+        self.explicit_tip_variants()
+            .map(|variant| variant.aspect.recip())
+            .reduce(f32::max)
+            .unwrap_or_else(|| self.tip_aspect.recip())
+    }
+
+    fn tip_variants_are_valid(&self) -> bool {
+        let mut saw_empty = false;
+        let mut ids = std::collections::HashSet::new();
+        for (index, variant) in self.tip_variants.iter().enumerate() {
+            if let Some(variant) = variant {
+                if saw_empty || !variant.is_valid() || !ids.insert(variant.asset_id) {
+                    return false;
+                }
+                if index == 0
+                    && (variant.asset_id != self.tip_asset_id
+                        || (variant.aspect - self.tip_aspect).abs() > 1e-4)
+                {
+                    return false;
+                }
+            } else {
+                saw_empty = true;
+            }
+        }
+        let explicit = self.tip_variant_count() > 1;
+        !explicit || self.tip_variants[0].is_some()
     }
 }
 fn default_tip_aspect() -> f32 {
@@ -1437,6 +1546,14 @@ impl Document {
             if let Some(image_texture) = stroke.brush.texture.image {
                 if !image_texture.is_valid() || !tip_assets.contains_key(&image_texture.asset_id) {
                     return Err("Invalid or missing repeating brush texture image".into());
+                }
+            }
+            for variant in stroke.brush.explicit_tip_variants() {
+                let asset = tip_assets
+                    .get(&variant.asset_id)
+                    .ok_or("Stroke refers to a missing brush tip variant")?;
+                if asset.size != variant.size {
+                    return Err("Brush tip variant dimensions do not match its PNG".into());
                 }
             }
             if stroke.brush.texture.anchor_mode == crate::texture::TextureAnchorMode::CapturedPlanar

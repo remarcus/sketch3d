@@ -26,15 +26,15 @@ impl SketchApp {
     }
     fn apply_preset(&mut self, preset: Preset) {
         self.finish();
-        if preset.brush.tip_asset_id != 0 {
-            if let Some(asset) = self.preset_ui.library.tip_asset(preset.brush.tip_asset_id) {
+        for asset_id in preset.brush.tip_variant_ids() {
+            if let Some(asset) = self.preset_ui.library.tip_asset(asset_id) {
                 if let Err(error) = self.doc.add_brush_tip_asset(asset.clone()) {
                     self.status = format!("Cannot apply brush tip: {error}");
                     return;
                 }
                 self.dirty = true;
             } else {
-                self.status = "Cannot apply brush tip: preset asset is missing".into();
+                self.status = "Cannot apply brush tip: preset variant asset is missing".into();
                 return;
             }
         }

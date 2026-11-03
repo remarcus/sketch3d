@@ -131,6 +131,10 @@ impl ArtworkAnimation {
                     || !stroke.brush.is_valid()
                     || (stroke.brush.tip_asset_id != 0
                         && !tip_asset_ids.contains(&stroke.brush.tip_asset_id))
+                    || stroke
+                        .brush
+                        .explicit_tip_variants()
+                        .any(|variant| !tip_asset_ids.contains(&variant.asset_id))
                     || stroke.points.iter().any(|point| !point.is_valid())
                     || !stroke.point_thickness_is_valid()
                     || stroke.modifiers.as_ref().is_some_and(|stack| {

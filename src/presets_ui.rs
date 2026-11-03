@@ -212,6 +212,7 @@ impl PresetUi {
                 if let Some(preset) = self.library.get(self.selected).cloned() {
                     self.preview(ui, &preset);
                     self.tip_preview(ui, &preset);
+                    self.tip_variant_controls(ui, &preset);
                     self.repeating_texture_preview(ui, &preset);
                     if ui.button("Import PNG tip…").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
@@ -222,6 +223,29 @@ impl PresetUi {
                                 Ok(file_name) => self.persist(&format!("Imported {file_name}")),
                                 Err(error) => {
                                     self.notice = format!("Brush tip import failed: {error}")
+                                }
+                            }
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.repair_needed && preset.brush.tip_asset_id != 0,
+                            egui::Button::new("Add tip variant PNG…"),
+                        )
+                        .on_hover_text("Add up to seven more image stamps to this brush")
+                        .clicked()
+                    {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("PNG image", &["png"])
+                            .pick_file()
+                        {
+                            match self.import_tip_variant(&path, preset.id) {
+                                Ok(file_name) => {
+                                    self.persist(&format!("Added tip variant {file_name}"))
+                                }
+                                Err(error) => {
+                                    self.notice =
+                                        format!("Brush tip variant import failed: {error}")
                                 }
                             }
                         }
@@ -522,7 +546,22 @@ impl PresetUi {
                                     .image
                                     .and_then(|settings| self.library.tip_asset(settings.asset_id))
                                     .cloned();
-                                let package = if repeating_texture_asset.is_some() {
+                                let package = if preset.brush.uses_tip_atlas() {
+                                    let tip_variant_assets = preset
+                                        .brush
+                                        .explicit_tip_variants()
+                                        .skip(1)
+                                        .filter_map(|variant| {
+                                            self.library.tip_asset(variant.asset_id).cloned()
+                                        })
+                                        .collect();
+                                    BrushPackage::from_preset_with_variant_assets(
+                                        preset,
+                                        tip_asset,
+                                        repeating_texture_asset,
+                                        tip_variant_assets,
+                                    )
+                                } else if repeating_texture_asset.is_some() {
                                     BrushPackage::from_preset_with_assets(
                                         preset,
                                         tip_asset,
@@ -643,6 +682,7 @@ impl PresetUi {
                     ui.strong(format!("Preview: {}", preset.name));
                     self.preview(ui, &preset);
                     self.tip_preview(ui, &preset);
+                    self.tip_variant_controls(ui, &preset);
                     self.repeating_texture_preview(ui, &preset);
                     describe_preset(ui, &preset);
                     if ui.button("Use selected preset").clicked() {
@@ -664,8 +704,10 @@ impl PresetUi {
     fn preview(&mut self, ui: &mut egui::Ui, preset: &Preset) {
         if self.preview_preset.as_ref() != Some(preset) {
             self.preview_doc = preview_document(preset);
-            if let Some(asset) = self.library.tip_asset(preset.brush.tip_asset_id) {
-                self.preview_doc.brush_tip_assets.push(asset.clone());
+            for asset_id in preset.brush.tip_variant_ids() {
+                if let Some(asset) = self.library.tip_asset(asset_id) {
+                    self.preview_doc.brush_tip_assets.push(asset.clone());
+                }
             }
             if let Some(settings) = preset.brush.texture.image {
                 if let Some(asset) = self.library.tip_asset(settings.asset_id) {
@@ -707,37 +749,104 @@ impl PresetUi {
     }
 
     fn tip_preview(&mut self, ui: &mut egui::Ui, preset: &Preset) {
-        let id = preset.brush.tip_asset_id;
-        if id == 0 {
+        let ids = preset.brush.tip_variant_ids();
+        if ids.is_empty() {
             return;
         }
-        let Some(asset) = self.library.tip_asset(id) else {
-            ui.small("Image tip asset is unavailable.");
+        ui.label(if ids.len() > 1 {
+            format!("PNG tip variants · {} images · alpha preserved", ids.len())
+        } else {
+            "PNG tip · alpha preserved".into()
+        });
+        ui.horizontal_wrapped(|ui| {
+            for (index, id) in ids.into_iter().enumerate() {
+                let Some(asset) = self.library.tip_asset(id) else {
+                    ui.small("Tip variant asset is unavailable.");
+                    continue;
+                };
+                if let std::collections::hash_map::Entry::Vacant(entry) =
+                    self.tip_previews.entry(id)
+                {
+                    let Ok(decoded) = asset.decoded() else {
+                        ui.small("Tip variant preview could not be decoded.");
+                        continue;
+                    };
+                    let size = [decoded.size[0] as usize, decoded.size[1] as usize];
+                    let image = egui::ColorImage::from_rgba_unmultiplied(size, &decoded.pixels);
+                    let texture = ui.ctx().load_texture(
+                        format!("brush-tip-{id:016x}"),
+                        image,
+                        egui::TextureOptions::NEAREST,
+                    );
+                    entry.insert(texture);
+                }
+                ui.vertical(|ui| {
+                    ui.small(format!(
+                        "Tip {} · {}×{}",
+                        index + 1,
+                        asset.size[0],
+                        asset.size[1]
+                    ));
+                    if let Some(texture) = self.tip_previews.get(&id) {
+                        ui.image((texture.id(), egui::vec2(72.0, 72.0)));
+                    }
+                    if let Some(provenance) = &asset.provenance {
+                        ui.small(provenance);
+                    }
+                });
+            }
+        });
+    }
+
+    fn tip_variant_controls(&mut self, ui: &mut egui::Ui, preset: &Preset) {
+        let count = preset.brush.tip_variant_count();
+        if count < 2 {
             return;
-        };
-        if let std::collections::hash_map::Entry::Vacant(entry) = self.tip_previews.entry(id) {
-            let Ok(decoded) = asset.decoded() else {
-                ui.small("Image tip preview could not be decoded.");
-                return;
+        }
+        ui.label("Variant selection");
+        let mut mode = preset.brush.tip_selection_mode;
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            changed |= ui
+                .selectable_value(
+                    &mut mode,
+                    crate::document::TipSelectionMode::SeededRandom,
+                    "Seeded random",
+                )
+                .changed();
+            changed |= ui
+                .selectable_value(
+                    &mut mode,
+                    crate::document::TipSelectionMode::Sequential,
+                    "Sequential",
+                )
+                .changed();
+        });
+        let mut variants = preset.brush.tip_variants;
+        for (index, variant) in variants.iter_mut().enumerate().take(count) {
+            let Some(variant) = variant.as_mut() else {
+                continue;
             };
-            let size = [decoded.size[0] as usize, decoded.size[1] as usize];
-            let image = egui::ColorImage::from_rgba_unmultiplied(size, &decoded.pixels);
-            let texture = ui.ctx().load_texture(
-                format!("brush-tip-{id:016x}"),
-                image,
-                egui::TextureOptions::NEAREST,
-            );
-            entry.insert(texture);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!("Tip {} weight", index + 1));
+                changed |= ui
+                    .add(egui::Slider::new(&mut variant.weight, 1..=100))
+                    .changed();
+                changed |= ui.checkbox(&mut variant.flip_x, "Flip X").changed();
+                changed |= ui.checkbox(&mut variant.flip_y, "Flip Y").changed();
+            });
         }
-        if let Some(texture) = self.tip_previews.get(&id) {
-            ui.label(format!(
-                "PNG tip · {} × {} · alpha preserved",
-                asset.size[0], asset.size[1]
-            ));
-            ui.image((texture.id(), egui::vec2(96.0, 96.0)));
-        }
-        if let Some(provenance) = &asset.provenance {
-            ui.small(format!("Source: {provenance}"));
+        if changed {
+            match self
+                .library
+                .set_tip_variant_settings(preset.id, variants, mode)
+            {
+                Ok(()) => {
+                    self.preview_preset = None;
+                    self.persist("Tip variant settings updated");
+                }
+                Err(error) => self.notice = error,
+            }
         }
     }
 
@@ -798,6 +907,32 @@ impl PresetUi {
         let asset = crate::brush_tip::BrushTipAsset::from_png(bytes, provenance)?;
         let file_name = asset.file_name();
         self.library.assign_tip_asset(preset_id, asset)?;
+        Ok(file_name)
+    }
+
+    fn import_tip_variant(&mut self, path: &Path, preset_id: u64) -> Result<String, String> {
+        let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err("Choose a regular PNG image file".into());
+        }
+        let mut bytes =
+            Vec::with_capacity(metadata.len().min(crate::brush_tip::MAX_PNG_BYTES as u64) as usize);
+        fs::File::open(path)
+            .map_err(|error| error.to_string())?
+            .take(crate::brush_tip::MAX_PNG_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() > crate::brush_tip::MAX_PNG_BYTES {
+            return Err("Brush tip PNG must be no larger than 512 KiB".into());
+        }
+        let provenance = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| name.chars().count() <= 240 && !name.chars().any(char::is_control))
+            .map(|name| format!("Imported from {name}"));
+        let asset = crate::brush_tip::BrushTipAsset::from_png(bytes, provenance)?;
+        let file_name = asset.file_name();
+        self.library.assign_tip_variant_asset(preset_id, asset)?;
         Ok(file_name)
     }
 

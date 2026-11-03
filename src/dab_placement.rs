@@ -7,7 +7,7 @@
 //! following spacing interval; fragments exclude repeated dabs at exact phase-aligned starts.
 
 use crate::{
-    document::{Document, Stroke},
+    document::{Brush, BrushTipVariant, Document, Stroke},
     dynamics,
 };
 use glam::Vec3;
@@ -34,6 +34,10 @@ fn first_dab_index(origin: f32, step: f32) -> f32 {
 pub struct ResolvedDab {
     /// Stable global spacing index, retained through split fragments.
     pub dab_index: u64,
+    /// Resolved image choice for this stable dab index, when this brush uses
+    /// an imported image tip.
+    pub tip_variant: Option<BrushTipVariant>,
+    pub tip_variant_index: u8,
     pub position: Vec3,
     pub tangent: Vec3,
     pub normal: Vec3,
@@ -322,8 +326,12 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> Option<ResolvedDab
         stroke.brush.dynamics.taper_end,
     );
     let angle = (angle_random * 2.0 - 1.0) * stroke.brush.dabs.angle_variation_degrees;
+    let (tip_variant_index, tip_variant) =
+        selected_tip_variant(stroke.brush, stroke.brush.dab_seed, index);
     Some(ResolvedDab {
         dab_index: index,
+        tip_variant,
+        tip_variant_index,
         position: center + scatter,
         tangent,
         normal,
@@ -339,6 +347,53 @@ fn resolve_dab(stroke: &Stroke, parameters: DabParameters) -> Option<ResolvedDab
         distance: global_distance,
         gradient_t,
     })
+}
+
+fn selected_tip_variant(brush: Brush, seed: u64, dab_index: u64) -> (u8, Option<BrushTipVariant>) {
+    let count = brush.tip_variant_count();
+    if count == 0 {
+        return (0, None);
+    }
+    if brush.tip_variants[0].is_none() {
+        return (
+            0,
+            Some(BrushTipVariant {
+                asset_id: brush.tip_asset_id,
+                size: [0; 2],
+                aspect: brush.tip_aspect,
+                weight: 1,
+                flip_x: false,
+                flip_y: false,
+            }),
+        );
+    }
+    let variants = brush.tip_variants;
+    let total_weight = variants
+        .iter()
+        .take(count)
+        .flatten()
+        .map(|variant| u64::from(variant.weight))
+        .sum::<u64>();
+    if total_weight == 0 {
+        return (0, variants[0]);
+    }
+    let position = match brush.tip_selection_mode {
+        crate::document::TipSelectionMode::Sequential => dab_index % total_weight,
+        crate::document::TipSelectionMode::SeededRandom => {
+            (random01(seed, dab_index, 7) * total_weight as f32) as u64
+        }
+    };
+    let mut edge = 0_u64;
+    for (index, variant) in variants.iter().take(count).enumerate() {
+        let Some(variant) = variant else {
+            break;
+        };
+        edge += u64::from(variant.weight);
+        if position < edge {
+            return (index as u8, Some(*variant));
+        }
+    }
+    (0, variants[0])
 }
 
 fn point_thickness_at_distance(stroke: &Stroke, distances: &[f32], distance: f32) -> f32 {
