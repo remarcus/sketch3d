@@ -237,9 +237,174 @@ pub fn tessellate_stroke(
     Ok(stroke)
 }
 
+/// Tessellate Bézier controls stored in an unwrapped cylinder chart while
+/// measuring subdivision error in world space. Curve samples are mapped back
+/// to the captured finite cylinder side and never cross its open ends.
+pub fn tessellate_cylinder_stroke(
+    segments: &[PressureSegment],
+    prototype: &Stroke,
+    cylinder: crate::surface::Cylinder,
+    tolerance_world: f32,
+    max_points: usize,
+) -> Result<Stroke, String> {
+    validate_tessellation(tolerance_world, max_points)?;
+    if !cylinder.valid() || segments.is_empty() || segments.len() > max_points {
+        return Err("Cylinder curve target or segment count is invalid".into());
+    }
+    if !prototype.brush.is_valid()
+        || !prototype.radius.is_finite()
+        || !(0.001..=1.0).contains(&prototype.radius)
+        || prototype
+            .color
+            .iter()
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+    {
+        return Err("Curve stroke brush, radius, or color is invalid".into());
+    }
+    let mut points = Vec::new();
+    for (index, segment) in segments.iter().copied().enumerate() {
+        if !segment.is_valid()
+            || segment.curve.p0.z.abs() > 1e-4
+            || segment.curve.p1.z.abs() > 1e-4
+            || segment.curve.p2.z.abs() > 1e-4
+            || segment.curve.p3.z.abs() > 1e-4
+            || [
+                segment.curve.p0,
+                segment.curve.p1,
+                segment.curve.p2,
+                segment.curve.p3,
+            ]
+            .iter()
+            .any(|point| point.y.abs() > cylinder.height * 0.5)
+        {
+            return Err("Cylinder curve controls extend beyond the finite surface".into());
+        }
+        if index > 0 {
+            let previous = segments[index - 1];
+            if previous.curve.p3.distance(segment.curve.p0) > tolerance_world
+                || (previous.pressure_end - segment.pressure_start).abs() > 0.001
+            {
+                return Err(
+                    "Curve segments must share position and pressure at each anchor".into(),
+                );
+            }
+        }
+        let map = |point: Vec3| cylinder.point_from_parameter(point);
+        let mut samples = vec![(
+            0.0,
+            map(segment.curve.p0).ok_or("Cylinder curve start is outside its surface")?,
+        )];
+        flatten_cylinder(
+            segment.curve,
+            cylinder,
+            tolerance_world,
+            0,
+            0.0,
+            1.0,
+            max_points.saturating_sub(points.len()).max(2),
+            &mut samples,
+        )?;
+        for (sample_index, (t, position)) in samples.into_iter().enumerate() {
+            if index > 0 && sample_index == 0 {
+                continue;
+            }
+            if points.len() >= max_points {
+                return Err("Curve tessellation exceeds the point limit".into());
+            }
+            let pressure =
+                segment.pressure_start + (segment.pressure_end - segment.pressure_start) * t;
+            let point = Point {
+                position,
+                pressure,
+                tilt: None,
+                time_ms: 0,
+            };
+            if !point.is_valid() {
+                return Err("Curve tessellation exceeds point or pressure limits".into());
+            }
+            points.push(point);
+        }
+    }
+    if points.len() < 2
+        || points
+            .windows(2)
+            .any(|pair| pair[0].position.distance_squared(pair[1].position) <= 1e-12)
+    {
+        return Err("Curve needs at least two distinct samples".into());
+    }
+    let mut stroke = prototype.clone();
+    stroke.fill = None;
+    stroke.points = points;
+    Ok(stroke)
+}
+
+fn flatten_cylinder(
+    curve: CubicBezier,
+    cylinder: crate::surface::Cylinder,
+    tolerance: f32,
+    depth: u8,
+    t0: f32,
+    t1: f32,
+    max_points: usize,
+    output: &mut Vec<(f32, Vec3)>,
+) -> Result<(), String> {
+    let mapped = CubicBezier {
+        p0: cylinder
+            .point_from_parameter(curve.p0)
+            .ok_or("Cylinder curve left its surface")?,
+        p1: cylinder
+            .point_from_parameter(curve.p1)
+            .ok_or("Cylinder curve handle left its surface")?,
+        p2: cylinder
+            .point_from_parameter(curve.p2)
+            .ok_or("Cylinder curve handle left its surface")?,
+        p3: cylinder
+            .point_from_parameter(curve.p3)
+            .ok_or("Cylinder curve left its surface")?,
+    };
+    let curved_midpoint = cylinder
+        .point_from_parameter(curve.evaluate(0.5)?)
+        .ok_or("Cylinder curve midpoint left its surface")?;
+    if flatness(mapped).max(point_line_distance(curved_midpoint, mapped.p0, mapped.p3)) <= tolerance
+    {
+        if output.len() >= max_points {
+            return Err("Curve tessellation exceeds the point limit".into());
+        }
+        output.push((t1, mapped.p3));
+        return Ok(());
+    }
+    if depth >= MAX_RECURSION_DEPTH {
+        return Err(
+            "Curve could not meet the requested tolerance within the subdivision limit".into(),
+        );
+    }
+    let (left, right) = curve.split(0.5)?;
+    let middle = (t0 + t1) * 0.5;
+    flatten_cylinder(
+        left,
+        cylinder,
+        tolerance,
+        depth + 1,
+        t0,
+        middle,
+        max_points,
+        output,
+    )?;
+    flatten_cylinder(
+        right,
+        cylinder,
+        tolerance,
+        depth + 1,
+        middle,
+        t1,
+        max_points,
+        output,
+    )
+}
+
 /// Compute symmetric handle offsets for a smooth anchor. Endpoints use the
 /// available one-sided direction; interior handles lie along the chord from
-/// previous to next. Offsets are world-space vectors relative to `position`.
+/// previous to next. Offsets use the same coordinate space as the controls.
 pub fn smooth_handle_offsets(
     previous: Option<Vec3>,
     position: Vec3,
@@ -421,6 +586,135 @@ mod tests {
         for (unit_point, scaled_point) in unit.iter().zip(&scaled) {
             assert!(unit_point.distance(*scaled_point / 10.0) < 0.00001);
         }
+    }
+
+    #[test]
+    fn cylinder_curve_tessellation_wraps_the_seam_and_rejects_out_of_domain_handles() {
+        let cylinder = crate::surface::Cylinder {
+            center: Vec3::new(0.3, -0.4, 0.8),
+            rotation_degrees: Vec3::new(13.0, 27.0, -8.0),
+            radius: 1.2,
+            height: 2.0,
+        };
+        let segment = PressureSegment {
+            curve: CubicBezier {
+                p0: Vec3::new(3.62, -0.2, 0.0),
+                p1: Vec3::new(3.72, -0.1, 0.0),
+                p2: Vec3::new(3.82, 0.1, 0.0),
+                p3: Vec3::new(3.92, 0.2, 0.0),
+            },
+            pressure_start: 0.2,
+            pressure_end: 0.9,
+        };
+        let stroke =
+            tessellate_cylinder_stroke(&[segment], &prototype(), cylinder, 0.002, MAX_CURVE_POINTS)
+                .unwrap();
+        let rotation = cylinder.rotation();
+        let angle = segment.curve.p0.x / cylinder.radius;
+        let curve = crate::document::CurveData {
+            anchors: vec![
+                crate::document::CurveAnchor {
+                    position: segment.curve.p0,
+                    pressure: segment.pressure_start,
+                    incoming: Vec3::ZERO,
+                    outgoing: segment.curve.p1 - segment.curve.p0,
+                    manual: true,
+                },
+                crate::document::CurveAnchor {
+                    position: segment.curve.p3,
+                    pressure: segment.pressure_end,
+                    incoming: segment.curve.p2 - segment.curve.p3,
+                    outgoing: Vec3::ZERO,
+                    manual: true,
+                },
+            ],
+            frame_origin: cylinder.center,
+            frame_normal: rotation * Vec3::new(angle.sin(), 0.0, angle.cos()),
+            frame_tangent: rotation * Vec3::new(angle.cos(), 0.0, -angle.sin()),
+            half_extent: None,
+            tension: 1.0,
+            surface_target: Some(crate::dynamics::DabSurfaceTarget::Cylinder {
+                center: cylinder.center,
+                rotation,
+                radius: cylinder.radius,
+                height: cylinder.height,
+            }),
+            shape: None,
+        };
+        assert!(curve.is_valid());
+        let mut stroke = stroke;
+        stroke.curve = Some(curve.clone());
+        assert!(stroke.points.len() > 2);
+        assert!(stroke.points.iter().all(|point| {
+            let local = cylinder.to_local(point.position);
+            (local.x.hypot(local.z) - cylinder.radius).abs() < 1.0e-4
+                && (0.2..=0.9).contains(&point.pressure)
+        }));
+        assert!(stroke
+            .points
+            .windows(2)
+            .all(|pair| { pair[0].position.distance(pair[1].position) < 0.2 }));
+
+        let document = Document {
+            strokes: vec![stroke.clone()],
+            ..Document::default()
+        };
+        let reopened = Document::from_json(&serde_json::to_string(&document).unwrap()).unwrap();
+        assert_eq!(reopened.strokes[0].curve.as_ref(), Some(&curve));
+        let recovery_root = tempfile::tempdir().unwrap();
+        let snapshot = crate::recovery_store::RecoverySnapshot::new(
+            "cylinder-curve-test".into(),
+            None,
+            reopened.clone(),
+        );
+        crate::recovery_store::write(recovery_root.path(), &snapshot).unwrap();
+        let recovered = crate::recovery_store::scan(recovery_root.path(), "test-reader").unwrap();
+        assert_eq!(recovered.candidates.len(), 1);
+        assert_eq!(
+            recovered.candidates[0].snapshot.document.strokes[0]
+                .curve
+                .as_ref(),
+            Some(&curve)
+        );
+        let exported = crate::export::encode(&reopened, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
+        assert_eq!(gltf.meshes().count(), 1);
+        let mut camera = crate::geometry::Camera::default();
+        let angle = segment.curve.p3.x / cylinder.radius;
+        let facing = rotation * Vec3::new(angle.sin(), 0.0, angle.cos());
+        camera.yaw = facing.x.atan2(facing.z);
+        camera.pitch = facing.y.asin();
+        camera.target = cylinder.center;
+        camera.distance = 5.0;
+        let canvas = eframe::egui::Rect::from_min_size(
+            eframe::egui::Pos2::ZERO,
+            eframe::egui::vec2(500.0, 400.0),
+        );
+        let point = stroke.points[stroke.points.len() / 2].position;
+        let screen = crate::gizmo::project(&camera, canvas, point).unwrap().0;
+        assert_eq!(
+            crate::gizmo::pick(&reopened, &camera, canvas, screen),
+            Some(stroke.id)
+        );
+
+        let invalid = PressureSegment {
+            curve: CubicBezier {
+                p0: Vec3::new(0.0, 0.0, 0.0),
+                p1: Vec3::new(0.1, 1.1, 0.0),
+                p2: Vec3::new(0.2, 0.0, 0.0),
+                p3: Vec3::new(0.3, 0.0, 0.0),
+            },
+            pressure_start: 1.0,
+            pressure_end: 1.0,
+        };
+        assert!(tessellate_cylinder_stroke(
+            &[invalid],
+            &prototype(),
+            cylinder,
+            0.01,
+            MAX_CURVE_POINTS,
+        )
+        .is_err());
     }
 
     #[test]

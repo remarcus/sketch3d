@@ -439,6 +439,8 @@ mod tests {
             frame_tangent: Vec3::X,
             half_extent: None,
             tension: 0.5,
+            surface_target: None,
+            shape: None,
         });
         assert!(edit(&curve, &HashSet::from([4]), settings(Operation::Smooth)).is_err());
         let mut linked = Document {

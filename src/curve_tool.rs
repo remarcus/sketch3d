@@ -22,7 +22,7 @@ enum HandleRef {
 }
 
 struct CurveDraft {
-    target: PlanarTarget,
+    target: CurveTarget,
     stroke: Stroke,
     anchors: Vec<Anchor>,
     preview: Option<Stroke>,
@@ -30,6 +30,79 @@ struct CurveDraft {
     selected_anchor: Option<usize>,
     editing_stroke_id: Option<u64>,
     viewport_height: f32,
+}
+
+#[derive(Clone, Copy)]
+enum CurveTarget {
+    Planar(PlanarTarget),
+    Cylinder(crate::surface::Cylinder),
+}
+
+impl CurveTarget {
+    fn hit(self, origin: Vec3, direction: Vec3) -> Option<Vec3> {
+        match self {
+            Self::Planar(target) => target.hit(origin, direction),
+            Self::Cylinder(cylinder) => cylinder.hit(origin, direction),
+        }
+    }
+
+    fn world_to_control(self, world: Vec3, previous: Option<Vec3>) -> Option<Vec3> {
+        match self {
+            Self::Planar(_) => world.is_finite().then_some(world),
+            Self::Cylinder(cylinder) => cylinder.parameterize(world, previous),
+        }
+    }
+
+    fn control_to_world(self, control: Vec3) -> Option<Vec3> {
+        match self {
+            Self::Planar(_) => control.is_finite().then_some(control),
+            Self::Cylinder(cylinder) => cylinder.point_from_parameter(control),
+        }
+    }
+
+    fn contains_world(self, world: Vec3) -> bool {
+        match self {
+            Self::Planar(target) => target.contains(world),
+            Self::Cylinder(cylinder) => cylinder.parameterize(world, None).is_some(),
+        }
+    }
+
+    fn planar(self) -> Option<PlanarTarget> {
+        match self {
+            Self::Planar(target) => Some(target),
+            Self::Cylinder(_) => None,
+        }
+    }
+
+    fn cylinder_surface(self) -> Option<crate::dynamics::DabSurfaceTarget> {
+        let Self::Cylinder(cylinder) = self else {
+            return None;
+        };
+        Some(crate::dynamics::DabSurfaceTarget::Cylinder {
+            center: cylinder.center,
+            rotation: cylinder.rotation(),
+            radius: cylinder.radius,
+            height: cylinder.height,
+        })
+    }
+
+    fn frame(self, control: Vec3) -> Option<(Vec3, Vec3, Vec3)> {
+        match self {
+            Self::Planar(target) => {
+                let (tangent, _, normal) = target.plane.basis();
+                Some((target.plane.origin(), normal, tangent))
+            }
+            Self::Cylinder(cylinder) => {
+                let angle = control.x / cylinder.radius;
+                let rotation = cylinder.rotation();
+                Some((
+                    cylinder.center,
+                    rotation * Vec3::new(angle.sin(), 0.0, angle.cos()),
+                    rotation * Vec3::new(angle.cos(), 0.0, -angle.sin()),
+                ))
+            }
+        }
+    }
 }
 
 pub(super) struct CurveUi {
@@ -80,9 +153,9 @@ impl SketchApp {
     }
 
     pub(super) fn start_curve_tool(&mut self) {
-        if self.planar_drawing_target().is_none() && !self.has_selected_editable_curve() {
+        if self.curve_target().is_none() && !self.has_selected_editable_curve() {
             self.status =
-                "Smooth curves require a plane guide. Activate a planar guide first.".into();
+                "Smooth curves require a plane or cylinder guide. Activate a supported guide first.".into();
             return;
         }
         self.finish();
@@ -97,6 +170,60 @@ impl SketchApp {
         self.status =
             "Smooth curve tool ready. Click to add anchors; drag an anchor to set its tangent."
                 .into();
+    }
+
+    fn curve_target(&self) -> Option<CurveTarget> {
+        if self.doc.active_image_plane.is_some() {
+            return self.planar_drawing_target().map(CurveTarget::Planar);
+        }
+        if let Some(geometry) = self.saved_guide_geometry() {
+            return match geometry {
+                crate::document::guide_resources::GuideGeometry::Cylinder {
+                    center,
+                    rotation,
+                    radius,
+                    height,
+                } => {
+                    let (z, y, x) = rotation.to_euler(glam::EulerRot::ZYX);
+                    Some(CurveTarget::Cylinder(crate::surface::Cylinder {
+                        center: *center,
+                        rotation_degrees: Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI),
+                        radius: *radius,
+                        height: *height,
+                    }))
+                }
+                crate::document::guide_resources::GuideGeometry::Plane { .. } => {
+                    self.planar_drawing_target().map(CurveTarget::Planar)
+                }
+                _ => None,
+            };
+        }
+        if self.use_cylinder {
+            Some(CurveTarget::Cylinder(self.cylinder))
+        } else {
+            self.planar_drawing_target().map(CurveTarget::Planar)
+        }
+    }
+
+    fn curve_target_from_snapshot(
+        target: crate::dynamics::DabSurfaceTarget,
+    ) -> Option<CurveTarget> {
+        let crate::dynamics::DabSurfaceTarget::Cylinder {
+            center,
+            rotation,
+            radius,
+            height,
+        } = target
+        else {
+            return None;
+        };
+        let (z, y, x) = rotation.to_euler(glam::EulerRot::ZYX);
+        Some(CurveTarget::Cylinder(crate::surface::Cylinder {
+            center,
+            rotation_degrees: Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI),
+            radius,
+            height,
+        }))
     }
 
     pub(super) fn cancel_curve(&mut self) {
@@ -116,7 +243,7 @@ impl SketchApp {
             return;
         }
         ui.strong("SMOOTH CURVE");
-        ui.label("Click to append anchors or click near a segment to insert one. Reopened curves retain their captured frame and bounds.");
+        ui.label("Click to append anchors or click near a segment to insert one. Curves capture their plane or unwrapped cylinder target.");
         let can_edit_selected = self.has_selected_editable_curve();
         if ui
             .add_enabled(can_edit_selected, egui::Button::new("Edit selected curve"))
@@ -219,40 +346,28 @@ impl SketchApp {
         if !rect.contains(pos) {
             return;
         }
-        if self.curve_tool.draft.is_some() && self.snapping.options.enabled {
-            let (target, excluded) = self
-                .curve_tool
-                .draft
-                .as_ref()
-                .map(|draft| {
-                    (
-                        draft.target,
-                        draft.editing_stroke_id.into_iter().collect::<HashSet<_>>(),
-                    )
-                })
-                .expect("curve draft remains active");
-            if self.planar_snap_index_stale(target, rect, &excluded) {
-                self.prepare_planar_snap(target, rect, &excluded);
-            }
-        }
         if begin {
             if self.curve_tool.draft.is_none() {
-                let Some(target) = self.planar_drawing_target() else {
+                let Some(target) = self.curve_target() else {
                     self.status =
-                        "Smooth curves require a plane guide. Activate a planar guide first."
+                        "Smooth curves require a plane or cylinder guide. Activate a supported guide first."
                             .into();
                     return;
                 };
-                let plane = target.plane;
                 if !self.doc.active_editable() {
                     self.status = "Choose a visible unlocked layer for the curve.".into();
                     return;
                 }
                 let (origin, direction) = crate::gizmo::ray(&self.camera, rect, pos);
-                let Some(_) = target.hit(origin, direction) else {
+                let Some(world) = target.hit(origin, direction) else {
                     return;
                 };
-                let (u, _, normal) = plane.basis();
+                let Some(control) = target.world_to_control(world, None) else {
+                    return;
+                };
+                let Some((_, normal, tangent)) = target.frame(control) else {
+                    return;
+                };
                 let stroke = Stroke {
                     model_surface: None,
                     curve: None,
@@ -268,7 +383,7 @@ impl SketchApp {
                     radius: self.radius,
                     brush: Brush {
                         normal,
-                        tangent: u,
+                        tangent,
                         dabs: crate::dynamics::DabSettings {
                             enabled: false,
                             ..self.brush.dabs
@@ -298,13 +413,19 @@ impl SketchApp {
                         (draft.target, excluded)
                     })
                     .expect("curve draft was initialized");
-                if self.planar_snap_index_stale(target, rect, &excluded) {
-                    self.prepare_planar_snap(target, rect, &excluded);
+                if let Some(planar) = target.planar() {
+                    if self.planar_snap_index_stale(planar, rect, &excluded) {
+                        self.prepare_planar_snap(planar, rect, &excluded);
+                    }
                 }
             }
-            let Some(world) = self.curve_world(pos, rect) else {
+            let Some(mut world) = self.curve_world(pos, rect) else {
                 return;
             };
+            let target = self.curve_tool.draft.as_ref().unwrap().target;
+            if let Some(planar) = target.planar() {
+                world = self.snap_planar_point(world, pos, planar, rect, None);
+            }
             let handle = self
                 .curve_tool
                 .draft
@@ -327,7 +448,6 @@ impl SketchApp {
                     .as_ref()
                     .expect("curve draft remains active")
                     .target;
-                let world = self.snap_planar_point(world, pos, target, rect, None);
                 let insertion_pos = crate::gizmo::project(&self.camera, rect, world)
                     .map_or(pos, |(screen, _)| screen);
                 let insertion = self.curve_tool.draft.as_ref().and_then(|draft| {
@@ -336,18 +456,24 @@ impl SketchApp {
                     }
                     let mut nearest: (f32, usize) = (14.0, draft.anchors.len());
                     for pair_index in 0..draft.anchors.len() - 1 {
-                        let Some((a, _)) = crate::gizmo::project(
-                            &self.camera,
-                            rect,
-                            draft.anchors[pair_index].position,
-                        ) else {
+                        let Some(world_a) = draft
+                            .target
+                            .control_to_world(draft.anchors[pair_index].position)
+                        else {
                             continue;
                         };
-                        let Some((b, _)) = crate::gizmo::project(
-                            &self.camera,
-                            rect,
-                            draft.anchors[pair_index + 1].position,
-                        ) else {
+                        let Some(world_b) = draft
+                            .target
+                            .control_to_world(draft.anchors[pair_index + 1].position)
+                        else {
+                            continue;
+                        };
+                        let Some((a, _)) = crate::gizmo::project(&self.camera, rect, world_a)
+                        else {
+                            continue;
+                        };
+                        let Some((b, _)) = crate::gizmo::project(&self.camera, rect, world_b)
+                        else {
                             continue;
                         };
                         let distance = point_segment_distance(insertion_pos, a, b);
@@ -367,12 +493,24 @@ impl SketchApp {
                         Some("Curves are limited to 256 control points.".into());
                     return;
                 }
+                let previous = self.curve_tool.draft.as_ref().and_then(|draft| {
+                    insertion
+                        .unwrap_or(draft.anchors.len())
+                        .checked_sub(1)
+                        .and_then(|index| draft.anchors.get(index))
+                        .map(|anchor| anchor.position)
+                });
+                let Some(control) = target.world_to_control(world, previous) else {
+                    self.curve_tool.error =
+                        Some("Point is outside the captured cylinder surface.".into());
+                    return;
+                };
                 if let Some(draft) = &mut self.curve_tool.draft {
                     let idx = insertion.unwrap_or(draft.anchors.len());
                     draft.anchors.insert(
                         idx,
                         Anchor {
-                            position: world,
+                            position: control,
                             pressure: pressure.clamp(0.0, 1.0),
                             incoming: Vec3::ZERO,
                             outgoing: Vec3::ZERO,
@@ -396,18 +534,26 @@ impl SketchApp {
             let Some(world) = self.curve_world(pos, rect) else {
                 return;
             };
-            let world = if let HandleRef::Anchor(_) = handle {
-                let target = self
-                    .curve_tool
-                    .draft
-                    .as_ref()
-                    .expect("curve draft remains active")
-                    .target;
-                self.snap_planar_point(world, pos, target, rect, None)
-            } else {
-                world
+            let anchor_index = match handle {
+                HandleRef::Anchor(index)
+                | HandleRef::Incoming(index)
+                | HandleRef::Outgoing(index)
+                | HandleRef::NewAnchor(index) => index,
             };
-            self.curve_move_handle(handle, world);
+            let (target, previous) = {
+                let draft = self.curve_tool.draft.as_ref().unwrap();
+                (draft.target, draft.anchors[anchor_index].position)
+            };
+            let mut world = world;
+            if matches!(handle, HandleRef::Anchor(_)) {
+                if let Some(planar) = target.planar() {
+                    world = self.snap_planar_point(world, pos, planar, rect, None);
+                }
+            }
+            let Some(control) = target.world_to_control(world, Some(previous)) else {
+                return;
+            };
+            self.curve_move_handle(handle, control);
             self.curve_refresh(rect);
         }
     }
@@ -425,7 +571,7 @@ impl SketchApp {
             .draft
             .as_ref()
             .map(|draft| draft.target)
-            .or_else(|| self.planar_drawing_target())?;
+            .or_else(|| self.curve_target())?;
         let (origin, direction) = crate::gizmo::ray(&self.camera, rect, pos);
         target.hit(origin, direction)
     }
@@ -434,13 +580,16 @@ impl SketchApp {
         let mut nearest_anchor = (10.0_f32, None);
         let mut nearest_handle = (12.0_f32, None);
         for (index, anchor) in draft.anchors.iter().enumerate() {
-            if let Some((screen, _)) = crate::gizmo::project(&self.camera, rect, anchor.position) {
+            let Some(anchor_world) = draft.target.control_to_world(anchor.position) else {
+                continue;
+            };
+            if let Some((screen, _)) = crate::gizmo::project(&self.camera, rect, anchor_world) {
                 let distance = screen.distance(pos);
                 if distance < nearest_anchor.0 {
                     nearest_anchor = (distance, Some(HandleRef::Anchor(index)));
                 }
             }
-            for (endpoint, handle) in [
+            for (endpoint_control, handle) in [
                 (
                     anchor.position + anchor.incoming,
                     HandleRef::Incoming(index),
@@ -450,6 +599,9 @@ impl SketchApp {
                     HandleRef::Outgoing(index),
                 ),
             ] {
+                let Some(endpoint) = draft.target.control_to_world(endpoint_control) else {
+                    continue;
+                };
                 if let Some((screen, _)) = crate::gizmo::project(&self.camera, rect, endpoint) {
                     let distance = screen.distance(pos);
                     if distance < nearest_handle.0 {
@@ -561,26 +713,42 @@ impl SketchApp {
                 pressure_end: pair[1].pressure,
             })
             .collect();
+        let Some(first_world) = draft.target.control_to_world(draft.anchors[0].position) else {
+            draft.preview = None;
+            self.curve_tool.error = Some("Curve anchor is outside the captured surface.".into());
+            return;
+        };
         let scale = self
             .camera
-            .world_per_pixel(draft.anchors[0].position, draft.viewport_height.max(1.0));
+            .world_per_pixel(first_world, draft.viewport_height.max(1.0));
         let tolerance = (scale * 0.75).clamp(
             crate::curve_geometry::MIN_TOLERANCE_WORLD,
             crate::curve_geometry::MAX_TOLERANCE_WORLD,
         );
-        match crate::curve_geometry::tessellate_stroke(
-            &segments,
-            &draft.stroke,
-            tolerance,
-            crate::curve_geometry::MAX_CURVE_POINTS,
-        ) {
+        let tessellated = match draft.target {
+            CurveTarget::Planar(_) => crate::curve_geometry::tessellate_stroke(
+                &segments,
+                &draft.stroke,
+                tolerance,
+                crate::curve_geometry::MAX_CURVE_POINTS,
+            ),
+            CurveTarget::Cylinder(cylinder) => crate::curve_geometry::tessellate_cylinder_stroke(
+                &segments,
+                &draft.stroke,
+                cylinder,
+                tolerance,
+                crate::curve_geometry::MAX_CURVE_POINTS,
+            ),
+        };
+        match tessellated {
             Ok(stroke)
                 if stroke
                     .points
                     .iter()
-                    .all(|point| draft.target.contains(point.position)) =>
+                    .all(|point| draft.target.contains_world(point.position)) =>
             {
-                let (tangent, _, normal) = draft.target.plane.basis();
+                let (frame_origin, normal, tangent) =
+                    draft.target.frame(draft.anchors[0].position).unwrap();
                 let curve = CurveData {
                     anchors: draft
                         .anchors
@@ -593,11 +761,13 @@ impl SketchApp {
                             manual: anchor.manual,
                         })
                         .collect(),
-                    frame_origin: draft.target.plane.origin(),
+                    frame_origin,
                     frame_normal: normal,
                     frame_tangent: tangent,
-                    half_extent: draft.target.half_extent(),
+                    half_extent: draft.target.planar().and_then(PlanarTarget::half_extent),
                     tension: self.curve_tool.tension,
+                    surface_target: draft.target.cylinder_surface(),
+                    shape: None,
                 };
                 if curve.is_valid() {
                     let mut stroke = stroke;
@@ -612,8 +782,14 @@ impl SketchApp {
             }
             Ok(_) => {
                 draft.preview = None;
-                self.curve_tool.error =
-                    Some("Curve extends beyond the active image bounds.".into());
+                self.curve_tool.error = Some(match draft.target {
+                    CurveTarget::Planar(_) => {
+                        "Curve extends beyond the active image bounds.".into()
+                    }
+                    CurveTarget::Cylinder(_) => {
+                        "Curve extends beyond the captured cylinder bounds.".into()
+                    }
+                });
             }
             Err(error) => {
                 draft.preview = None;
@@ -662,12 +838,15 @@ impl SketchApp {
         }
         self.doc.strokes.iter().any(|stroke| {
             self.selected.contains(&stroke.id)
-                && stroke.curve.as_ref().is_some_and(CurveData::is_valid)
+                && stroke
+                    .curve
+                    .as_ref()
+                    .is_some_and(|curve| curve.shape.is_none() && curve.is_valid())
                 && self.doc.editable(stroke)
         })
     }
 
-    fn open_selected_curve(&mut self) {
+    pub(super) fn open_selected_curve(&mut self) {
         if self.curve_tool.draft.is_some() {
             self.status = "Apply or cancel the current curve preview first.".into();
             return;
@@ -686,12 +865,18 @@ impl SketchApp {
             self.status = "The selected stroke has no editable curve anchors.".into();
             return;
         };
-        let Some(target) = PlanarTarget::from_curve_frame(
-            curve.frame_origin,
-            curve.frame_normal,
-            curve.frame_tangent,
-            curve.half_extent,
-        ) else {
+        let target = if let Some(surface) = curve.surface_target {
+            Self::curve_target_from_snapshot(surface)
+        } else {
+            PlanarTarget::from_curve_frame(
+                curve.frame_origin,
+                curve.frame_normal,
+                curve.frame_tangent,
+                curve.half_extent,
+            )
+            .map(CurveTarget::Planar)
+        };
+        let Some(target) = target else {
             self.status = "The selected curve has an invalid captured drawing frame.".into();
             return;
         };
@@ -1144,15 +1329,21 @@ impl SketchApp {
             }
         }
         for anchor in &draft.anchors {
-            if let Some((point, _)) = crate::gizmo::project(&self.camera, rect, anchor.position) {
+            let Some(anchor_world) = draft.target.control_to_world(anchor.position) else {
+                continue;
+            };
+            if let Some((point, _)) = crate::gizmo::project(&self.camera, rect, anchor_world) {
                 painter.circle_filled(point, 4.5, color);
             }
-            for endpoint in [
+            for endpoint_control in [
                 anchor.position + anchor.incoming,
                 anchor.position + anchor.outgoing,
             ] {
+                let Some(endpoint) = draft.target.control_to_world(endpoint_control) else {
+                    continue;
+                };
                 if let (Some((a, _)), Some((b, _))) = (
-                    crate::gizmo::project(&self.camera, rect, anchor.position),
+                    crate::gizmo::project(&self.camera, rect, anchor_world),
                     crate::gizmo::project(&self.camera, rect, endpoint),
                 ) {
                     painter.line_segment(

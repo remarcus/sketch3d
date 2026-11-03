@@ -289,7 +289,7 @@ pub struct Stroke {
     /// stored centerline. `None` preserves the legacy rendering path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modifiers: Option<crate::stroke_modifiers::StrokeModifierStack>,
-    /// Exact control points for curves created by the smooth curve tool.
+    /// Exact controls for semantic curves and curved circle/ellipse tools.
     /// The sampled points remain authoritative for rendering and export.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve: Option<CurveData>,
@@ -522,6 +522,13 @@ pub struct CurveData {
     #[serde(default)]
     pub half_extent: Option<glam::Vec2>,
     pub tension: f32,
+    /// Optional analytic target snapshot. When present, anchors and handles
+    /// are stored in the target's unwrapped surface chart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_target: Option<crate::dynamics::DabSurfaceTarget>,
+    /// Curved circle/ellipse dimensions retained for reopening shape controls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<CurvedShapeData>,
 }
 
 /// A non-recursive linked definition backed by regular source strokes.
@@ -562,10 +569,26 @@ pub struct CurveAnchor {
     pub manual: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CurvedShapeKind {
+    Circle,
+    Ellipse,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CurvedShapeData {
+    pub kind: CurvedShapeKind,
+    /// Center in the captured cylinder's unwrapped chart.
+    pub center: Vec3,
+    pub radius_u: f32,
+    pub radius_v: f32,
+}
+
 impl CurveData {
     pub fn is_valid(&self) -> bool {
         let unit = |v: Vec3| v.is_finite() && (v.length_squared() - 1.0).abs() <= 0.001;
-        self.anchors.len() >= 2
+        let common = self.anchors.len() >= 2
             && self.anchors.len() <= 256
             && self.frame_origin.is_finite()
             && self.frame_origin.abs().max_element() <= 10_000.0
@@ -576,23 +599,118 @@ impl CurveData {
             && (0.0..=2.0).contains(&self.tension)
             && self.half_extent.is_none_or(|extent| {
                 extent.is_finite() && extent.min_element() > 0.0 && extent.max_element() <= 10_000.0
-            })
-            && self.anchors.iter().all(|anchor| {
-                anchor.position.is_finite()
-                    && anchor.position.abs().max_element() <= 10_000.0
-                    && anchor.pressure.is_finite()
-                    && (0.0..=1.0).contains(&anchor.pressure)
-                    && anchor.incoming.is_finite()
-                    && anchor.incoming.abs().max_element() <= 10_000.0
-                    && anchor.outgoing.is_finite()
-                    && anchor.outgoing.abs().max_element() <= 10_000.0
-                    && anchor.incoming.dot(self.frame_normal).abs() <= 0.01
-                    && anchor.outgoing.dot(self.frame_normal).abs() <= 0.01
-                    && (anchor.position - self.frame_origin)
-                        .dot(self.frame_normal)
-                        .abs()
-                        <= 0.01
-            })
+            });
+        let anchors_valid = self.anchors.iter().all(|anchor| {
+            anchor.position.is_finite()
+                && anchor.position.abs().max_element() <= 10_000.0
+                && anchor.pressure.is_finite()
+                && (0.0..=1.0).contains(&anchor.pressure)
+                && anchor.incoming.is_finite()
+                && anchor.incoming.abs().max_element() <= 10_000.0
+                && anchor.outgoing.is_finite()
+                && anchor.outgoing.abs().max_element() <= 10_000.0
+        });
+        common
+            && anchors_valid
+            && match self.surface_target {
+                None => {
+                    self.shape.is_none()
+                        && self.anchors.iter().all(|anchor| {
+                            anchor.incoming.dot(self.frame_normal).abs() <= 0.01
+                                && anchor.outgoing.dot(self.frame_normal).abs() <= 0.01
+                                && (anchor.position - self.frame_origin)
+                                    .dot(self.frame_normal)
+                                    .abs()
+                                    <= 0.01
+                        })
+                }
+                Some(target) => {
+                    let crate::dynamics::DabSurfaceTarget::Cylinder {
+                        center,
+                        rotation,
+                        radius,
+                        height,
+                    } = target
+                    else {
+                        return false;
+                    };
+                    target.is_valid()
+                        && self.half_extent.is_none()
+                        && self.anchors.iter().all(|anchor| {
+                            anchor.position.z.abs() <= 1.0e-4
+                                && anchor.incoming.z.abs() <= 1.0e-4
+                                && anchor.outgoing.z.abs() <= 1.0e-4
+                                && anchor.position.y.abs() <= height * 0.5
+                                && (anchor.position.y + anchor.incoming.y).abs() <= height * 0.5
+                                && (anchor.position.y + anchor.outgoing.y).abs() <= height * 0.5
+                                && anchor.position.x.abs() <= 1_000_000.0
+                        })
+                        && self.shape.is_none_or(|shape| {
+                            shape.center.is_finite()
+                                && shape.center.abs().max_element() <= 10_000.0
+                                && shape.center.z.abs() <= 1.0e-4
+                                && shape.center.y.abs() <= height * 0.5
+                                && (0.001..=std::f32::consts::PI * radius).contains(&shape.radius_u)
+                                && (0.001..=height).contains(&shape.radius_v)
+                                && shape.center.y - shape.radius_v >= -height * 0.5
+                                && shape.center.y + shape.radius_v <= height * 0.5
+                                && (shape.kind != CurvedShapeKind::Circle
+                                    || (shape.radius_u - shape.radius_v).abs() <= 1.0e-5)
+                        })
+                        && center.abs().max_element() <= 10_000.0
+                        && rotation.is_finite()
+                }
+            }
+    }
+
+    /// Ensure sampled geometry agrees with its semantic controls. Planar curve
+    /// endpoints are world positions; cylinder curve endpoints are chart
+    /// positions. Curved shapes retain dimensions instead of endpoint anchors.
+    pub fn samples_match_stroke(&self, stroke: &Stroke) -> bool {
+        if !self.is_valid() {
+            return false;
+        }
+        let (Some(first), Some(last)) = (stroke.points.first(), stroke.points.last()) else {
+            return false;
+        };
+        if stroke.points.len() < 2 {
+            return false;
+        }
+        match self.surface_target {
+            None => {
+                self.shape.is_none()
+                    && first.position == self.anchors[0].position
+                    && last.position == self.anchors[self.anchors.len() - 1].position
+            }
+            Some(crate::dynamics::DabSurfaceTarget::Cylinder {
+                center,
+                rotation,
+                radius,
+                height,
+            }) => {
+                let (z, y, x) = rotation.to_euler(glam::EulerRot::ZYX);
+                let cylinder = crate::surface::Cylinder {
+                    center,
+                    rotation_degrees: glam::Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI),
+                    radius,
+                    height,
+                };
+                let samples_on_target = stroke.points.iter().all(|point| {
+                    let local = cylinder.to_local(point.position);
+                    (local.x.hypot(local.z) - radius).abs() <= 0.001
+                        && local.y.abs() <= height * 0.5 + 0.001
+                });
+                let endpoints_match = self.shape.is_some()
+                    || (cylinder
+                        .point_from_parameter(self.anchors[0].position)
+                        .is_some_and(|position| position.distance(first.position) <= 0.001)
+                        && cylinder
+                            .point_from_parameter(self.anchors[self.anchors.len() - 1].position)
+                            .is_some_and(|position| position.distance(last.position) <= 0.001));
+                samples_on_target && endpoints_match
+            }
+            Some(_) => false,
+        }
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -748,7 +866,7 @@ impl Default for Document {
         Self {
             layers: layers_default(),
             active_layer: 1,
-            version: 26,
+            version: 27,
             strokes: Vec::new(),
             image_planes: Vec::new(),
             active_image_plane: None,
@@ -1077,7 +1195,7 @@ impl Document {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
-        if !matches!(version, Some(1..=26)) {
+        if !matches!(version, Some(1..=27)) {
             return Err("Unsupported document version".into());
         }
         if matches!(version, Some(1..=6)) {
@@ -1161,7 +1279,7 @@ impl Document {
                 }
             }
         }
-        doc.version = 26;
+        doc.version = 27;
         doc.refresh_linked_instances()?;
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
@@ -1342,13 +1460,7 @@ impl Document {
                 || stroke.curve.as_ref().is_some_and(|curve| {
                     !curve.is_valid()
                         || stroke.points.len() > crate::curve_geometry::MAX_CURVE_POINTS
-                        || stroke
-                            .points
-                            .first()
-                            .is_none_or(|point| point.position != curve.anchors[0].position)
-                        || stroke.points.last().is_none_or(|point| {
-                            point.position != curve.anchors[curve.anchors.len() - 1].position
-                        })
+                        || !curve.samples_match_stroke(stroke)
                 })
             {
                 return Err("Invalid or oversized stroke data".into());
@@ -1428,7 +1540,7 @@ mod tests {
                 animation: Default::default(),
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
-            assert_eq!(loaded.version, 26);
+            assert_eq!(loaded.version, 27);
             assert_eq!(loaded.strokes, doc.strokes);
         }
     }
@@ -1455,7 +1567,7 @@ mod tests {
         // a new shape, or prevent an otherwise valid legacy file from opening.
         old["strokes"][0]["brush"] = serde_json::json!({"kind": "future_brush"});
         let loaded = Document::from_json(&old.to_string()).unwrap();
-        assert_eq!(loaded.version, 26);
+        assert_eq!(loaded.version, 27);
         assert_eq!(loaded.strokes, vec![original]);
         old["strokes"][0].as_object_mut().unwrap().remove("brush");
         let without_extension = Document::from_json(&old.to_string()).unwrap();
@@ -1484,7 +1596,7 @@ mod tests {
             .remove("opacity");
 
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 26);
+        assert_eq!(loaded.version, 27);
         assert_eq!(loaded.strokes[0].brush.opacity, 1.0);
         assert_eq!(loaded.strokes[0].brush.softness, 0.0);
         assert_eq!(
@@ -1494,7 +1606,7 @@ mod tests {
 
         let saved = serde_json::to_string(&loaded).unwrap();
         let reopened = Document::from_json(&saved).unwrap();
-        assert_eq!(reopened.version, 26);
+        assert_eq!(reopened.version, 27);
         assert_eq!(reopened.strokes, loaded.strokes);
     }
     #[test]
@@ -1636,7 +1748,7 @@ mod tests {
         value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
         value["strokes"][0]["points"][0]["tilt"] = serde_json::json!("unknown extension");
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 26);
+        assert_eq!(loaded.version, 27);
         assert_eq!(loaded.strokes, vec![original]);
     }
     #[test]
@@ -1739,7 +1851,7 @@ mod tests {
         legacy["strokes"][0]["brush"]["texture"] = serde_json::json!({"kind":"future_pattern"});
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
         mark.brush.texture = TextureSettings::default();
-        assert_eq!(loaded.version, 26);
+        assert_eq!(loaded.version, 27);
         assert_eq!(loaded.strokes, vec![mark]);
     }
     #[test]
@@ -1815,7 +1927,7 @@ mod layer_tests {
         value["active_layer"] = serde_json::json!(99);
         value["strokes"][0]["layer_id"] = serde_json::json!("unknown");
         let migrated = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(migrated.version, 26);
+        assert_eq!(migrated.version, 27);
         assert_eq!(migrated.strokes, vec![original]);
         assert_eq!(migrated.layers, layers_default());
         assert_eq!(migrated.active_layer, 1);
@@ -2187,7 +2299,7 @@ mod saved_guide_document_tests {
         legacy.as_object_mut().unwrap().remove("guide_resources");
         legacy.as_object_mut().unwrap().remove("active_guide");
         let loaded = Document::from_json(&legacy.to_string()).unwrap();
-        assert_eq!(loaded.version, 26);
+        assert_eq!(loaded.version, 27);
         assert!(loaded.guide_resources.is_empty());
         assert_eq!(loaded.active_guide, None);
         assert_eq!(loaded.strokes, doc.strokes);
@@ -2239,7 +2351,7 @@ mod group_tests {
         };
         let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
         assert_eq!(reopened.strokes, doc.strokes);
-        assert_eq!(reopened.version, 26);
+        assert_eq!(reopened.version, 27);
 
         let mut invalid = doc;
         invalid.strokes[0].model_surface.as_mut().unwrap().triangles[0].normal = Vec3::ZERO;
@@ -2273,7 +2385,7 @@ mod group_tests {
             s.group_id = None;
         }
         let loaded = Document::from_json(&value.to_string()).unwrap();
-        assert_eq!(loaded.version, 26);
+        assert_eq!(loaded.version, 27);
         assert_eq!(loaded.strokes, doc.strokes);
         assert_eq!(loaded.layers, doc.layers);
     }

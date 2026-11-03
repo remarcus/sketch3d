@@ -363,6 +363,184 @@ impl SketchApp {
                 .unwrap();
         assert_eq!(loaded.strokes, self.doc.strokes);
         self.load_lantern();
+        self.run_curved_construction_checks(rect);
+        self.cancel_curve_tool();
+        self.cancel_shape_draft();
+        self.shape_tool.mode = None;
+        self.load_lantern();
         self.stabilization = 0.35;
+    }
+
+    fn run_curved_construction_checks(&mut self, rect: Rect) {
+        fn screen(app: &SketchApp, rect: Rect, cylinder: Cylinder, angle: f32, y: f32) -> Pos2 {
+            gizmo::project(&app.camera, rect, cylinder.point(angle, y))
+                .expect("cylinder contact projects into the verification view")
+                .0
+        }
+        fn check_surface(stroke: &Stroke, cylinder: Cylinder) {
+            let curve = stroke
+                .curve
+                .as_ref()
+                .expect("curved stroke retains controls");
+            assert!(curve.is_valid());
+            assert!(curve.samples_match_stroke(stroke));
+            for point in &stroke.points {
+                let local = cylinder.to_local(point.position);
+                assert!((local.x.hypot(local.z) - cylinder.radius).abs() < 0.001);
+                assert!(local.y.abs() <= cylinder.height * 0.5 + 0.001);
+            }
+        }
+
+        self.doc.active_image_plane = None;
+        self.doc.active_guide = None;
+        self.doc.active_model_reference = None;
+        self.use_cylinder = true;
+        self.use_revolved = false;
+        self.curve_tool.tension = 0.0;
+        let cylinder = self.cylinder;
+        self.camera.target = cylinder.center;
+        self.camera.yaw = std::f32::consts::PI;
+        self.camera.pitch = 0.0;
+        self.camera.distance = (cylinder.radius * 4.0).max(4.0);
+        let before = self.doc.strokes.len();
+
+        // Keep the captured cylinder while the camera orbits between seam anchors.
+        self.start_curve_tool();
+        let start = screen(self, rect, cylinder, std::f32::consts::PI - 0.07, -0.25);
+        self.curve_input(start, 0.6, rect, true);
+        self.curve_pointer_up();
+        assert_eq!(self.curve_draft_anchor_count(), 1);
+        self.camera.yaw += 0.18;
+        self.camera.pitch = 0.04;
+        self.camera.distance *= 1.08;
+        self.camera.target += Vec3::new(0.03, 0.0, 0.0);
+        let end = screen(self, rect, cylinder, -std::f32::consts::PI + 0.07, 0.25);
+        self.curve_input(end, 0.9, rect, true);
+        self.curve_pointer_up();
+        let preview = self
+            .curve_draft_preview()
+            .expect("seam curve remains previewed after camera navigation")
+            .clone();
+        check_surface(&preview, cylinder);
+        let anchors = &preview.curve.as_ref().unwrap().anchors;
+        assert!(anchors[1].position.x > anchors[0].position.x);
+        assert!(anchors[1].position.x - anchors[0].position.x < 0.25);
+        assert_eq!(
+            self.doc.strokes.len(),
+            before,
+            "preview does not mutate artwork"
+        );
+        self.cancel_curve();
+        assert_eq!(
+            self.doc.strokes.len(),
+            before,
+            "Escape cancels the curve preview"
+        );
+
+        self.start_curve_tool();
+        let start = screen(self, rect, cylinder, std::f32::consts::PI - 0.07, -0.25);
+        self.curve_input(start, 0.6, rect, true);
+        self.curve_pointer_up();
+        let end = screen(self, rect, cylinder, -std::f32::consts::PI + 0.07, 0.25);
+        self.curve_input(end, 0.9, rect, true);
+        self.curve_pointer_up();
+        self.commit_curve();
+        assert_eq!(self.doc.strokes.len(), before + 1);
+        let curve = self.doc.strokes.last().unwrap().clone();
+        check_surface(&curve, cylinder);
+        self.undo();
+        assert_eq!(self.doc.strokes.len(), before);
+        self.redo();
+        assert_eq!(self.doc.strokes.last(), Some(&curve));
+
+        let reloaded = Document::from_json(&serde_json::to_string(&self.doc).unwrap()).unwrap();
+        assert_eq!(reloaded.strokes.last(), Some(&curve));
+        self.doc = reloaded;
+        self.undo.clear();
+        self.redo.clear();
+        self.selected = HashSet::from([curve.id]);
+        self.cylinder.radius *= 1.5;
+        self.start_curve_tool();
+        self.open_selected_curve();
+        let reopened = self
+            .curve_draft_preview()
+            .expect("saved cylinder curve reopens with a preview")
+            .clone();
+        check_surface(&reopened, cylinder);
+        assert_eq!(
+            reopened.curve.as_ref().unwrap().surface_target,
+            curve.curve.as_ref().unwrap().surface_target
+        );
+        let source_curve = curve.curve.as_ref().unwrap();
+        let first_anchor = source_curve.anchors[0].position;
+        let first_world = cylinder.point_from_parameter(first_anchor).unwrap();
+        let moved_world = cylinder
+            .point_from_parameter(first_anchor + Vec3::new(0.0, 0.06, 0.0))
+            .unwrap();
+        let start = gizmo::project(&self.camera, rect, first_world).unwrap().0;
+        let end = gizmo::project(&self.camera, rect, moved_world).unwrap().0;
+        self.curve_input(start, 0.6, rect, true);
+        self.curve_input(end, 0.6, rect, false);
+        self.curve_pointer_up();
+        let edited_preview = self.curve_draft_preview().unwrap().clone();
+        check_surface(&edited_preview, cylinder);
+        self.commit_curve();
+        let edited = self.doc.strokes.last().unwrap().clone();
+        check_surface(&edited, cylinder);
+        self.undo();
+        assert_eq!(self.doc.strokes.last(), Some(&curve));
+        self.redo();
+        assert_eq!(self.doc.strokes.last(), Some(&edited));
+        self.cancel_curve_tool();
+        self.undo.clear();
+        self.redo.clear();
+
+        self.cylinder = cylinder;
+        self.selected.clear();
+        self.shape_tool.mode = Some(shape_tool::ShapeMode::Ellipse);
+        self.shape_tool.precise = true;
+        self.shape_tool.width = 0.24;
+        self.shape_tool.height = 0.5;
+        self.start_shape_tool(shape_tool::ShapeMode::Ellipse);
+        let center = Vec3::new(std::f32::consts::PI * cylinder.radius - 0.02, 0.0, 0.0);
+        let world_center = cylinder.point_from_parameter(center).unwrap();
+        let center_screen = gizmo::project(&self.camera, rect, world_center).unwrap().0;
+        let shape_count = self.doc.strokes.len();
+        self.shape_input(center_screen, 0.8, rect, true);
+        let shape_preview = self.shape_draft_preview().unwrap().clone();
+        check_surface(&shape_preview, cylinder);
+        assert_eq!(
+            shape_preview.curve.as_ref().unwrap().shape.unwrap().kind,
+            crate::document::CurvedShapeKind::Ellipse
+        );
+        self.cancel_shape_draft();
+        assert_eq!(self.doc.strokes.len(), shape_count);
+        self.shape_input(center_screen, 0.8, rect, true);
+        self.release_shape(center_screen, 0.8, rect);
+        assert_eq!(self.doc.strokes.len(), shape_count + 1);
+        let shape = self.doc.strokes.last().unwrap().clone();
+        check_surface(&shape, cylinder);
+
+        self.doc = Document::from_json(&serde_json::to_string(&self.doc).unwrap()).unwrap();
+        self.undo.clear();
+        self.redo.clear();
+        self.selected = HashSet::from([shape.id]);
+        self.open_selected_curved_shape();
+        assert!(self.shape_edit_active());
+        self.shape_tool.width *= 1.5;
+        self.refresh_curved_shape_edit();
+        let shape_preview = self.shape_draft_preview().unwrap().clone();
+        check_surface(&shape_preview, cylinder);
+        assert_ne!(shape_preview, shape);
+        self.commit_curved_shape_edit();
+        let edited_shape = self.doc.strokes.last().unwrap().clone();
+        assert_eq!(edited_shape.id, shape.id);
+        assert_eq!(self.undo.len(), 1);
+        self.undo();
+        assert_eq!(self.doc.strokes.last(), Some(&shape));
+        self.redo();
+        assert_eq!(self.doc.strokes.last(), Some(&edited_shape));
+        self.shape_tool.mode = None;
+        self.selected.clear();
     }
 }

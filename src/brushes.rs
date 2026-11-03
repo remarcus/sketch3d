@@ -428,7 +428,7 @@ impl SketchApp {
                     &std::fs::read_to_string(self.file.as_ref().unwrap()).unwrap(),
                 )
                 .unwrap();
-                assert_eq!(loaded.version, 26);
+                assert_eq!(loaded.version, 27);
                 assert_eq!(loaded.strokes, original);
                 self.verify_stipple_spray(rect);
                 self.verify_image_stamps(rect);

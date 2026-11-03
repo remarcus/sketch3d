@@ -624,10 +624,28 @@ pub fn transformed_with_scale(
             curve.frame_origin = next_origin;
             curve.frame_normal = next_normal;
             curve.frame_tangent = next_tangent;
-            for anchor in &mut curve.anchors {
-                anchor.position = transform_point(anchor.position);
-                anchor.incoming = linear * anchor.incoming;
-                anchor.outgoing = linear * anchor.outgoing;
+            if let Some(target) = curve.surface_target {
+                curve.surface_target = Some(
+                    target
+                        .transformed_uniform(pivot, linear, translation)
+                        .ok_or("Cylinder curves require a rigid or uniform positive transform. Use Reproject with Convert semantic curves to sampled strokes enabled to detach the surface controls before applying this transform.")?,
+                );
+                for anchor in &mut curve.anchors {
+                    anchor.position *= average_scale;
+                    anchor.incoming *= average_scale;
+                    anchor.outgoing *= average_scale;
+                }
+                if let Some(shape) = &mut curve.shape {
+                    shape.center *= average_scale;
+                    shape.radius_u *= average_scale;
+                    shape.radius_v *= average_scale;
+                }
+            } else {
+                for anchor in &mut curve.anchors {
+                    anchor.position = transform_point(anchor.position);
+                    anchor.incoming = linear * anchor.incoming;
+                    anchor.outgoing = linear * anchor.outgoing;
+                }
             }
             if !curve.is_valid() {
                 return Err("Transform exceeds curve control bounds");

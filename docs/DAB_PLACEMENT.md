@@ -88,8 +88,9 @@ space between dabs.
 ## Versioning and budgets
 
 SKETCH-071 introduced native schema version 14. Current drawings use schema
-version 26, which adds captured model-surface patches for image stamps and
-scattered dabs. Earlier versions added bounded tube profiles, timestamped
+version 27, which adds captured cylinder curve and shape semantics; version 26
+added captured model-surface patches for image stamps and scattered dabs.
+Earlier versions added bounded tube profiles, timestamped
 airbrush flow, and bounded bristle/rake strand settings.
 Version 17 added
 the resolved image-tip aspect ratio used by stamp geometry; version 16 added

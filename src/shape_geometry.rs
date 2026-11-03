@@ -1,4 +1,4 @@
-//! Bounded planar circle and ellipse geometry for ordinary editable strokes.
+//! Bounded planar and cylinder circle/ellipse geometry for editable strokes.
 #![allow(clippy::too_many_arguments)] // Explicit geometry parameters keep the public builders unambiguous.
 use crate::{
     document::{Brush, Point, Stroke},
@@ -167,7 +167,7 @@ pub fn cylinder_circle(
     brush: Brush,
     tolerance_world: f32,
 ) -> Result<Stroke, String> {
-    cylinder_ellipse(
+    let mut stroke = cylinder_ellipse(
         cylinder,
         center,
         radius,
@@ -179,7 +179,11 @@ pub fn cylinder_circle(
         pressure,
         brush,
         tolerance_world,
-    )
+    )?;
+    if let Some(shape) = stroke.curve.as_mut().and_then(|curve| curve.shape.as_mut()) {
+        shape.kind = crate::document::CurvedShapeKind::Circle;
+    }
+    Ok(stroke)
 }
 
 /// Builds an ellipse in the cylinder's unwrapped surface chart. Its perimeter
@@ -225,7 +229,7 @@ pub fn cylinder_ellipse(
         .ceil()
         .clamp(MIN_SEGMENTS as f32, MAX_SEGMENTS as f32) as usize;
     let angle = center.x / cylinder.radius;
-    cylinder
+    let anchor = cylinder
         .point_from_parameter(center)
         .ok_or("Invalid cylinder shape center")?;
     let rotation = cylinder.rotation();
@@ -261,9 +265,43 @@ pub fn cylinder_ellipse(
     if points.iter().any(|point| !point.is_valid()) {
         return Err("Cylinder shape exceeds the valid document bounds".into());
     }
+    let surface_target = crate::dynamics::DabSurfaceTarget::Cylinder {
+        center: cylinder.center,
+        rotation,
+        radius: cylinder.radius,
+        height: cylinder.height,
+    };
+    let chart_anchor = |position| crate::document::CurveAnchor {
+        position,
+        pressure,
+        incoming: Vec3::ZERO,
+        outgoing: Vec3::ZERO,
+        manual: true,
+    };
+    let curve = crate::document::CurveData {
+        anchors: vec![
+            chart_anchor(center),
+            chart_anchor(Vec3::new(center.x + radius_u, center.y, 0.0)),
+        ],
+        frame_origin: anchor,
+        frame_normal: normal,
+        frame_tangent: tangent,
+        half_extent: None,
+        tension: 1.0,
+        surface_target: Some(surface_target),
+        shape: Some(crate::document::CurvedShapeData {
+            kind: crate::document::CurvedShapeKind::Ellipse,
+            center,
+            radius_u,
+            radius_v,
+        }),
+    };
+    if !curve.is_valid() {
+        return Err("Cylinder shape controls exceed the captured surface bounds".into());
+    }
     Ok(Stroke {
         model_surface: None,
-        curve: None,
+        curve: Some(curve),
         material: Default::default(),
         point_thickness: None,
         modifiers: None,
@@ -566,6 +604,15 @@ mod tests {
                 < 1.0e-5
         );
         assert!(stroke.points.iter().all(|point| point.is_valid()));
+        let semantic = stroke
+            .curve
+            .as_ref()
+            .expect("cylinder circles retain controls");
+        assert!(semantic.is_valid());
+        assert_eq!(
+            semantic.shape.unwrap().kind,
+            crate::document::CurvedShapeKind::Circle
+        );
         assert!(stroke
             .points
             .windows(2)
@@ -586,6 +633,115 @@ mod tests {
             0.001,
         );
         assert!(too_tall.is_err());
+    }
+
+    #[test]
+    fn cylinder_ellipse_retains_semantics_through_native_recovery_picking_and_glb_export() {
+        let cylinder = crate::surface::Cylinder {
+            center: Vec3::ZERO,
+            rotation_degrees: Vec3::ZERO,
+            radius: 1.25,
+            height: 3.0,
+        };
+        let center = Vec3::new(std::f32::consts::PI * cylinder.radius - 0.02, 0.1, 0.0);
+        let make_ellipse = |tolerance| {
+            cylinder_ellipse(
+                cylinder,
+                center,
+                0.12,
+                0.3,
+                31,
+                1,
+                [0.8, 0.3, 0.2],
+                0.025,
+                0.9,
+                Brush::default(),
+                tolerance,
+            )
+            .unwrap()
+        };
+        let ellipse = make_ellipse(0.002);
+        let coarse = make_ellipse(0.08);
+        assert!(ellipse.points.len() > coarse.points.len());
+        assert!(ellipse.points.iter().all(|point| {
+            let local = cylinder.to_local(point.position);
+            (local.x.hypot(local.z) - cylinder.radius).abs() < 1.0e-4
+        }));
+        let semantic = ellipse.curve.as_ref().expect("ellipse retains dimensions");
+        assert!(semantic.is_valid());
+        let shape = semantic.shape.unwrap();
+        assert_eq!(shape.kind, crate::document::CurvedShapeKind::Ellipse);
+        assert_eq!(shape.center, center);
+        assert_eq!((shape.radius_u, shape.radius_v), (0.12, 0.3));
+
+        let document = Document {
+            strokes: vec![ellipse.clone()],
+            ..Document::default()
+        };
+        let selected = std::collections::HashSet::from([ellipse.id]);
+        let snapshot = crate::editing::snapshot(&document, &selected);
+        let uniformly_scaled = crate::editing::transformed(
+            &snapshot,
+            Vec3::ZERO,
+            Vec3::ZERO,
+            glam::Quat::IDENTITY,
+            1.2,
+        )
+        .unwrap();
+        assert!(uniformly_scaled[0]
+            .1
+            .curve
+            .as_ref()
+            .unwrap()
+            .samples_match_stroke(&uniformly_scaled[0].1));
+        let nonuniform = crate::editing::transformed_with_scale(
+            &snapshot,
+            Vec3::ZERO,
+            Vec3::ZERO,
+            glam::Quat::IDENTITY,
+            Vec3::new(1.2, 1.0, 1.0),
+            glam::Quat::IDENTITY,
+            true,
+        )
+        .unwrap_err();
+        assert!(nonuniform.contains("Reproject with Convert semantic curves"));
+
+        let serialized = serde_json::to_string(&document).unwrap();
+        let reopened = Document::from_json(&serialized).unwrap();
+        assert_eq!(reopened.strokes, document.strokes);
+        assert_eq!(reopened.version, 27);
+
+        let recovery_root = tempfile::tempdir().unwrap();
+        let snapshot = crate::recovery_store::RecoverySnapshot::new(
+            "cylinder-curve-shape-test".into(),
+            None,
+            reopened.clone(),
+        );
+        crate::recovery_store::write(recovery_root.path(), &snapshot).unwrap();
+        let recovered = crate::recovery_store::scan(recovery_root.path(), "test-reader").unwrap();
+        assert_eq!(recovered.candidates.len(), 1);
+        assert_eq!(
+            recovered.candidates[0].snapshot.document.strokes,
+            reopened.strokes
+        );
+
+        let mut camera = crate::geometry::Camera::default();
+        camera.yaw = std::f32::consts::PI;
+        camera.pitch = 0.0;
+        camera.target = cylinder.center;
+        camera.distance = 5.0;
+        let canvas = Rect::from_min_size(Pos2::ZERO, eframe::egui::vec2(500.0, 400.0));
+        let screen = crate::gizmo::project(&camera, canvas, ellipse.points[0].position)
+            .unwrap()
+            .0;
+        assert_eq!(
+            crate::gizmo::pick(&reopened, &camera, canvas, screen),
+            Some(ellipse.id)
+        );
+
+        let exported = crate::export::encode(&reopened, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
+        assert_eq!(gltf.meshes().count(), 1);
     }
 
     #[test]
