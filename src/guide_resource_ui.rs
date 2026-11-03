@@ -2183,7 +2183,10 @@ mod planar_target_tests {
             material: StrokeMaterial::default(),
             point_thickness: None,
             modifiers: None,
-            fill: Some(crate::document::PlanarFill { offset: 0.01 }),
+            fill: Some(crate::document::PlanarFill {
+                offset: 0.01,
+                gradient: None,
+            }),
             group_id: None,
             layer_id: 1,
             id: 1,

@@ -5029,6 +5029,7 @@ impl SketchApp {
                     self.fill_contour_pointer(sample.position, rect, false);
                     if let Some(draft) = &mut self.fills.draft {
                         draft.drag = None;
+                        draft.gradient_drag = None;
                     }
                     continue;
                 }
@@ -5248,6 +5249,7 @@ impl SketchApp {
                                 self.fill_contour_pointer(pos, rect, false);
                                 if let Some(draft) = &mut self.fills.draft {
                                     draft.drag = None;
+                                    draft.gradient_drag = None;
                                 }
                                 self.mouse_down = false;
                                 continue;

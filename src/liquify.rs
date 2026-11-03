@@ -274,7 +274,10 @@ mod tests {
         document.layers[0].visible = false;
         assert!(edit(&document, &ids, settings()).is_err());
         document.layers[0].visible = true;
-        document.strokes[0].fill = Some(crate::document::PlanarFill { offset: 0.01 });
+        document.strokes[0].fill = Some(crate::document::PlanarFill {
+            offset: 0.01,
+            gradient: None,
+        });
         assert!(edit(&document, &ids, settings()).is_err());
     }
 

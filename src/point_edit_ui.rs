@@ -4,7 +4,7 @@ pub(super) struct MultiPointRegionDrag {
     pub start: Pos2,
     pub path: Vec<Pos2>,
     pub original_selection: HashSet<crate::point_edit::PointRef>,
-    pub shape: crate::selection::RegionSelectionShape,
+    pub shape: crate::app::selection::RegionSelectionShape,
 }
 
 pub(super) struct PointDrag {
@@ -57,7 +57,7 @@ impl SketchApp {
                 self.presentation.preferences.layout.inspector_open = true;
                 self.presentation.preferences.layout.inspector_tab =
                     crate::presentation::InspectorTab::Properties;
-                self.status = format!("Multi-point edit: drag a {} region around sample handles, then choose a transform.", if self.region_select_shape == crate::selection::RegionSelectionShape::Box { "box" } else { "lasso" });
+                self.status = format!("Multi-point edit: drag a {} region around sample handles, then choose a transform.", if self.region_select_shape == crate::app::selection::RegionSelectionShape::Box { "box" } else { "lasso" });
             }
             Err(error) => self.status = error,
         }
@@ -87,7 +87,7 @@ impl SketchApp {
         {
             drag.path.push(pos);
         }
-        let region = if drag.shape == crate::selection::RegionSelectionShape::Box {
+        let region = if drag.shape == crate::app::selection::RegionSelectionShape::Box {
             let end = *drag.path.last().unwrap();
             if drag.start.distance(end) < 2.0 {
                 return;
@@ -178,12 +178,12 @@ impl SketchApp {
             ui.label("Point region");
             ui.selectable_value(
                 &mut self.region_select_shape,
-                crate::selection::RegionSelectionShape::Box,
+                crate::app::selection::RegionSelectionShape::Box,
                 "Box",
             );
             ui.selectable_value(
                 &mut self.region_select_shape,
-                crate::selection::RegionSelectionShape::Lasso,
+                crate::app::selection::RegionSelectionShape::Lasso,
                 "Lasso",
             );
         });
@@ -308,7 +308,7 @@ impl SketchApp {
             }
         }
         if let Some(drag) = &self.point_multi_drag {
-            let path = if drag.shape == crate::selection::RegionSelectionShape::Box {
+            let path = if drag.shape == crate::app::selection::RegionSelectionShape::Box {
                 let end = *drag.path.last().unwrap();
                 vec![
                     Pos2::new(drag.start.x.min(end.x), drag.start.y.min(end.y)),
@@ -322,7 +322,7 @@ impl SketchApp {
             for pair in path.windows(2) {
                 painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, accent));
             }
-            if drag.shape == crate::selection::RegionSelectionShape::Box && path.len() == 4 {
+            if drag.shape == crate::app::selection::RegionSelectionShape::Box && path.len() == 4 {
                 painter.line_segment(
                     [*path.last().unwrap(), path[0]],
                     egui::Stroke::new(1.5, accent),

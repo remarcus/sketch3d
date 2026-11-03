@@ -34,6 +34,54 @@ fn projected(stroke: &Stroke) -> Vec<DVec2> {
         })
         .collect()
 }
+
+fn bounds(points: &[DVec2]) -> (DVec2, DVec2) {
+    let mut min = DVec2::splat(f64::INFINITY);
+    let mut max = DVec2::splat(f64::NEG_INFINITY);
+    for point in points {
+        min = min.min(*point);
+        max = max.max(*point);
+    }
+    (min, max)
+}
+
+fn normalized_uv(point: DVec2, min: DVec2, max: DVec2) -> glam::Vec2 {
+    let size = (max - min).max(DVec2::splat(1e-8));
+    ((point - min) / size).as_vec2()
+}
+
+fn gradient_world(stroke: &Stroke, uv: glam::Vec2) -> Vec3 {
+    let points = projected(stroke);
+    let (min, max) = bounds(&points);
+    let local = min + (max - min) * uv.as_dvec2();
+    let origin = stroke.points[0].position;
+    let tangent = stroke.brush.tangent;
+    let bitangent = stroke.brush.normal.cross(tangent);
+    origin + tangent * local.x as f32 + bitangent * local.y as f32
+        - stroke.brush.normal * stroke.fill.map_or(0.0, |fill| fill.offset)
+}
+
+pub fn gradient_handle_positions(stroke: &Stroke) -> Option<[Vec3; 2]> {
+    let gradient = stroke.fill?.gradient?;
+    Some([
+        gradient_world(stroke, gradient.start),
+        gradient_world(stroke, gradient.end),
+    ])
+}
+
+pub fn gradient_uv_from_world(stroke: &Stroke, world: Vec3) -> Option<glam::Vec2> {
+    let origin = stroke.points.first()?.position;
+    let delta = (world - origin).as_dvec3();
+    let tangent = stroke.brush.tangent.as_dvec3();
+    let bitangent = stroke.brush.normal.as_dvec3().cross(tangent);
+    let points = projected(stroke);
+    let (min, max) = bounds(&points);
+    Some(normalized_uv(
+        DVec2::new(delta.dot(tangent), delta.dot(bitangent)),
+        min,
+        max,
+    ))
+}
 pub fn triangulate(stroke: &Stroke) -> Result<Vec<[usize; 3]>, String> {
     let fill = stroke.fill.ok_or("This mark is not a planar fill")?;
     if !(3..=MAX_CORNERS).contains(&stroke.points.len()) {
@@ -42,6 +90,7 @@ pub fn triangulate(stroke: &Stroke) -> Result<Vec<[usize; 3]>, String> {
     if !stroke.brush.is_valid()
         || !fill.offset.is_finite()
         || !(0.0..=1.0).contains(&fill.offset)
+        || fill.gradient.is_some_and(|gradient| !gradient.is_valid())
         || stroke.brush.texture.kind != crate::texture::TextureKind::Solid
         || stroke.points.iter().any(|p| {
             !p.is_valid()
@@ -178,23 +227,67 @@ pub fn mesh(stroke: &Stroke) -> Vec<crate::geometry::Vertex> {
         return Vec::new();
     };
     let offset = stroke.brush.normal * stroke.fill.unwrap().offset;
-    triangles
-        .into_iter()
-        .flatten()
-        .map(|i| crate::geometry::Vertex {
-            material: 0.0,
-            gradient_t: 0.0,
-            position: (stroke.points[i].position - offset).to_array(),
-            normal: stroke.brush.normal.to_array(),
-            color: stroke.color,
-            uv: [0.0; 2],
-            opacity: stroke.brush.opacity
-                * crate::dynamics::opacity_scale(
-                    stroke.brush.dynamics.opacity,
+    let points = projected(stroke);
+    let (min, max) = bounds(&points);
+    let gradient = stroke.fill.unwrap().gradient;
+    let make_vertex = |position: Vec3, uv: glam::Vec2, pressure: f32| crate::geometry::Vertex {
+        material: 0.0,
+        gradient_t: 0.0,
+        position: (position - offset).to_array(),
+        normal: stroke.brush.normal.to_array(),
+        color: gradient.map_or(stroke.color, |gradient| gradient.sample(uv)),
+        uv: uv.to_array(),
+        opacity: stroke.brush.opacity
+            * crate::dynamics::opacity_scale(stroke.brush.dynamics.opacity, pressure),
+    };
+    let mut output = Vec::new();
+    for [a, b, c] in triangles {
+        if gradient
+            .is_some_and(|gradient| gradient.kind == crate::document::FillGradientKind::Radial)
+        {
+            // Radial color fields are nonlinear; subdividing keeps their vertex-color
+            // interpolation smooth in both the viewport and exported meshes.
+            const DIVISIONS: usize = 8;
+            let [pa, pb, pc] = [a, b, c].map(|i| stroke.points[i].position);
+            let [ua, ub, uc] = [a, b, c].map(|i| normalized_uv(points[i], min, max));
+            let [qa, qb, qc] = [a, b, c].map(|i| stroke.points[i].pressure);
+            let sample = |i: usize, j: usize| {
+                let wb = i as f32 / DIVISIONS as f32;
+                let wc = j as f32 / DIVISIONS as f32;
+                let wa = 1.0 - wb - wc;
+                (
+                    pa * wa + pb * wb + pc * wc,
+                    ua * wa + ub * wb + uc * wc,
+                    qa * wa + qb * wb + qc * wc,
+                )
+            };
+            for i in 0..DIVISIONS {
+                for j in 0..(DIVISIONS - i) {
+                    let p0 = sample(i, j);
+                    let p1 = sample(i + 1, j);
+                    let p2 = sample(i, j + 1);
+                    for p in [p0, p1, p2] {
+                        output.push(make_vertex(p.0, p.1, p.2));
+                    }
+                    if i + j + 1 < DIVISIONS {
+                        let p3 = sample(i + 1, j + 1);
+                        for p in [p1, p3, p2] {
+                            output.push(make_vertex(p.0, p.1, p.2));
+                        }
+                    }
+                }
+            }
+        } else {
+            for i in [a, b, c] {
+                output.push(make_vertex(
+                    stroke.points[i].position,
+                    normalized_uv(points[i], min, max),
                     stroke.points[i].pressure,
-                ),
-        })
-        .collect()
+                ));
+            }
+        }
+    }
+    output
 }
 
 pub fn study() -> crate::document::Document {
@@ -215,7 +308,10 @@ pub fn study() -> crate::document::Document {
             material: Default::default(),
             point_thickness: None,
             modifiers: None,
-            fill: Some(PlanarFill { offset: 0.003 }),
+            fill: Some(PlanarFill {
+                offset: 0.003,
+                gradient: None,
+            }),
             group_id: None,
             layer_id: 1,
             id: doc.strokes.len() as u64 + 1,
@@ -334,7 +430,10 @@ mod tests {
             material: Default::default(),
             point_thickness: None,
             modifiers: None,
-            fill: Some(PlanarFill { offset: 0.003 }),
+            fill: Some(PlanarFill {
+                offset: 0.003,
+                gradient: None,
+            }),
             group_id: None,
             layer_id: 1,
             id: 1,

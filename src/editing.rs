@@ -901,7 +901,10 @@ mod tests {
     fn non_uniform_group_scale_preserves_fill_frame_tilt_bounds_and_undo() {
         let mut filled = stroke(1, 0.0);
         filled.group_id = Some(19);
-        filled.fill = Some(crate::document::PlanarFill { offset: 0.2 });
+        filled.fill = Some(crate::document::PlanarFill {
+            offset: 0.2,
+            gradient: None,
+        });
         filled.points = vec![
             Point {
                 position: Vec3::ZERO,
@@ -2093,7 +2096,10 @@ mod appearance_tests {
             doc.layers[0].locked = false;
         }
 
-        doc.strokes[0].fill = Some(PlanarFill { offset: 0.03 });
+        doc.strokes[0].fill = Some(PlanarFill {
+            offset: 0.03,
+            gradient: None,
+        });
         let filled_before = snapshot(&doc, &ids);
         assert!(appearance_edit(
             &doc,
@@ -2116,7 +2122,13 @@ mod appearance_tests {
         .unwrap();
         recolor.apply(&mut doc, true);
         assert!(doc.strokes.iter().all(|stroke| stroke.color == color));
-        assert_eq!(doc.strokes[0].fill, Some(PlanarFill { offset: 0.03 }));
+        assert_eq!(
+            doc.strokes[0].fill,
+            Some(PlanarFill {
+                offset: 0.03,
+                gradient: None
+            })
+        );
         recolor.apply(&mut doc, false);
         assert_eq!(snapshot(&doc, &ids), filled_before);
     }

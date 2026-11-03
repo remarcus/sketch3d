@@ -1270,7 +1270,10 @@ mod tests {
         assert!(join_strokes(&compatible, 1, 2, 0.0).is_err());
 
         let mut fill = base.clone();
-        fill.strokes[0].fill = Some(crate::document::PlanarFill { offset: 0.0 });
+        fill.strokes[0].fill = Some(crate::document::PlanarFill {
+            offset: 0.0,
+            gradient: None,
+        });
         assert!(split_stroke(&fill, 1, 1, 2).is_err());
         let mut locked = base;
         locked.layers[0].locked = true;
@@ -1346,7 +1349,10 @@ mod tests {
         assert!(edit_point(&doc, 1, 0, None).is_err());
         assert_eq!(doc.strokes, original);
         doc.layers[0].visible = true;
-        doc.strokes[0].fill = Some(crate::document::PlanarFill { offset: 0.0 });
+        doc.strokes[0].fill = Some(crate::document::PlanarFill {
+            offset: 0.0,
+            gradient: None,
+        });
         assert!(edit_point(&doc, 1, 0, Some(Vec3::Y)).is_err());
     }
 

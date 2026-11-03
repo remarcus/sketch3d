@@ -407,6 +407,59 @@ impl CurveData {
 pub struct PlanarFill {
     /// Physical separation behind the captured guide normal, in world units.
     pub offset: f32,
+    /// Optional color field in normalized coordinates of the current contour bounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient: Option<FillGradient>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FillGradientKind {
+    #[default]
+    Linear,
+    Radial,
+}
+
+/// Two-stop fill gradient. Coordinates are normalized in the fill's captured plane
+/// and relative to the contour bounds, so the gradient follows contour transforms.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FillGradient {
+    #[serde(default)]
+    pub kind: FillGradientKind,
+    pub start_color: [f32; 3],
+    pub end_color: [f32; 3],
+    pub start: glam::Vec2,
+    pub end: glam::Vec2,
+}
+
+impl FillGradient {
+    pub fn is_valid(self) -> bool {
+        let color_valid = |color: [f32; 3]| {
+            color
+                .into_iter()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+        };
+        self.start.is_finite()
+            && self.end.is_finite()
+            && self.start.min_element() >= 0.0
+            && self.start.max_element() <= 1.0
+            && self.end.min_element() >= 0.0
+            && self.end.max_element() <= 1.0
+            && self.start.distance(self.end) >= 0.01
+            && color_valid(self.start_color)
+            && color_valid(self.end_color)
+    }
+
+    pub fn sample(self, uv: glam::Vec2) -> [f32; 3] {
+        let t = match self.kind {
+            FillGradientKind::Linear => {
+                let axis = self.end - self.start;
+                (uv - self.start).dot(axis) / axis.length_squared().max(1e-8)
+            }
+            FillGradientKind::Radial => uv.distance(self.start) / self.start.distance(self.end),
+        }
+        .clamp(0.0, 1.0);
+        std::array::from_fn(|i| self.start_color[i] + (self.end_color[i] - self.start_color[i]) * t)
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Document {
@@ -938,8 +991,12 @@ impl Document {
                 return Err("Invalid stroke IDs".into());
             }
             if stroke.fill.is_some() {
-                if stroke.gradient.is_some() {
-                    return Err("Planar fill gradients are not supported".into());
+                if stroke.gradient.is_some()
+                    || stroke.fill.is_some_and(|fill| {
+                        fill.gradient.is_some_and(|gradient| !gradient.is_valid())
+                    })
+                {
+                    return Err("Invalid gradient data for a planar fill".into());
                 }
                 crate::polygon::triangulate(stroke)?;
             }

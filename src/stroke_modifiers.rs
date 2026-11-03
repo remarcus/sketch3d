@@ -447,7 +447,10 @@ mod tests {
             .is_valid(source.points.len()));
         assert!(!StrokeModifierStack::default().is_valid(MAX_POINTS + 1));
         let mut fill = source.clone();
-        fill.fill = Some(crate::document::PlanarFill { offset: 0.0 });
+        fill.fill = Some(crate::document::PlanarFill {
+            offset: 0.0,
+            gradient: None,
+        });
         assert!(!StrokeModifierStack::default().is_compatible(&fill));
     }
 

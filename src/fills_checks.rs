@@ -151,7 +151,10 @@ impl SketchApp {
                 material: Default::default(),
                 point_thickness: None,
                 modifiers: None,
-                fill: Some(PlanarFill { offset: 0.003 }),
+                fill: Some(PlanarFill {
+                    offset: 0.003,
+                    gradient: None,
+                }),
                 group_id: None,
                 layer_id: 1,
                 id,

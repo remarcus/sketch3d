@@ -5,11 +5,12 @@ use crate::{document::PlanarFill, polygon};
 pub(super) struct FillDraft {
     pub mark: Stroke,
     target: PlanarTarget,
-    original: Option<Stroke>,
+    pub(super) original: Option<Stroke>,
     selected: usize,
-    drag: Option<FillPointDrag>,
+    pub(super) drag: Option<FillPointDrag>,
+    pub(super) gradient_drag: Option<(usize, Camera, Rect, Vec3)>,
 }
-struct FillPointDrag {
+pub(super) struct FillPointDrag {
     index: usize,
     origin: Vec3,
     start: Vec3,
@@ -83,6 +84,7 @@ impl SketchApp {
             original: Some(source),
             selected: 0,
             drag: None,
+            gradient_drag: None,
         });
         self.select_mode = false;
         self.brush_select_enabled = false;
@@ -135,6 +137,106 @@ impl SketchApp {
                 .clicked();
             cancel = ui.button("Cancel contour edits").clicked();
         });
+        ui.separator();
+        ui.strong("Fill appearance");
+        if let Some(fill) = draft.mark.fill.as_mut() {
+            if let Some(mut gradient) = fill.gradient {
+                let old_kind = gradient.kind;
+                ui.horizontal(|ui| {
+                    ui.label("Gradient type");
+                    egui::ComboBox::from_id_salt("fill-gradient-kind")
+                        .selected_text(match gradient.kind {
+                            crate::document::FillGradientKind::Linear => "Linear",
+                            crate::document::FillGradientKind::Radial => "Radial",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut gradient.kind,
+                                crate::document::FillGradientKind::Linear,
+                                "Linear",
+                            );
+                            ui.selectable_value(
+                                &mut gradient.kind,
+                                crate::document::FillGradientKind::Radial,
+                                "Radial",
+                            );
+                        });
+                });
+                if gradient.kind != old_kind {
+                    match gradient.kind {
+                        crate::document::FillGradientKind::Linear => {
+                            gradient.start = glam::Vec2::new(0.0, 0.5);
+                            gradient.end = glam::Vec2::new(1.0, 0.5);
+                        }
+                        crate::document::FillGradientKind::Radial => {
+                            gradient.start = glam::Vec2::splat(0.5);
+                            gradient.end = glam::Vec2::new(1.0, 0.5);
+                        }
+                    }
+                }
+                let mut start = gradient
+                    .start_color
+                    .map(crate::presentation::linear_to_srgb);
+                let mut end = gradient.end_color.map(crate::presentation::linear_to_srgb);
+                ui.horizontal(|ui| {
+                    ui.label("Start stop");
+                    if ui.color_edit_button_rgb(&mut start).changed() {
+                        gradient.start_color = start.map(crate::presentation::srgb_to_linear);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("End stop");
+                    if ui.color_edit_button_rgb(&mut end).changed() {
+                        gradient.end_color = end.map(crate::presentation::srgb_to_linear);
+                    }
+                });
+                for (label, position) in [
+                    ("Start", &mut gradient.start),
+                    ("End / radius", &mut gradient.end),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        ui.add(
+                            egui::DragValue::new(&mut position.x)
+                                .range(0.0..=1.0)
+                                .prefix("U "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut position.y)
+                                .range(0.0..=1.0)
+                                .prefix("V "),
+                        );
+                    });
+                }
+                if gradient.is_valid() {
+                    fill.gradient = Some(gradient);
+                } else {
+                    self.status =
+                        "Gradient handles must stay distinct and within the fill bounds.".into();
+                }
+                ui.small("Drag the on-canvas handles; coordinates follow the fill's normalized bounds and interpolate in linear RGB.");
+                if ui.button("Reset to solid color").clicked() {
+                    fill.gradient = None;
+                }
+            } else {
+                let mut color = draft.mark.color.map(crate::presentation::linear_to_srgb);
+                ui.horizontal(|ui| {
+                    ui.label("Solid color");
+                    if ui.color_edit_button_rgb(&mut color).changed() {
+                        draft.mark.color = color.map(crate::presentation::srgb_to_linear);
+                    }
+                });
+                if ui.button("Add linear gradient").clicked() {
+                    fill.gradient = Some(crate::document::FillGradient {
+                        kind: crate::document::FillGradientKind::Linear,
+                        start_color: draft.mark.color,
+                        end_color: [1.0; 3],
+                        start: glam::Vec2::new(0.0, 0.5),
+                        end: glam::Vec2::new(1.0, 0.5),
+                    });
+                }
+            }
+        }
         let _ = draft;
         if changed {
             self.update_fill_vertex(selected, Vec3::from_array(coordinates));
@@ -257,6 +359,21 @@ impl SketchApp {
             return;
         };
         if begin {
+            if let Some(handles) = polygon::gradient_handle_positions(&draft.mark) {
+                let nearest = handles
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(index, world)| {
+                        crate::gizmo::project(&self.camera, rect, world)
+                            .map(|(screen, _)| (index, world, screen.distance(pos)))
+                    })
+                    .filter(|(_, _, distance)| *distance < 13.0)
+                    .min_by(|a, b| a.2.total_cmp(&b.2));
+                if let Some((index, origin, _)) = nearest {
+                    draft.gradient_drag = Some((index, self.camera, rect, origin));
+                    return;
+                }
+            }
             let mut nearest = None;
             let mut distance = 10.0_f32;
             for (index, point) in draft.mark.points.iter().enumerate() {
@@ -286,6 +403,29 @@ impl SketchApp {
                 camera: self.camera,
                 rect,
             });
+        } else if let Some((index, camera, drag_rect, origin)) = draft.gradient_drag {
+            if let Some(world) =
+                crate::gizmo::plane_hit(&camera, drag_rect, pos, origin, draft.mark.brush.normal)
+            {
+                if let (Some(fill), Some(mut gradient)) = (
+                    draft.mark.fill,
+                    draft.mark.fill.and_then(|fill| fill.gradient),
+                ) {
+                    if let Some(uv) = polygon::gradient_uv_from_world(&draft.mark, world) {
+                        if index == 0 {
+                            gradient.start = uv;
+                        } else {
+                            gradient.end = uv;
+                        }
+                        if gradient.is_valid() {
+                            draft.mark.fill = Some(crate::document::PlanarFill {
+                                gradient: Some(gradient),
+                                ..fill
+                            });
+                        }
+                    }
+                }
+            }
         } else if let Some(drag) = &draft.drag {
             if let Some(position) = drag.position(pos) {
                 let previous = draft.mark.points[drag.index];
@@ -407,13 +547,14 @@ impl SketchApp {
                 target.half_extent(),
             ) {
                 Ok(points) => {
-                    let mut mark = Stroke {
+                    let mark = Stroke {
                         curve: None,
                         material: Default::default(),
                         point_thickness: None,
                         modifiers: None,
                         fill: Some(PlanarFill {
                             offset: self.fills.offset,
+                            gradient: None,
                         }),
                         group_id: None,
                         layer_id: self.doc.active_layer,
@@ -446,6 +587,7 @@ impl SketchApp {
                         original: None,
                         selected: 0,
                         drag: None,
+                        gradient_drag: None,
                     });
                     self.status = "Region preview ready. Enter commits; Escape cancels.".into();
                 }
@@ -491,6 +633,7 @@ impl SketchApp {
             original: None,
             selected: 0,
             drag: None,
+            gradient_drag: None,
             mark: Stroke {
                 curve: None,
                 material: Default::default(),
@@ -498,6 +641,7 @@ impl SketchApp {
                 modifiers: None,
                 fill: Some(PlanarFill {
                     offset: self.fills.offset,
+                    gradient: None,
                 }),
                 group_id: None,
                 layer_id: self.doc.active_layer,
@@ -551,6 +695,7 @@ impl SketchApp {
         mark.color = self.color;
         mark.fill = Some(PlanarFill {
             offset: self.fills.offset,
+            gradient: None,
         });
         if let Err(error) = polygon::triangulate(&mark) {
             self.status = error;
@@ -645,17 +790,66 @@ impl SketchApp {
             .map(|p| crate::gizmo::project(&self.camera, rect, p.position))
             .collect();
         if draft.mark.fill.is_some() {
-            if let Ok(triangles) = polygon::triangulate(&draft.mark) {
-                let preview = color.gamma_multiply(0.22);
-                for [a, b, c] in triangles {
-                    if let (Some((a, _)), Some((b, _)), Some((c, _))) =
-                        (projected[a], projected[b], projected[c])
-                    {
-                        painter.add(egui::Shape::convex_polygon(
-                            vec![a, b, c],
-                            preview,
-                            egui::Stroke::NONE,
-                        ));
+            let vertices = polygon::mesh(&draft.mark);
+            for tri in vertices.chunks_exact(3) {
+                let points = tri
+                    .iter()
+                    .map(|vertex| {
+                        crate::gizmo::project(&self.camera, rect, Vec3::from_array(vertex.position))
+                            .map(|(screen, _)| screen)
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if let Some(points) = points {
+                    let rgb = tri[0].color.map(crate::presentation::linear_to_srgb);
+                    let fill = Color32::from_rgba_unmultiplied(
+                        (rgb[0] * 255.0).round() as u8,
+                        (rgb[1] * 255.0).round() as u8,
+                        (rgb[2] * 255.0).round() as u8,
+                        (150.0
+                            * tri[0].opacity
+                            * self.doc.layer_opacity(draft.mark.layer_id).clamp(0.0, 1.0))
+                        .round() as u8,
+                    );
+                    painter.add(egui::Shape::convex_polygon(
+                        points,
+                        fill,
+                        egui::Stroke::NONE,
+                    ));
+                }
+            }
+            if let Some(fill) = draft.mark.fill {
+                if let Some(gradient) = fill.gradient {
+                    if let Some([start, end]) = polygon::gradient_handle_positions(&draft.mark) {
+                        if let (Some((a, _)), Some((b, _))) = (
+                            crate::gizmo::project(&self.camera, rect, start),
+                            crate::gizmo::project(&self.camera, rect, end),
+                        ) {
+                            painter.line_segment([a, b], egui::Stroke::new(2.0_f32, color));
+                            for (point, stop, active) in
+                                [(a, gradient.start_color, 0), (b, gradient.end_color, 1)]
+                            {
+                                let rgb = stop.map(crate::presentation::linear_to_srgb);
+                                let stop_color = Color32::from_rgb(
+                                    (rgb[0] * 255.0).round() as u8,
+                                    (rgb[1] * 255.0).round() as u8,
+                                    (rgb[2] * 255.0).round() as u8,
+                                );
+                                painter.circle_filled(point, 7.0, stop_color);
+                                painter.circle_stroke(
+                                    point,
+                                    8.0,
+                                    egui::Stroke::new(
+                                        if draft.gradient_drag.is_some_and(|drag| drag.0 == active)
+                                        {
+                                            3.0_f32
+                                        } else {
+                                            1.5_f32
+                                        },
+                                        Color32::WHITE,
+                                    ),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -694,7 +888,7 @@ impl SketchApp {
                                 Color32::WHITE
                             },
                         );
-                        painter.circle_stroke(*position, 6.0, egui::Stroke::new(1.0, color));
+                        painter.circle_stroke(*position, 6.0, egui::Stroke::new(1.0_f32, color));
                     }
                 }
             }

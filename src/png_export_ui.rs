@@ -466,7 +466,10 @@ fn append_storefront_details(doc: &mut Document) {
             material: Default::default(),
             point_thickness: None,
             modifiers: None,
-            fill: Some(crate::document::PlanarFill { offset: 0.004 }),
+            fill: Some(crate::document::PlanarFill {
+                offset: 0.004,
+                gradient: None,
+            }),
             group_id: None,
             layer_id: doc.active_layer,
             id,

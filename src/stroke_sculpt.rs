@@ -424,7 +424,10 @@ mod tests {
         locked.layers[0].locked = true;
         assert!(edit(&locked, &HashSet::from([4]), settings(Operation::Smooth)).is_err());
         let mut fill = document.clone();
-        fill.strokes[0].fill = Some(crate::document::PlanarFill { offset: 0.0 });
+        fill.strokes[0].fill = Some(crate::document::PlanarFill {
+            offset: 0.0,
+            gradient: None,
+        });
         assert!(edit(&fill, &HashSet::from([4]), settings(Operation::Smooth)).is_err());
         let mut curve = document;
         curve.strokes[0].curve = Some(crate::document::CurveData {

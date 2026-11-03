@@ -359,9 +359,11 @@ pub fn encode_with_images(
             || settings.kind.uses_continuous_alpha()
             || (stroke.brush.dynamics.opacity.enabled
                 && stroke.brush.dynamics.opacity.minimum < 1.0);
+        let fill_gradient = stroke.fill.and_then(|fill| fill.gradient).is_some();
+        let has_gradient = stroke.gradient.is_some() || fill_gradient;
         let key = (
             stroke.color.map(f32::to_bits),
-            stroke.gradient.is_some(),
+            has_gradient,
             double_sided,
             texture_key,
             tip_key,
@@ -377,11 +379,7 @@ pub fn encode_with_images(
             } else {
                 1.0
             };
-            let base_color = if stroke.gradient.is_some() {
-                [1.0; 3]
-            } else {
-                stroke.color
-            };
+            let base_color = if has_gradient { [1.0; 3] } else { stroke.color };
             let mut material = json!({"name":format!("Ink {}",index+1),"pbrMetallicRoughness":{"baseColorFactor":[base_color[0],base_color[1],base_color[2],material_alpha],"metallicFactor":0.0,"roughnessFactor":0.8},"alphaMode":if alpha_blended {"BLEND"} else if texture_key.is_some() {"MASK"} else {"OPAQUE"},"doubleSided":double_sided});
             match stroke.material {
                 crate::document::StrokeMaterial::Shaded => {}
@@ -484,6 +482,24 @@ pub fn encode_with_images(
         if let Some(fill) = stroke.fill {
             node["extras"]["spatialSketchGeometry"] = json!("planar_fill");
             node["extras"]["spatialSketchFillOffset"] = json!(fill.offset);
+            if let Some(gradient) = fill.gradient {
+                node["extras"]["spatialSketchFillGradient"] = json!({
+                    "kind": match gradient.kind {
+                        crate::document::FillGradientKind::Linear => "linear",
+                        crate::document::FillGradientKind::Radial => "radial",
+                    },
+                    "coordinates": "normalized_contour_bounds",
+                    "interpolation": "linear_rgb",
+                    "start": gradient.start.to_array(),
+                    "end": gradient.end.to_array(),
+                    "startColor": gradient.start_color,
+                    "endColor": gradient.end_color,
+                });
+                if stroke.material == crate::document::StrokeMaterial::Emissive {
+                    node["extras"]["spatialSketchEmissiveFillGradientFallback"] =
+                        json!("COLOR_0_contains_fill_gradient; emissiveFactor_remains_uniform");
+                }
+            }
         }
         if let Some(gradient) = stroke.gradient {
             node["extras"]["spatialSketchGradientStopsLinearRgb"] =

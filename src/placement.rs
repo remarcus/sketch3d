@@ -200,7 +200,10 @@ mod tests {
             id,
             point_thickness: None,
             modifiers: None,
-            fill: Some(PlanarFill { offset: 0.0 }),
+            fill: Some(PlanarFill {
+                offset: 0.0,
+                gradient: None,
+            }),
             group_id: None,
             layer_id: 1,
             color: [0.5; 3],

@@ -1,0 +1,7 @@
+# Fill gradients
+
+Planar fills can use a solid color, a linear two-stop gradient, or a radial two-stop gradient. Select one fill and choose **Edit fill contour…** to open the detached preview. The Fill appearance section edits the color stops and gradient type. **Reset to solid color** removes the gradient and keeps the fill's solid color. Apply stores the contour and appearance changes as one undoable edit; Cancel and Escape discard them.
+
+Gradient coordinates are normalized to the current contour bounds in the fill's captured plane. This keeps the gradient attached when the fill is translated, rotated, scaled, or edited. Linear gradients project each location onto the start-to-end handle axis. Radial gradients use the start handle as the center and the distance to the end handle as the radius. Stops are interpolated in linear RGB. The two visible canvas handles can be dragged; the U/V fields provide precise normalized coordinates.
+
+Old documents omit the optional fill gradient and continue to render as solid fills. The viewport and mesh exports use the same triangulated vertex colors. Radial gradients subdivide each contour triangle into an 8-division grid before sampling, which smooths the nonlinear color field while keeping the fill topology and sample work bounded. GLB stores vertex colors and records the gradient settings in node extras. OBJ/MTL cannot store per-vertex color, so a gradient fill uses its evaluated color at normalized center `(0.5, 0.5)` as a documented solid-color fallback.

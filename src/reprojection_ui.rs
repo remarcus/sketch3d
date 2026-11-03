@@ -78,7 +78,7 @@ impl SketchApp {
             .filter_map(|guide| {
                 matches!(
                     &guide.geometry,
-                    crate::document::GuideGeometry::Plane { .. }
+                    crate::document::guide_resources::GuideGeometry::Plane { .. }
                 )
                 .then_some((guide.id, guide.name.clone()))
             })

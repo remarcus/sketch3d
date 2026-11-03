@@ -151,10 +151,19 @@ pub fn write_obj_bundle(
             entry.insert(index);
             materials.push(Material {
                 name: format!("material_{index:05}"),
-                diffuse: stroke
-                    .gradient
-                    .map_or(stroke.color, |gradient| gradient.sample(0.5)),
-                gradient_fallback: stroke.gradient.is_some(),
+                diffuse: stroke.gradient.map_or_else(
+                    || {
+                        stroke
+                            .fill
+                            .and_then(|fill| fill.gradient)
+                            .map_or(stroke.color, |gradient| {
+                                gradient.sample(glam::Vec2::splat(0.5))
+                            })
+                    },
+                    |gradient| gradient.sample(0.5),
+                ),
+                gradient_fallback: stroke.gradient.is_some()
+                    || stroke.fill.and_then(|fill| fill.gradient).is_some(),
                 opacity: if stroke.material == StrokeMaterial::Cutout {
                     0.0
                 } else {
@@ -194,15 +203,17 @@ pub fn write_obj_bundle(
     }) {
         mtl.push_str("# Layer Multiply, Screen, and Add modes fall back to Normal in OBJ/MTL.\n");
     }
-    if strokes.iter().any(|stroke| stroke.gradient.is_some()) {
+    if strokes.iter().any(|stroke| {
+        stroke.gradient.is_some() || stroke.fill.and_then(|fill| fill.gradient).is_some()
+    }) {
         mtl.push_str(
-            "# OBJ/MTL cannot store per-vertex color; gradient strokes use their midpoint color.\n",
+            "# OBJ/MTL cannot store per-vertex color; stroke and fill gradients use their evaluated midpoint color.\n",
         );
     }
     for material in &materials {
         writeln!(mtl, "newmtl {}", material.name).unwrap();
         if material.gradient_fallback {
-            mtl.push_str("# Two-stop gradient approximated by its linear RGB midpoint.\n");
+            mtl.push_str("# Two-stop gradient approximated by its linear RGB midpoint; radial fills sample normalized center.\n");
         }
         writeln!(
             mtl,
@@ -429,9 +440,17 @@ pub fn write_obj_bundle(
 
 fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
     let texture = texture::key(stroke.brush.texture);
-    let diffuse = stroke
-        .gradient
-        .map_or(stroke.color, |gradient| gradient.sample(0.5));
+    let diffuse = stroke.gradient.map_or_else(
+        || {
+            stroke
+                .fill
+                .and_then(|fill| fill.gradient)
+                .map_or(stroke.color, |gradient| {
+                    gradient.sample(glam::Vec2::splat(0.5))
+                })
+        },
+        |gradient| gradient.sample(0.5),
+    );
     (
         diffuse[0].to_bits(),
         diffuse[1].to_bits(),
