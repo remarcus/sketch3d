@@ -207,7 +207,12 @@ impl SketchApp {
                 } else if self.brush.texture.kind != TextureKind::Solid {
                     if matches!(
                         self.brush.texture.kind,
-                        TextureKind::Grain | TextureKind::DryBrush | TextureKind::Crosshatch
+                        TextureKind::Grain
+                            | TextureKind::DryBrush
+                            | TextureKind::Pattern
+                            | TextureKind::Graphite
+                            | TextureKind::Charcoal
+                            | TextureKind::Crosshatch
                     ) {
                         let kind = self.brush.texture.kind;
                         let mut generator = self.brush.texture.generator;
@@ -215,6 +220,9 @@ impl SketchApp {
                         ui.strong(match kind {
                             TextureKind::Grain => "Paper grain generator",
                             TextureKind::DryBrush => "Directional fiber generator",
+                            TextureKind::Pattern => "Diamond pattern generator",
+                            TextureKind::Graphite => "Graphite generator",
+                            TextureKind::Charcoal => "Charcoal generator",
                             _ => "Crosshatch generator",
                         });
                         ui.add(
@@ -226,6 +234,9 @@ impl SketchApp {
                                 .text(match kind {
                                     TextureKind::Grain => "Coarse scale",
                                     TextureKind::DryBrush => "Streak length",
+                                    TextureKind::Pattern => "Cell size",
+                                    TextureKind::Graphite => "Coarse scale",
+                                    TextureKind::Charcoal => "Cloud scale",
                                     _ => "Line coarseness",
                                 }),
                         );
@@ -234,6 +245,9 @@ impl SketchApp {
                                 .text(match kind {
                                     TextureKind::Grain => "Grain direction",
                                     TextureKind::DryBrush => "Fiber direction",
+                                    TextureKind::Graphite | TextureKind::Charcoal => {
+                                        "Grain direction"
+                                    }
                                     _ => "Direction",
                                 }),
                         );
@@ -242,6 +256,10 @@ impl SketchApp {
                                 .text(match kind {
                                     TextureKind::Grain => "Directional anisotropy",
                                     TextureKind::DryBrush => "Fiber spacing ratio",
+                                    TextureKind::Graphite | TextureKind::Charcoal => {
+                                        "Grain anisotropy"
+                                    }
+                                    TextureKind::Pattern => "Cell aspect ratio",
                                     _ => "Hatch spacing ratio",
                                 }),
                         );
@@ -294,6 +312,62 @@ impl SketchApp {
                                     if ui.button("Angled fibers").clicked() {
                                         generator = crate::texture::TextureGeneratorSettings {
                                             frequency: 6,
+                                            coarseness: 2,
+                                            direction_degrees: 35.0,
+                                            anisotropy: 1.5,
+                                            ..Default::default()
+                                        };
+                                    }
+                                }
+                                TextureKind::Pattern => {
+                                    if ui.button("Small diamonds").clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 8,
+                                            coarseness: 1,
+                                            ..Default::default()
+                                        };
+                                    }
+                                    if ui.button("Large diamonds").clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 2,
+                                            coarseness: 4,
+                                            ..Default::default()
+                                        };
+                                    }
+                                    if ui.button("Slanted pattern").clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 6,
+                                            coarseness: 2,
+                                            direction_degrees: 30.0,
+                                            anisotropy: 1.5,
+                                            ..Default::default()
+                                        };
+                                    }
+                                }
+                                TextureKind::Graphite | TextureKind::Charcoal => {
+                                    let (soft, fine, directional) = if kind == TextureKind::Graphite
+                                    {
+                                        ("Soft graphite", "Fine graphite", "Directional graphite")
+                                    } else {
+                                        ("Broad charcoal", "Fine charcoal", "Directional charcoal")
+                                    };
+                                    if ui.button(soft).clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 2,
+                                            coarseness: 4,
+                                            ..Default::default()
+                                        };
+                                    }
+                                    if ui.button(fine).clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 8,
+                                            coarseness: 1,
+                                            ..Default::default()
+                                        };
+                                    }
+                                    if ui.button(directional).clicked() {
+                                        generator = crate::texture::TextureGeneratorSettings {
+                                            frequency: 5,
                                             coarseness: 2,
                                             direction_degrees: 35.0,
                                             anisotropy: 1.5,

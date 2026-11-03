@@ -231,8 +231,8 @@ impl TextureDynamics {
 }
 
 /// Versioned controls for the app-generated repeating coverage masks.
-/// Grain, Dry Brush, and Crosshatch use these controls in version 1; the other
-/// procedural kinds retain their legacy pixels until they gain a generator.
+/// All procedural mask kinds use these controls in version 1; their legacy
+/// pixels remain unchanged until any control is edited.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TextureGeneratorSettings {
@@ -477,10 +477,7 @@ pub fn key(settings: TextureSettings) -> TextureCacheKey {
     if settings.image.is_some() || settings.kind == TextureKind::Solid || settings.strength == 0.0 {
         (TextureKind::Solid, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     } else {
-        let uses_generator = matches!(
-            settings.kind,
-            TextureKind::Grain | TextureKind::DryBrush | TextureKind::Crosshatch
-        );
+        let uses_generator = settings.kind != TextureKind::Solid;
         (
             settings.kind,
             settings.strength.to_bits(),
@@ -637,11 +634,35 @@ fn texel_alpha(settings: TextureSettings, x: u32, y: u32) -> u8 {
             }
         }
         TextureKind::Pattern => {
-            let phase_x = settings.seed & 31;
-            let phase_y = (settings.seed >> 5) & 31;
-            let dx = ((x + phase_x) % 32).abs_diff(16) as f32;
-            let dy = ((y + phase_y) % 32).abs_diff(16) as f32;
-            if 1.0 - (dx + dy) / 32.0 >= settings.strength * 0.95 {
+            let covered = if settings.generator == TextureGeneratorSettings::default() {
+                let phase_x = settings.seed & 31;
+                let phase_y = (settings.seed >> 5) & 31;
+                let dx = ((x + phase_x) % 32).abs_diff(16) as f32;
+                let dy = ((y + phase_y) % 32).abs_diff(16) as f32;
+                1.0 - (dx + dy) / 32.0 >= settings.strength * 0.95
+            } else {
+                let generator = settings.generator;
+                let frequency =
+                    (i32::from(generator.frequency) / i32::from(generator.coarseness)).max(1);
+                let across_frequency = (frequency as f32 * generator.anisotropy)
+                    .round()
+                    .clamp(1.0, 16.0) as i32;
+                let u_mode = direction_mode(generator.direction_degrees, frequency);
+                let v_mode = direction_mode(generator.direction_degrees + 90.0, across_frequency);
+                let phase_u =
+                    (x as i32 * u_mode[0] + y as i32 * u_mode[1] + (settings.seed % SIZE) as i32)
+                        .rem_euclid(SIZE as i32) as f32
+                        / SIZE as f32;
+                let phase_v = (x as i32 * v_mode[0]
+                    + y as i32 * v_mode[1]
+                    + (settings.seed.rotate_left(13) % SIZE) as i32)
+                    .rem_euclid(SIZE as i32) as f32
+                    / SIZE as f32;
+                let dx = (phase_u - 0.5).abs();
+                let dy = (phase_v - 0.5).abs();
+                1.0 - (dx + dy) >= settings.strength * 0.95
+            };
+            if covered {
                 1.0
             } else {
                 0.0
@@ -679,16 +700,67 @@ fn texel_alpha(settings: TextureSettings, x: u32, y: u32) -> u8 {
             }
         }
         TextureKind::Graphite => {
-            let coarse = periodic_value_noise(x, y, settings.seed, 5);
-            let fine = periodic_value_noise(x, y, settings.seed ^ 0x6d2b_79f5, 29);
-            let grit = periodic_value_noise(x, y, settings.seed ^ 0xa511_e9b3, 71);
+            let (coarse, fine, grit) = if settings.generator == TextureGeneratorSettings::default()
+            {
+                (
+                    periodic_value_noise(x, y, settings.seed, 5),
+                    periodic_value_noise(x, y, settings.seed ^ 0x6d2b_79f5, 29),
+                    periodic_value_noise(x, y, settings.seed ^ 0xa511_e9b3, 71),
+                )
+            } else {
+                let generator = settings.generator;
+                let frequency = i32::from(generator.frequency);
+                let coarse_frequency = (frequency / i32::from(generator.coarseness)).max(1);
+                (
+                    periodic_generator_noise(x, y, settings.seed, generator, coarse_frequency),
+                    periodic_generator_noise(
+                        x,
+                        y,
+                        settings.seed ^ 0x6d2b_79f5,
+                        generator,
+                        frequency,
+                    ),
+                    periodic_generator_noise(
+                        x,
+                        y,
+                        settings.seed ^ 0xa511_e9b3,
+                        generator,
+                        frequency * 2,
+                    ),
+                )
+            };
             let grain = coarse * 0.24 + fine * 0.48 + grit * 0.28;
             1.0 - settings.strength * (1.0 - (0.24 + grain * 0.76))
         }
         TextureKind::Charcoal => {
-            let broad = periodic_value_noise(x, y, settings.seed, 6);
-            let mid = periodic_value_noise(x, y, settings.seed ^ 0x68bc_21eb, 19);
-            let grit = periodic_value_noise(x, y, settings.seed ^ 0x02e5_be93, 47);
+            let (broad, mid, grit) = if settings.generator == TextureGeneratorSettings::default() {
+                (
+                    periodic_value_noise(x, y, settings.seed, 6),
+                    periodic_value_noise(x, y, settings.seed ^ 0x68bc_21eb, 19),
+                    periodic_value_noise(x, y, settings.seed ^ 0x02e5_be93, 47),
+                )
+            } else {
+                let generator = settings.generator;
+                let frequency = i32::from(generator.frequency);
+                let coarse_frequency = (frequency / i32::from(generator.coarseness)).max(1);
+                (
+                    periodic_generator_noise(x, y, settings.seed, generator, coarse_frequency),
+                    periodic_generator_noise(
+                        x,
+                        y,
+                        settings.seed ^ 0x68bc_21eb,
+                        generator,
+                        frequency,
+                    ),
+                    periodic_generator_noise(
+                        x,
+                        y,
+                        settings.seed ^ 0x02e5_be93,
+                        generator,
+                        frequency * 2,
+                    ),
+                )
+            };
             let field = broad * 0.58 + mid * 0.3 + grit * 0.12;
             let density = smoothstep(0.18, 0.76, field);
             1.0 - settings.strength * (1.0 - (0.06 + density * 0.94))
@@ -720,6 +792,40 @@ fn periodic_wave(x: u32, y: u32, mode: [i32; 2], seed: u32) -> f32 {
     let cycles = (x as i32 * mode[0] + y as i32 * mode[1]) as f32 / SIZE as f32;
     let phase = noise(0, 0, seed) * std::f32::consts::TAU;
     0.5 + 0.5 * (cycles * std::f32::consts::TAU + phase).sin()
+}
+
+fn periodic_generator_noise(
+    x: u32,
+    y: u32,
+    seed: u32,
+    generator: TextureGeneratorSettings,
+    frequency: i32,
+) -> f32 {
+    let across_frequency = (frequency as f32 * generator.anisotropy)
+        .round()
+        .clamp(1.0, 64.0) as i32;
+    let diagonal_frequency = ((frequency as f32 * across_frequency as f32).sqrt())
+        .round()
+        .clamp(1.0, 64.0) as i32;
+    let along = periodic_wave(
+        x,
+        y,
+        direction_mode(generator.direction_degrees, frequency),
+        seed,
+    );
+    let across = periodic_wave(
+        x,
+        y,
+        direction_mode(generator.direction_degrees + 90.0, across_frequency),
+        seed ^ 0x6d2b_79f5,
+    );
+    let diagonal = periodic_wave(
+        x,
+        y,
+        direction_mode(generator.direction_degrees + 45.0, diagonal_frequency),
+        seed ^ 0xa511_e9b3,
+    );
+    along * 0.4 + across * 0.35 + diagonal * 0.25
 }
 
 fn periodic_value_noise(x: u32, y: u32, seed: u32, period: u32) -> f32 {
