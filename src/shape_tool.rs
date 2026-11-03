@@ -18,8 +18,7 @@ impl ShapeMode {
 
 struct ShapeDraft {
     mode: ShapeMode,
-    target: PlanarTarget,
-    plane: DrawingPlane,
+    target: ShapeTarget,
     first: Vec3,
     current: Vec3,
     pressure: f32,
@@ -27,6 +26,30 @@ struct ShapeDraft {
     radius: f32,
     brush: Brush,
     preview: Option<Stroke>,
+}
+
+#[derive(Clone, Copy)]
+enum ShapeTarget {
+    Planar(PlanarTarget),
+    Cylinder(crate::surface::Cylinder),
+}
+
+impl ShapeTarget {
+    fn hit(self, origin: Vec3, direction: Vec3) -> Option<Vec3> {
+        match self {
+            Self::Planar(target) => target.hit(origin, direction),
+            Self::Cylinder(cylinder) => cylinder.hit(origin, direction),
+        }
+    }
+
+    fn contains(self, point: Vec3) -> bool {
+        match self {
+            Self::Planar(target) => target.contains(point),
+            Self::Cylinder(cylinder) => cylinder
+                .parameterize(point, None)
+                .is_some_and(|parameter| parameter.y.abs() <= cylinder.height * 0.5),
+        }
+    }
 }
 
 pub(super) struct ShapeTool {
@@ -64,9 +87,9 @@ impl SketchApp {
     }
 
     pub(super) fn start_shape_tool(&mut self, mode: ShapeMode) {
-        if self.planar_drawing_target().is_none() {
+        if self.shape_target().is_none() {
             self.status =
-                "Circles and ellipses require a plane guide. Activate a planar guide first.".into();
+                "Circles and ellipses require a plane or cylinder guide. Activate a supported guide first.".into();
             return;
         }
         self.finish();
@@ -77,9 +100,42 @@ impl SketchApp {
         self.select_mode = false;
         self.eraser = false;
         self.status = format!(
-            "{} tool ready. Drag on the active planar target to preview.",
+            "{} tool ready. Drag on the active plane or cylinder to preview.",
             mode.label()
         );
+    }
+
+    fn shape_target(&self) -> Option<ShapeTarget> {
+        if self.doc.active_image_plane.is_some() {
+            return self.planar_drawing_target().map(ShapeTarget::Planar);
+        }
+        if let Some(geometry) = self.saved_guide_geometry() {
+            return match geometry {
+                crate::document::guide_resources::GuideGeometry::Cylinder {
+                    center,
+                    rotation,
+                    radius,
+                    height,
+                } => {
+                    let (z, y, x) = rotation.to_euler(glam::EulerRot::ZYX);
+                    Some(ShapeTarget::Cylinder(crate::surface::Cylinder {
+                        center: *center,
+                        rotation_degrees: Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI),
+                        radius: *radius,
+                        height: *height,
+                    }))
+                }
+                crate::document::guide_resources::GuideGeometry::Plane { .. } => {
+                    self.planar_drawing_target().map(ShapeTarget::Planar)
+                }
+                _ => None,
+            };
+        }
+        if self.use_cylinder {
+            Some(ShapeTarget::Cylinder(self.cylinder))
+        } else {
+            self.planar_drawing_target().map(ShapeTarget::Planar)
+        }
     }
 
     pub(super) fn cancel_shape_draft(&mut self) {
@@ -93,8 +149,9 @@ impl SketchApp {
         let Some(mode) = self.shape_tool.mode else {
             return;
         };
+        let cylinder_target = matches!(self.shape_target(), Some(ShapeTarget::Cylinder(_)));
         ui.strong(format!("{} TOOL", mode.label().to_ascii_uppercase()));
-        ui.label("Shapes follow the active plane or image plane and use uniform start pressure.");
+        ui.label("Shapes follow the active plane or cylinder and use uniform start pressure.");
         ui.checkbox(&mut self.shape_tool.precise, "Use typed dimensions");
         if self.shape_tool.precise {
             match mode {
@@ -128,10 +185,19 @@ impl SketchApp {
                 }
             }
             ui.small("Click a center point to place the typed shape.");
+            if cylinder_target {
+                ui.small("Cylinder dimensions use the unwrapped surface chart: circumferential arc length and axial distance. Shapes wrap across the angular seam and stop at the finite ends.");
+            }
         } else if mode == ShapeMode::Circle {
             ui.small("Drag from the circle center to its edge.");
+            if cylinder_target {
+                ui.small("Radius is measured in the cylinder surface chart and may cross the angular seam.");
+            }
         } else {
             ui.small("Drag opposite corners of the ellipse bounds.");
+            if cylinder_target {
+                ui.small("Ellipse width follows circumferential arc length; height follows the cylinder axis.");
+            }
         }
         ui.small("Escape cancels the preview. Release creates one editable, undoable outline.");
     }
@@ -140,9 +206,9 @@ impl SketchApp {
         if begin {
             self.finish();
             self.cancel_shape_draft();
-            let Some(target) = self.planar_drawing_target() else {
+            let Some(target) = self.shape_target() else {
                 self.status =
-                    "Circles and ellipses require a plane guide. Activate a planar guide first."
+                    "Circles and ellipses require a plane or cylinder guide. Activate a supported guide first."
                         .into();
                 return;
             };
@@ -154,16 +220,18 @@ impl SketchApp {
             let Some(world) = target.hit(origin, direction) else {
                 return;
             };
-            self.prepare_planar_snap(target, rect, &HashSet::new());
-            let world = self.snap_planar_point(world, pos, target, rect, None);
-            let plane = target.plane;
+            let world = if let ShapeTarget::Planar(planar) = target {
+                self.prepare_planar_snap(planar, rect, &HashSet::new());
+                self.snap_planar_point(world, pos, planar, rect, None)
+            } else {
+                world
+            };
             let mut brush = self.brush;
             brush.dynamics.taper_start = 0.0;
             brush.dynamics.taper_end = 0.0;
             self.shape_tool.draft = Some(ShapeDraft {
                 mode: self.shape_tool.mode.expect("shape mode active"),
                 target,
-                plane,
                 first: world,
                 current: world,
                 pressure: pressure.clamp(0.0, 1.0),
@@ -181,66 +249,170 @@ impl SketchApp {
         }
         let (origin, direction) = crate::gizmo::ray(&self.camera, rect, pos);
         let target = draft.target;
-        let plane = draft.plane;
         let first = draft.first;
         let mode = draft.mode;
         let color = draft.color;
         let radius = draft.radius;
         let pressure = draft.pressure;
         let brush = draft.brush;
-        if let Some(world) = target.hit(origin, direction) {
-            let excluded = HashSet::new();
-            if self.planar_snap_index_stale(target, rect, &excluded) {
-                self.prepare_planar_snap(target, rect, &excluded);
+        if let Some(mut world) = target.hit(origin, direction) {
+            if let ShapeTarget::Planar(planar) = target {
+                let excluded = HashSet::new();
+                if self.planar_snap_index_stale(planar, rect, &excluded) {
+                    self.prepare_planar_snap(planar, rect, &excluded);
+                }
+                world = self.snap_planar_point(world, pos, planar, rect, None);
             }
-            let world = self.snap_planar_point(world, pos, target, rect, None);
             let id = self.next_id;
-            let result = match (mode, self.shape_tool.precise) {
-                (ShapeMode::Circle, true) => crate::shape_geometry::circle_from_center(
-                    plane,
-                    first,
-                    self.shape_tool.radius,
-                    id,
-                    self.doc.active_layer,
-                    color,
-                    radius,
-                    pressure,
-                    brush,
-                ),
-                (ShapeMode::Circle, false) => crate::shape_geometry::circle_from_center_edge(
-                    plane,
-                    first,
-                    world,
-                    id,
-                    self.doc.active_layer,
-                    color,
-                    radius,
-                    pressure,
-                    brush,
-                ),
-                (ShapeMode::Ellipse, true) => crate::shape_geometry::ellipse_from_center(
-                    plane,
-                    first,
-                    self.shape_tool.width * 0.5,
-                    self.shape_tool.height * 0.5,
-                    id,
-                    self.doc.active_layer,
-                    color,
-                    radius,
-                    pressure,
-                    brush,
-                ),
-                (ShapeMode::Ellipse, false) => crate::shape_geometry::ellipse_from_bounds(
-                    plane,
-                    first,
-                    world,
-                    id,
-                    self.doc.active_layer,
-                    color,
-                    radius,
-                    pressure,
-                    brush,
-                ),
+            let result = match (target, mode, self.shape_tool.precise) {
+                (ShapeTarget::Cylinder(cylinder), ShapeMode::Circle, true) => {
+                    let Some(center) = cylinder.parameterize(first, None) else {
+                        return;
+                    };
+                    crate::shape_geometry::cylinder_circle(
+                        cylinder,
+                        center,
+                        self.shape_tool.radius,
+                        id,
+                        self.doc.active_layer,
+                        color,
+                        radius,
+                        pressure,
+                        brush,
+                        (self.camera.world_per_pixel(first, rect.height().max(1.0)) * 0.75).clamp(
+                            crate::curve_geometry::MIN_TOLERANCE_WORLD,
+                            crate::curve_geometry::MAX_TOLERANCE_WORLD,
+                        ),
+                    )
+                }
+                (ShapeTarget::Cylinder(cylinder), ShapeMode::Circle, false) => {
+                    let Some(center) = cylinder.parameterize(first, None) else {
+                        return;
+                    };
+                    let Some(edge) = cylinder.parameterize(world, Some(center)) else {
+                        return;
+                    };
+                    crate::shape_geometry::cylinder_circle(
+                        cylinder,
+                        center,
+                        center.distance(edge),
+                        id,
+                        self.doc.active_layer,
+                        color,
+                        radius,
+                        pressure,
+                        brush,
+                        self.camera
+                            .world_per_pixel(first, rect.height().max(1.0))
+                            .clamp(
+                                crate::curve_geometry::MIN_TOLERANCE_WORLD,
+                                crate::curve_geometry::MAX_TOLERANCE_WORLD,
+                            ),
+                    )
+                }
+                (ShapeTarget::Cylinder(cylinder), ShapeMode::Ellipse, true) => {
+                    let Some(center) = cylinder.parameterize(first, None) else {
+                        return;
+                    };
+                    crate::shape_geometry::cylinder_ellipse(
+                        cylinder,
+                        center,
+                        self.shape_tool.width * 0.5,
+                        self.shape_tool.height * 0.5,
+                        id,
+                        self.doc.active_layer,
+                        color,
+                        radius,
+                        pressure,
+                        brush,
+                        self.camera
+                            .world_per_pixel(first, rect.height().max(1.0))
+                            .clamp(
+                                crate::curve_geometry::MIN_TOLERANCE_WORLD,
+                                crate::curve_geometry::MAX_TOLERANCE_WORLD,
+                            ),
+                    )
+                }
+                (ShapeTarget::Cylinder(cylinder), ShapeMode::Ellipse, false) => {
+                    let Some(first_parameter) = cylinder.parameterize(first, None) else {
+                        return;
+                    };
+                    let Some(opposite) = cylinder.parameterize(world, Some(first_parameter)) else {
+                        return;
+                    };
+                    let center = (first_parameter + opposite) * 0.5;
+                    crate::shape_geometry::cylinder_ellipse(
+                        cylinder,
+                        center,
+                        (opposite.x - first_parameter.x).abs() * 0.5,
+                        (opposite.y - first_parameter.y).abs() * 0.5,
+                        id,
+                        self.doc.active_layer,
+                        color,
+                        radius,
+                        pressure,
+                        brush,
+                        self.camera
+                            .world_per_pixel(first, rect.height().max(1.0))
+                            .clamp(
+                                crate::curve_geometry::MIN_TOLERANCE_WORLD,
+                                crate::curve_geometry::MAX_TOLERANCE_WORLD,
+                            ),
+                    )
+                }
+                (ShapeTarget::Planar(target), ShapeMode::Circle, true) => {
+                    crate::shape_geometry::circle_from_center(
+                        target.plane,
+                        first,
+                        self.shape_tool.radius,
+                        id,
+                        self.doc.active_layer,
+                        color,
+                        radius,
+                        pressure,
+                        brush,
+                    )
+                }
+                (ShapeTarget::Planar(target), ShapeMode::Ellipse, true) => {
+                    crate::shape_geometry::ellipse_from_center(
+                        target.plane,
+                        first,
+                        self.shape_tool.width * 0.5,
+                        self.shape_tool.height * 0.5,
+                        id,
+                        self.doc.active_layer,
+                        color,
+                        radius,
+                        pressure,
+                        brush,
+                    )
+                }
+                (ShapeTarget::Planar(target), ShapeMode::Circle, false) => {
+                    crate::shape_geometry::circle_from_center_edge(
+                        target.plane,
+                        first,
+                        world,
+                        id,
+                        self.doc.active_layer,
+                        color,
+                        radius,
+                        pressure,
+                        brush,
+                    )
+                }
+                (ShapeTarget::Planar(target), ShapeMode::Ellipse, false) => {
+                    crate::shape_geometry::ellipse_from_bounds(
+                        target.plane,
+                        first,
+                        world,
+                        id,
+                        self.doc.active_layer,
+                        color,
+                        radius,
+                        pressure,
+                        brush,
+                    )
+                }
             };
             let draft = self
                 .shape_tool

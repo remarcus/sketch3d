@@ -152,6 +152,133 @@ pub fn ellipse_from_bounds(
     )
 }
 
+/// Builds a circle in the cylinder's unwrapped surface chart. `center` and
+/// dimensions are chart coordinates: X is circumferential arc length and Y
+/// is axial distance. The result wraps continuously across the cylinder seam.
+pub fn cylinder_circle(
+    cylinder: crate::surface::Cylinder,
+    center: Vec3,
+    radius: f32,
+    id: u64,
+    layer_id: u64,
+    color: [f32; 3],
+    stroke_radius: f32,
+    pressure: f32,
+    brush: Brush,
+    tolerance_world: f32,
+) -> Result<Stroke, String> {
+    cylinder_ellipse(
+        cylinder,
+        center,
+        radius,
+        radius,
+        id,
+        layer_id,
+        color,
+        stroke_radius,
+        pressure,
+        brush,
+        tolerance_world,
+    )
+}
+
+/// Builds an ellipse in the cylinder's unwrapped surface chart. Its perimeter
+/// is sampled adaptively in world space, with a bounded 24–512 segment count.
+pub fn cylinder_ellipse(
+    cylinder: crate::surface::Cylinder,
+    center: Vec3,
+    radius_u: f32,
+    radius_v: f32,
+    id: u64,
+    layer_id: u64,
+    color: [f32; 3],
+    stroke_radius: f32,
+    pressure: f32,
+    brush: Brush,
+    tolerance_world: f32,
+) -> Result<Stroke, String> {
+    validate_common_values(color, stroke_radius, pressure, brush)?;
+    if !cylinder.valid()
+        || !center.is_finite()
+        || center.z.abs() > 1.0e-5
+        || center.y.abs() > cylinder.height * 0.5
+    {
+        return Err("Cylinder shape center is outside the captured surface".into());
+    }
+    validate_extent(radius_u, "Horizontal")?;
+    validate_extent(radius_v, "Vertical")?;
+    if radius_u > std::f32::consts::PI * cylinder.radius
+        || center.y - radius_v < -cylinder.height * 0.5
+        || center.y + radius_v > cylinder.height * 0.5
+    {
+        return Err("Cylinder shape extends beyond the unwrapped surface bounds".into());
+    }
+    if !tolerance_world.is_finite()
+        || !(crate::curve_geometry::MIN_TOLERANCE_WORLD
+            ..=crate::curve_geometry::MAX_TOLERANCE_WORLD)
+            .contains(&tolerance_world)
+    {
+        return Err("Cylinder shape tessellation tolerance is outside supported bounds".into());
+    }
+    let extent = radius_u.max(radius_v).max(cylinder.radius);
+    let segments = (std::f32::consts::TAU * (extent / (8.0 * tolerance_world)).sqrt())
+        .ceil()
+        .clamp(MIN_SEGMENTS as f32, MAX_SEGMENTS as f32) as usize;
+    let angle = center.x / cylinder.radius;
+    cylinder
+        .point_from_parameter(center)
+        .ok_or("Invalid cylinder shape center")?;
+    let rotation = cylinder.rotation();
+    let normal = rotation * Vec3::new(angle.sin(), 0.0, angle.cos());
+    let tangent = rotation * Vec3::new(angle.cos(), 0.0, -angle.sin());
+    let mut frame_brush = Brush {
+        normal,
+        tangent,
+        ..brush
+    };
+    frame_brush.dabs.enabled = false;
+    if !frame_brush.is_valid() {
+        return Err("Brush settings are invalid for the cylinder surface".into());
+    }
+    let points: Vec<Point> = (0..=segments)
+        .map(|index| {
+            let theta = TAU * index as f32 / segments as f32;
+            let parameter = Vec3::new(
+                center.x + radius_u * theta.cos(),
+                center.y + radius_v * theta.sin(),
+                0.0,
+            );
+            Point {
+                position: cylinder
+                    .point_from_parameter(parameter)
+                    .unwrap_or(Vec3::splat(f32::NAN)),
+                pressure,
+                tilt: None,
+                time_ms: 0,
+            }
+        })
+        .collect();
+    if points.iter().any(|point| !point.is_valid()) {
+        return Err("Cylinder shape exceeds the valid document bounds".into());
+    }
+    Ok(Stroke {
+        model_surface: None,
+        curve: None,
+        material: Default::default(),
+        point_thickness: None,
+        modifiers: None,
+        fill: None,
+        group_id: None,
+        layer_id,
+        id,
+        color,
+        gradient: None,
+        radius: stroke_radius,
+        brush: frame_brush,
+        points,
+    })
+}
+
 /// Creates a valid ordinary stroke with uniformly sampled pressure. The first
 /// point is repeated once as a closed-loop marker; the mesh builder joins the
 /// final segment without adding overlapping endpoint caps.
@@ -394,6 +521,71 @@ mod tests {
             });
         assert!((radius_u - 1.2).abs() < 0.0001);
         assert!((radius_v - 0.6).abs() < 0.0001);
+    }
+
+    #[test]
+    fn cylinder_circle_crosses_the_unwrapped_seam_and_rejects_finite_height_overflow() {
+        let cylinder = crate::surface::Cylinder {
+            center: Vec3::new(0.5, -0.2, 1.0),
+            rotation_degrees: Vec3::new(17.0, 31.0, -9.0),
+            radius: 1.25,
+            height: 3.0,
+        };
+        let before_seam = cylinder
+            .parameterize(cylinder.point(std::f32::consts::PI - 0.02, 0.0), None)
+            .unwrap();
+        let after_seam = cylinder
+            .parameterize(
+                cylinder.point(-std::f32::consts::PI + 0.02, 0.0),
+                Some(before_seam),
+            )
+            .unwrap();
+        assert!((after_seam.x - before_seam.x - 0.04 * cylinder.radius).abs() < 1.0e-4);
+        let center = Vec3::new((std::f32::consts::PI - 0.015) * cylinder.radius, 0.0, 0.0);
+        let stroke = cylinder_circle(
+            cylinder,
+            center,
+            0.12,
+            19,
+            1,
+            [0.2, 0.4, 0.6],
+            0.02,
+            0.7,
+            Brush::default(),
+            0.001,
+        )
+        .unwrap();
+        assert!(stroke.points.len() > MIN_SEGMENTS);
+        assert!(
+            stroke
+                .points
+                .first()
+                .unwrap()
+                .position
+                .distance(stroke.points.last().unwrap().position)
+                < 1.0e-5
+        );
+        assert!(stroke.points.iter().all(|point| point.is_valid()));
+        assert!(stroke
+            .points
+            .windows(2)
+            .all(|pair| { pair[0].position.distance(pair[1].position) < 0.04 }));
+        assert_eq!(stroke.brush.normal.length(), 1.0);
+        assert!((stroke.brush.normal.dot(stroke.brush.tangent)).abs() < 1.0e-5);
+
+        let too_tall = cylinder_circle(
+            cylinder,
+            Vec3::new(0.0, 1.45, 0.0),
+            0.1,
+            20,
+            1,
+            [0.2, 0.4, 0.6],
+            0.02,
+            0.7,
+            Brush::default(),
+            0.001,
+        );
+        assert!(too_tall.is_err());
     }
 
     #[test]

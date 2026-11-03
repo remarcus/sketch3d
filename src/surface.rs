@@ -101,6 +101,31 @@ impl Cylinder {
     fn decode(self, parameter: Vec3) -> Vec3 {
         self.point(parameter.x / self.radius, parameter.y)
     }
+    /// Map a world-space cylinder contact into the unwrapped surface chart.
+    /// The first coordinate is circumferential arc length and the second is
+    /// axial distance. Supplying a previous parameter keeps seam crossings
+    /// continuous.
+    pub fn parameterize(self, world: Vec3, previous: Option<Vec3>) -> Option<Vec3> {
+        if !self.valid() || !world.is_finite() {
+            return None;
+        }
+        let parameter = self.parameter(world, previous);
+        (parameter.is_finite() && parameter.y.abs() <= self.height * 0.5 + 1.0e-5)
+            .then_some(parameter)
+    }
+
+    /// Map an unwrapped cylinder chart coordinate onto the finite side.
+    pub fn point_from_parameter(self, parameter: Vec3) -> Option<Vec3> {
+        if !self.valid()
+            || !parameter.is_finite()
+            || parameter.y.abs() > self.height * 0.5 + 1.0e-5
+            || parameter.x.abs() > 1_000_000.0
+        {
+            return None;
+        }
+        let point = self.decode(parameter);
+        point.is_finite().then_some(point)
+    }
     pub fn wireframe(self) -> Vec<Vertex> {
         let mut vertices = Vec::new();
         let color = [0.12, 0.38, 0.39];
