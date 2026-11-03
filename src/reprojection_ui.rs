@@ -83,6 +83,18 @@ impl SketchApp {
                 .then_some((guide.id, guide.name.clone()))
             })
             .collect();
+        let saved_curved_guides: Vec<_> = doc
+            .guide_resources
+            .iter()
+            .filter_map(|guide| {
+                matches!(
+                    &guide.geometry,
+                    crate::document::guide_resources::GuideGeometry::Cylinder { .. }
+                        | crate::document::guide_resources::GuideGeometry::Sphere { .. }
+                )
+                .then_some((guide.id, guide.name.clone()))
+            })
+            .collect();
         let mut changed = false;
         let mut apply = false;
         let mut cancel = false;
@@ -91,9 +103,13 @@ impl SketchApp {
                 return;
             };
             ui.heading("Reproject selected strokes");
-            ui.small("The preview projects stored samples onto a plane and rebuilds the brush frame. Source strokes remain unchanged until Apply.");
+            ui.small("The preview projects stored samples onto a plane or saved analytic surface and rebuilds the brush frame. Source strokes remain unchanged until Apply.");
             egui::ComboBox::from_id_salt("reproject-target")
-                .selected_text(target_label(draft.target, &saved_planes))
+                .selected_text(target_label(
+                    draft.target,
+                    &saved_planes,
+                    &saved_curved_guides,
+                ))
                 .show_ui(ui, |ui| {
                     for (target, label) in [
                         (TargetChoice::Front, "Front"),
@@ -114,6 +130,19 @@ impl SketchApp {
                             .selectable_value(
                                 &mut draft.target,
                                 TargetChoice::SavedPlane(*id),
+                                name,
+                            )
+                            .changed();
+                    }
+                    if !saved_curved_guides.is_empty() {
+                        ui.separator();
+                        ui.label("Curved guides");
+                    }
+                    for (id, name) in &saved_curved_guides {
+                        changed |= ui
+                            .selectable_value(
+                                &mut draft.target,
+                                TargetChoice::SavedCurvedGuide(*id),
                                 name,
                             )
                             .changed();
@@ -143,9 +172,23 @@ impl SketchApp {
             changed |= ui
                 .checkbox(
                     &mut draft.keep_original,
-                    "Keep original samples outside captured view",
+                    "Keep original samples when projection misses",
                 )
                 .changed();
+            if matches!(draft.target, TargetChoice::SavedCurvedGuide(_)) {
+                ui.small("Cylinder and Sphere targets use the nearest surface point or the first forward hit along captured view rays. Samples through cylinder ends or ambiguous center points report a miss; keeping them can leave segments crossing the surface.");
+            } else if draft.mode == ProjectionMode::CapturedViewRay {
+                ui.small("Samples outside the captured view or without a forward target hit report a miss.");
+            }
+            if draft.kept_original_samples > 0 {
+                ui.colored_label(
+                    ui_style::colors(ui.ctx()).warning,
+                    format!(
+                        "{} samples remain at their original positions because the target had no hit.",
+                        draft.kept_original_samples
+                    ),
+                );
+            }
             if draft.before.iter().any(|stroke| stroke.curve.is_some()) {
                 changed |= ui
                     .checkbox(
@@ -179,17 +222,16 @@ impl SketchApp {
         }
         if changed {
             if let Some(draft) = self.reprojection_draft.as_mut() {
-                match draft.target_plane(doc, active_plane) {
-                    Ok(plane) => {
-                        if let Err(error) = draft.rebuild(plane, rect) {
-                            self.status = error;
-                        }
+                let result = match draft.target {
+                    TargetChoice::SavedCurvedGuide(id) => {
+                        draft.rebuild_on_curved_guide(doc, id, rect)
                     }
-                    Err(error) => {
-                        draft.preview = draft.before.clone();
-                        draft.error = Some(error.clone());
-                        self.status = error;
-                    }
+                    _ => draft
+                        .target_plane(doc, active_plane)
+                        .and_then(|plane| draft.rebuild(plane, rect)),
+                };
+                if let Err(error) = result {
+                    self.status = error;
                 }
             }
         }
@@ -220,7 +262,7 @@ impl SketchApp {
     }
 }
 
-fn target_label(target: TargetChoice, saved: &[(u64, String)]) -> String {
+fn target_label(target: TargetChoice, saved: &[(u64, String)], curved: &[(u64, String)]) -> String {
     match target {
         TargetChoice::Front => "Front".into(),
         TargetChoice::Side => "Side".into(),
@@ -232,5 +274,10 @@ fn target_label(target: TargetChoice, saved: &[(u64, String)]) -> String {
             .find(|entry| entry.0 == id)
             .map(|entry| entry.1.clone())
             .unwrap_or_else(|| "Missing saved plane".into()),
+        TargetChoice::SavedCurvedGuide(id) => curved
+            .iter()
+            .find(|entry| entry.0 == id)
+            .map(|entry| entry.1.clone())
+            .unwrap_or_else(|| "Missing curved guide".into()),
     }
 }

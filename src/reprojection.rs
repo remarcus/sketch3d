@@ -25,6 +25,7 @@ pub enum TargetChoice {
     ActivePlanarGuide,
     CapturedView,
     SavedPlane(u64),
+    SavedCurvedGuide(u64),
 }
 
 pub struct Draft {
@@ -37,6 +38,8 @@ pub struct Draft {
     pub convert_curves: bool,
     pub captured_camera: Camera,
     pub error: Option<String>,
+    pub kept_original_samples: usize,
+    target_guide_snapshot: Option<(u64, GuideGeometry)>,
 }
 
 impl Draft {
@@ -57,10 +60,11 @@ impl Draft {
                     || doc.has_linked_source(stroke.id)
                     || doc.linked_instance_for_stroke(stroke.id).is_some()
                     || stroke.modifiers.is_some()
+                    || stroke.model_surface.is_some()
                     || stroke.points.is_empty()
             })
         {
-            return Err("Reprojection supports selected editable sampled strokes only; fills, linked artwork, and modifier stacks are unsupported.".into());
+            return Err("Reprojection supports selected editable sampled strokes only; fills, linked artwork, model-bound dab strokes, and modifier stacks are unsupported.".into());
         }
         let count: usize = before.iter().map(|stroke| stroke.points.len()).sum();
         if count > MAX_POINTS {
@@ -81,6 +85,8 @@ impl Draft {
             convert_curves: false,
             captured_camera: camera,
             error: None,
+            kept_original_samples: 0,
+            target_guide_snapshot: None,
         })
     }
 
@@ -113,34 +119,103 @@ impl Draft {
                     depth: 0.0,
                 }
             }
+            TargetChoice::SavedCurvedGuide(_) => {
+                return Err(
+                    "Choose a curved guide rebuild target instead of a planar target.".into(),
+                );
+            }
         })
     }
 
-    pub fn rebuild(&mut self, plane: DrawingPlane, rect: Rect) -> Result<(), String> {
-        let result = self.build_preview(plane, rect);
+    pub fn rebuild_on_curved_guide(
+        &mut self,
+        doc: &Document,
+        guide_id: u64,
+        rect: Rect,
+    ) -> Result<(), String> {
+        let Some(guide) = doc
+            .guide_resources
+            .iter()
+            .find(|guide| guide.id == guide_id)
+        else {
+            self.preview = self.before.clone();
+            self.error = Some("Selected curved guide no longer exists".into());
+            self.kept_original_samples = 0;
+            self.target_guide_snapshot = None;
+            return Err("Selected curved guide no longer exists".into());
+        };
+        let geometry = guide.geometry.clone();
+        let result = match &geometry {
+            GuideGeometry::Cylinder { .. } | GuideGeometry::Sphere { .. } => {
+                self.build_curved_preview(&geometry, rect)
+            }
+            _ => Err("Reprojection currently supports saved Cylinder and Sphere guides.".into()),
+        };
         match result {
-            Ok(preview) => {
+            Ok((preview, kept_original_samples)) => {
                 self.preview = preview;
                 self.error = None;
+                self.kept_original_samples = kept_original_samples;
+                self.target_guide_snapshot = Some((guide_id, geometry));
                 Ok(())
             }
             Err(error) => {
                 self.preview = self.before.clone();
                 self.error = Some(error.clone());
+                self.kept_original_samples = 0;
+                self.target_guide_snapshot = None;
                 Err(error)
             }
         }
     }
 
-    fn build_preview(&self, plane: DrawingPlane, rect: Rect) -> Result<Vec<Stroke>, String> {
+    pub fn rebuild(&mut self, plane: DrawingPlane, rect: Rect) -> Result<(), String> {
+        let result = self.build_preview(plane, rect);
+        match result {
+            Ok((preview, kept_original_samples)) => {
+                self.preview = preview;
+                self.error = None;
+                self.kept_original_samples = kept_original_samples;
+                self.target_guide_snapshot = None;
+                Ok(())
+            }
+            Err(error) => {
+                self.preview = self.before.clone();
+                self.error = Some(error.clone());
+                self.kept_original_samples = 0;
+                self.target_guide_snapshot = None;
+                Err(error)
+            }
+        }
+    }
+
+    fn build_preview(
+        &self,
+        plane: DrawingPlane,
+        rect: Rect,
+    ) -> Result<(Vec<Stroke>, usize), String> {
+        self.build_preview_with_target(ProjectionTarget::Plane(plane), rect)
+    }
+
+    fn build_curved_preview(
+        &self,
+        guide: &GuideGeometry,
+        rect: Rect,
+    ) -> Result<(Vec<Stroke>, usize), String> {
+        self.build_preview_with_target(ProjectionTarget::Curved(guide), rect)
+    }
+
+    fn build_preview_with_target(
+        &self,
+        target: ProjectionTarget<'_>,
+        rect: Rect,
+    ) -> Result<(Vec<Stroke>, usize), String> {
         if !self.offset.is_finite() || !(-100.0..=100.0).contains(&self.offset) {
             return Err("Normal offset must be between −100 and 100 world units".into());
         }
-        let (u, _, n) = plane.basis();
-        let origin = plane.origin();
-        let camera = self.captured_camera;
         let mut preview = self.before.clone();
         let mut total = 0usize;
+        let mut kept_original_samples = 0;
         for stroke in &mut preview {
             if stroke.curve.is_some() && !self.convert_curves {
                 return Err("Selected semantic curves need the explicit Convert curves option before reprojection.".into());
@@ -152,37 +227,25 @@ impl Draft {
             if total > MAX_POINTS {
                 return Err("Reprojection exceeds its sample budget".into());
             }
+            let mut first_surface_normal = None;
             for point in &mut stroke.points {
                 let original = point.position;
-                let projected = match self.mode {
-                    ProjectionMode::Orthogonal => original - n * (original - origin).dot(n),
-                    ProjectionMode::CapturedViewRay => {
-                        let Some((screen, _)) = crate::gizmo::project(&camera, rect, original)
-                        else {
-                            if self.keep_original {
-                                continue;
-                            }
-                            return Err("A source sample is outside the captured view; enable Keep Original or adjust the view.".into());
-                        };
-                        let (ray_origin, ray_direction) = crate::gizmo::ray(&camera, rect, screen);
-                        let denominator = ray_direction.dot(n);
-                        if denominator.abs() < 1.0e-6 {
-                            return Err(
-                                "A captured view ray is parallel to the target plane.".into()
-                            );
-                        }
-                        let distance = (origin - ray_origin).dot(n) / denominator;
-                        if !distance.is_finite() || distance < 0.0 {
-                            return Err("A captured view ray hits behind its camera; choose another target.".into());
-                        }
-                        ray_origin + ray_direction * distance
+                let Some((projected, normal)) = self.project_sample(target, original, rect)? else {
+                    if self.keep_original {
+                        kept_original_samples += 1;
+                        continue;
                     }
+                    return Err(match target {
+                        ProjectionTarget::Plane(_) => "A source sample could not be projected to the target plane.",
+                        ProjectionTarget::Curved(_) => "A source sample misses the curved target or is ambiguous; enable Keep Original or choose another projection.",
+                    }.into());
                 };
-                let position = projected + n * self.offset;
+                let position = projected + normal * self.offset;
                 if !position.is_finite() || position.abs().max_element() > 10000.0 {
                     return Err("Reprojected point exceeds the ±10000 world-unit limit".into());
                 }
                 point.position = position;
+                first_surface_normal.get_or_insert(normal);
             }
             if stroke.points.len() >= 2 {
                 let length: f32 = stroke
@@ -194,18 +257,118 @@ impl Draft {
                     return Err("Projection collapses a stroke to a degenerate point; revise the target or keep the original samples.".into());
                 }
             }
-            stroke.brush.normal = n;
-            stroke.brush.tangent = u;
+            match target {
+                ProjectionTarget::Plane(plane) => {
+                    let (tangent, _, normal) = plane.basis();
+                    stroke.brush.normal = normal;
+                    stroke.brush.tangent = tangent;
+                }
+                ProjectionTarget::Curved(_) => {
+                    if let Some(normal) = first_surface_normal {
+                        let tangent = stroke
+                            .points
+                            .windows(2)
+                            .map(|pair| pair[1].position - pair[0].position)
+                            .map(|delta| delta - normal * delta.dot(normal))
+                            .find_map(Vec3::try_normalize)
+                            .or_else(|| {
+                                let tangent = stroke.brush.tangent;
+                                (tangent - normal * tangent.dot(normal)).try_normalize()
+                            })
+                            .or_else(|| normal.cross(Vec3::X).try_normalize())
+                            .or_else(|| normal.cross(Vec3::Y).try_normalize())
+                            .unwrap_or(Vec3::Z);
+                        stroke.brush.normal = normal;
+                        stroke.brush.tangent = tangent;
+                    }
+                }
+            }
             if !stroke.brush.is_valid() {
                 return Err("Projected brush frame is invalid".into());
             }
         }
-        Ok(preview)
+        Ok((preview, kept_original_samples))
+    }
+
+    fn project_sample(
+        &self,
+        target: ProjectionTarget<'_>,
+        original: Vec3,
+        rect: Rect,
+    ) -> Result<Option<(Vec3, Vec3)>, String> {
+        match target {
+            ProjectionTarget::Plane(plane) => {
+                let (_, _, normal) = plane.basis();
+                let origin = plane.origin();
+                let projected = match self.mode {
+                    ProjectionMode::Orthogonal => {
+                        original - normal * (original - origin).dot(normal)
+                    }
+                    ProjectionMode::CapturedViewRay => {
+                        let Some((screen, _)) =
+                            crate::gizmo::project(&self.captured_camera, rect, original)
+                        else {
+                            return Ok(None);
+                        };
+                        let (ray_origin, ray_direction) =
+                            crate::gizmo::ray(&self.captured_camera, rect, screen);
+                        let denominator = ray_direction.dot(normal);
+                        if denominator.abs() < 1.0e-6 {
+                            return Err(
+                                "A captured view ray is parallel to the target plane.".into()
+                            );
+                        }
+                        let distance = (origin - ray_origin).dot(normal) / denominator;
+                        if !distance.is_finite() || distance < 0.0 {
+                            return Err("A captured view ray hits behind its camera; choose another target.".into());
+                        }
+                        ray_origin + ray_direction * distance
+                    }
+                };
+                Ok(Some((projected, normal)))
+            }
+            ProjectionTarget::Curved(guide) => {
+                let projected = match self.mode {
+                    ProjectionMode::Orthogonal => orthogonal_guide_projection(guide, original),
+                    ProjectionMode::CapturedViewRay => {
+                        let Some((screen, _)) =
+                            crate::gizmo::project(&self.captured_camera, rect, original)
+                        else {
+                            return Ok(None);
+                        };
+                        let (ray_origin, ray_direction) =
+                            crate::gizmo::ray(&self.captured_camera, rect, screen);
+                        guide.clone().hit(ray_origin, ray_direction)
+                    }
+                };
+                let Some(projected) = projected else {
+                    return Ok(None);
+                };
+                let Some(normal) = guide_normal(guide, projected) else {
+                    return Ok(None);
+                };
+                Ok(Some((projected, normal)))
+            }
+        }
     }
 
     pub fn edit(&self, doc: &Document) -> Result<Edit, String> {
         if self.preview == self.before {
             return Err("Reprojection produces no changes.".into());
+        }
+        if let Some((guide_id, expected_geometry)) = &self.target_guide_snapshot {
+            let target_is_unchanged = matches!(self.target, TargetChoice::SavedCurvedGuide(id) if id == *guide_id)
+                && doc
+                    .guide_resources
+                    .iter()
+                    .find(|guide| guide.id == *guide_id)
+                    .is_some_and(|guide| guide.geometry == *expected_geometry);
+            if !target_is_unchanged {
+                return Err(
+                    "The curved target changed or disappeared; reopen the reprojection preview."
+                        .into(),
+                );
+            }
         }
         for source in &self.before {
             if !doc.editable(source) || !doc.strokes.iter().any(|stroke| stroke == source) {
@@ -228,5 +391,55 @@ impl Draft {
             }
         }
         Ok(Edit::Change { before, after })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProjectionTarget<'a> {
+    Plane(DrawingPlane),
+    Curved(&'a GuideGeometry),
+}
+
+fn orthogonal_guide_projection(guide: &GuideGeometry, point: Vec3) -> Option<Vec3> {
+    match guide {
+        GuideGeometry::Cylinder {
+            center,
+            rotation,
+            radius,
+            height,
+        } => {
+            let local = rotation.inverse() * (point - *center);
+            let radial = Vec3::new(local.x, 0.0, local.z).try_normalize()?;
+            (local.y.abs() <= *height * 0.5).then_some(
+                *center + *rotation * Vec3::new(radial.x * *radius, local.y, radial.z * *radius),
+            )
+        }
+        GuideGeometry::Sphere {
+            center,
+            rotation,
+            radius,
+        } => {
+            let local = rotation.inverse() * (point - *center);
+            let direction = local.try_normalize()?;
+            Some(*center + *rotation * direction * *radius)
+        }
+        _ => None,
+    }
+}
+
+fn guide_normal(guide: &GuideGeometry, point: Vec3) -> Option<Vec3> {
+    match guide {
+        GuideGeometry::Cylinder {
+            center, rotation, ..
+        } => {
+            let local = rotation.inverse() * (point - *center);
+            (*rotation * Vec3::new(local.x, 0.0, local.z).try_normalize()?).try_normalize()
+        }
+        GuideGeometry::Sphere {
+            center, rotation, ..
+        } => {
+            (*rotation * (rotation.inverse() * (point - *center)).try_normalize()?).try_normalize()
+        }
+        _ => None,
     }
 }
