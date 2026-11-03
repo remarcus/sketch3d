@@ -12,7 +12,6 @@ impl SketchApp {
             "Drawing plane placed through the camera focus, facing the current view.".into();
     }
     pub(super) fn plane_controls(&mut self, ui: &mut egui::Ui) {
-        ui_style::section(ui, "Drawing guide");
         self.saved_guide_controls(ui);
         if self.doc.active_guide.is_some() {
             return;
