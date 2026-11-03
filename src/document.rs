@@ -410,6 +410,69 @@ pub struct PlanarFill {
     /// Optional color field in normalized coordinates of the current contour bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gradient: Option<FillGradient>,
+    /// Optional portable image and fill-local UV mapping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture: Option<FillImageTexture>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FillImageTexture {
+    pub asset_id: u64,
+    #[serde(default = "default_fill_texture_scale")]
+    pub scale: glam::Vec2,
+    #[serde(default)]
+    pub rotation: f32,
+    #[serde(default)]
+    pub offset: glam::Vec2,
+    #[serde(default = "default_fill_texture_repeat")]
+    pub repeat: bool,
+    #[serde(default = "default_fill_texture_tint")]
+    pub tint: [f32; 3],
+    #[serde(default = "default_true_f32")]
+    pub opacity: f32,
+}
+
+fn default_fill_texture_scale() -> glam::Vec2 {
+    glam::Vec2::ONE
+}
+fn default_fill_texture_tint() -> [f32; 3] {
+    [1.0; 3]
+}
+fn default_fill_texture_repeat() -> bool {
+    true
+}
+fn default_true_f32() -> f32 {
+    1.0
+}
+
+impl FillImageTexture {
+    pub fn is_valid(self) -> bool {
+        self.asset_id != 0
+            && self.asset_id != u64::MAX
+            && self.scale.is_finite()
+            && self.scale.min_element() >= 0.001
+            && self.scale.max_element() <= 100.0
+            && self.rotation.is_finite()
+            && self.rotation.abs() <= std::f32::consts::TAU * 100.0
+            && self.offset.is_finite()
+            && self.offset.abs().max_element() <= 10_000.0
+            && self
+                .tint
+                .into_iter()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+            && self.opacity.is_finite()
+            && (0.0..=1.0).contains(&self.opacity)
+    }
+
+    pub fn map_uv(self, uv: glam::Vec2) -> glam::Vec2 {
+        let scaled = (uv - glam::Vec2::splat(0.5)) * self.scale;
+        let (sin, cos) = self.rotation.sin_cos();
+        glam::Vec2::new(
+            cos * scaled.x - sin * scaled.y,
+            sin * scaled.x + cos * scaled.y,
+        ) + glam::Vec2::splat(0.5)
+            + self.offset
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -994,9 +1057,14 @@ impl Document {
                 if stroke.gradient.is_some()
                     || stroke.fill.is_some_and(|fill| {
                         fill.gradient.is_some_and(|gradient| !gradient.is_valid())
+                            || fill.texture.is_some_and(|texture| {
+                                !texture.is_valid() || !tip_assets.contains_key(&texture.asset_id)
+                            })
                     })
                 {
-                    return Err("Invalid gradient data for a planar fill".into());
+                    return Err(
+                        "Invalid gradient or missing image texture for a planar fill".into(),
+                    );
                 }
                 crate::polygon::triangulate(stroke)?;
             }

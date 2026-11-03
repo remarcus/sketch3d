@@ -9,6 +9,7 @@ pub(super) struct FillDraft {
     selected: usize,
     pub(super) drag: Option<FillPointDrag>,
     pub(super) gradient_drag: Option<(usize, Camera, Rect, Vec3)>,
+    imported_texture_ids: Vec<u64>,
 }
 pub(super) struct FillPointDrag {
     index: usize,
@@ -31,6 +32,7 @@ pub(super) struct FillUi {
     pub gap_tolerance: f32,
     pub draft: Option<FillDraft>,
     pub verification_frame: Option<u32>,
+    texture_preview: Option<(u64, bool, egui::TextureHandle)>,
 }
 impl Default for FillUi {
     fn default() -> Self {
@@ -41,6 +43,7 @@ impl Default for FillUi {
             gap_tolerance: 0.0,
             draft: None,
             verification_frame: None,
+            texture_preview: None,
         }
     }
 }
@@ -85,6 +88,7 @@ impl SketchApp {
             selected: 0,
             drag: None,
             gradient_drag: None,
+            imported_texture_ids: Vec::new(),
         });
         self.select_mode = false;
         self.brush_select_enabled = false;
@@ -125,6 +129,7 @@ impl SketchApp {
         let mut cancel = false;
         let mut insert = false;
         let mut remove = false;
+        let mut preview_texture_id = None;
         ui.horizontal(|ui| {
             insert = ui.button("Insert midpoint after vertex").clicked();
             remove = ui
@@ -139,7 +144,60 @@ impl SketchApp {
         });
         ui.separator();
         ui.strong("Fill appearance");
+        let import_texture = ui.button("Import fill texture PNG…").clicked();
         if let Some(fill) = draft.mark.fill.as_mut() {
+            if let Some(mut texture) = fill.texture {
+                ui.horizontal(|ui| {
+                    ui.label("Fill texture");
+                    ui.checkbox(&mut texture.repeat, "Repeat");
+                });
+                ui.small("Uncheck Repeat to clamp the texture at its borders.");
+                ui.horizontal(|ui| {
+                    ui.label("Scale U / V");
+                    ui.add(egui::DragValue::new(&mut texture.scale.x).range(0.001..=100.0));
+                    ui.add(egui::DragValue::new(&mut texture.scale.y).range(0.001..=100.0));
+                });
+                let mut rotation_degrees = texture.rotation.to_degrees();
+                ui.horizontal(|ui| {
+                    ui.label("Rotation");
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut rotation_degrees)
+                                .range(-36000.0..=36000.0)
+                                .suffix("°"),
+                        )
+                        .changed()
+                    {
+                        texture.rotation = rotation_degrees.to_radians();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Offset U / V");
+                    ui.add(egui::DragValue::new(&mut texture.offset.x).range(-100.0..=100.0));
+                    ui.add(egui::DragValue::new(&mut texture.offset.y).range(-100.0..=100.0));
+                });
+                let mut tint = texture.tint.map(crate::presentation::linear_to_srgb);
+                ui.horizontal(|ui| {
+                    ui.label("Tint");
+                    if ui.color_edit_button_rgb(&mut tint).changed() {
+                        texture.tint = tint.map(crate::presentation::srgb_to_linear);
+                    }
+                });
+                ui.add(egui::Slider::new(&mut texture.opacity, 0.0..=1.0).text("Texture opacity"));
+                if texture.is_valid() {
+                    fill.texture = Some(texture);
+                } else {
+                    self.status = "Texture mapping values exceed the supported limits.".into();
+                }
+                if ui.button("Remove image texture").clicked() {
+                    fill.texture = None;
+                    self.fills.texture_preview = None;
+                }
+                let texture_id = fill.texture.map(|texture| texture.asset_id);
+                if let Some(texture_id) = texture_id {
+                    preview_texture_id = Some((texture_id, texture.repeat));
+                }
+            }
             if let Some(mut gradient) = fill.gradient {
                 let old_kind = gradient.kind;
                 ui.horizontal(|ui| {
@@ -215,7 +273,14 @@ impl SketchApp {
                         "Gradient handles must stay distinct and within the fill bounds.".into();
                 }
                 ui.small("Drag the on-canvas handles; coordinates follow the fill's normalized bounds and interpolate in linear RGB.");
-                if ui.button("Reset to solid color").clicked() {
+                if ui
+                    .button(if fill.texture.is_some() {
+                        "Remove gradient"
+                    } else {
+                        "Reset to solid color"
+                    })
+                    .clicked()
+                {
                     fill.gradient = None;
                 }
             } else {
@@ -238,6 +303,15 @@ impl SketchApp {
             }
         }
         let _ = draft;
+        if let Some((id, repeat)) = preview_texture_id {
+            self.ensure_fill_texture_preview(ui.ctx(), id, repeat);
+            if let Some((_, _, preview)) = &self.fills.texture_preview {
+                ui.image((preview.id(), egui::vec2(160.0, 100.0)));
+            }
+        }
+        if import_texture {
+            self.import_fill_texture(ui.ctx());
+        }
         if changed {
             self.update_fill_vertex(selected, Vec3::from_array(coordinates));
         }
@@ -250,6 +324,125 @@ impl SketchApp {
         if apply || cancel {
             self.finish_fill_contour_edit(apply);
         }
+    }
+
+    fn ensure_fill_texture_preview(&mut self, ctx: &egui::Context, id: u64, repeat: bool) {
+        if self
+            .fills
+            .texture_preview
+            .as_ref()
+            .is_some_and(|(preview_id, preview_repeat, _)| {
+                *preview_id == id && *preview_repeat == repeat
+            })
+        {
+            return;
+        }
+        let Some(asset) = self
+            .doc
+            .brush_tip_assets
+            .iter()
+            .find(|asset| asset.id == id)
+        else {
+            self.fills.texture_preview = None;
+            return;
+        };
+        let Ok(decoded) = asset.decoded() else {
+            self.fills.texture_preview = None;
+            return;
+        };
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [decoded.size[0] as usize, decoded.size[1] as usize],
+            &decoded.pixels,
+        );
+        self.fills.texture_preview = Some((
+            id,
+            repeat,
+            ctx.load_texture(
+                format!("fill-texture-{id}-{repeat}"),
+                image,
+                if repeat {
+                    egui::TextureOptions::LINEAR_REPEAT
+                } else {
+                    egui::TextureOptions::LINEAR
+                },
+            ),
+        ));
+    }
+
+    fn import_fill_texture(&mut self, ctx: &egui::Context) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("PNG image", &["png"])
+            .pick_file()
+        else {
+            return;
+        };
+        match std::fs::metadata(&path) {
+            Ok(metadata)
+                if metadata.is_file()
+                    && metadata.len() <= crate::brush_tip::MAX_PNG_BYTES as u64 => {}
+            Ok(_) => {
+                self.status = format!(
+                    "Fill textures must be PNG files no larger than {} KiB.",
+                    crate::brush_tip::MAX_PNG_BYTES / 1024
+                );
+                return;
+            }
+            Err(error) => {
+                self.status = format!("Could not inspect fill texture: {error}");
+                return;
+            }
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.status = format!("Could not read fill texture: {error}");
+                return;
+            }
+        };
+        let provenance = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned);
+        let asset = match crate::brush_tip::BrushTipAsset::from_png(bytes, provenance) {
+            Ok(asset) => asset,
+            Err(error) => {
+                self.status = format!("Fill texture import failed: {error}");
+                return;
+            }
+        };
+        let id = asset.id;
+        let is_new = !self
+            .doc
+            .brush_tip_assets
+            .iter()
+            .any(|existing| existing.id == id);
+        if let Err(error) = self.doc.add_brush_tip_asset(asset) {
+            self.status = format!("Fill texture import failed: {error}");
+            return;
+        }
+        let Some(draft) = self.fills.draft.as_mut() else {
+            if is_new {
+                self.doc.brush_tip_assets.retain(|asset| asset.id != id);
+            }
+            return;
+        };
+        let Some(fill) = draft.mark.fill.as_mut() else {
+            return;
+        };
+        fill.texture = Some(crate::document::FillImageTexture {
+            asset_id: id,
+            scale: glam::Vec2::ONE,
+            rotation: 0.0,
+            offset: glam::Vec2::ZERO,
+            repeat: true,
+            tint: [1.0; 3],
+            opacity: 1.0,
+        });
+        if is_new {
+            draft.imported_texture_ids.push(id);
+        }
+        self.ensure_fill_texture_preview(ctx, id, true);
+        self.status = "Fill texture imported into the detached preview. Apply commits it; Cancel removes newly added unused image data.".into();
     }
 
     fn update_fill_vertex(&mut self, index: usize, position: Vec3) {
@@ -313,11 +506,13 @@ impl SketchApp {
             return;
         };
         if !apply {
+            self.cleanup_imported_fill_textures(&draft.imported_texture_ids);
             self.select_mode = true;
             self.status = "Fill contour edit cancelled; the drawing is unchanged.".into();
             return;
         }
         if draft.mark == original {
+            self.cleanup_imported_fill_textures(&draft.imported_texture_ids);
             self.select_mode = true;
             self.status = "No contour changes to apply.".into();
             return;
@@ -325,6 +520,7 @@ impl SketchApp {
         if !self.doc.editable(&original)
             || !self.doc.strokes.iter().any(|stroke| stroke == &original)
         {
+            self.cleanup_imported_fill_textures(&draft.imported_texture_ids);
             self.select_mode = true;
             self.status =
                 "The fill changed or its layer is now protected; contour edit cancelled.".into();
@@ -342,6 +538,7 @@ impl SketchApp {
         edit.apply(&mut self.doc, true);
         self.undo.push(edit);
         self.redo.clear();
+        self.cleanup_imported_fill_textures(&draft.imported_texture_ids);
         self.dirty = true;
         self.record_recovery_edit();
         self.renderer.invalidate_ids(&self.selected);
@@ -439,8 +636,26 @@ impl SketchApp {
     }
 
     pub(super) fn cancel_fill_tool(&mut self) {
-        self.fills.draft = None;
+        if let Some(draft) = self.fills.draft.take() {
+            self.cleanup_imported_fill_textures(&draft.imported_texture_ids);
+        }
         self.fills.enabled = false;
+    }
+
+    fn cleanup_imported_fill_textures(&mut self, ids: &[u64]) {
+        for id in ids {
+            let referenced = self.doc.strokes.iter().any(|stroke| {
+                stroke.brush.tip_asset_id == *id
+                    || stroke
+                        .fill
+                        .and_then(|fill| fill.texture)
+                        .is_some_and(|texture| texture.asset_id == *id)
+            });
+            if !referenced {
+                self.doc.brush_tip_assets.retain(|asset| asset.id != *id);
+            }
+        }
+        self.fills.texture_preview = None;
     }
     pub(super) fn fill_controls(&mut self, ui: &mut egui::Ui) {
         if self
@@ -555,6 +770,7 @@ impl SketchApp {
                         fill: Some(PlanarFill {
                             offset: self.fills.offset,
                             gradient: None,
+                            texture: None,
                         }),
                         group_id: None,
                         layer_id: self.doc.active_layer,
@@ -588,6 +804,7 @@ impl SketchApp {
                         selected: 0,
                         drag: None,
                         gradient_drag: None,
+                        imported_texture_ids: Vec::new(),
                     });
                     self.status = "Region preview ready. Enter commits; Escape cancels.".into();
                 }
@@ -634,6 +851,7 @@ impl SketchApp {
             selected: 0,
             drag: None,
             gradient_drag: None,
+            imported_texture_ids: Vec::new(),
             mark: Stroke {
                 curve: None,
                 material: Default::default(),
@@ -642,6 +860,7 @@ impl SketchApp {
                 fill: Some(PlanarFill {
                     offset: self.fills.offset,
                     gradient: None,
+                    texture: None,
                 }),
                 group_id: None,
                 layer_id: self.doc.active_layer,
@@ -696,6 +915,7 @@ impl SketchApp {
         mark.fill = Some(PlanarFill {
             offset: self.fills.offset,
             gradient: None,
+            texture: None,
         });
         if let Err(error) = polygon::triangulate(&mark) {
             self.status = error;
@@ -791,15 +1011,53 @@ impl SketchApp {
             .collect();
         if draft.mark.fill.is_some() {
             let vertices = polygon::mesh(&draft.mark);
+            let preview_texture =
+                draft
+                    .mark
+                    .fill
+                    .and_then(|fill| fill.texture)
+                    .and_then(|texture| {
+                        self.fills
+                            .texture_preview
+                            .as_ref()
+                            .filter(|(id, repeat, _)| {
+                                *id == texture.asset_id && *repeat == texture.repeat
+                            })
+                    });
+            let mut textured_mesh =
+                preview_texture.map(|(_, _, texture)| egui::Mesh::with_texture(texture.id()));
             for tri in vertices.chunks_exact(3) {
-                let points = tri
+                let projected_triangle = tri
                     .iter()
                     .map(|vertex| {
                         crate::gizmo::project(&self.camera, rect, Vec3::from_array(vertex.position))
-                            .map(|(screen, _)| screen)
+                            .map(|(screen, _)| (screen, vertex))
                     })
                     .collect::<Option<Vec<_>>>();
-                if let Some(points) = points {
+                if let Some(projected_triangle) = projected_triangle {
+                    if let Some(mesh) = &mut textured_mesh {
+                        let base = mesh.vertices.len() as u32;
+                        for (position, vertex) in projected_triangle {
+                            let rgb = vertex.color.map(crate::presentation::linear_to_srgb);
+                            let alpha = (vertex.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+                            mesh.vertices.push(egui::epaint::Vertex {
+                                pos: position,
+                                uv: egui::pos2(vertex.uv[0], vertex.uv[1]),
+                                color: Color32::from_rgba_unmultiplied(
+                                    (rgb[0] * 255.0).round() as u8,
+                                    (rgb[1] * 255.0).round() as u8,
+                                    (rgb[2] * 255.0).round() as u8,
+                                    alpha,
+                                ),
+                            });
+                        }
+                        mesh.add_triangle(base, base + 1, base + 2);
+                        continue;
+                    }
+                    let points = projected_triangle
+                        .into_iter()
+                        .map(|(position, _)| position)
+                        .collect::<Vec<_>>();
                     let rgb = tri[0].color.map(crate::presentation::linear_to_srgb);
                     let fill = Color32::from_rgba_unmultiplied(
                         (rgb[0] * 255.0).round() as u8,
@@ -816,6 +1074,9 @@ impl SketchApp {
                         egui::Stroke::NONE,
                     ));
                 }
+            }
+            if let Some(mesh) = textured_mesh {
+                painter.add(egui::Shape::mesh(mesh));
             }
             if let Some(fill) = draft.mark.fill {
                 if let Some(gradient) = fill.gradient {

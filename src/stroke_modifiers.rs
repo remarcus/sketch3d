@@ -450,6 +450,7 @@ mod tests {
         fill.fill = Some(crate::document::PlanarFill {
             offset: 0.0,
             gradient: None,
+            texture: None,
         });
         assert!(!StrokeModifierStack::default().is_compatible(&fill));
     }

@@ -39,9 +39,11 @@ opaque.
 Only PNG is accepted. The decoder supports PNG color types, bit depths, and
 alpha forms accepted by the bundled `image` PNG decoder; assets are decoded to
 RGBA for preview and rendering. Each PNG is at most 512 KiB and 512 × 512
-pixels. A library or drawing holds at most 64 unique tips, 16 MiB of encoded
-PNG bytes, and 4,194,304 total pixels (16 MiB worst-case decoded RGBA). The
-complete package is limited to 1 MiB and the local library file to 32 MiB.
+pixels. A drawing's shared portable PNG catalog (brush tips and fill textures)
+holds at most 64 unique assets, 16 MiB of encoded PNG bytes, and 4,194,304 total
+pixels (16 MiB worst-case decoded RGBA). A brush library uses the same limits
+for its tip assets. The complete package is limited to 1 MiB and the local
+library file to 32 MiB.
 These limits are checked before committing an import or document edit.
 
 Package names and settings use the same limits as local presets. Malformed

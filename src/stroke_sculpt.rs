@@ -427,6 +427,7 @@ mod tests {
         fill.strokes[0].fill = Some(crate::document::PlanarFill {
             offset: 0.0,
             gradient: None,
+            texture: None,
         });
         assert!(edit(&fill, &HashSet::from([4]), settings(Operation::Smooth)).is_err());
         let mut curve = document;

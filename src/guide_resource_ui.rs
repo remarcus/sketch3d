@@ -2186,6 +2186,7 @@ mod planar_target_tests {
             fill: Some(crate::document::PlanarFill {
                 offset: 0.01,
                 gradient: None,
+                texture: None,
             }),
             group_id: None,
             layer_id: 1,

@@ -85,7 +85,7 @@ impl BrushTipAsset {
 pub fn validate_catalog(assets: &[BrushTipAsset]) -> Result<(), String> {
     if assets.len() > MAX_ASSETS {
         return Err(format!(
-            "A brush library/drawing can contain at most {MAX_ASSETS} tips"
+            "A brush library/drawing can contain at most {MAX_ASSETS} portable PNG assets"
         ));
     }
     let mut ids = std::collections::HashMap::with_capacity(assets.len());
@@ -95,12 +95,12 @@ pub fn validate_catalog(assets: &[BrushTipAsset]) -> Result<(), String> {
         asset.validate()?;
         total = total.saturating_add(asset.png.len());
         if total > MAX_CATALOG_BYTES {
-            return Err("Brush tips exceed the 16 MiB encoded catalog budget".into());
+            return Err("Portable PNG assets exceed the 16 MiB encoded catalog budget".into());
         }
         total_pixels = total_pixels
             .saturating_add(u64::from(asset.size[0]).saturating_mul(u64::from(asset.size[1])));
         if total_pixels > MAX_CATALOG_PIXELS {
-            return Err("Brush tips exceed the 16 MiB decoded RGBA memory budget".into());
+            return Err("Portable PNG assets exceed the 16 MiB decoded RGBA memory budget".into());
         }
         if let Some(previous) = ids.insert(asset.id, asset.png.as_slice()) {
             if previous != asset.png {

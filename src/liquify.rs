@@ -277,6 +277,7 @@ mod tests {
         document.strokes[0].fill = Some(crate::document::PlanarFill {
             offset: 0.01,
             gradient: None,
+            texture: None,
         });
         assert!(edit(&document, &ids, settings()).is_err());
     }

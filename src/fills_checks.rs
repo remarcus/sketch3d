@@ -154,6 +154,7 @@ impl SketchApp {
                 fill: Some(PlanarFill {
                     offset: 0.003,
                     gradient: None,
+                    texture: None,
                 }),
                 group_id: None,
                 layer_id: 1,

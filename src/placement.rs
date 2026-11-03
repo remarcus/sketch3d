@@ -203,6 +203,7 @@ mod tests {
             fill: Some(PlanarFill {
                 offset: 0.0,
                 gradient: None,
+                texture: None,
             }),
             group_id: None,
             layer_id: 1,

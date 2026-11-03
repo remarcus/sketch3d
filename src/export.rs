@@ -164,17 +164,26 @@ pub(crate) fn stroke_mesh(stroke: &Stroke) -> Result<Mesh, String> {
                 n.z,
                 vertex.uv[0],
                 vertex.uv[1],
-                if stroke.gradient.is_some() {
+                if stroke.gradient.is_some()
+                    || stroke.fill.and_then(|fill| fill.gradient).is_some()
+                    || stroke.fill.and_then(|fill| fill.texture).is_some()
+                {
                     vertex.color[0]
                 } else {
                     1.0
                 },
-                if stroke.gradient.is_some() {
+                if stroke.gradient.is_some()
+                    || stroke.fill.and_then(|fill| fill.gradient).is_some()
+                    || stroke.fill.and_then(|fill| fill.texture).is_some()
+                {
                     vertex.color[1]
                 } else {
                     1.0
                 },
-                if stroke.gradient.is_some() {
+                if stroke.gradient.is_some()
+                    || stroke.fill.and_then(|fill| fill.gradient).is_some()
+                    || stroke.fill.and_then(|fill| fill.texture).is_some()
+                {
                     vertex.color[2]
                 } else {
                     1.0
@@ -274,9 +283,11 @@ pub fn encode_with_images(
     let mut colors = HashMap::new();
     let mut image_keys = HashMap::new();
     let mut tip_image_keys = HashMap::new();
+    let mut fill_image_keys = HashMap::new();
     let mut images = Vec::new();
     let mut textures = Vec::new();
     let mut image_samplers = false;
+    let mut fill_repeat_sampler = false;
     let mut uses_unlit = false;
     let mut ids = HashSet::new();
     let mut summary = ExportSummary {
@@ -345,6 +356,17 @@ pub fn encode_with_images(
                 stroke.id
             ));
         }
+        let fill_texture_key = stroke
+            .fill
+            .and_then(|fill| fill.texture)
+            .map(|texture| (texture.asset_id, texture.repeat));
+        if fill_texture_key.is_some_and(|(id, _)| !tip_assets.contains_key(&id)) {
+            return Err(format!(
+                "Stroke {} refers to a missing fill texture",
+                stroke.id
+            ));
+        }
+        fill_repeat_sampler |= fill_texture_key.is_some_and(|(_, repeat)| repeat);
         let double_sided =
             stroke.fill.is_some() || stroke.brush.kind == BrushKind::Ribbon || tip_key.is_some();
         let settings = stroke.brush.texture;
@@ -354,6 +376,7 @@ pub fn encode_with_images(
             || stroke.brush.opacity < 1.0
             || stroke.brush.flow.enabled
             || tip_key.is_some()
+            || fill_texture_key.is_some()
             || (stroke.fill.is_none() && stroke.brush.softness > 0.0)
             || stroke.material == crate::document::StrokeMaterial::Cutout
             || settings.kind.uses_continuous_alpha()
@@ -367,6 +390,7 @@ pub fn encode_with_images(
             double_sided,
             texture_key,
             tip_key,
+            fill_texture_key,
             alpha_blended,
             stroke.material,
         );
@@ -379,7 +403,11 @@ pub fn encode_with_images(
             } else {
                 1.0
             };
-            let base_color = if has_gradient { [1.0; 3] } else { stroke.color };
+            let base_color = if has_gradient || fill_texture_key.is_some() {
+                [1.0; 3]
+            } else {
+                stroke.color
+            };
             let mut material = json!({"name":format!("Ink {}",index+1),"pbrMetallicRoughness":{"baseColorFactor":[base_color[0],base_color[1],base_color[2],material_alpha],"metallicFactor":0.0,"roughnessFactor":0.8},"alphaMode":if alpha_blended {"BLEND"} else if texture_key.is_some() {"MASK"} else {"OPAQUE"},"doubleSided":double_sided});
             match stroke.material {
                 crate::document::StrokeMaterial::Shaded => {}
@@ -394,7 +422,35 @@ pub fn encode_with_images(
                 }
                 crate::document::StrokeMaterial::Cutout => {}
             }
-            if let Some(tip_id) = tip_key {
+            if let Some((asset_id, repeat)) = fill_texture_key {
+                let image_index = if let Some(index) = fill_image_keys.get(&(asset_id, repeat)) {
+                    *index
+                } else {
+                    let asset = tip_assets
+                        .get(&asset_id)
+                        .ok_or("Missing validated fill texture asset")?;
+                    ensure_binary_budget(binary.len(), asset.png.len() + 3, "fill textures")?;
+                    while !binary.len().is_multiple_of(4) {
+                        binary.push(0);
+                    }
+                    let offset = binary.len();
+                    binary.extend_from_slice(&asset.png);
+                    let view = views.len();
+                    views
+                        .push(json!({"buffer":0,"byteOffset":offset,"byteLength":asset.png.len()}));
+                    while !binary.len().is_multiple_of(4) {
+                        binary.push(0);
+                    }
+                    let index = images.len();
+                    images.push(json!({"name":format!("Fill texture {:016x}",asset_id),"bufferView":view,"mimeType":"image/png"}));
+                    textures.push(json!({"sampler":if repeat { 2 } else { 1 },"source":index}));
+                    image_samplers = true;
+                    fill_image_keys.insert((asset_id, repeat), index);
+                    index
+                };
+                material["pbrMetallicRoughness"]["baseColorTexture"] =
+                    json!({"index":image_index,"texCoord":0});
+            } else if let Some(tip_id) = tip_key {
                 let image_index = if let Some(index) = tip_image_keys.get(&tip_id) {
                     *index
                 } else {
@@ -498,6 +554,22 @@ pub fn encode_with_images(
                 if stroke.material == crate::document::StrokeMaterial::Emissive {
                     node["extras"]["spatialSketchEmissiveFillGradientFallback"] =
                         json!("COLOR_0_contains_fill_gradient; emissiveFactor_remains_uniform");
+                }
+            }
+            if let Some(texture) = fill.texture {
+                node["extras"]["spatialSketchFillTexture"] = json!({
+                    "assetId": format!("{:016x}", texture.asset_id),
+                    "scale": texture.scale.to_array(),
+                    "rotationRadians": texture.rotation,
+                    "offset": texture.offset.to_array(),
+                    "wrap": if texture.repeat { "repeat" } else { "clamp" },
+                    "tint": texture.tint,
+                    "opacity": texture.opacity,
+                    "filter": "linear",
+                });
+                if stroke.material == crate::document::StrokeMaterial::Emissive {
+                    node["extras"]["spatialSketchEmissiveFillTextureFallback"] =
+                        json!("baseColorTexture_and_COLOR_0_preserve_texture; emissiveFactor_remains_uniform");
                 }
             }
         }
@@ -806,6 +878,9 @@ pub fn encode_with_images(
             vec![json!({"magFilter":9728,"minFilter":9728,"wrapS":10497,"wrapT":10497})];
         if image_samplers {
             samplers.push(json!({"magFilter":9729,"minFilter":9987,"wrapS":33071,"wrapT":33071}));
+        }
+        if fill_repeat_sampler {
+            samplers.push(json!({"magFilter":9729,"minFilter":9987,"wrapS":10497,"wrapT":10497}));
         }
         root["samplers"] = json!(samplers);
     }

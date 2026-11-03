@@ -133,6 +133,7 @@ fn is_translucent(stroke: &Stroke, layer_opacity: f32, layer_blend_mode: LayerBl
         || layer_blend_mode != LayerBlendMode::Normal
         || stroke.brush.opacity < 0.999_999
         || stroke.brush.tip_asset_id != 0
+        || stroke.fill.and_then(|fill| fill.texture).is_some()
         || (stroke.brush.dynamics.opacity.enabled
             && stroke.brush.dynamics.opacity.minimum < 0.999_999)
         || (stroke.fill.is_none() && stroke.brush.softness > 0.0)
@@ -319,6 +320,7 @@ pub struct SceneRenderer {
     image_plane_meshes: HashMap<u64, ImagePlaneMesh>,
     image_plane_textures: HashMap<u64, ImagePlaneTexture>,
     tip_textures: HashMap<u64, ImagePlaneTexture>,
+    fill_textures: HashMap<(u64, bool), ImagePlaneTexture>,
     screen_background: Option<ScreenBackgroundTexture>,
     obj_reference_meshes: HashMap<u64, ObjReferenceMeshes>,
     repeat_preview: Vec<(crate::document::Stroke, Mesh)>,
@@ -929,6 +931,7 @@ impl SceneRenderer {
             image_plane_meshes: HashMap::new(),
             image_plane_textures: HashMap::new(),
             tip_textures: HashMap::new(),
+            fill_textures: HashMap::new(),
             screen_background: None,
             obj_reference_meshes: HashMap::new(),
             repeat_preview: Vec::new(),
@@ -1011,10 +1014,19 @@ impl SceneRenderer {
         &self,
         asset: &crate::brush_tip::BrushTipAsset,
     ) -> Result<ImagePlaneTexture, String> {
+        self.create_portable_image_texture(asset, false, "Portable brush image tip")
+    }
+
+    fn create_portable_image_texture(
+        &self,
+        asset: &crate::brush_tip::BrushTipAsset,
+        repeat: bool,
+        label: &'static str,
+    ) -> Result<ImagePlaneTexture, String> {
         let decoded = asset.decoded()?;
         let (width, height) = (decoded.size[0], decoded.size[1]);
         let texture = self.state.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Portable brush image tip"),
+            label: Some(label),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -1048,9 +1060,17 @@ impl SceneRenderer {
         );
         let view = texture.create_view(&Default::default());
         let sampler = self.state.device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Clamp brush image tip sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            label: Some("Portable image sampler"),
+            address_mode_u: if repeat {
+                wgpu::AddressMode::Repeat
+            } else {
+                wgpu::AddressMode::ClampToEdge
+            },
+            address_mode_v: if repeat {
+                wgpu::AddressMode::Repeat
+            } else {
+                wgpu::AddressMode::ClampToEdge
+            },
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
@@ -1104,11 +1124,42 @@ impl SceneRenderer {
                 self.tip_textures.insert(id, texture);
             }
         }
+        let mut fill_needed: HashSet<(u64, bool)> = doc
+            .strokes
+            .iter()
+            .filter(|stroke| doc.visible(stroke))
+            .filter_map(|stroke| stroke.fill.and_then(|fill| fill.texture))
+            .map(|texture| (texture.asset_id, texture.repeat))
+            .collect();
+        fill_needed.extend(
+            self.repeat_preview
+                .iter()
+                .filter_map(|(stroke, _)| stroke.fill.and_then(|fill| fill.texture))
+                .map(|texture| (texture.asset_id, texture.repeat)),
+        );
+        self.fill_textures
+            .retain(|key, _| fill_needed.contains(key));
+        for (id, repeat) in fill_needed {
+            if self.fill_textures.contains_key(&(id, repeat)) {
+                continue;
+            }
+            let Some(asset) = doc.brush_tip_assets.iter().find(|asset| asset.id == id) else {
+                continue;
+            };
+            if let Ok(texture) =
+                self.create_portable_image_texture(asset, repeat, "Portable planar fill texture")
+            {
+                self.fill_textures.insert((id, repeat), texture);
+            }
+        }
     }
 
     fn brush_texture(&self, stroke: &Stroke) -> &wgpu::BindGroup {
-        self.tip_textures
-            .get(&stroke.brush.tip_asset_id)
+        stroke
+            .fill
+            .and_then(|fill| fill.texture)
+            .and_then(|texture| self.fill_textures.get(&(texture.asset_id, texture.repeat)))
+            .or_else(|| self.tip_textures.get(&stroke.brush.tip_asset_id))
             .map(|texture| &texture.bind)
             .unwrap_or(&self.textures[&texture::key(stroke.brush.texture)])
     }

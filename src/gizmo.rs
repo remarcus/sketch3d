@@ -227,6 +227,33 @@ fn pick_filtered(
         }
         if stroke.fill.is_some() {
             if let Some(hit) = crate::polygon::ray_hit(stroke, origin, direction) {
+                let texture_visible =
+                    stroke
+                        .fill
+                        .and_then(|fill| fill.texture)
+                        .is_none_or(|texture| {
+                            let Some(asset) = doc
+                                .brush_tip_assets
+                                .iter()
+                                .find(|asset| asset.id == texture.asset_id)
+                            else {
+                                return false;
+                            };
+                            let Some(mut uv) = crate::polygon::mapped_fill_uv(stroke, hit) else {
+                                return false;
+                            };
+                            if texture.repeat {
+                                uv = uv - uv.floor();
+                            } else {
+                                uv = uv.clamp(glam::Vec2::ZERO, glam::Vec2::ONE);
+                            }
+                            asset
+                                .alpha_at_uv(uv.to_array())
+                                .is_ok_and(|alpha| alpha > 0.01)
+                        });
+                if !texture_visible {
+                    continue;
+                }
                 if let Some((_, depth)) = project(camera, rect, hit) {
                     if best.is_none_or(|old| depth < old.0) {
                         best = Some((depth, 0.0, stroke.id));

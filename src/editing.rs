@@ -904,6 +904,7 @@ mod tests {
         filled.fill = Some(crate::document::PlanarFill {
             offset: 0.2,
             gradient: None,
+            texture: None,
         });
         filled.points = vec![
             Point {
@@ -2099,6 +2100,7 @@ mod appearance_tests {
         doc.strokes[0].fill = Some(PlanarFill {
             offset: 0.03,
             gradient: None,
+            texture: None,
         });
         let filled_before = snapshot(&doc, &ids);
         assert!(appearance_edit(
@@ -2126,7 +2128,8 @@ mod appearance_tests {
             doc.strokes[0].fill,
             Some(PlanarFill {
                 offset: 0.03,
-                gradient: None
+                gradient: None,
+                texture: None,
             })
         );
         recolor.apply(&mut doc, false);

@@ -82,6 +82,26 @@ pub fn gradient_uv_from_world(stroke: &Stroke, world: Vec3) -> Option<glam::Vec2
         max,
     ))
 }
+
+pub fn mapped_fill_uv(stroke: &Stroke, world: Vec3) -> Option<glam::Vec2> {
+    let origin = stroke.points.first()?.position;
+    let delta = (world - origin).as_dvec3();
+    let tangent = stroke.brush.tangent.as_dvec3();
+    let bitangent = stroke.brush.normal.as_dvec3().cross(tangent);
+    let points = projected(stroke);
+    let (min, max) = bounds(&points);
+    let uv = normalized_uv(
+        DVec2::new(delta.dot(tangent), delta.dot(bitangent)),
+        min,
+        max,
+    );
+    Some(
+        stroke
+            .fill?
+            .texture
+            .map_or(uv, |texture| texture.map_uv(uv)),
+    )
+}
 pub fn triangulate(stroke: &Stroke) -> Result<Vec<[usize; 3]>, String> {
     let fill = stroke.fill.ok_or("This mark is not a planar fill")?;
     if !(3..=MAX_CORNERS).contains(&stroke.points.len()) {
@@ -91,6 +111,7 @@ pub fn triangulate(stroke: &Stroke) -> Result<Vec<[usize; 3]>, String> {
         || !fill.offset.is_finite()
         || !(0.0..=1.0).contains(&fill.offset)
         || fill.gradient.is_some_and(|gradient| !gradient.is_valid())
+        || fill.texture.is_some_and(|texture| !texture.is_valid())
         || stroke.brush.texture.kind != crate::texture::TextureKind::Solid
         || stroke.points.iter().any(|p| {
             !p.is_valid()
@@ -229,16 +250,31 @@ pub fn mesh(stroke: &Stroke) -> Vec<crate::geometry::Vertex> {
     let offset = stroke.brush.normal * stroke.fill.unwrap().offset;
     let points = projected(stroke);
     let (min, max) = bounds(&points);
-    let gradient = stroke.fill.unwrap().gradient;
-    let make_vertex = |position: Vec3, uv: glam::Vec2, pressure: f32| crate::geometry::Vertex {
-        material: 0.0,
-        gradient_t: 0.0,
-        position: (position - offset).to_array(),
-        normal: stroke.brush.normal.to_array(),
-        color: gradient.map_or(stroke.color, |gradient| gradient.sample(uv)),
-        uv: uv.to_array(),
-        opacity: stroke.brush.opacity
-            * crate::dynamics::opacity_scale(stroke.brush.dynamics.opacity, pressure),
+    let fill = stroke.fill.unwrap();
+    let gradient = fill.gradient;
+    let texture = fill.texture;
+    let make_vertex = |position: Vec3, uv: glam::Vec2, pressure: f32| {
+        let mut color = gradient.map_or(stroke.color, |gradient| gradient.sample(uv));
+        if let Some(texture) = texture {
+            if gradient.is_none() {
+                color = texture.tint;
+            } else {
+                for (component, tint) in color.iter_mut().zip(texture.tint) {
+                    *component *= tint;
+                }
+            }
+        }
+        crate::geometry::Vertex {
+            material: 0.0,
+            gradient_t: 0.0,
+            position: (position - offset).to_array(),
+            normal: stroke.brush.normal.to_array(),
+            color,
+            uv: texture.map_or(uv, |texture| texture.map_uv(uv)).to_array(),
+            opacity: stroke.brush.opacity
+                * texture.map_or(1.0, |texture| texture.opacity)
+                * crate::dynamics::opacity_scale(stroke.brush.dynamics.opacity, pressure),
+        }
     };
     let mut output = Vec::new();
     for [a, b, c] in triangles {
@@ -311,6 +347,7 @@ pub fn study() -> crate::document::Document {
             fill: Some(PlanarFill {
                 offset: 0.003,
                 gradient: None,
+                texture: None,
             }),
             group_id: None,
             layer_id: 1,
@@ -433,6 +470,7 @@ mod tests {
             fill: Some(PlanarFill {
                 offset: 0.003,
                 gradient: None,
+                texture: None,
             }),
             group_id: None,
             layer_id: 1,

@@ -24,6 +24,8 @@ type MaterialKey = (
     StrokeMaterial,
     u64,
     u32,
+    u64,
+    bool,
 );
 
 /// Write a compact OBJ/MTL fixture with one stroke for each material mode.
@@ -88,6 +90,10 @@ struct Material {
     mask_file: Option<String>,
     tip_file: Option<String>,
     tip_alpha_file: Option<String>,
+    fill_texture_id: Option<u64>,
+    fill_texture_repeat: bool,
+    fill_texture_file: Option<String>,
+    fill_texture_alpha_file: Option<String>,
     mode: StrokeMaterial,
 }
 
@@ -120,6 +126,14 @@ pub fn write_obj_bundle(
     }) {
         return Err("An exported stroke refers to a missing brush tip".into());
     }
+    if strokes.iter().any(|stroke| {
+        stroke
+            .fill
+            .and_then(|fill| fill.texture)
+            .is_some_and(|texture| !tip_assets.contains_key(&texture.asset_id))
+    }) {
+        return Err("An exported fill refers to a missing image texture".into());
+    }
     if strokes.is_empty() {
         return Err("No visible strokes to export".into());
     }
@@ -148,31 +162,62 @@ pub fn write_obj_bundle(
             let tip_file = has_tip.then(|| format!("tip-{:016x}.png", stroke.brush.tip_asset_id));
             let tip_alpha_file =
                 has_tip.then(|| format!("tip-alpha-{:016x}.png", stroke.brush.tip_asset_id));
+            let fill_texture_id = stroke
+                .fill
+                .and_then(|fill| fill.texture)
+                .map(|t| t.asset_id);
+            let fill_texture_repeat = stroke
+                .fill
+                .and_then(|fill| fill.texture)
+                .is_some_and(|texture| texture.repeat);
+            let fill_texture_alpha_file =
+                fill_texture_id.map(|id| format!("fill-alpha-{id:016x}.png"));
+            let fill_texture_file = fill_texture_id.map(|id| format!("fill-{id:016x}.png"));
             entry.insert(index);
             materials.push(Material {
                 name: format!("material_{index:05}"),
-                diffuse: stroke.gradient.map_or_else(
+                diffuse: stroke.fill.and_then(|fill| fill.texture).map_or_else(
                     || {
-                        stroke
+                        stroke.gradient.map_or_else(
+                            || {
+                                stroke
+                                    .fill
+                                    .and_then(|fill| fill.gradient)
+                                    .map_or(stroke.color, |gradient| {
+                                        gradient.sample(glam::Vec2::splat(0.5))
+                                    })
+                            },
+                            |gradient| gradient.sample(0.5),
+                        )
+                    },
+                    |texture| {
+                        let base = stroke
                             .fill
                             .and_then(|fill| fill.gradient)
-                            .map_or(stroke.color, |gradient| {
-                                gradient.sample(glam::Vec2::splat(0.5))
-                            })
+                            .map_or([1.0; 3], |gradient| gradient.sample(glam::Vec2::splat(0.5)));
+                        std::array::from_fn(|i| base[i] * texture.tint[i])
                     },
-                    |gradient| gradient.sample(0.5),
                 ),
                 gradient_fallback: stroke.gradient.is_some()
                     || stroke.fill.and_then(|fill| fill.gradient).is_some(),
                 opacity: if stroke.material == StrokeMaterial::Cutout {
                     0.0
                 } else {
-                    stroke.brush.opacity * layer_opacity
+                    stroke.brush.opacity
+                        * layer_opacity
+                        * stroke
+                            .fill
+                            .and_then(|fill| fill.texture)
+                            .map_or(1.0, |t| t.opacity)
                 },
                 texture: stroke.brush.texture,
                 mask_file,
                 tip_file,
                 tip_alpha_file,
+                fill_texture_id,
+                fill_texture_repeat,
+                fill_texture_file,
+                fill_texture_alpha_file,
                 mode: stroke.material,
             });
         }
@@ -243,7 +288,21 @@ pub fn write_obj_bundle(
             }
         )
         .unwrap();
-        if let Some(tip_file) = &material.tip_file {
+        if let Some(fill_file) = &material.fill_texture_file {
+            writeln!(
+                mtl,
+                "map_Kd {}sketch3d-{nonce}-{fill_file}",
+                if material.fill_texture_repeat {
+                    ""
+                } else {
+                    "-clamp on "
+                }
+            )
+            .unwrap();
+            if let Some(alpha_file) = &material.fill_texture_alpha_file {
+                writeln!(mtl, "map_d sketch3d-{nonce}-{alpha_file}").unwrap();
+            }
+        } else if let Some(tip_file) = &material.tip_file {
             writeln!(mtl, "map_Kd sketch3d-{nonce}-{tip_file}").unwrap();
             writeln!(
                 mtl,
@@ -261,7 +320,31 @@ pub fn write_obj_bundle(
     }
     let mut companion_size = mtl.len();
     let mut emitted_tips = std::collections::HashSet::new();
+    let mut emitted_fill_textures = std::collections::HashSet::new();
     for (index, material) in materials.iter().enumerate() {
+        if let Some(id) = material.fill_texture_id {
+            if emitted_fill_textures.insert(id) {
+                let asset = tip_assets
+                    .get(&id)
+                    .ok_or("Missing validated fill texture")?;
+                let alpha_png = tip_alpha_png(asset)?;
+                companion_size = companion_size
+                    .checked_add(asset.png.len())
+                    .and_then(|total| total.checked_add(alpha_png.len()))
+                    .ok_or("OBJ fill texture companion size overflow")?;
+                if companion_size >= export::MAX_BINARY_BYTES {
+                    return Err("OBJ fill textures exceed the 128 MiB export limit".into());
+                }
+                companion_files.push((
+                    parent.join(format!("sketch3d-{nonce}-fill-{:016x}.png", id)),
+                    asset.png.clone(),
+                ));
+                companion_files.push((
+                    parent.join(format!("sketch3d-{nonce}-fill-alpha-{:016x}.png", id)),
+                    alpha_png,
+                ));
+            }
+        }
         if let Some(tip_file) = &material.tip_file {
             let id = u64::from_str_radix(
                 tip_file.trim_start_matches("tip-").trim_end_matches(".png"),
@@ -440,28 +523,42 @@ pub fn write_obj_bundle(
 
 fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
     let texture = texture::key(stroke.brush.texture);
-    let diffuse = stroke.gradient.map_or_else(
+    let fill_texture = stroke.fill.and_then(|fill| fill.texture);
+    let diffuse = fill_texture.map_or_else(
         || {
-            stroke
+            stroke.gradient.map_or_else(
+                || {
+                    stroke
+                        .fill
+                        .and_then(|fill| fill.gradient)
+                        .map_or(stroke.color, |gradient| {
+                            gradient.sample(glam::Vec2::splat(0.5))
+                        })
+                },
+                |gradient| gradient.sample(0.5),
+            )
+        },
+        |texture| {
+            let base = stroke
                 .fill
                 .and_then(|fill| fill.gradient)
-                .map_or(stroke.color, |gradient| {
-                    gradient.sample(glam::Vec2::splat(0.5))
-                })
+                .map_or([1.0; 3], |gradient| gradient.sample(glam::Vec2::splat(0.5)));
+            std::array::from_fn(|i| base[i] * texture.tint[i])
         },
-        |gradient| gradient.sample(0.5),
     );
     (
         diffuse[0].to_bits(),
         diffuse[1].to_bits(),
         diffuse[2].to_bits(),
-        stroke.brush.opacity.to_bits(),
+        (stroke.brush.opacity * fill_texture.map_or(1.0, |texture| texture.opacity)).to_bits(),
         texture.0,
         texture.1,
         texture.2,
         stroke.material,
         stroke.brush.tip_asset_id,
         layer_opacity.to_bits(),
+        fill_texture.map_or(0, |texture| texture.asset_id),
+        fill_texture.is_none_or(|texture| texture.repeat),
     )
 }
 
