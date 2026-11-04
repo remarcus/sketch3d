@@ -765,6 +765,11 @@ impl SketchApp {
                     .get(&original.id)
                     .map(|entry| (entry.error.clone(), entry.truncated));
                 let model_available = self.obj_reference_models.contains_key(&original.id);
+                let model_warnings = self
+                    .obj_reference_models
+                    .get(&original.id)
+                    .map(|model| model.warnings.clone())
+                    .unwrap_or_default();
                 let mut resource_changed = false;
                 ui.group(|ui| {
                     let resource = &mut self.doc.model_references[index];
@@ -783,6 +788,13 @@ impl SketchApp {
                     ui.add_enabled_ui(!resource.locked, |ui| {
                         resource_changed |= transform_controls(ui, resource);
                     });
+                    if !model_warnings.is_empty() {
+                        ui.collapsing(format!("Import notes ({})", model_warnings.len()), |ui| {
+                            for warning in &model_warnings {
+                                ui.colored_label(ui_style::colors(ui.ctx()).warning, warning);
+                            }
+                        });
+                    }
                     ui.horizontal(|ui| {
                         if resource.live_line_art.is_some() {
                             ui.label("Live line art");
