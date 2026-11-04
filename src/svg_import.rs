@@ -154,34 +154,35 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
                         transforms.push(own.then(parent_transform));
                         styles.push(derive_style(&parent_style, &attrs));
                     }
-                } else if name == "path" || name == "polygon" || name == "polyline" {
+                } else if matches!(
+                    name.as_str(),
+                    "path" | "polygon" | "polyline" | "rect" | "circle" | "ellipse" | "line"
+                ) {
+                    if name == "line" {
+                        attrs.entry("fill".into()).or_insert_with(|| "none".into());
+                    }
                     let own = attrs
                         .get("transform")
                         .map(|v| parse_transform(v))
                         .unwrap_or(Some(Affine::IDENTITY));
                     let transform = own.map(|local| local.then(parent_transform));
                     let geometry = if let Some(transform) = transform {
-                        if name == "path" {
-                            attrs.get("d").and_then(|d| parse_path(d).ok())
-                        } else {
-                            attrs
-                                .get("points")
-                                .and_then(|p| parse_poly(p, name == "polygon").ok())
-                        }
-                        .map(|(segments, closed)| {
-                            (
-                                segments
-                                    .into_iter()
-                                    .map(|s| CubicBezier {
-                                        p0: transform.apply(s.p0.truncate()).extend(0.0),
-                                        p1: transform.apply(s.p1.truncate()).extend(0.0),
-                                        p2: transform.apply(s.p2.truncate()).extend(0.0),
-                                        p3: transform.apply(s.p3.truncate()).extend(0.0),
-                                    })
-                                    .collect(),
-                                closed,
-                            )
-                        })
+                        parse_element_geometry(&name, &attrs)
+                            .ok()
+                            .map(|(segments, closed)| {
+                                (
+                                    segments
+                                        .into_iter()
+                                        .map(|s| CubicBezier {
+                                            p0: transform.apply(s.p0.truncate()).extend(0.0),
+                                            p1: transform.apply(s.p1.truncate()).extend(0.0),
+                                            p2: transform.apply(s.p2.truncate()).extend(0.0),
+                                            p3: transform.apply(s.p3.truncate()).extend(0.0),
+                                        })
+                                        .collect(),
+                                    closed,
+                                )
+                            })
                     } else {
                         None
                     };
@@ -191,7 +192,10 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
                         let transform_scale = transform
                             .map(|matrix| (matrix.a * matrix.d - matrix.b * matrix.c).abs().sqrt())
                             .unwrap_or(1.0);
-                        let style = derive_style(&parent_style, &attrs);
+                        let mut style = derive_style(&parent_style, &attrs);
+                        if name == "line" {
+                            style.fill = "none".into();
+                        }
                         let fill = parse_color(&style.fill).map(|color| {
                             (color, (style.opacity * style.fill_opacity).clamp(0.0, 1.0))
                         });
@@ -579,6 +583,118 @@ fn line(a: Vec2, b: Vec2) -> CubicBezier {
         p3: b.extend(0.0),
     }
 }
+
+fn parse_element_geometry(
+    name: &str,
+    attrs: &std::collections::HashMap<String, String>,
+) -> Result<(Vec<CubicBezier>, bool), String> {
+    let value = |key: &str, default: f32| -> Result<f32, String> {
+        let result = attrs
+            .get(key)
+            .map(|text| text.parse::<f32>())
+            .transpose()
+            .map_err(|_| format!("Invalid SVG {key} value"))?
+            .unwrap_or(default);
+        if !result.is_finite() || result.abs() > 1_000_000.0 {
+            return Err(format!("SVG {key} exceeds the import limit"));
+        }
+        Ok(result)
+    };
+    match name {
+        "path" => attrs
+            .get("d")
+            .ok_or_else(|| "SVG path is missing its d attribute".to_owned())
+            .and_then(|data| parse_path(data)),
+        "polygon" | "polyline" => attrs
+            .get("points")
+            .ok_or_else(|| "SVG point shape is missing its points attribute".to_owned())
+            .and_then(|points| parse_poly(points, name == "polygon")),
+        "rect" => {
+            let x = value("x", 0.0)?;
+            let y = value("y", 0.0)?;
+            let width = value("width", 0.0)?;
+            let height = value("height", 0.0)?;
+            let rx = value("rx", 0.0)?;
+            let ry = value("ry", 0.0)?;
+            if width <= 0.0 || height <= 0.0 || rx < 0.0 || ry < 0.0 || rx > 0.0 || ry > 0.0 {
+                return Err(
+                    "SVG rectangles need positive dimensions; rounded rectangles are not supported yet"
+                        .into(),
+                );
+            }
+            Ok((
+                segments_for_points(
+                    &[
+                        Vec2::new(x, y),
+                        Vec2::new(x + width, y),
+                        Vec2::new(x + width, y + height),
+                        Vec2::new(x, y + height),
+                    ],
+                    true,
+                ),
+                true,
+            ))
+        }
+        "circle" | "ellipse" => {
+            let cx = value("cx", 0.0)?;
+            let cy = value("cy", 0.0)?;
+            let (rx, ry) = if name == "circle" {
+                let radius = value("r", 0.0)?;
+                (radius, radius)
+            } else {
+                (value("rx", 0.0)?, value("ry", 0.0)?)
+            };
+            if rx <= 0.0 || ry <= 0.0 {
+                return Err("SVG circle or ellipse radii must be positive".into());
+            }
+            Ok((ellipse_segments(cx, cy, rx, ry), true))
+        }
+        "line" => {
+            let start = Vec2::new(value("x1", 0.0)?, value("y1", 0.0)?);
+            let end = Vec2::new(value("x2", 0.0)?, value("y2", 0.0)?);
+            if start.distance_squared(end) <= 1e-10 {
+                return Err("SVG line endpoints must be distinct".into());
+            }
+            Ok((vec![line(start, end)], false))
+        }
+        _ => Err("Unsupported SVG element".into()),
+    }
+}
+
+fn ellipse_segments(cx: f32, cy: f32, rx: f32, ry: f32) -> Vec<CubicBezier> {
+    const KAPPA: f32 = 0.552_284_8;
+    let center = Vec2::new(cx, cy);
+    let right = center + Vec2::new(rx, 0.0);
+    let bottom = center + Vec2::new(0.0, ry);
+    let left = center - Vec2::new(rx, 0.0);
+    let top = center - Vec2::new(0.0, ry);
+    vec![
+        CubicBezier {
+            p0: right.extend(0.0),
+            p1: (right + Vec2::new(0.0, ry * KAPPA)).extend(0.0),
+            p2: (bottom + Vec2::new(rx * KAPPA, 0.0)).extend(0.0),
+            p3: bottom.extend(0.0),
+        },
+        CubicBezier {
+            p0: bottom.extend(0.0),
+            p1: (bottom - Vec2::new(rx * KAPPA, 0.0)).extend(0.0),
+            p2: (left + Vec2::new(0.0, ry * KAPPA)).extend(0.0),
+            p3: left.extend(0.0),
+        },
+        CubicBezier {
+            p0: left.extend(0.0),
+            p1: (left - Vec2::new(0.0, ry * KAPPA)).extend(0.0),
+            p2: (top - Vec2::new(rx * KAPPA, 0.0)).extend(0.0),
+            p3: top.extend(0.0),
+        },
+        CubicBezier {
+            p0: top.extend(0.0),
+            p1: (top + Vec2::new(rx * KAPPA, 0.0)).extend(0.0),
+            p2: (right - Vec2::new(0.0, ry * KAPPA)).extend(0.0),
+            p3: right.extend(0.0),
+        },
+    ]
+}
 fn parse_poly(s: &str, closed: bool) -> Result<(Vec<CubicBezier>, bool), String> {
     let n = numbers(s).ok_or("Invalid SVG points")?;
     if n.len() < 4 || n.len() % 2 != 0 || n.len() / 2 > MAX_SVG_SEGMENTS {
@@ -588,11 +704,18 @@ fn parse_poly(s: &str, closed: bool) -> Result<(Vec<CubicBezier>, bool), String>
         .chunks_exact(2)
         .map(|p| Vec2::new(p[0], p[1]))
         .collect::<Vec<_>>();
-    let mut seg = pts.windows(2).map(|p| line(p[0], p[1])).collect::<Vec<_>>();
-    if closed {
-        seg.push(line(*pts.last().unwrap(), pts[0]));
+    Ok((segments_for_points(&pts, closed), closed))
+}
+
+fn segments_for_points(points: &[Vec2], closed: bool) -> Vec<CubicBezier> {
+    let mut segments = points
+        .windows(2)
+        .map(|pair| line(pair[0], pair[1]))
+        .collect::<Vec<_>>();
+    if closed && points.len() > 1 {
+        segments.push(line(*points.last().unwrap(), points[0]));
     }
-    Ok((seg, closed))
+    segments
 }
 
 /// Convert parsed paths into strokes on the supplied planar frame.
