@@ -1190,7 +1190,34 @@ pub struct Document {
     /// Editable artwork keyframes. This is separate from construction history.
     #[serde(default)]
     pub animation: crate::animation::ArtworkAnimation,
+    /// Pinned world-space measurements shown as drawing annotations.
+    #[serde(default)]
+    pub measurements: Vec<MeasurementAnnotation>,
 }
+
+/// A persisted distance and angle annotation captured in a planar frame.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MeasurementAnnotation {
+    pub id: u64,
+    pub start: glam::Vec3,
+    pub end: glam::Vec3,
+    pub axis_u: glam::Vec3,
+    pub axis_v: glam::Vec3,
+}
+
+impl MeasurementAnnotation {
+    pub fn is_valid(self) -> bool {
+        self.id != 0
+            && self.start.is_finite()
+            && self.end.is_finite()
+            && self.axis_u.is_finite()
+            && self.axis_v.is_finite()
+            && (self.axis_u.length_squared() - 1.0).abs() < 0.01
+            && (self.axis_v.length_squared() - 1.0).abs() < 0.01
+            && self.axis_u.dot(self.axis_v).abs() < 0.01
+    }
+}
+
 impl Default for Document {
     fn default() -> Self {
         Self {
@@ -1208,6 +1235,7 @@ impl Default for Document {
             brush_tip_assets: Vec::new(),
             linked_stroke_groups: LinkedStrokeGroups::default(),
             animation: crate::animation::ArtworkAnimation::default(),
+            measurements: Vec::new(),
         }
     }
 }
@@ -1650,6 +1678,17 @@ impl Document {
         if doc.strokes.len() > 100_000 {
             return Err("Too many strokes".into());
         }
+        if doc.measurements.len() > 10_000 {
+            return Err("Too many measurement annotations".into());
+        }
+        let mut measurement_ids = std::collections::HashSet::new();
+        if doc
+            .measurements
+            .iter()
+            .any(|annotation| !annotation.is_valid() || !measurement_ids.insert(annotation.id))
+        {
+            return Err("Invalid or duplicate measurement annotation".into());
+        }
         if doc.layers.is_empty() || doc.layers.len() > 256 {
             return Err("A document requires 1–256 layers".into());
         }
@@ -1926,6 +1965,7 @@ mod tests {
                 active_model_reference: None,
                 brush_tip_assets: Vec::new(),
                 animation: Default::default(),
+                measurements: Vec::new(),
             };
             let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
             assert_eq!(loaded.version, 30);
@@ -1949,6 +1989,7 @@ mod tests {
             active_model_reference: None,
             brush_tip_assets: Vec::new(),
             animation: Default::default(),
+            measurements: Vec::new(),
         })
         .unwrap();
         // Even an unrecognized extension must not opt a version-1 stroke into
@@ -2069,6 +2110,7 @@ mod tests {
                 active_model_reference: None,
                 brush_tip_assets: Vec::new(),
                 animation: Default::default(),
+                measurements: Vec::new(),
             };
             assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
         }
@@ -2105,6 +2147,7 @@ mod tests {
             active_model_reference: None,
             brush_tip_assets: Vec::new(),
             animation: Default::default(),
+            measurements: Vec::new(),
         };
         assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_err());
         doc.strokes.pop();
@@ -2131,6 +2174,7 @@ mod tests {
             active_model_reference: None,
             brush_tip_assets: Vec::new(),
             animation: Default::default(),
+            measurements: Vec::new(),
         })
         .unwrap();
         value["strokes"][0]["brush"]["dynamics"] = serde_json::json!({"future":true});
@@ -2155,6 +2199,7 @@ mod tests {
             active_model_reference: None,
             brush_tip_assets: Vec::new(),
             animation: Default::default(),
+            measurements: Vec::new(),
         };
         for dynamics in [
             Dynamics {
@@ -2232,6 +2277,7 @@ mod tests {
             active_model_reference: None,
             brush_tip_assets: Vec::new(),
             animation: Default::default(),
+            measurements: Vec::new(),
         };
         let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
         assert_eq!(loaded.strokes, doc.strokes);
@@ -2265,6 +2311,7 @@ mod tests {
                 active_model_reference: None,
                 brush_tip_assets: Vec::new(),
                 animation: Default::default(),
+                measurements: Vec::new(),
             })
             .unwrap();
             doc["strokes"][0]["brush"]["texture"][field] = serde_json::json!(value);

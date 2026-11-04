@@ -244,6 +244,10 @@ pub enum Edit {
         before: DocumentColorState,
         after: DocumentColorState,
     },
+    /// One undoable insertion/removal of a pinned measuring annotation.
+    Measurement {
+        annotation: crate::document::MeasurementAnnotation,
+    },
     Merge(MergeEdit),
 }
 impl Edit {
@@ -387,6 +391,15 @@ impl Edit {
                 doc.color_swatches = state.swatches.clone();
                 doc.strokes = state.strokes.clone();
                 doc.animation = state.animation.clone();
+            }
+            Self::Measurement { annotation } => {
+                if forward {
+                    if !doc.measurements.iter().any(|item| item.id == annotation.id) {
+                        doc.measurements.push(*annotation);
+                    }
+                } else {
+                    doc.measurements.retain(|item| item.id != annotation.id);
+                }
             }
             Self::Merge(merge) => {
                 if forward {

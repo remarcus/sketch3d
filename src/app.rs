@@ -58,6 +58,14 @@ fn tool_icon_button(
             painter.circle_filled(point(-11.0, 9.0), 2.5, color);
             painter.circle_filled(point(11.0, -9.0), 2.5, color);
         }
+        "measure" => {
+            line(point(-11.0, 8.0), point(11.0, -8.0));
+            line(point(-8.0, 5.0), point(-5.0, 8.0));
+            line(point(-3.0, 0.0), point(0.0, 3.0));
+            line(point(2.0, -5.0), point(5.0, -2.0));
+            painter.circle_filled(point(-11.0, 8.0), 2.0, color);
+            painter.circle_filled(point(11.0, -8.0), 2.0, color);
+        }
         "curve" => {
             let p0 = point(-11.0, 7.0);
             let p1 = point(-4.0, -10.0);
@@ -351,6 +359,8 @@ mod lighting_ui;
 mod line_checks;
 #[path = "line_tool.rs"]
 mod line_tool;
+#[path = "measure_tool.rs"]
+mod measure_tool;
 #[path = "liquify_ui.rs"]
 mod liquify_ui;
 #[path = "local_color_ui.rs"]
@@ -494,6 +504,7 @@ enum Pending {
 
 pub struct SketchApp {
     line: line_tool::LineUi,
+    measure: measure_tool::MeasureUi,
     curve_tool: curve_tool::CurveUi,
     shape_tool: shape_tool::ShapeTool,
     snapping: snapping::SnapUi,
@@ -2065,6 +2076,7 @@ impl SketchApp {
             insert_offset: [0.0; 3],
             insert_as_group: false,
             line: Default::default(),
+            measure: Default::default(),
             curve_tool: Default::default(),
             shape_tool: Default::default(),
             snapping: Default::default(),
@@ -4101,6 +4113,9 @@ impl SketchApp {
         self.status = "Demo scene. New starts a blank drawing.".into();
     }
     fn choose_tool(&mut self, tool: &str) {
+        if tool != "Measure" {
+            self.cancel_measure_tool();
+        }
         if self.resource_target_active()
             && matches!(tool, "Line" | "Fill" | "Circle" | "Ellipse" | "Curve")
         {
@@ -4163,6 +4178,7 @@ impl SketchApp {
                 self.shape_tool.mode = None;
                 self.start_line_tool();
             }
+            "Measure" => self.start_measure_tool(),
             "Circle" => {
                 self.cancel_curve_tool();
                 self.start_shape_tool(shape_tool::ShapeMode::Circle)
@@ -4184,6 +4200,7 @@ impl SketchApp {
         let tools = [
             ("Brush", "B", QuickPaletteCommand::Tool("Brush")),
             ("Line", "L", QuickPaletteCommand::Tool("Line")),
+            ("Measure", "M", QuickPaletteCommand::Tool("Measure")),
             ("Curve", "C", QuickPaletteCommand::Tool("Curve")),
             ("Shape", "", QuickPaletteCommand::Tool("Circle")),
             ("Fill", "P", QuickPaletteCommand::Tool("Fill")),
@@ -4508,6 +4525,8 @@ impl SketchApp {
                     "Fill"
                 } else if self.line.enabled {
                     "Line"
+                } else if self.measure.enabled {
+                    "Measure"
                 } else if self.curve_tool.enabled {
                     "Curve"
                 } else if let Some(mode) = self.shape_tool.mode {
@@ -4528,9 +4547,11 @@ impl SketchApp {
                         && !self.select_mode
                         && !self.fills.enabled
                         && !self.line.enabled
+                        && !self.measure.enabled
                         && !self.curve_tool.enabled
                         && self.shape_tool.mode.is_none(),
                     self.line.enabled && !self.select_mode,
+                    self.measure.enabled && !self.select_mode,
                     self.curve_tool.enabled && !self.select_mode,
                     self.shape_tool.mode.is_some(),
                     self.fills.enabled && !self.select_mode,
@@ -4541,6 +4562,7 @@ impl SketchApp {
                 let tools = [
                     ("Brush", "Brush", "B", "brush"),
                     ("Line", "Line", "L", "line"),
+                    ("Measure", "Measure", "M", "measure"),
                     ("Curve", "Curve", "C", "curve"),
                     ("Circle", "Shape", "", "shape"),
                     ("Fill", "Fill", "P", "fill"),
@@ -4675,6 +4697,8 @@ impl SketchApp {
             } else if self.line.enabled {
                 ui.label(RichText::new("Straight line").strong());
                 ui.label("Drag from start to end; release to commit");
+            } else if self.measure.enabled {
+                ui.label(RichText::new("Measure").strong());
             } else {
                 let tool_label = if self.eraser {
                     "Eraser"
@@ -4744,6 +4768,7 @@ impl SketchApp {
         }
         let common_brush_settings = !self.select_mode
             && !self.fills.enabled
+            && !self.measure.enabled
             && self.shape_tool.mode.is_none()
             && !self.curve_tool.enabled
             && !self.local_color_brush.enabled
@@ -4766,6 +4791,7 @@ impl SketchApp {
         }
         self.snapping.controls(ui);
         self.line_controls(ui);
+        self.measure_controls(ui);
         self.curve_controls(ui);
         self.fill_controls(ui);
         self.shape_controls(ui);
@@ -6210,6 +6236,10 @@ impl SketchApp {
             self.fill_contour_pointer(pos, rect, begin);
             return;
         }
+        if self.measure.enabled {
+            self.measure_input(pos, rect, begin);
+            return;
+        }
         if self.placement.stamp.is_some() {
             self.stamp_pointer_action(pos, rect, begin);
             return;
@@ -6316,6 +6346,15 @@ impl SketchApp {
             pointer.hover_pos().filter(|position| inside_canvas(*position)),
             rect,
         );
+        if self.measure.enabled {
+            if let Some(position) = pointer.hover_pos().filter(|position| inside_canvas(*position)) {
+                self.measure_input(position, rect, false);
+            }
+            if ctx.input(|input| input.key_pressed(Key::Escape)) {
+                self.cancel_measure_tool();
+                self.status = "Measurement cancelled.".into();
+            }
+        }
         let scale = ctx.pixels_per_point();
         for sample in &mut pen {
             sample.position.x /= scale;
@@ -6339,6 +6378,9 @@ impl SketchApp {
             }
             let inside = inside_canvas(sample.position);
             let previous = self.pen_previous.replace(sample.position);
+            if self.measure.enabled && inside && sample.phase == Phase::Move {
+                self.measure_input(sample.position, rect, false);
+            }
             if self.plane_picker.active && sample.phase == Phase::Move && !sample.contact {
                 self.update_plane_picker_hover(inside.then_some(sample.position), rect);
             }
@@ -6952,7 +6994,7 @@ impl eframe::App for SketchApp {
             {
                 self.selection_shortcuts(ctx);
             }
-            let (mods, b, e, f, i_key, t_key, z, y, s, o, n) = ctx.input(|i| {
+            let (mods, b, e, f, i_key, t_key, m_key, z, y, s, o, n) = ctx.input(|i| {
                 (
                     i.modifiers,
                     i.key_pressed(Key::B),
@@ -6960,6 +7002,7 @@ impl eframe::App for SketchApp {
                     i.key_pressed(Key::F),
                     i.key_pressed(Key::I),
                     i.key_pressed(Key::T),
+                    i.key_pressed(Key::M),
                     i.key_pressed(Key::Z),
                     i.key_pressed(Key::Y),
                     i.key_pressed(Key::S),
@@ -6990,6 +7033,9 @@ impl eframe::App for SketchApp {
             } else {
                 if i_key {
                     self.start_color_sampling();
+                }
+                if m_key {
+                    self.choose_tool("Measure");
                 }
                 if b {
                     self.cancel_line_tool();
@@ -7764,6 +7810,7 @@ impl eframe::App for SketchApp {
                 self.verify_png_export(ctx);
                 if !self.presentation.artwork {
                     self.line_overlay(ui, rect);
+                    self.measure_overlay(ui, rect);
                     self.curve_overlay(ui, rect);
                     self.mirror_overlay(ui, rect);
                     self.fill_overlay(ui, rect);
