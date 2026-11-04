@@ -83,6 +83,13 @@ fn material_output(in: Output, alpha: f32, sampled_color: vec3<f32>) -> Fragment
     if clip <= 0.001 { discard; }
     if length(in.normal)<0.1 { return material_output(in, clip, vec3<f32>(1.0)); }
     let sampled_texture=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0);
+    if in.grain_dynamics.y > 2.5 {
+        return material_output(in, clip, sampled_texture.rgb);
+    }
+    if in.grain_dynamics.y > 1.5 {
+        if sampled_texture.a * in.opacity < in.grain_dynamics.x { discard; }
+        return material_output(in, clip, sampled_texture.rgb);
+    }
     let mask_alpha=grain_coverage(in,sampled_texture.a);
     var coverage=mask_alpha;
     if scene.shadow.z<0.5 {

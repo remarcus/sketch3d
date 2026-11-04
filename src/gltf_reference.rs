@@ -106,45 +106,75 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
         diffuse: [1.0; 3],
         opacity: 1.0,
         base_color_texture: None,
+        base_color_tex_coord: None,
+        alpha_mode: crate::obj_reference::ObjMaterialAlphaMode::Opaque,
+        alpha_cutoff: 0.5,
     }];
     let mut warnings = Vec::new();
     for material in gltf.materials() {
         let pbr = material.pbr_metallic_roughness();
         let color = pbr.base_color_factor();
+        let alpha_cutoff = material.alpha_cutoff().unwrap_or(0.5);
+        if material.alpha_mode() == gltf::material::AlphaMode::Mask
+            && (!alpha_cutoff.is_finite() || !(0.0..=1.0).contains(&alpha_cutoff))
+        {
+            return Err("GLB alpha-mask cutoff must be between 0 and 1".into());
+        }
         materials.push(ObjMaterial {
             name: material
                 .name()
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("Material {}", material.index().unwrap_or(0) + 1)),
             diffuse: [color[0], color[1], color[2]],
-            opacity: color[3],
+            opacity: if material.alpha_mode() == gltf::material::AlphaMode::Opaque {
+                1.0
+            } else {
+                color[3]
+            },
             base_color_texture: pbr.base_color_texture().and_then(|info| {
-                (info.tex_coord() == 0)
-                    .then(|| {
-                        decoded_images
-                            .get(info.texture().source().index())
-                            .cloned()
-                            .flatten()
-                    })
+                decoded_images
+                    .get(info.texture().source().index())
+                    .cloned()
                     .flatten()
             }),
+            base_color_tex_coord: pbr.base_color_texture().map(|info| info.tex_coord()),
+            alpha_mode: match material.alpha_mode() {
+                gltf::material::AlphaMode::Opaque => {
+                    crate::obj_reference::ObjMaterialAlphaMode::Opaque
+                }
+                gltf::material::AlphaMode::Mask => crate::obj_reference::ObjMaterialAlphaMode::Mask,
+                gltf::material::AlphaMode::Blend => {
+                    crate::obj_reference::ObjMaterialAlphaMode::Blend
+                }
+            },
+            alpha_cutoff,
         });
         if pbr.base_color_texture().is_some() {
-            if pbr
-                .base_color_texture()
-                .is_some_and(|info| info.tex_coord() != 0)
-            {
-                warnings.push("Base-color textures using a nonzero UV set are retained in the bundled GLB; viewport shading uses the material base-color factor.".into());
-            } else if pbr.base_color_texture().is_some_and(|info| {
+            if pbr.base_color_texture().is_some_and(|info| {
                 decoded_images
                     .get(info.texture().source().index())
                     .is_none_or(Option::is_none)
             }) {
                 warnings.push("WebP base-color textures are retained in the bundled GLB; viewport shading uses the material base-color factor because WebP decoding is unavailable.".into());
             }
-        }
-        if material.alpha_mode() == gltf::material::AlphaMode::Mask {
-            warnings.push("Alpha-mask materials use their base-color opacity; alpha cutoffs are not reproduced by the reference renderer.".into());
+            if pbr.base_color_texture().is_some_and(|info| {
+                let sampler = info.texture().sampler();
+                sampler.wrap_s() != gltf::texture::WrappingMode::Repeat
+                    || sampler.wrap_t() != gltf::texture::WrappingMode::Repeat
+                    || sampler
+                        .mag_filter()
+                        .is_some_and(|filter| filter != gltf::texture::MagFilter::Linear)
+                    || sampler.min_filter().is_some_and(|filter| {
+                        !matches!(
+                            filter,
+                            gltf::texture::MinFilter::Linear
+                                | gltf::texture::MinFilter::LinearMipmapNearest
+                                | gltf::texture::MinFilter::LinearMipmapLinear
+                        )
+                    })
+            }) {
+                warnings.push("GLB texture sampler wrap/filter settings use the viewport's linear-repeat fallback.".into());
+            }
         }
         if material.emissive_factor() != [0.0; 3] {
             warnings.push("Emissive material values are retained in the source GLB but are not applied by the reference renderer.".into());
@@ -246,6 +276,14 @@ fn visit_node(
                 gltf::buffer::Source::Bin => Some(blob),
                 gltf::buffer::Source::Uri(_) => None,
             });
+            let material = primitive
+                .material()
+                .index()
+                .map(|index| index as u16 + 1)
+                .unwrap_or(0);
+            if material as usize >= materials.len() {
+                return Err("GLB material index is invalid".into());
+            }
             let local_positions: Vec<_> = reader
                 .read_positions()
                 .ok_or("GLB triangle primitive is missing positions")?
@@ -282,7 +320,11 @@ fn visit_node(
             normals.extend(local_normals);
 
             let local_uvs: Vec<_> = reader
-                .read_tex_coords(0)
+                .read_tex_coords(
+                    materials[material as usize]
+                        .base_color_tex_coord
+                        .unwrap_or(0),
+                )
                 .map(|uvs| uvs.into_f32().map(Vec2::from_array).collect())
                 .unwrap_or_default();
             let has_local_uvs = !local_uvs.is_empty();
@@ -299,21 +341,13 @@ fn visit_node(
             {
                 return Err("GLB exceeds the one million triangle limit".into());
             }
-            let material = primitive
-                .material()
-                .index()
-                .map(|index| index as u16 + 1)
-                .unwrap_or(0);
-            if material as usize >= materials.len() {
-                return Err("GLB material index is invalid".into());
-            }
             if !has_local_uvs
                 && materials[material as usize].base_color_texture.is_some()
                 && !warnings
                     .iter()
-                    .any(|warning| warning.contains("without TEXCOORD_0"))
+                    .any(|warning| warning.contains("without its requested texture coordinate set"))
             {
-                warnings.push("A textured primitive without TEXCOORD_0 samples a single texture corner in the viewport; the bundled GLB retains the source primitive.".into());
+                warnings.push("A textured primitive without its requested texture coordinate set samples a single texture corner in the viewport; the bundled GLB retains the source primitive.".into());
             }
             for triangle in primitive_indices {
                 if triangle.iter().any(|index| *index >= position_count) {

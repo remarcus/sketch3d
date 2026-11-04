@@ -45,6 +45,17 @@ pub struct ObjMaterial {
     pub opacity: f32,
     /// Optional decoded base-color texture for self-contained GLB references.
     pub base_color_texture: Option<crate::image_planes::ImageAsset>,
+    pub base_color_tex_coord: Option<u32>,
+    pub alpha_mode: ObjMaterialAlphaMode,
+    pub alpha_cutoff: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ObjMaterialAlphaMode {
+    #[default]
+    Opaque,
+    Mask,
+    Blend,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -430,6 +441,9 @@ fn parse_mtl(
                     diffuse: [1.0; 3],
                     opacity: 1.0,
                     base_color_texture: None,
+                    base_color_tex_coord: None,
+                    alpha_mode: ObjMaterialAlphaMode::Opaque,
+                    alpha_cutoff: 0.5,
                 });
                 current = Some(materials.len() - 1);
             }
@@ -464,6 +478,11 @@ fn parse_mtl(
                     1.0 - value
                 } else {
                     value
+                };
+                materials[index].alpha_mode = if materials[index].opacity < 0.999_999 {
+                    ObjMaterialAlphaMode::Blend
+                } else {
+                    ObjMaterialAlphaMode::Opaque
                 };
             }
             "map_Kd" | "map_Ka" | "map_Ks" | "map_d" | "bump" | "map_Bump" | "norm" => {

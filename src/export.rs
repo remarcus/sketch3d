@@ -1801,8 +1801,13 @@ pub fn encode_with_images(
                         material.map_or_else(|| "Default".to_owned(), |m| m.name.clone());
                     let diffuse = material.map_or([1.0; 3], |m| m.diffuse);
                     let opacity = material.map_or(1.0, |m| m.opacity);
+                    let alpha_mode = material.map_or(
+                        crate::obj_reference::ObjMaterialAlphaMode::Opaque,
+                        |material| material.alpha_mode,
+                    );
+                    let alpha_cutoff = material.map_or(0.5, |material| material.alpha_cutoff);
                     let mut base_color_texture = None;
-                    let texture_has_alpha = if let Some(texture) =
+                    if let Some(texture) =
                         material.and_then(|material| material.base_color_texture.as_ref())
                     {
                         let png = image_asset_png(texture)?;
@@ -1828,10 +1833,7 @@ pub fn encode_with_images(
                         image_samplers = true;
                         fill_repeat_sampler = true;
                         base_color_texture = Some(texture_index);
-                        texture.pixels.chunks_exact(4).any(|pixel| pixel[3] < 255)
-                    } else {
-                        false
-                    };
+                    }
                     let material_index = materials.len();
                     let mut exported_material = json!({
                         "name": format!("OBJ {} - {}", resource.name, material_name),
@@ -1840,9 +1842,16 @@ pub fn encode_with_images(
                             "metallicFactor": 0.0,
                             "roughnessFactor": 0.8
                         },
-                        "alphaMode": if opacity < 0.999_999 || texture_has_alpha {"BLEND"} else {"OPAQUE"},
+                        "alphaMode": match alpha_mode {
+                            crate::obj_reference::ObjMaterialAlphaMode::Opaque => "OPAQUE",
+                            crate::obj_reference::ObjMaterialAlphaMode::Mask => "MASK",
+                            crate::obj_reference::ObjMaterialAlphaMode::Blend => "BLEND",
+                        },
                         "doubleSided": true
                     });
+                    if alpha_mode == crate::obj_reference::ObjMaterialAlphaMode::Mask {
+                        exported_material["alphaCutoff"] = json!(alpha_cutoff);
+                    }
                     if let Some(index) = base_color_texture {
                         exported_material["pbrMetallicRoughness"]["baseColorTexture"] =
                             json!({"index":index,"texCoord":0});

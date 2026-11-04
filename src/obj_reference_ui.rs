@@ -695,7 +695,7 @@ impl SketchApp {
                 }
                 self.import_obj_reference();
             }
-            ui.small("OBJ and self-contained GLB models are read-only references. Whole-scene GLB includes visible models; selected-stroke export remains ink-only. GLB node transforms, base-color materials, and embedded PNG/JPEG textures are imported and kept with the drawing. WebP textures, nonzero UV sets, and alpha-mask cutoffs fall back to the material color. External dependencies are rejected.");
+            ui.small("OBJ and self-contained GLB models are read-only references. Whole-scene GLB includes visible models; selected-stroke export remains ink-only. GLB node transforms, UV sets, alpha modes, and embedded PNG/JPEG base-color textures are imported and kept with the drawing. WebP textures and non-default texture samplers use documented fallbacks. External dependencies are rejected.");
 
             ui.separator();
             ui.strong("Model line art");

@@ -1667,15 +1667,6 @@ impl SceneRenderer {
         {
             return Err("OBJ reference transform is invalid".into());
         }
-        let texture_has_alpha: Vec<_> = model
-            .materials
-            .iter()
-            .map(|material| {
-                material.base_color_texture.as_ref().is_some_and(|texture| {
-                    texture.pixels.chunks_exact(4).any(|pixel| pixel[3] < 255)
-                })
-            })
-            .collect();
         let mut opaque: HashMap<usize, Vec<Vertex>> = HashMap::new();
         let mut translucent: HashMap<usize, Vec<Vertex>> = HashMap::new();
         for triangle in &model.triangles {
@@ -1683,16 +1674,22 @@ impl SceneRenderer {
             let material_index = triangle.material.unwrap_or(0) as usize;
             let color = material.map_or([1.0; 3], |material| material.diffuse);
             let opacity = material.map_or(1.0, |material| material.opacity);
-            let target = if opacity < 0.999_999
-                || texture_has_alpha
-                    .get(material_index)
-                    .copied()
-                    .unwrap_or(false)
-            {
+            let alpha_mode = material.map_or(
+                crate::obj_reference::ObjMaterialAlphaMode::Opaque,
+                |material| material.alpha_mode,
+            );
+            let is_translucent = alpha_mode == crate::obj_reference::ObjMaterialAlphaMode::Blend;
+            let target = if is_translucent {
                 translucent.entry(material_index).or_default()
             } else {
                 opaque.entry(material_index).or_default()
             };
+            let alpha_mode_marker = match alpha_mode {
+                crate::obj_reference::ObjMaterialAlphaMode::Opaque => 3.0,
+                crate::obj_reference::ObjMaterialAlphaMode::Mask => 2.0,
+                crate::obj_reference::ObjMaterialAlphaMode::Blend => 1.0,
+            };
+            let alpha_cutoff = material.map_or(0.5, |material| material.alpha_cutoff);
             for source in model.render_vertices(triangle)? {
                 let position = center + rotation * (source.position * scale);
                 if !position.is_finite() || position.abs().max_element() > 10_000.0 {
@@ -1701,7 +1698,7 @@ impl SceneRenderer {
                 target.push(Vertex {
                     material: 0.0,
                     grain_uv: [0.0; 2],
-                    grain_dynamics: [1.0; 2],
+                    grain_dynamics: [alpha_cutoff, alpha_mode_marker],
                     gradient_t: 0.0,
                     position: position.to_array(),
                     normal: (rotation * source.normal).normalize_or_zero().to_array(),
