@@ -32,6 +32,8 @@ Each invocation creates a unique run directory. `result.json` uses schema versio
 
 Outcomes are `passed`, `failed`, `unsupported`, or `timed_out`. Artifact paths are relative to the run directory. Original verifier reports and generated images are retained alongside captured stdout and stderr. Unsupported environments do not fail the suite; failures and timeouts return a nonzero process exit code.
 
+New normalized reports may include top-level `build` and `source_revision` objects and per-check `fixture` and `rendering` objects. Build identity records the executable's product/file version and SHA-256 fingerprint; source revision is the Git commit when available. Each check has a stable fixture ID and, when a fixture source file exists, its SHA-256 fingerprint. Export rendering metadata contains the report's pixel resolution only. Missing metadata is represented by `null` values plus an explicit availability status. These fields are optional, so older schema-version-1 results remain readable. MCP-synthesized results use the MCP binary's package version and mark unavailable fingerprints/revision explicitly.
+
 ## Read results through local MCP
 
 Start the report-only server with the normalized output root:

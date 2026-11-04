@@ -22,6 +22,45 @@ $Executable = [IO.Path]::GetFullPath($Executable)
 if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
     throw "Executable not found: $Executable. Build the release app first or pass -Executable."
 }
+
+$buildVersion = $null
+$buildFileVersion = $null
+$buildProductVersion = $null
+$buildFingerprint = $null
+$buildFingerprintStatus = 'unavailable'
+try {
+    $fileVersionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($Executable)
+    $buildFileVersion = if ([string]::IsNullOrWhiteSpace($fileVersionInfo.FileVersion)) { $null } else { $fileVersionInfo.FileVersion }
+    $buildProductVersion = if ([string]::IsNullOrWhiteSpace($fileVersionInfo.ProductVersion)) { $null } else { $fileVersionInfo.ProductVersion }
+    $buildVersion = if ($buildProductVersion) { $buildProductVersion } else { $buildFileVersion }
+} catch {}
+try {
+    $buildFingerprint = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+    $buildFingerprintStatus = 'available'
+} catch {}
+$buildIdentity = [ordered]@{
+    version = $buildVersion
+    version_status = if ($buildVersion) { 'available' } else { 'unavailable' }
+    file_version = $buildFileVersion
+    product_version = $buildProductVersion
+    fingerprint_algorithm = 'sha256'
+    fingerprint = $buildFingerprint
+    fingerprint_status = $buildFingerprintStatus
+}
+
+$sourceRevision = $null
+$sourceRevisionStatus = 'unavailable'
+$gitCommand = Get-Command 'git' -ErrorAction SilentlyContinue
+if ($gitCommand) {
+    try {
+        $revisionOutput = & $gitCommand.Source -C $repoRoot rev-parse --verify HEAD 2>$null
+        $revision = ([string]$revisionOutput).Trim()
+        if ($LASTEXITCODE -eq 0 -and $revision -match '^[0-9a-fA-F]{40,64}$') {
+            $sourceRevision = $revision.ToLowerInvariant()
+            $sourceRevisionStatus = 'available'
+        }
+    } catch {}
+}
 if (-not [IO.Path]::IsPathRooted($OutputDirectory)) {
     $OutputDirectory = Join-Path $repoRoot $OutputDirectory
 }
@@ -33,6 +72,56 @@ $runDirectory = Join-Path $OutputDirectory $runId
 function Get-RelativeArtifact([string]$Path) {
     $relative = [IO.Path]::GetRelativePath($runDirectory, [IO.Path]::GetFullPath($Path))
     return $relative.Replace('\', '/')
+}
+
+function Get-FixtureIdentity([string]$Id) {
+    $fixtureId = $null
+    $sourceRelativePath = $null
+    switch ($Id) {
+        'startup' { $fixtureId = 'startup-smoke-v1' }
+        'save-reopen' {
+            $fixtureId = 'artwork-animation-roundtrip-v1'
+            $sourceRelativePath = 'src/animation_check.rs'
+        }
+        'export' {
+            $fixtureId = 'still-export-visual-v1'
+            $sourceRelativePath = 'src/still_export_check.rs'
+        }
+    }
+    $fingerprint = $null
+    $fingerprintStatus = 'not_applicable'
+    if ($sourceRelativePath) {
+        $fingerprintStatus = 'unavailable'
+        $fixtureSource = Join-Path $repoRoot ($sourceRelativePath.Replace('/', [IO.Path]::DirectorySeparatorChar))
+        if (Test-Path -LiteralPath $fixtureSource -PathType Leaf) {
+            try {
+                $fingerprint = (Get-FileHash -LiteralPath $fixtureSource -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+                $fingerprintStatus = 'available'
+            } catch {}
+        }
+    }
+    return [ordered]@{
+        id = $fixtureId
+        fingerprint_algorithm = 'sha256'
+        fingerprint = $fingerprint
+        fingerprint_status = $fingerprintStatus
+    }
+}
+
+function Get-RenderingMetadata([string]$Id, [string[]]$Reports) {
+    if ($Id -ne 'export') { return $null }
+    $reportPath = $Reports | Where-Object { $_.EndsWith('still-export-report.json', [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+    if (-not $reportPath -or -not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
+        return [ordered]@{ status = 'unavailable' }
+    }
+    try {
+        $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json -ErrorAction Stop
+        $size = @($report.size)
+        if ($size.Count -eq 2 -and [int]$size[0] -gt 0 -and [int]$size[1] -gt 0) {
+            return [ordered]@{ status = 'available'; resolution_px = @([int]$size[0], [int]$size[1]) }
+        }
+    } catch {}
+    return [ordered]@{ status = 'unavailable' }
 }
 
 function Invoke-VerificationCheck([string]$Id, [string[]]$Arguments, [string[]]$Reports) {
@@ -123,6 +212,8 @@ function Invoke-VerificationCheck([string]$Id, [string[]]$Arguments, [string[]]$
         failure_reason = $failureReason
         exit_code = $exitCode
         artifacts = @($artifacts)
+        fixture = Get-FixtureIdentity $Id
+        rendering = Get-RenderingMetadata $Id $Reports
     }
 }
 
@@ -148,6 +239,8 @@ $summary = [ordered]@{
     schema_version = 1
     run_id = $runId
     generated_utc = [DateTime]::UtcNow.ToString('o')
+    build = $buildIdentity
+    source_revision = [ordered]@{ value = $sourceRevision; status = $sourceRevisionStatus }
     results = @($results)
 }
 $summaryPath = Join-Path $runDirectory 'result.json'

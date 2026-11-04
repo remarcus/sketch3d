@@ -1327,15 +1327,38 @@ fn persist_tool_result(
     let stderr_path = run_directory.join(format!("{check_id}.stderr.log"));
     fs::write(&stdout_path, stdout).map_err(|error| error.to_string())?;
     fs::write(&stderr_path, stderr).map_err(|error| error.to_string())?;
+    let fixture_id = match check_id {
+        "startup" => "startup-smoke-v1",
+        "save-reopen" => "artwork-animation-roundtrip-v1",
+        "export" => "still-export-visual-v1",
+        _ => "unknown",
+    };
     let result = json!({
         "schema_version": 1,
         "run_id": run_id,
         "generated_utc": utc_timestamp(),
+        "build": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "version_status": "available",
+            "file_version": Value::Null,
+            "product_version": env!("CARGO_PKG_VERSION"),
+            "fingerprint_algorithm": "sha256",
+            "fingerprint": Value::Null,
+            "fingerprint_status": "unavailable"
+        },
+        "source_revision": {"value": Value::Null, "status": "unavailable"},
         "results": [{
             "check_id": check_id,
             "outcome": outcome,
             "failure_reason": reason,
             "exit_code": Value::Null,
+            "fixture": {
+                "id": fixture_id,
+                "fingerprint_algorithm": "sha256",
+                "fingerprint": Value::Null,
+                "fingerprint_status": if check_id == "startup" { "not_applicable" } else { "unavailable" }
+            },
+            "rendering": if check_id == "export" { json!({"status":"unavailable"}) } else { Value::Null },
             "artifacts": [
                 format!("{check_id}.stdout.log"),
                 format!("{check_id}.stderr.log")
