@@ -38,6 +38,29 @@ pub fn serve(configured_root: &Path) -> Result<(), String> {
         return Err("Configured verification path is not a directory".into());
     }
 
+    serve_config(ServerConfig::Reports(root))
+}
+
+pub fn serve_drawings(configured_input: &Path, configured_output: &Path) -> Result<(), String> {
+    let input = configured_input
+        .canonicalize()
+        .map_err(|error| format!("Cannot resolve native drawing directory: {error}"))?;
+    let output = configured_output
+        .canonicalize()
+        .map_err(|error| format!("Cannot resolve drawing export directory: {error}"))?;
+    if !input.is_dir() || !output.is_dir() {
+        return Err("Native drawing and export paths must be existing directories".into());
+    }
+    serve_config(ServerConfig::Drawings { input, output })
+}
+
+enum ServerConfig {
+    Reports(PathBuf),
+    Drawings { input: PathBuf, output: PathBuf },
+}
+
+fn serve_config(config: ServerConfig) -> Result<(), String> {
+
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut input = stdin.lock();
@@ -59,7 +82,7 @@ pub fn serve(configured_root: &Path) -> Result<(), String> {
             ReadLine::Line => {
                 let parsed = serde_json::from_slice::<Value>(&line);
                 let response = match parsed {
-                    Ok(message) => handle_message(&root, message),
+                    Ok(message) => handle_message(&config, message),
                     Err(error) => Some(json!({
                         "jsonrpc": "2.0",
                         "id": null,
@@ -146,7 +169,7 @@ fn write_message<W: Write>(writer: &mut W, message: &Value) -> io::Result<()> {
     writer.flush()
 }
 
-fn handle_message(root: &Path, message: Value) -> Option<Value> {
+fn handle_message(config: &ServerConfig, message: Value) -> Option<Value> {
     let id = message.get("id").cloned();
     if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return id.map(|id| rpc_error(id, -32600, "Expected JSON-RPC 2.0"));
@@ -172,20 +195,20 @@ fn handle_message(root: &Path, message: Value) -> Option<Value> {
                 json!({
                     "protocolVersion": protocol_version,
                     "capabilities": {"tools": {"listChanged": false}},
-                    "serverInfo": {"name": "sketch3d-verification-reports", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "Read-only access to normalized verification results beneath the configured verification directory."
+                    "serverInfo": {"name": if matches!(config, ServerConfig::Reports(_)) { "sketch3d-verification-reports" } else { "sketch3d-drawing-library" }, "version": env!("CARGO_PKG_VERSION")},
+                    "instructions": if matches!(config, ServerConfig::Reports(_)) { "Read-only access to normalized verification results beneath the configured verification directory." } else { "Read-only inspection and bounded GLB export for native drawings beneath the configured input directory." }
                 }),
             ))
         }
         "notifications/initialized" | "notifications/cancelled" | "notifications/progress" => None,
         "ping" => id.map(|id| rpc_result(id, json!({}))),
-        "tools/list" => id.map(|id| rpc_result(id, json!({ "tools": tool_definitions() }))),
+        "tools/list" => id.map(|id| rpc_result(id, json!({ "tools": tool_definitions(config) }))),
         "tools/call" => {
             let Some(id) = id else { return None };
             let params = message.get("params").cloned().unwrap_or(Value::Null);
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-            let result = call_tool(root, name, &arguments);
+            let result = call_configured_tool(config, name, &arguments);
             Some(rpc_result(id, result))
         }
         _ if id.is_none() => None,
@@ -208,8 +231,8 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-fn tool_definitions() -> Value {
-    json!([
+fn tool_definitions(config: &ServerConfig) -> Value {
+    let reports = json!([
         {
             "name": "verification_list_checks",
             "description": "List the supported verification check IDs and completed run IDs beneath the configured report directory.",
@@ -240,7 +263,32 @@ fn tool_definitions() -> Value {
             "inputSchema": {"type": "object", "properties": {"check_id": {"type": "string", "enum": ["startup", "save-reopen", "export"]}, "timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 600, "default": 180}}, "required": ["check_id"], "additionalProperties": false},
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
         }
-    ])
+    ]);
+    let drawings = json!([
+        {
+            "name": "drawing_inspect_native",
+            "description": "Return a bounded summary of one native drawing beneath the configured input directory, including layers, guides, world bounds, and managed external-asset requirements.",
+            "inputSchema": {"type":"object","properties":{"path":{"type":"string","maxLength":512}},"required":["path"],"additionalProperties":false},
+            "annotations": {"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}
+        },
+        {
+            "name": "drawing_export_glb",
+            "description": "Export one validated native drawing as a GLB file in the configured output directory. The native source is read-only.",
+            "inputSchema": {"type":"object","properties":{"path":{"type":"string","maxLength":512}},"required":["path"],"additionalProperties":false},
+            "annotations": {"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}
+        }
+    ]);
+    match config {
+        ServerConfig::Reports(_) => reports,
+        ServerConfig::Drawings { .. } => drawings,
+    }
+}
+
+fn call_configured_tool(config: &ServerConfig, name: &str, arguments: &Value) -> Value {
+    match config {
+        ServerConfig::Reports(root) => call_tool(root, name, arguments),
+        ServerConfig::Drawings { input, output } => call_drawing_tool(input, output, name, arguments),
+    }
 }
 
 fn call_tool(root: &Path, name: &str, arguments: &Value) -> Value {
@@ -294,6 +342,178 @@ fn call_tool(root: &Path, name: &str, arguments: &Value) -> Value {
             "isError": true
         }),
     }
+}
+
+fn call_drawing_tool(input: &Path, output: &Path, name: &str, arguments: &Value) -> Value {
+    let result = required_string(arguments, "path").and_then(|relative| match name {
+        "drawing_inspect_native" => inspect_native_drawing(input, relative),
+        "drawing_export_glb" => export_native_drawing(input, output, relative),
+        _ => Err("Unknown drawing tool".into()),
+    });
+    match result {
+        Ok(payload) => {
+            let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into());
+            json!({
+                "content": [{"type":"text", "text":text}],
+                "structuredContent": payload,
+                "isError": false
+            })
+        }
+        Err(error) => json!({"content":[{"type":"text","text":error}],"isError":true}),
+    }
+}
+
+const MAX_NATIVE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_DRAWING_SUMMARY_BYTES: usize = 512 * 1024;
+
+fn native_file(input: &Path, relative: &str) -> Result<PathBuf, String> {
+    let relative_path = Path::new(relative);
+    if relative.len() > 512
+        || relative_path.is_absolute()
+        || relative_path.as_os_str().is_empty()
+        || relative_path.components().any(|component| !matches!(component, Component::Normal(_)))
+        || relative_path.extension().and_then(|extension| extension.to_str()).is_none_or(|extension| !extension.eq_ignore_ascii_case("json"))
+    {
+        return Err("Native drawing path must be a safe relative .json path".into());
+    }
+    let mut candidate = input.to_path_buf();
+    for component in relative_path.components() {
+        candidate.push(component.as_os_str());
+        let metadata = fs::symlink_metadata(&candidate)
+            .map_err(|_| "Native drawing was not found beneath the configured input directory".to_owned())?;
+        if metadata.file_type().is_symlink() {
+            return Err("Native drawing path cannot contain symlinks".into());
+        }
+    }
+    let canonical = candidate.canonicalize().map_err(|error| error.to_string())?;
+    let metadata = fs::metadata(&canonical).map_err(|error| error.to_string())?;
+    if !canonical.starts_with(input) || !metadata.is_file() {
+        return Err("Native drawing is outside the configured input directory or is not a file".into());
+    }
+    if metadata.len() > MAX_NATIVE_BYTES {
+        return Err("Native drawing exceeds the 64 MiB read limit".into());
+    }
+    Ok(canonical)
+}
+
+fn load_native_document(input: &Path, relative: &str) -> Result<(PathBuf, crate::document::Document), String> {
+    let path = native_file(input, relative)?;
+    let file = fs::File::open(&path).map_err(|error| error.to_string())?;
+    let mut text = String::new();
+    file.take(MAX_NATIVE_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|error| format!("Native drawing is not valid UTF-8: {error}"))?;
+    if text.len() as u64 > MAX_NATIVE_BYTES {
+        return Err("Native drawing grew beyond the 64 MiB read limit".into());
+    }
+    let document = crate::document::Document::from_json(&text)
+        .map_err(|error| format!("Native drawing is invalid: {error}"))?;
+    Ok((path, document))
+}
+
+fn inspect_native_drawing(input: &Path, relative: &str) -> Result<Value, String> {
+    let (path, document) = load_native_document(input, relative)?;
+    let asset_root = crate::image_plane_storage::asset_root(&path)?;
+    let asset_root_metadata = fs::symlink_metadata(&asset_root).ok();
+    let asset_root_safe = asset_root_metadata.as_ref().is_some_and(|metadata| {
+        metadata.is_dir() && !metadata.file_type().is_symlink()
+    });
+    let mut min = glam::Vec3::splat(f32::INFINITY);
+    let mut max = glam::Vec3::splat(f32::NEG_INFINITY);
+    let mut samples = 0usize;
+    for point in document.strokes.iter().flat_map(|stroke| stroke.points.iter()) {
+        if point.position.is_finite() {
+            min = min.min(point.position);
+            max = max.max(point.position);
+            samples += 1;
+        }
+    }
+    let bounds = if samples == 0 { Value::Null } else {
+        json!({"min":[min.x,min.y,min.z],"max":[max.x,max.y,max.z],"sample_count":samples})
+    };
+    let image_assets: Vec<_> = document.image_planes.iter().map(|plane| {
+        let candidate = asset_root.join(&plane.asset_file);
+        let candidate_metadata = fs::symlink_metadata(&candidate).ok();
+        let symlinked_asset = candidate_metadata.as_ref().is_some_and(|metadata| metadata.file_type().is_symlink());
+        let resolved = if asset_root_safe && !symlinked_asset {
+            plane.resolve_asset(&asset_root)
+        } else {
+            Ok(None)
+        };
+        let (available, size_bytes, issue) = match resolved {
+            Ok(Some(asset)) => match fs::metadata(&asset) {
+                Ok(metadata) => (true, Some(metadata.len()), None),
+                Err(error) => (false, None, Some(error.to_string())),
+            },
+            Ok(None) => (false, None, Some(if symlinked_asset { "asset file is a symlink".to_owned() } else if asset_root_metadata.is_some() && !asset_root_safe { "managed asset directory is unavailable".to_owned() } else { "missing".to_owned() })),
+            Err(error) => (false, None, Some(error)),
+        };
+        json!({"id":plane.id,"name":plane.name,"file":plane.asset_file,"available":available,"size_bytes":size_bytes,"pixel_size":plane.pixel_size,"issue":issue})
+    }).collect();
+    let models_root = asset_root.join("models");
+    let models_metadata = fs::symlink_metadata(&models_root).ok();
+    let models_root_safe = asset_root_safe && models_metadata.as_ref().is_some_and(|metadata| {
+        metadata.is_dir() && !metadata.file_type().is_symlink()
+    });
+    let model_assets: Vec<_> = document.model_references.iter().map(|resource| {
+        let bundle = models_root.join(resource.asset.id.to_string());
+        let metadata = models_root_safe.then(|| fs::symlink_metadata(&bundle).ok()).flatten();
+        let available = metadata.as_ref().is_some_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
+        let size_bytes = if available { directory_size_bounded(&bundle, crate::obj_reference_storage::MAX_MODEL_BUNDLE_BYTES).ok() } else { None };
+        json!({"id":resource.id,"name":resource.name,"bundle":resource.asset.bundle_dir,"available":available,"size_bytes":size_bytes,"issue":if available { Value::Null } else { json!("managed model bundle is missing or unsafe") }})
+    }).collect();
+    let summary = json!({
+        "path":relative,
+        "document_version":document.version,
+        "counts":{"strokes":document.strokes.len(),"layers":document.layers.len(),"guides":document.guide_resources.len(),"image_planes":document.image_planes.len(),"model_references":document.model_references.len()},
+        "bounds":{"coordinate_space":"world","source":"static_stroke_points","extent":bounds},
+        "layers":document.layers.iter().map(|layer| json!({"id":layer.id,"name":layer.name,"visible":layer.visible,"locked":layer.locked,"folder":document.layer_folders.iter().find(|folder|folder.layer_ids.contains(&layer.id)).map(|folder| folder.name.clone())})).collect::<Vec<_>>(),
+        "guides":document.guide_resources.iter().map(|guide| json!({"id":guide.id,"name":guide.name,"visible":guide.visible,"locked":guide.locked,"kind":serde_json::to_value(&guide.geometry).ok().and_then(|value|value.get("kind").and_then(Value::as_str).map(str::to_owned))})).collect::<Vec<_>>(),
+        "external_assets":{"image_planes":image_assets,"model_references":model_assets}
+    });
+    let encoded = serde_json::to_vec(&summary).map_err(|error| error.to_string())?;
+    if encoded.len() > MAX_DRAWING_SUMMARY_BYTES {
+        return Err("Native drawing summary exceeds the 512 KiB response limit".into());
+    }
+    Ok(summary)
+}
+
+fn directory_size_bounded(path: &Path, limit: u64) -> Result<u64, String> {
+    let mut total = 0u64;
+    let mut pending = vec![path.to_path_buf()];
+    let mut seen = 0usize;
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
+            seen += 1;
+            if seen > 4096 { return Err("Model bundle has too many entries".into()); }
+            let entry = entry.map_err(|error| error.to_string())?;
+            let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+            if metadata.file_type().is_symlink() { return Err("Model bundle contains a symlink".into()); }
+            if metadata.is_dir() { pending.push(entry.path()); }
+            else if metadata.is_file() {
+                total = total.saturating_add(metadata.len());
+                if total > limit { return Err("Model bundle exceeds its size limit".into()); }
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn export_native_drawing(input: &Path, output: &Path, relative: &str) -> Result<Value, String> {
+    let (path, document) = load_native_document(input, relative)?;
+    let filename = path.file_stem().ok_or("Native drawing has no filename")?;
+    let destination = output.join(filename).with_extension("glb");
+    if fs::symlink_metadata(&destination).is_ok() {
+        return Err("A GLB export with that name already exists in the configured output directory".into());
+    }
+    let asset_root = crate::image_plane_storage::asset_root(&path)?;
+    let summary = crate::export::write_glb_with_images(&document, None, &asset_root, &destination)?;
+    let metadata = fs::metadata(&destination).map_err(|error| error.to_string())?;
+    if metadata.len() > 128 * 1024 * 1024 {
+        let _ = fs::remove_file(&destination);
+        return Err("Export exceeded the 128 MiB output limit and was removed".into());
+    }
+    Ok(json!({"source":relative,"output":destination.file_name().unwrap_or_default().to_string_lossy(),"size_bytes":metadata.len(),"strokes":summary.strokes,"vertices":summary.vertices,"triangles":summary.triangles,"image_planes":summary.image_planes,"model_references":summary.model_references}))
 }
 
 fn required_string<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, String> {

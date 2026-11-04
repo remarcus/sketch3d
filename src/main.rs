@@ -88,6 +88,23 @@ fn main() -> eframe::Result {
     }
     if let Some(index) = args
         .iter()
+        .position(|argument| argument == "--mcp-drawing-server")
+    {
+        let (Some(input), Some(output)) = (args.get(index + 1), args.get(index + 2)) else {
+            eprintln!("Usage: sketch3d --mcp-drawing-server <native-input-directory> <glb-output-directory>");
+            std::process::exit(2);
+        };
+        if let Err(error) = verification_mcp::serve_drawings(
+            std::path::Path::new(input),
+            std::path::Path::new(output),
+        ) {
+            eprintln!("Drawing MCP server stopped: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(index) = args
+        .iter()
         .position(|argument| argument == "--verify-artwork-animation")
     {
         let Some(report) = args.get(index + 1) else {
