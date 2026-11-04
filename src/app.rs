@@ -146,79 +146,164 @@ fn inspector_rail_button(
     icon: &str,
     label: &str,
     selected: bool,
+    enabled: bool,
+    tooltip: Option<&str>,
 ) -> egui::Response {
-    let response = ui.add_sized(
-        [44.0, 44.0],
-        egui::Button::new(
-            if matches!(icon, "properties" | "layers" | "references" | "images") {
-                ""
-            } else {
-                icon
-            },
-        )
-        .selected(selected),
+    inspector_icon_button(ui, icon, label, selected, enabled, [44.0, 44.0], tooltip)
+}
+
+fn inspector_icon_button(
+    ui: &mut egui::Ui,
+    icon: &str,
+    label: &str,
+    selected: bool,
+    enabled: bool,
+    size: [f32; 2],
+    tooltip: Option<&str>,
+) -> egui::Response {
+    let response = ui.add_enabled(
+        enabled,
+        egui::Button::new("")
+            .selected(selected)
+            .min_size(size.into()),
     );
     let response = ui_style::accessible_button(response, label, Some(selected));
-    let response = response.on_hover_text(label);
-    if matches!(icon, "properties" | "layers" | "references" | "images") {
-        let painter = ui.painter_at(response.rect);
-        let color = if selected {
-            ui_style::colors(ui.ctx()).focus
-        } else {
-            ui_style::colors(ui.ctx()).text
-        };
-        let stroke = egui::Stroke::new(1.8_f32, color);
-        let center = response.rect.center();
-        let p = |x: f32, y: f32| center + egui::vec2(x, y);
-        match icon {
-            "properties" => {
-                for (y, knob_x) in [(-8.0, -4.0), (0.0, 5.0), (8.0, -1.0)] {
-                    painter.line_segment([p(-10.0, y), p(10.0, y)], stroke);
-                    painter.circle_filled(p(knob_x, y), 2.6, color);
-                }
+    let response = response.on_hover_text(tooltip.unwrap_or(label));
+    let painter = ui.painter_at(response.rect);
+    let colors = ui_style::colors(ui.ctx());
+    let color = if !enabled {
+        colors.muted_text
+    } else if selected {
+        colors.focus
+    } else {
+        colors.text
+    };
+    let stroke = egui::Stroke::new(1.8_f32, color);
+    let center = response.rect.center();
+    let p = |x: f32, y: f32| center + egui::vec2(x, y);
+    match icon {
+        "properties" => {
+            for (y, knob_x) in [(-8.0, -4.0), (0.0, 5.0), (8.0, -1.0)] {
+                painter.line_segment([p(-10.0, y), p(10.0, y)], stroke);
+                painter.circle_filled(p(knob_x, y), 2.6, color);
             }
-            "layers" => {
-                for (x, y) in [(-3.0, -8.0), (0.0, -2.0), (3.0, 4.0)] {
-                    painter.rect_stroke(
-                        egui::Rect::from_center_size(p(x, y), egui::vec2(16.0, 9.0)),
-                        1.5,
-                        stroke,
-                        egui::StrokeKind::Middle,
-                    );
-                }
-            }
-            "references" => {
-                painter.rect_stroke(
-                    egui::Rect::from_center_size(p(-2.0, -2.0), egui::vec2(17.0, 19.0)),
-                    1.5,
-                    stroke,
-                    egui::StrokeKind::Middle,
-                );
-                painter.circle_stroke(p(5.0, 5.0), 4.0, stroke);
-                painter.line_segment([p(8.0, 8.0), p(11.0, 11.0)], stroke);
-            }
-            "images" => {
-                painter.rect_stroke(
-                    egui::Rect::from_center_size(p(0.0, 0.0), egui::vec2(22.0, 18.0)),
-                    1.5,
-                    stroke,
-                    egui::StrokeKind::Middle,
-                );
-                painter.circle_filled(p(6.0, -4.0), 2.0, color);
-                painter.add(egui::Shape::line(
-                    vec![
-                        p(-9.0, 6.0),
-                        p(-3.0, 0.0),
-                        p(1.0, 4.0),
-                        p(5.0, 0.0),
-                        p(10.0, 6.0),
-                    ],
-                    stroke,
-                ));
-            }
-            _ => {}
         }
+        "layers" => {
+            for (x, y) in [(-3.0, -8.0), (0.0, -2.0), (3.0, 4.0)] {
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(p(x, y), egui::vec2(16.0, 9.0)),
+                    1.5,
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+            }
+        }
+        "references" => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(p(-2.0, -2.0), egui::vec2(17.0, 19.0)),
+                1.5,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.circle_stroke(p(5.0, 5.0), 4.0, stroke);
+            painter.line_segment([p(8.0, 8.0), p(11.0, 11.0)], stroke);
+        }
+        "images" => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(p(0.0, 0.0), egui::vec2(22.0, 18.0)),
+                1.5,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.circle_filled(p(6.0, -4.0), 2.0, color);
+            painter.add(egui::Shape::line(
+                vec![
+                    p(-9.0, 6.0),
+                    p(-3.0, 0.0),
+                    p(1.0, 4.0),
+                    p(5.0, 0.0),
+                    p(10.0, 6.0),
+                ],
+                stroke,
+            ));
+        }
+        "collapse" => {
+            painter.add(egui::Shape::line(
+                vec![p(-3.5, -7.0), p(3.5, 0.0), p(-3.5, 7.0)],
+                stroke,
+            ));
+        }
+        "expand" => {
+            painter.add(egui::Shape::line(
+                vec![p(3.5, -7.0), p(-3.5, 0.0), p(3.5, 7.0)],
+                stroke,
+            ));
+        }
+        "hide" => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(p(0.0, 0.0), egui::vec2(22.0, 18.0)),
+                1.5,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.line_segment([p(-4.0, -9.0), p(-4.0, 9.0)], stroke);
+            painter.line_segment([p(1.0, -3.0), p(7.0, 3.0)], stroke);
+            painter.line_segment([p(7.0, -3.0), p(1.0, 3.0)], stroke);
+        }
+        "sidebar" => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(p(0.0, 0.0), egui::vec2(22.0, 18.0)),
+                1.5,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.line_segment([p(5.0, -8.0), p(5.0, 8.0)], stroke);
+            painter.add(egui::Shape::line(
+                vec![p(-7.0, -4.0), p(-2.0, 0.0), p(-7.0, 4.0)],
+                stroke,
+            ));
+        }
+        _ => {}
     }
+    response
+}
+
+fn inspector_menu_action_button(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response {
+    let response = ui.add_sized(
+        [ui.available_width().max(160.0), 30.0],
+        egui::Button::new(""),
+    );
+    let response = ui_style::accessible_button(response, label, None).on_hover_text(label);
+    let painter = ui.painter_at(response.rect);
+    let colors = ui_style::colors(ui.ctx());
+    let color = colors.text;
+    let stroke = egui::Stroke::new(1.6_f32, color);
+    let center = egui::pos2(response.rect.left() + 16.0, response.rect.center().y);
+    let p = |x: f32, y: f32| center + egui::vec2(x, y);
+    painter.rect_stroke(
+        egui::Rect::from_center_size(center, egui::vec2(20.0, 16.0)),
+        1.5,
+        stroke,
+        egui::StrokeKind::Middle,
+    );
+    if icon == "sidebar" {
+        painter.line_segment([p(4.0, -7.0), p(4.0, 7.0)], stroke);
+        painter.add(egui::Shape::line(
+            vec![p(-7.0, -3.0), p(-3.0, 0.0), p(-7.0, 3.0)],
+            stroke,
+        ));
+    } else {
+        painter.line_segment([p(-4.0, -7.0), p(-4.0, 7.0)], stroke);
+        painter.line_segment([p(0.0, -3.0), p(6.0, 3.0)], stroke);
+        painter.line_segment([p(6.0, -3.0), p(0.0, 3.0)], stroke);
+    }
+    painter.text(
+        egui::pos2(response.rect.left() + 34.0, response.rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::TextStyle::Button.resolve(ui.style()),
+        color,
+    );
     response
 }
 
@@ -5209,16 +5294,15 @@ impl SketchApp {
                 self.camera_ui.open = true;
             }
             ui.separator();
-            if ui
-                .button(if self.presentation.preferences.layout.inspector_open {
-                    "Hide inspector"
-                } else {
-                    "Show inspector"
-                })
-                .clicked()
-            {
+            let open = !self.presentation.preferences.layout.inspector_open;
+            let label = if open {
+                "Show inspector"
+            } else {
+                "Hide inspector"
+            };
+            let icon = if open { "sidebar" } else { "hide" };
+            if inspector_menu_action_button(ui, icon, label).clicked() {
                 ui.close_menu();
-                let open = !self.presentation.preferences.layout.inspector_open;
                 self.set_inspector_open(open);
             }
             if ui.button("Reset workspace layout").clicked() {
@@ -5303,6 +5387,8 @@ impl SketchApp {
                                 glyph,
                                 label,
                                 self.presentation.preferences.layout.inspector_tab == tab,
+                                true,
+                                None,
                             );
                             if response.clicked() {
                                 if self.presentation.preferences.layout.inspector_tab != tab {
@@ -5312,22 +5398,29 @@ impl SketchApp {
                             }
                         }
                         ui.separator();
-                        if inspector_rail_button(ui, "»", "Expand inspector", false).clicked() {
+                        if inspector_rail_button(
+                            ui,
+                            "expand",
+                            "Expand inspector",
+                            false,
+                            true,
+                            None,
+                        )
+                        .clicked()
+                        {
                             self.set_inspector_collapsed(false);
                         }
                         let can_hide = self.point_draft.is_none()
                             && self.point_multi_draft.is_none()
                             && self.reprojection_draft.is_none();
-                        let hide = ui.add_enabled(
+                        let hide = inspector_rail_button(
+                            ui,
+                            "hide",
+                            "Hide inspector",
+                            false,
                             can_hide,
-                            egui::Button::new("×").min_size(Vec2::splat(44.0)),
+                            (!can_hide).then_some("Finish the active edit before hiding"),
                         );
-                        let hide = ui_style::accessible_button(hide, "Hide inspector", Some(false))
-                            .on_hover_text(if can_hide {
-                                "Hide inspector"
-                            } else {
-                                "Finish the active edit before hiding"
-                            });
                         if hide.clicked() {
                             self.set_inspector_open(false);
                         }
@@ -5380,27 +5473,30 @@ impl SketchApp {
                     {
                         self.presentation.schedule_layout_save();
                     }
-                    if ui
-                        .add_enabled(
-                            self.point_draft.is_none()
-                                && self.point_multi_draft.is_none()
-                                && self.reprojection_draft.is_none(),
-                            egui::Button::new("Collapse"),
-                        )
-                        .on_hover_text("Collapse inspector to its tab rail")
-                        .clicked()
+                    let can_change_visibility = self.point_draft.is_none()
+                        && self.point_multi_draft.is_none()
+                        && self.reprojection_draft.is_none();
+                    if inspector_rail_button(
+                        ui,
+                        "collapse",
+                        "Collapse inspector to its tab rail",
+                        false,
+                        can_change_visibility,
+                        None,
+                    )
+                    .clicked()
                     {
                         self.set_inspector_collapsed(true);
                     }
-                    if ui
-                        .add_enabled(
-                            self.point_draft.is_none()
-                                && self.point_multi_draft.is_none()
-                                && self.reprojection_draft.is_none(),
-                            egui::Button::new("Hide"),
-                        )
-                        .on_hover_text("Hide inspector")
-                        .clicked()
+                    if inspector_rail_button(
+                        ui,
+                        "hide",
+                        "Hide inspector",
+                        false,
+                        can_change_visibility,
+                        None,
+                    )
+                    .clicked()
                     {
                         self.set_inspector_open(false);
                     }
