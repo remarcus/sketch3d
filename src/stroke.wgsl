@@ -22,12 +22,12 @@ struct Output {
     @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32>,
     @location(1) color: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) grain_uv: vec2<f32>,
     @location(4) world: vec3<f32>, @location(5) opacity: f32, @location(6) material: f32,
-    @location(7) grain_dynamics: vec2<f32>,
+    @location(7) grain_dynamics: vec2<f32>, @location(8) emission: vec3<f32>,
 }
-@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) color: vec3<f32>, @location(3) uv: vec2<f32>, @location(4) opacity: f32, @location(5) material: f32, @location(6) grain_uv: vec2<f32>, @location(7) grain_dynamics: vec2<f32>) -> Output {
+@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) color: vec3<f32>, @location(3) uv: vec2<f32>, @location(4) opacity: f32, @location(5) material: f32, @location(6) grain_uv: vec2<f32>, @location(7) grain_dynamics: vec2<f32>, @location(8) emission: vec3<f32>) -> Output {
     var out: Output;
     out.position=scene.view_projection*vec4<f32>(position,1.0);
-    out.normal=normal; out.color=color; out.uv=uv; out.grain_uv=grain_uv; out.world=position; out.opacity=opacity; out.material=material; out.grain_dynamics=grain_dynamics; return out;
+    out.normal=normal; out.color=color; out.uv=uv; out.grain_uv=grain_uv; out.world=position; out.opacity=opacity; out.material=material; out.grain_dynamics=grain_dynamics; out.emission=emission; return out;
 }
 fn grain_coverage(in: Output, brush_alpha: f32) -> f32 {
     if in.material >= 4.0 {
@@ -74,8 +74,9 @@ fn material_output(in: Output, alpha: f32, sampled_color: vec3<f32>) -> Fragment
     var emission=vec3<f32>(0.0);
     if material>1.5 && material<2.5 {
         emission=in.color*sampled_color*2.0;
-        color+=emission;
     }
+    emission+=in.emission;
+    color+=emission;
     return FragmentOutput(vec4<f32>(apply_grain(color,in.position.xy),alpha),vec4<f32>(emission*alpha,alpha));
 }
 @fragment fn fs_main(in: Output) -> FragmentOutput {

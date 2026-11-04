@@ -634,7 +634,7 @@ impl SceneRenderer {
             };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:Some("3D strokes"),layout:Some(&pipeline_layout),
-            vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32,6=>Float32x2,7=>Float32x2]}]},
+            vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32,6=>Float32x2,7=>Float32x2,8=>Float32x3]}]},
             fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some(entry_point),compilation_options:Default::default(),targets:&[
                 Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:color_blend,write_mask:wgpu::ColorWrites::ALL}),
                 Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8Unorm,blend:Some(wgpu::BlendState {color:wgpu::BlendComponent {src_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},dst_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},operation:wgpu::BlendOperation::Add},alpha:wgpu::BlendComponent {src_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},dst_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},operation:wgpu::BlendOperation::Add}}),write_mask:wgpu::ColorWrites::ALL})
@@ -654,7 +654,7 @@ impl SceneRenderer {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32,6=>Float32x2,7=>Float32x2],
+                    attributes: &wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32,6=>Float32x2,7=>Float32x2,8=>Float32x3],
                 }],
             },
             fragment: Some(wgpu::FragmentState {
@@ -687,7 +687,7 @@ impl SceneRenderer {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32,6=>Float32x2,7=>Float32x2],
+                    attributes: &wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32,6=>Float32x2,7=>Float32x2,8=>Float32x3],
                 }],
             },
             fragment: Some(wgpu::FragmentState {
@@ -1737,6 +1737,7 @@ impl SceneRenderer {
                 }
                 target.push(Vertex {
                     material: 0.0,
+                    emission: material.map_or([0.0; 3], |material| material.emissive_factor),
                     grain_uv: [0.0; 2],
                     grain_dynamics: [alpha_cutoff, alpha_mode_marker],
                     gradient_t: 0.0,
@@ -2475,6 +2476,7 @@ impl SceneRenderer {
                 position,
                 normal: [0.0, 1.0, 0.0],
                 color: settings.ground_color,
+                emission: [0.0; 3],
                 uv: [0.0; 2],
                 opacity: 1.0,
                 material: 0.0,

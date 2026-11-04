@@ -18,6 +18,8 @@ pub struct Vertex {
     pub grain_dynamics: [f32; 2],
     /// Normalized centerline arc-length parameter used to resolve stroke gradients.
     pub gradient_t: f32,
+    /// Per-vertex emitted radiance for imported reference materials.
+    pub emission: [f32; 3],
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Plane {
@@ -291,6 +293,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
             let normal = a * angle.cos() + b * angle.sin();
             Vertex {
                 material: 0.0,
+                emission: [0.0; 3],
                 grain_uv: [0.0; 2],
                 grain_dynamics: [1.0; 2],
                 gradient_t: if total > 1.0e-8 {
@@ -345,6 +348,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
                     let normal = frame * local;
                     out.push(Vertex {
                         material: 0.0,
+                        emission: [0.0; 3],
                         grain_uv: [0.0; 2],
                         grain_dynamics: [1.0; 2],
                         gradient_t: 0.0,
@@ -380,6 +384,7 @@ pub fn tube(stroke: &Stroke) -> Vec<Vertex> {
         for (index, ring) in [(0, &rings[0]), (rings.len() - 1, rings.last().unwrap())] {
             let center = Vertex {
                 material: 0.0,
+                emission: [0.0; 3],
                 grain_uv: [0.0; 2],
                 grain_dynamics: [1.0; 2],
                 gradient_t: if total > 1.0e-8 {
@@ -1102,6 +1107,7 @@ fn dab_mesh(stroke: &Stroke) -> Vec<Vertex> {
                         let offset = position - dab.position;
                         vertices.push(Vertex {
                             material: 0.0,
+                            emission: [0.0; 3],
                             grain_uv: [0.0; 2],
                             grain_dynamics: [1.0; 2],
                             gradient_t: dab.gradient_t,
@@ -1258,6 +1264,7 @@ fn surface_dab_mesh_with_projection(
     let length_radius = stroke.radius * dab.size_scale;
     let center = Vertex {
         material: 0.0,
+        emission: [0.0; 3],
         grain_uv: [0.0; 2],
         grain_dynamics: [1.0; 2],
         gradient_t: dab.gradient_t,
@@ -1269,6 +1276,7 @@ fn surface_dab_mesh_with_projection(
     };
     let mut rim = [Vertex {
         material: 0.0,
+        emission: [0.0; 3],
         grain_uv: [0.0; 2],
         grain_dynamics: [1.0; 2],
         gradient_t: dab.gradient_t,
@@ -1287,6 +1295,7 @@ fn surface_dab_mesh_with_projection(
         };
         *vertex = Vertex {
             material: 0.0,
+            emission: [0.0; 3],
             grain_uv: [0.0; 2],
             grain_dynamics: [1.0; 2],
             gradient_t: dab.gradient_t,
@@ -2061,6 +2070,7 @@ fn flat_triangle(
             .zip(opacity)
             .map(|((position, uv), opacity)| Vertex {
                 material: 0.0,
+                emission: [0.0; 3],
                 grain_uv: [0.0; 2],
                 grain_dynamics: [1.0; 2],
                 gradient_t: 0.0,
@@ -2351,6 +2361,7 @@ pub fn grid(plane: DrawingPlane) -> Vec<Vertex> {
             for sign in [-1.0, 1.0] {
                 vertices.push(Vertex {
                     material: 0.0,
+                    emission: [0.0; 3],
                     grain_uv: [0.0; 2],
                     grain_dynamics: [1.0; 2],
                     gradient_t: 0.0,

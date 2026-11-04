@@ -493,6 +493,7 @@ pub fn mesh(stroke: &Stroke) -> Vec<crate::geometry::Vertex> {
         }
         crate::geometry::Vertex {
             material: 0.0,
+            emission: [0.0; 3],
             grain_uv: [0.0; 2],
             grain_dynamics: [1.0; 2],
             gradient_t: 0.0,

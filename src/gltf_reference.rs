@@ -239,8 +239,8 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
                 warnings.push("WebP base-color textures are retained in the bundled GLB; viewport shading uses the material base-color factor because WebP decoding is unavailable.".into());
             }
         }
-        if metallic > 0.0 || roughness < 1.0 || emissive_factor != [0.0; 3] {
-            warnings.push("GLB metallic, roughness, and emissive factors are preserved in whole-scene GLB export; the viewport uses a diffuse lighting approximation.".into());
+        if metallic > 0.0 || roughness < 1.0 {
+            warnings.push("GLB metallic and roughness factors are preserved in whole-scene GLB export; the viewport uses a diffuse lighting approximation. Emissive factors render in the viewport and are preserved on export.".into());
         }
     }
     if materials.len() > crate::obj_reference::MAX_MATERIALS {
