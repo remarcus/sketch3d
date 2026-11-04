@@ -82,7 +82,7 @@ fn serve_config(config: ServerConfig) -> Result<(), String> {
     let mut output = stdout.lock();
     loop {
         let mut line = Vec::new();
-        match read_bounded_line(&mut input, &mut line)? {
+        match read_bounded_line(&mut input, &mut line).map_err(|error| error.to_string())? {
             ReadLine::Eof => return Ok(()),
             ReadLine::Oversized => {
                 write_message(
@@ -92,7 +92,8 @@ fn serve_config(config: ServerConfig) -> Result<(), String> {
                         "id": null,
                         "error": {"code": -32600, "message": "Request exceeds the 64 KiB limit"}
                     }),
-                )?;
+                )
+                .map_err(|error| error.to_string())?;
             }
             ReadLine::Line => {
                 let parsed = serde_json::from_slice::<Value>(&line);
@@ -105,7 +106,7 @@ fn serve_config(config: ServerConfig) -> Result<(), String> {
                     })),
                 };
                 if let Some(response) = response {
-                    write_message(&mut output, &response)?;
+                    write_message(&mut output, &response).map_err(|error| error.to_string())?;
                 }
             }
         }
@@ -251,7 +252,7 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
 }
 
 fn tool_definitions(config: &ServerConfig) -> Value {
-    let reports = json!([
+    let mut reports = json!([
         {
             "name": "verification_list_checks",
             "description": "List the supported verification check IDs and completed run IDs beneath the configured report directory.",

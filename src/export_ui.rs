@@ -94,6 +94,7 @@ pub(super) fn build_export_document_snapshot(
         color_swatches: Default::default(),
         linked_stroke_groups: Default::default(),
         layers: document.layers.clone(),
+        layer_folders: document.layer_folders.clone(),
         active_layer: document.active_layer,
         version: document.version,
         image_planes: if include_scene_resources {

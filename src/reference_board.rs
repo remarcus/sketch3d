@@ -657,18 +657,18 @@ impl ReferenceBoard {
             PerspectiveMode::OnePoint => {
                 let point = image.record.perspective.points[0]?;
                 let depth = Vec2::new(point[0], point[1]) - center;
-                (depth.length_squared() > 1e-6)
-                    .then_some([Vec2::new(1.0, 0.0), depth.normalize()])
+                (depth.length_sq() > 1e-6)
+                    .then_some([Vec2::new(1.0, 0.0), depth.normalized()])
             }
             PerspectiveMode::TwoPoint => {
                 let left_point = image.record.perspective.points[0]?;
                 let right_point = image.record.perspective.points[1]?;
                 let left = Vec2::new(left_point[0], left_point[1]) - center;
                 let right = Vec2::new(right_point[0], right_point[1]) - center;
-                if left.length_squared() <= 1e-6 || right.length_squared() <= 1e-6 {
+                if left.length_sq() <= 1e-6 || right.length_sq() <= 1e-6 {
                     None
                 } else {
-                    Some([left.normalize(), right.normalize()])
+                    Some([left.normalized(), right.normalized()])
                 }
             }
         }

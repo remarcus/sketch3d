@@ -112,7 +112,7 @@ fn write_stroke(out: &mut String, stroke: &Stroke, frame: Frame, min: Vec2) -> R
 
 fn mean_stroke_color(stroke: &Stroke) -> [f32; 3] {
     let mut sum = [0.0; 3];
-    let mut count = 0.0;
+    let mut count: f32 = 0.0;
     for (index, _point) in stroke.points.iter().enumerate() {
         let t = if stroke.points.len() <= 1 { 0.0 } else { index as f32 / (stroke.points.len() - 1) as f32 };
         let mut color = stroke.gradient.map_or(stroke.color, |gradient| gradient.sample(t));
