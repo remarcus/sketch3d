@@ -15,6 +15,25 @@ struct ReferenceRecord {
     id: u64,
     name: String,
     file: String,
+    #[serde(default)]
+    perspective: PerspectiveGuide,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PerspectiveMode {
+    #[default]
+    Off,
+    OnePoint,
+    TwoPoint,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+struct PerspectiveGuide {
+    #[serde(default)]
+    mode: PerspectiveMode,
+    #[serde(default)]
+    points: [Option<[f32; 2]>; 2],
 }
 
 struct ReferenceImage {
@@ -33,6 +52,7 @@ pub(super) struct ReferenceBoard {
     pan: Vec2,
     pan_origin: Vec2,
     pan_start: Option<Pos2>,
+    guide_pick: Option<usize>,
     #[cfg(test)]
     viewer_rect: Option<Rect>,
     #[cfg(test)]
@@ -57,6 +77,7 @@ impl ReferenceBoard {
             pan: Vec2::ZERO,
             pan_origin: Vec2::ZERO,
             pan_start: None,
+            guide_pick: None,
             #[cfg(test)]
             viewer_rect: None,
             #[cfg(test)]
@@ -80,6 +101,7 @@ impl ReferenceBoard {
                 id,
                 name: "Appearance verification background".into(),
                 file: "appearance-verification-background.png".into(),
+                perspective: PerspectiveGuide::default(),
             },
             pixels,
             size,
@@ -279,7 +301,12 @@ impl ReferenceBoard {
                 .chars()
                 .take(100)
                 .collect();
-            let record = ReferenceRecord { id, name, file };
+            let record = ReferenceRecord {
+                id,
+                name,
+                file,
+                perspective: PerspectiveGuide::default(),
+            };
             Ok(make_image(ctx, record, rgba.into_raw(), size))
         })();
         match result {
@@ -410,6 +437,45 @@ impl ReferenceBoard {
                         .add(egui::Slider::new(&mut settings.opacity, 0.0..=1.0).text("Opacity"))
                         .changed();
                 }
+                if let Some(index) = self.selected_index() {
+                    let mut mode = self.images[index].record.perspective.mode;
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Perspective guides");
+                        ui.selectable_value(&mut mode, PerspectiveMode::Off, "Off");
+                        ui.selectable_value(&mut mode, PerspectiveMode::OnePoint, "One point");
+                        ui.selectable_value(&mut mode, PerspectiveMode::TwoPoint, "Two point");
+                    });
+                    if mode != self.images[index].record.perspective.mode {
+                        self.images[index].record.perspective = PerspectiveGuide {
+                            mode,
+                            points: [None, None],
+                        };
+                        self.guide_pick = None;
+                        self.changed("Perspective guide mode saved.");
+                    }
+                    if mode != PerspectiveMode::Off {
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Set vanishing point 1").clicked() {
+                                self.guide_pick = Some(0);
+                            }
+                            if mode == PerspectiveMode::TwoPoint
+                                && ui.button("Set vanishing point 2").clicked()
+                            {
+                                self.guide_pick = Some(1);
+                            }
+                            if ui.button("Clear points").clicked() {
+                                self.images[index].record.perspective.points = [None, None];
+                                self.guide_pick = None;
+                                self.changed("Perspective guide points cleared.");
+                            }
+                        });
+                        if let Some(point) = self.guide_pick {
+                            ui.small(format!("Click the reference image to set vanishing point {}.", point + 1));
+                        } else {
+                            ui.small("Points use normalized image coordinates and stay fixed through fit, zoom, pan and window changes.");
+                        }
+                    }
+                }
             }
             let mut move_up = false;
             let mut move_down = false;
@@ -465,8 +531,9 @@ impl ReferenceBoard {
             }
             ui.painter()
                 .rect_filled(viewer, 3.0, super::ui_style::colors(ui.ctx()).surface);
+            let mut guide_changed = false;
             if let Some(index) = self.selected_index() {
-                let image = &self.images[index];
+                let image = &mut self.images[index];
                 let base_scale = (viewer.width() / image.size[0] as f32)
                     .min(viewer.height() / image.size[1] as f32);
                 let size =
@@ -479,6 +546,43 @@ impl ReferenceBoard {
                     Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
+                let guide_color = Color32::from_rgb(255, 190, 70);
+                let guide_painter = ui.painter().with_clip_rect(viewer);
+                let point_count = match image.record.perspective.mode {
+                    PerspectiveMode::Off => 0,
+                    PerspectiveMode::OnePoint => 1,
+                    PerspectiveMode::TwoPoint => 2,
+                };
+                let guide_points: Vec<_> = image.record.perspective.points[..point_count]
+                    .iter()
+                    .flatten()
+                    .map(|uv| image_rect.min + Vec2::new(uv[0], uv[1]) * image_rect.size())
+                    .collect();
+                for (index, marker) in guide_points.iter().enumerate() {
+                    guide_painter.line_segment(
+                        [Pos2::new(marker.x, image_rect.top()), Pos2::new(marker.x, image_rect.bottom())],
+                        egui::Stroke::new(1.0, guide_color),
+                    );
+                    guide_painter.line_segment(
+                        [Pos2::new(image_rect.left(), marker.y), Pos2::new(image_rect.right(), marker.y)],
+                        egui::Stroke::new(1.0, guide_color),
+                    );
+                    guide_painter.circle_filled(*marker, 5.0, guide_color);
+                    guide_painter.circle_stroke(*marker, 8.0, egui::Stroke::new(1.0, Color32::BLACK));
+                    guide_painter.text(
+                        *marker + Vec2::new(9.0, 8.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("VP{}", index + 1),
+                        egui::FontId::proportional(12.0),
+                        guide_color,
+                    );
+                }
+                if guide_points.len() == 2 {
+                    guide_painter.line_segment(
+                        [guide_points[0], guide_points[1]],
+                        egui::Stroke::new(2.0, guide_color),
+                    );
+                }
                 if response.drag_started() {
                     self.pan_start = response.interact_pointer_pos();
                     self.pan_origin = self.pan;
@@ -500,28 +604,33 @@ impl ReferenceBoard {
                     if response.clicked() {
                         if let Some(pos) = response
                             .interact_pointer_pos()
-                            .filter(|pos| image_rect.contains(*pos))
+                            .filter(|pos| viewer.contains(*pos))
                         {
                             let uv = (pos - image_rect.min) / image_rect.size();
-                            let x = ((uv.x.clamp(0.0, 0.999999) * image.size[0] as f32) as usize)
-                                .min(image.size[0] - 1);
-                            let y = ((uv.y.clamp(0.0, 0.999999) * image.size[1] as f32) as usize)
-                                .min(image.size[1] - 1);
-                            let offset = (y * image.size[0] + x) * 4;
-                            sampled = Some([
-                                crate::presentation::srgb_to_linear(
-                                    image.pixels[offset] as f32 / 255.0,
-                                ),
-                                crate::presentation::srgb_to_linear(
-                                    image.pixels[offset + 1] as f32 / 255.0,
-                                ),
-                                crate::presentation::srgb_to_linear(
-                                    image.pixels[offset + 2] as f32 / 255.0,
-                                ),
-                            ]);
+                            if let Some(slot) = self.guide_pick.take() {
+                                image.record.perspective.points[slot.min(1)] = Some([
+                                    uv.x.clamp(-4.0, 5.0),
+                                    uv.y.clamp(-4.0, 5.0),
+                                ]);
+                                guide_changed = true;
+                            } else if image_rect.contains(pos) {
+                                let x = ((uv.x.clamp(0.0, 0.999999) * image.size[0] as f32) as usize)
+                                    .min(image.size[0] - 1);
+                                let y = ((uv.y.clamp(0.0, 0.999999) * image.size[1] as f32) as usize)
+                                    .min(image.size[1] - 1);
+                                let offset = (y * image.size[0] + x) * 4;
+                                sampled = Some([
+                                    crate::presentation::srgb_to_linear(image.pixels[offset] as f32 / 255.0),
+                                    crate::presentation::srgb_to_linear(image.pixels[offset + 1] as f32 / 255.0),
+                                    crate::presentation::srgb_to_linear(image.pixels[offset + 2] as f32 / 255.0),
+                                ]);
+                            }
                         }
                     }
                 }
+            }
+            if guide_changed {
+                self.changed("Perspective vanishing point saved in normalized image coordinates.");
             }
         }
         if let Some(notice) = &self.notice {
@@ -536,6 +645,33 @@ impl ReferenceBoard {
     pub fn background_image(&self, id: u64) -> Option<(&[u8], [u32; 2])> {
         let image = self.images.iter().find(|image| image.record.id == id)?;
         Some((&image.pixels, [image.size[0] as u32, image.size[1] as u32]))
+    }
+
+    /// Directions are normalized to the image center and remain independent of
+    /// board fit, pan, zoom, and viewer dimensions.
+    pub fn perspective_directions(&self) -> Option<[Vec2; 2]> {
+        let image = self.images.iter().find(|image| Some(image.record.id) == self.selected)?;
+        let center = Vec2::splat(0.5);
+        match image.record.perspective.mode {
+            PerspectiveMode::Off => None,
+            PerspectiveMode::OnePoint => {
+                let point = image.record.perspective.points[0]?;
+                let depth = Vec2::new(point[0], point[1]) - center;
+                (depth.length_squared() > 1e-6)
+                    .then_some([Vec2::new(1.0, 0.0), depth.normalize()])
+            }
+            PerspectiveMode::TwoPoint => {
+                let left_point = image.record.perspective.points[0]?;
+                let right_point = image.record.perspective.points[1]?;
+                let left = Vec2::new(left_point[0], left_point[1]) - center;
+                let right = Vec2::new(right_point[0], right_point[1]) - center;
+                if left.length_squared() <= 1e-6 || right.length_squared() <= 1e-6 {
+                    None
+                } else {
+                    Some([left.normalize(), right.normalize()])
+                }
+            }
+        }
     }
 
     fn selected_index(&self) -> Option<usize> {
@@ -582,6 +718,12 @@ fn valid_record(record: &ReferenceRecord) -> bool {
     !record.name.is_empty()
         && record.name.len() <= 400
         && (record.file == expected_png || record.file == expected_jpg)
+        && record
+            .perspective
+            .points
+            .into_iter()
+            .flatten()
+            .all(|point| point.into_iter().all(|value| value.is_finite() && (-4.0..=5.0).contains(&value)))
 }
 
 fn decode(path: &Path) -> Result<(Vec<u8>, [usize; 2]), String> {
@@ -682,6 +824,7 @@ mod tests {
             pan: Vec2::ZERO,
             pan_origin: Vec2::ZERO,
             pan_start: None,
+            guide_pick: None,
             viewer_rect: None,
             last_viewer_response: [false; 4],
         }
@@ -765,6 +908,7 @@ mod tests {
                 id: 1,
                 name: "Facade photo".into(),
                 file: "ref-1.png".into(),
+                perspective: PerspectiveGuide::default(),
             },
             pixels,
             [2, 1],
@@ -786,16 +930,19 @@ mod tests {
                 id: 1,
                 name: "Facade photo".into(),
                 file: "ref-1.png".into(),
+                perspective: PerspectiveGuide::default(),
             },
             ReferenceRecord {
                 id: 2,
                 name: "Missing photo".into(),
                 file: "ref-2.png".into(),
+                perspective: PerspectiveGuide::default(),
             },
             ReferenceRecord {
                 id: 3,
                 name: "Unsafe path".into(),
                 file: "..\\outside.png".into(),
+                perspective: PerspectiveGuide::default(),
             },
         ];
         std::fs::write(
@@ -822,6 +969,7 @@ mod tests {
                 id: 1,
                 name: "Synthetic test image".into(),
                 file: "ref-1.png".into(),
+                perspective: PerspectiveGuide::default(),
             },
             vec![20, 80, 140, 255, 20, 80, 140, 255],
             [2, 1],

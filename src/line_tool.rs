@@ -8,6 +8,7 @@ pub(super) enum Constraint {
     Horizontal,
     Vertical,
     Angle,
+    Perspective,
 }
 pub(super) struct LineDraft {
     target: PlanarTarget,
@@ -55,6 +56,7 @@ fn constrain(
             x = length * angle.cos();
             y = length * angle.sin();
         }
+        Constraint::Perspective => {}
     }
     start + u * x + v * y
 }
@@ -95,11 +97,22 @@ impl SketchApp {
                     (Constraint::Horizontal, "Horizontal"),
                     (Constraint::Vertical, "Vertical"),
                     (Constraint::Angle, "Angle snap"),
+                    (Constraint::Perspective, "Perspective"),
                 ] {
                     ui.radio_value(&mut self.line.constraint, constraint, label);
                 }
             });
         });
+        if self.line.constraint == Constraint::Perspective {
+            if self.reference_board.perspective_directions().is_some() {
+                ui.small("Line direction follows the active reference image's vanishing guide in the drawing plane.");
+            } else {
+                ui.colored_label(
+                    ui_style::colors(ui.ctx()).warning,
+                    "Choose a reference image and set its vanishing point(s) in the References panel.",
+                );
+            }
+        }
         if self.line.constraint == Constraint::Angle {
             ui_style::slider_row(
                 ui,
@@ -205,7 +218,31 @@ impl SketchApp {
         let Some(world) = target.hit(o, d) else {
             return false;
         };
-        let constrained_end = constrain(start, world, plane, constraint, step);
+        let constrained_end = if constraint == Constraint::Perspective {
+            let (u, v, _) = plane.basis();
+            self.reference_board
+                .perspective_directions()
+                .map(|directions| {
+                    let delta = world - start;
+                    let direction = directions
+                        .into_iter()
+                        .map(|image_direction| (u * image_direction.x - v * image_direction.y).normalize())
+                        .max_by(|left, right| {
+                            left.dot(delta).abs().total_cmp(&right.dot(delta).abs())
+                        })
+                        .unwrap_or(u);
+                    let projected = delta.dot(direction);
+                    let (direction, distance) = if projected < 0.0 {
+                        (-direction, -projected)
+                    } else {
+                        (direction, projected)
+                    };
+                    start + direction * distance
+                })
+                .unwrap_or(world)
+        } else {
+            constrain(start, world, plane, constraint, step)
+        };
         let constrained = constraint != Constraint::Free;
         let snap_cursor = if constrained {
             crate::gizmo::project(&self.camera, rect, constrained_end)
