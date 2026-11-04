@@ -168,6 +168,7 @@ impl SketchApp {
         let mut action = None;
         let mut opacity_responses = Vec::new();
         let mut blend_changes = Vec::new();
+        let mut clip_changes = Vec::new();
         let mut property_buttons = Vec::new();
         let rename_id = egui::Id::new(RENAMING_LAYER_ID);
         let focus_rename_id = egui::Id::new(FOCUS_RENAME_LAYER_ID);
@@ -392,6 +393,24 @@ impl SketchApp {
                                         property_buttons.push((layer_id, apply, cancel));
                                     }
                                 });
+
+                                let layer_index = self
+                                    .doc
+                                    .layers
+                                    .iter()
+                                    .position(|candidate| candidate.id == layer_id)
+                                    .unwrap_or(0);
+                                let mut clip_to_below = layer.clip_to_below;
+                                let response = ui.add_enabled(
+                                    layer_index > 0,
+                                    egui::Checkbox::new(&mut clip_to_below, "Clip to layer below"),
+                                );
+                                let response = response.on_hover_text(
+                                    "Uses the immediately lower layer's screen-space silhouette and opacity as this layer's mask. Mask source depth is ignored; clipped marks keep scene depth tests but do not write depth or cast shadows. A hidden source clips to nothing, and reordering changes the source.",
+                                );
+                                if response.changed() {
+                                    clip_changes.push((layer_id, clip_to_below));
+                                }
                             });
                     });
 
@@ -510,6 +529,10 @@ impl SketchApp {
             for (layer_id, blend_mode) in blend_changes {
                 self.begin_layer_properties_preview(layer_id);
                 self.preview_layer_action(LayerAction::BlendMode(layer_id, blend_mode));
+            }
+            for (layer_id, clip_to_below) in clip_changes {
+                self.begin_layer_properties_preview(layer_id);
+                self.preview_layer_action(LayerAction::ClipToBelow(layer_id, clip_to_below));
             }
             for (layer_id, apply, cancel) in property_buttons {
                 if cancel
@@ -637,6 +660,7 @@ impl SketchApp {
                 locked: false,
                 opacity: 1.0,
                 blend_mode: LayerBlendMode::Normal,
+                clip_to_below: false,
             });
             let upper = doc.layers.iter_mut().find(|layer| layer.id == 2).unwrap();
             upper.opacity = opacity;
@@ -815,6 +839,7 @@ impl SketchApp {
                 locked: false,
                 opacity: 1.0,
                 blend_mode: LayerBlendMode::Normal,
+                clip_to_below: false,
             });
             doc.layers
                 .iter_mut()
@@ -903,6 +928,7 @@ impl SketchApp {
                     locked: false,
                     opacity: 0.6 + layer_id as f32 * 0.05,
                     blend_mode: modes[(layer_id as usize - 1) % modes.len()],
+                    clip_to_below: false,
                 });
             }
             for stroke_index in 0..8 {

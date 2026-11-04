@@ -1129,6 +1129,7 @@ mod tests {
             locked: true,
             opacity: 1.0,
             blend_mode: Default::default(),
+            clip_to_below: false,
         });
         doc.layers.push(Layer {
             id: 3,
@@ -1137,6 +1138,7 @@ mod tests {
             locked: false,
             opacity: 1.0,
             blend_mode: Default::default(),
+            clip_to_below: false,
         });
         assert!(!doc.editable(&doc.strokes[1]));
         assert!(doc.visible(&doc.strokes[1]));

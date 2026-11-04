@@ -394,6 +394,9 @@ pub struct Layer {
     pub opacity: f32,
     #[serde(default)]
     pub blend_mode: LayerBlendMode,
+    /// Restrict this layer's visible coverage to the immediately lower layer.
+    #[serde(default)]
+    pub clip_to_below: bool,
 }
 pub fn default_layer_id() -> u64 {
     1
@@ -406,6 +409,7 @@ pub fn layers_default() -> Vec<Layer> {
         locked: false,
         opacity: 1.0,
         blend_mode: LayerBlendMode::Normal,
+        clip_to_below: false,
     }]
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1356,6 +1360,10 @@ impl Document {
             .find(|layer| layer.id == layer_id)
             .map_or(LayerBlendMode::Normal, |layer| layer.blend_mode)
     }
+    pub fn layer_clip_source(&self, layer_id: u64) -> Option<u64> {
+        let index = self.layers.iter().position(|layer| layer.id == layer_id)?;
+        (self.layers[index].clip_to_below && index > 0).then(|| self.layers[index - 1].id)
+    }
     pub fn editable(&self, stroke: &Stroke) -> bool {
         self.layers
             .iter()
@@ -2177,6 +2185,7 @@ mod layer_tests {
             locked: true,
             opacity: 1.0,
             blend_mode: LayerBlendMode::Normal,
+            clip_to_below: false,
         });
         doc.active_layer = 2;
         let stroke = Stroke {
@@ -2234,6 +2243,7 @@ mod layer_tests {
                     locked: false,
                     opacity: 1.0,
                     blend_mode: LayerBlendMode::Normal,
+                    clip_to_below: false,
                 }),
                 "blank_name" => doc.layers[0].name = " ".into(),
                 "active_missing" => doc.active_layer = 2,
@@ -2610,6 +2620,7 @@ mod group_tests {
             locked: true,
             opacity: 1.0,
             blend_mode: LayerBlendMode::Normal,
+            clip_to_below: false,
         });
         doc.active_layer = 2;
         for stroke in &mut doc.strokes {
@@ -2677,6 +2688,7 @@ mod group_tests {
             locked: false,
             opacity: 1.0,
             blend_mode: LayerBlendMode::Normal,
+            clip_to_below: false,
         });
         let mut second = mark(2);
         second.layer_id = 2;

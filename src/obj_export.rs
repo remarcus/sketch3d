@@ -419,6 +419,12 @@ pub fn write_obj_bundle(
     }) {
         mtl.push_str("# Layer Multiply, Screen, and Add modes fall back to Normal in OBJ/MTL.\n");
     }
+    if strokes
+        .iter()
+        .any(|stroke| doc.layer_clip_source(stroke.layer_id).is_some())
+    {
+        mtl.push_str("# Layer clipping masks are screen-space coverage operations and are not applied to OBJ geometry.\n");
+    }
     if strokes.iter().any(|stroke| {
         stroke.gradient.is_some()
             || stroke

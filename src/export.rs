@@ -1446,7 +1446,8 @@ pub fn encode_with_images(
             .iter()
             .find(|layer| layer.id == stroke.layer_id)
             .unwrap();
-        let mut node = json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":layer.name,"spatialSketchLayerOpacity":layer_opacity,"spatialSketchLayerBlendMode":layer.blend_mode.label(),"spatialSketchLayerBlendFallback":"normal"}});
+        let clipped_to_below = doc.layer_clip_source(stroke.layer_id).is_some();
+        let mut node = json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":layer.name,"spatialSketchLayerOpacity":layer_opacity,"spatialSketchLayerBlendMode":layer.blend_mode.label(),"spatialSketchLayerBlendFallback":"normal","spatialSketchLayerClipToBelow":clipped_to_below,"spatialSketchLayerClipFallback":if clipped_to_below {"not_applied_by_mesh_export"} else {"none"}}});
         node["extras"]["spatialSketchMaterial"] = json!(match stroke.material {
             crate::document::StrokeMaterial::Shaded => "shaded",
             crate::document::StrokeMaterial::Unlit => "unlit",

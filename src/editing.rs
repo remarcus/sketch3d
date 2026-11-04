@@ -1278,6 +1278,7 @@ pub enum LayerAction {
     Rename(u64, String),
     Opacity(u64, f32),
     BlendMode(u64, LayerBlendMode),
+    ClipToBelow(u64, bool),
     Visible(u64, bool),
     Lock(u64, bool),
     Activate(u64),
@@ -1308,6 +1309,7 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 locked: false,
                 opacity: 1.0,
                 blend_mode: crate::document::LayerBlendMode::Normal,
+                clip_to_below: false,
             });
             after.active_layer = id;
         }
@@ -1337,6 +1339,17 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 .find(|l| l.id == id)
                 .ok_or("Layer not found")?
                 .blend_mode = value;
+        }
+        LayerAction::ClipToBelow(id, value) => {
+            let index = after
+                .layers
+                .iter()
+                .position(|layer| layer.id == id)
+                .ok_or("Layer not found")?;
+            if value && index == 0 {
+                return Err("The bottom layer has no layer below to clip to".into());
+            }
+            after.layers[index].clip_to_below = value;
         }
         LayerAction::Visible(id, value) => {
             after

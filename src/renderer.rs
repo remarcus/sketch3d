@@ -10,8 +10,14 @@ use eframe::{
     egui_wgpu::{self, wgpu},
 };
 use glam::{Mat4, Vec3};
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 use wgpu::util::DeviceExt;
+
+const MAX_LAYER_CLIP_MASK_PIXELS: u64 = 16 * 1024 * 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -23,6 +29,7 @@ struct SceneUniform {
     shadow: [f32; 4],
     camera: [f32; 4],
     background: [f32; 4],
+    resolution: [f32; 4],
 }
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -96,6 +103,13 @@ struct ScreenBackgroundTexture {
     fit: BackgroundImageFit,
     alignment: [f32; 2],
     opacity: f32,
+}
+
+struct ClipMaskTexture {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    bind: wgpu::BindGroup,
+    size: [u32; 2],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -299,6 +313,12 @@ pub struct SceneRenderer {
     coverage_triangles: wgpu::RenderPipeline,
     transparent_triangles: wgpu::RenderPipeline,
     blend_pipelines: HashMap<(LayerBlendMode, u32), wgpu::RenderPipeline>,
+    clip_mask_pipeline: wgpu::RenderPipeline,
+    clip_mask_cutout_pipeline: wgpu::RenderPipeline,
+    _clip_default_texture: wgpu::Texture,
+    clip_default_bind: wgpu::BindGroup,
+    clip_sampler: wgpu::Sampler,
+    clip_mask_cache: RefCell<HashMap<u64, Rc<ClipMaskTexture>>>,
     lines: wgpu::RenderPipeline,
     single_triangles: wgpu::RenderPipeline,
     single_cutout_triangles: wgpu::RenderPipeline,
@@ -358,6 +378,7 @@ impl SceneRenderer {
                 shadow: [0.0; 4],
                 camera: [0.0; 4],
                 background: [0.0; 4],
+                resolution: [1.0, 1.0, 0.0, 0.0],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -400,6 +421,62 @@ impl SceneRenderer {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
+                },
+            ],
+        });
+        let clip_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Layer clip mask sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let clip_default_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Unclipped layer mask"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        state.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &clip_default_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[255],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(1),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let clip_default_view = clip_default_texture.create_view(&Default::default());
+        let clip_default_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Unclipped layer mask binding"),
+            layout: &texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&clip_default_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&clip_sampler),
                 },
             ],
         });
@@ -479,7 +556,13 @@ impl SceneRenderer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&layout, &texture_layout, &shadow_layout, &texture_layout],
+            bind_group_layouts: &[
+                &layout,
+                &texture_layout,
+                &shadow_layout,
+                &texture_layout,
+                &texture_layout,
+            ],
             push_constant_ranges: &[],
         });
         let sample_count = canvas_sample_count(&state.adapter);
@@ -556,6 +639,72 @@ impl SceneRenderer {
             multisample:wgpu::MultisampleState {count:pipeline_samples,mask:!0,alpha_to_coverage_enabled:pipeline_samples > 1 && !transparent && !alpha_blend && !cutout},multiview:None,cache:None,
         })
         };
+        let clip_mask_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Layer clip coverage mask"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32,6=>Float32x2,7=>Float32x2],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_clip_mask"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::R8Unorm,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::RED,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
+        let clip_mask_cutout_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Layer clip cutout mask"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32,6=>Float32x2,7=>Float32x2],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_clip_mask_cutout"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::R8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::RED,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
         let triangles = create(
             wgpu::PrimitiveTopology::TriangleList,
             false,
@@ -912,6 +1061,12 @@ impl SceneRenderer {
             coverage_triangles,
             transparent_triangles,
             blend_pipelines,
+            clip_mask_pipeline,
+            clip_mask_cutout_pipeline,
+            _clip_default_texture: clip_default_texture,
+            clip_default_bind,
+            clip_sampler,
+            clip_mask_cache: RefCell::new(HashMap::new()),
             lines,
             single_triangles,
             single_cutout_triangles,
@@ -1783,6 +1938,155 @@ impl SceneRenderer {
         pass.draw(0..3, 0..1);
     }
 
+    fn record_layer_clip_masks(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        doc: &Document,
+        size: [u32; 2],
+        meshes: &HashMap<u64, &Mesh>,
+    ) -> HashMap<u64, Rc<ClipMaskTexture>> {
+        let mut masks = HashMap::new();
+        let needed: HashSet<_> = doc
+            .layers
+            .windows(2)
+            .filter(|layers| layers[1].clip_to_below)
+            .map(|layers| layers[0].id)
+            .collect();
+        let mask_count = doc
+            .layers
+            .windows(2)
+            .filter(|layers| layers[1].clip_to_below)
+            .count()
+            .max(1) as u64;
+        let full_pixels = u64::from(size[0]) * u64::from(size[1]);
+        let pixels_per_mask = (MAX_LAYER_CLIP_MASK_PIXELS / mask_count).max(1);
+        let scale = (pixels_per_mask as f64 / full_pixels.max(1) as f64)
+            .sqrt()
+            .min(1.0);
+        let mask_size = [
+            (f64::from(size[0]) * scale).floor().max(1.0) as u32,
+            (f64::from(size[1]) * scale).floor().max(1.0) as u32,
+        ];
+        let mut cache = self.clip_mask_cache.borrow_mut();
+        cache.retain(|id, mask| needed.contains(id) && mask.size == mask_size);
+        for (index, layer) in doc.layers.iter().enumerate() {
+            if !doc
+                .layers
+                .get(index + 1)
+                .is_some_and(|above| above.clip_to_below)
+            {
+                continue;
+            }
+            if !cache.contains_key(&layer.id) {
+                let texture = self.state.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Layer coverage mask"),
+                    size: wgpu::Extent3d {
+                        width: mask_size[0],
+                        height: mask_size[1],
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::R8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&Default::default());
+                let bind = self
+                    .state
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Layer coverage mask binding"),
+                        layout: &self.texture_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(&self.clip_sampler),
+                            },
+                        ],
+                    });
+                cache.insert(
+                    layer.id,
+                    Rc::new(ClipMaskTexture {
+                        _texture: texture,
+                        view,
+                        bind,
+                        size: mask_size,
+                    }),
+                );
+            }
+            let mask = Rc::clone(&cache[&layer.id]);
+            let parent_mask = if layer.clip_to_below && index > 0 {
+                masks
+                    .get(&doc.layers[index - 1].id)
+                    .map_or(&self.clip_default_bind, |mask: &Rc<ClipMaskTexture>| {
+                        &mask.bind
+                    })
+            } else {
+                &self.clip_default_bind
+            };
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Layer coverage mask pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &mask.view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                if layer.visible {
+                    pass.set_bind_group(0, &self.bind, &[]);
+                    pass.set_bind_group(4, parent_mask, &[]);
+                    let mut layer_strokes: Vec<_> = doc
+                        .strokes
+                        .iter()
+                        .filter(|stroke| stroke.layer_id == layer.id && doc.visible(stroke))
+                        .collect();
+                    layer_strokes.sort_by_key(|stroke| stroke.id);
+                    for stroke in layer_strokes {
+                        let Some(mesh) = meshes.get(&stroke.id) else {
+                            continue;
+                        };
+                        pass.set_pipeline(if stroke.material == StrokeMaterial::Cutout {
+                            &self.clip_mask_cutout_pipeline
+                        } else {
+                            &self.clip_mask_pipeline
+                        });
+                        pass.set_bind_group(1, self.brush_texture(stroke), &[]);
+                        pass.set_bind_group(3, self.grain_texture(stroke), &[]);
+                        pass.set_vertex_buffer(0, mesh.buffer.slice(..));
+                        pass.draw(0..mesh.count, 0..1);
+                    }
+                }
+            }
+            masks.insert(layer.id, mask);
+        }
+        masks
+    }
+
+    fn clip_binding<'a>(
+        &'a self,
+        doc: &Document,
+        layer_id: u64,
+        masks: &'a HashMap<u64, Rc<ClipMaskTexture>>,
+    ) -> &'a wgpu::BindGroup {
+        doc.layer_clip_source(layer_id)
+            .and_then(|source| masks.get(&source))
+            .map_or(&self.clip_default_bind, |mask| &mask.bind)
+    }
+
     pub fn render(
         &mut self,
         doc: &Document,
@@ -2138,6 +2442,7 @@ impl SceneRenderer {
                 crate::presentation::srgb_to_linear(self.background[2]),
                 1.0,
             ],
+            resolution: [size[0] as f32, size[1] as f32, 0.0, 0.0],
         };
         self.state
             .queue
@@ -2165,6 +2470,8 @@ impl SceneRenderer {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Canvas frame"),
                 });
+        let mesh_refs: HashMap<_, _> = self.meshes.iter().map(|(id, mesh)| (*id, mesh)).collect();
+        let clip_masks = self.record_layer_clip_masks(&mut encoder, doc, size, &mesh_refs);
         if shadow_enabled {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Directional shadow casters"),
@@ -2187,6 +2494,7 @@ impl SceneRenderer {
                     .iter()
                     .filter(|s| {
                         doc.visible(s)
+                            && !doc.layer_clip_source(s.layer_id).is_some()
                             && !is_translucent(
                                 s,
                                 doc.layer_opacity(s.layer_id),
@@ -2272,6 +2580,7 @@ impl SceneRenderer {
             pass.set_bind_group(2, &self.shadow_bind, &[]);
             // Ground, grid, and models share the stroke pipeline but have no grain.
             pass.set_bind_group(3, &self.textures[&texture::key(solid)], &[]);
+            pass.set_bind_group(4, &self.clip_default_bind, &[]);
             if settings.ground {
                 pass.set_pipeline(triangles);
                 if let Some((_, mesh)) = &self.ground {
@@ -2319,9 +2628,16 @@ impl SceneRenderer {
                 if let Some(mesh) = self.meshes.get(&stroke.id) {
                     pass.set_pipeline(if stroke.material == StrokeMaterial::Cutout {
                         cutout_triangles
+                    } else if doc.layer_clip_source(stroke.layer_id).is_some() {
+                        transparent_triangles
                     } else {
                         triangles
                     });
+                    pass.set_bind_group(
+                        4,
+                        self.clip_binding(doc, stroke.layer_id, &clip_masks),
+                        &[],
+                    );
                     pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                     pass.set_bind_group(3, self.grain_texture(stroke), &[]);
                     pass.set_vertex_buffer(0, mesh.buffer.slice(..));
@@ -2352,6 +2668,7 @@ impl SceneRenderer {
                     &self.blend_pipelines[&(mode, requested_samples)]
                 };
                 pass.set_pipeline(pipeline);
+                pass.set_bind_group(4, self.clip_binding(doc, stroke.layer_id, &clip_masks), &[]);
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_bind_group(3, self.grain_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
@@ -2367,6 +2684,7 @@ impl SceneRenderer {
                     &self.blend_pipelines[&(mode, requested_samples)]
                 };
                 pass.set_pipeline(pipeline);
+                pass.set_bind_group(4, self.clip_binding(doc, stroke.layer_id, &clip_masks), &[]);
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_bind_group(3, self.grain_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
@@ -2679,6 +2997,7 @@ impl SceneRenderer {
                     1.0,
                 ]
             }),
+            resolution: [size[0] as f32, size[1] as f32, 0.0, 0.0],
         };
         self.state
             .queue
@@ -2707,6 +3026,11 @@ impl SceneRenderer {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Artwork PNG export"),
                 });
+        let mesh_refs: HashMap<_, _> = meshes
+            .iter()
+            .map(|(stroke, mesh)| (stroke.id, mesh))
+            .collect();
+        let clip_masks = self.record_layer_clip_masks(&mut encoder, doc, size, &mesh_refs);
         let timestamp_queries = (measure_gpu_time
             && self
                 .state
@@ -2826,6 +3150,7 @@ impl SceneRenderer {
             pass.set_bind_group(2, &self.shadow_bind, &[]);
             // Offscreen ground draws also require the pipeline's grain binding.
             pass.set_bind_group(3, &self.textures[&texture::key(solid)], &[]);
+            pass.set_bind_group(4, &self.clip_default_bind, &[]);
             if background.is_some() && settings.ground {
                 pass.set_pipeline(triangles);
                 if let Some((cached_settings, ground)) = &self.ground {
@@ -2846,9 +3171,12 @@ impl SceneRenderer {
                     cutout_triangles
                 } else if background.is_none() {
                     coverage_triangles
+                } else if doc.layer_clip_source(stroke.layer_id).is_some() {
+                    transparent_triangles
                 } else {
                     triangles
                 });
+                pass.set_bind_group(4, self.clip_binding(doc, stroke.layer_id, &clip_masks), &[]);
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_bind_group(3, self.grain_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
@@ -2881,6 +3209,7 @@ impl SceneRenderer {
                     &self.blend_pipelines[&(mode, sample_count)]
                 };
                 pass.set_pipeline(pipeline);
+                pass.set_bind_group(4, self.clip_binding(doc, stroke.layer_id, &clip_masks), &[]);
                 pass.set_bind_group(1, self.brush_texture(stroke), &[]);
                 pass.set_bind_group(3, self.grain_texture(stroke), &[]);
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));

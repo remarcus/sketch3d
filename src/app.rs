@@ -8864,6 +8864,7 @@ mod native_merge_apply_tests {
                     locked: false,
                     opacity: 1.0,
                     blend_mode: crate::document::LayerBlendMode::Normal,
+                    clip_to_below: false,
                 }],
                 image_planes: Vec::new(),
                 guides: Vec::new(),

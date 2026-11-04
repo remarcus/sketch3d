@@ -158,7 +158,8 @@ pub fn prepare_insert(
     let inserted_layers: Vec<Layer> = source
         .layers
         .iter()
-        .map(|layer| {
+        .enumerate()
+        .map(|(index, layer)| {
             Ok(Layer {
                 id: layer_map[&layer.id],
                 name: unique_name(&layer.name, &mut used_layer_names, 64),
@@ -166,6 +167,7 @@ pub fn prepare_insert(
                 locked: layer.locked,
                 opacity: layer.opacity,
                 blend_mode: layer.blend_mode,
+                clip_to_below: index > 0 && layer.clip_to_below,
             })
         })
         .collect::<Result<_, String>>()?;

@@ -590,6 +590,7 @@ mod tests {
                 locked: true,
                 opacity: 1.0,
                 blend_mode: crate::document::LayerBlendMode::Normal,
+                clip_to_below: false,
             },
             Layer {
                 id: 3,
@@ -598,6 +599,7 @@ mod tests {
                 locked: false,
                 opacity: 1.0,
                 blend_mode: crate::document::LayerBlendMode::Normal,
+                clip_to_below: false,
             },
         ]);
         let point = Vec3::ZERO;

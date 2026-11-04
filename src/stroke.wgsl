@@ -1,6 +1,6 @@
 struct Scene {
     view_projection: mat4x4<f32>, light_projection: mat4x4<f32>,
-    light: vec4<f32>, settings: vec4<f32>, shadow: vec4<f32>, camera: vec4<f32>, background: vec4<f32>,
+    light: vec4<f32>, settings: vec4<f32>, shadow: vec4<f32>, camera: vec4<f32>, background: vec4<f32>, resolution: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(1) @binding(0) var brush_mask: texture_2d<f32>;
@@ -9,6 +9,8 @@ struct Scene {
 @group(2) @binding(1) var shadow_sampler: sampler_comparison;
 @group(3) @binding(0) var grain_mask: texture_2d<f32>;
 @group(3) @binding(1) var grain_sampler: sampler;
+@group(4) @binding(0) var clip_mask: texture_2d<f32>;
+@group(4) @binding(1) var clip_sampler: sampler;
 fn apply_grain(color: vec3<f32>, position: vec2<f32>) -> vec3<f32> {
     let amount = scene.camera.w;
     if amount <= 0.0 { return color; }
@@ -53,6 +55,13 @@ fn visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     return mix(1.0,sum/9.0,scene.settings.z);
 }
 struct FragmentOutput { @location(0) color: vec4<f32>, @location(1) emission: vec4<f32>, }
+fn clip_coverage(in: Output) -> f32 {
+    return textureSampleLevel(clip_mask, clip_sampler, in.position.xy / max(scene.resolution.xy, vec2<f32>(1.0)), 0.0).r;
+}
+fn parent_clip_coverage(in: Output) -> f32 {
+    let dimensions = vec2<f32>(textureDimensions(clip_mask));
+    return textureSampleLevel(clip_mask, clip_sampler, in.position.xy / dimensions, 0.0).r;
+}
 fn material_output(in: Output, alpha: f32, sampled_color: vec3<f32>) -> FragmentOutput {
     let material = in.material - floor(in.material / 4.0) * 4.0;
     var shade=1.0;
@@ -70,7 +79,9 @@ fn material_output(in: Output, alpha: f32, sampled_color: vec3<f32>) -> Fragment
     return FragmentOutput(vec4<f32>(apply_grain(color,in.position.xy),alpha),vec4<f32>(emission*alpha,alpha));
 }
 @fragment fn fs_main(in: Output) -> FragmentOutput {
-    if length(in.normal)<0.1 { return material_output(in, 1.0, vec3<f32>(1.0)); }
+    let clip = clip_coverage(in);
+    if clip <= 0.001 { discard; }
+    if length(in.normal)<0.1 { return material_output(in, clip, vec3<f32>(1.0)); }
     let sampled_texture=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0);
     let mask_alpha=grain_coverage(in,sampled_texture.a);
     var coverage=mask_alpha;
@@ -78,19 +89,21 @@ fn material_output(in: Output, alpha: f32, sampled_color: vec3<f32>) -> Fragment
         if mask_alpha<0.5 { discard; }
         coverage=1.0;
     }
-    return material_output(in, coverage, sampled_texture.rgb);
+    return material_output(in, coverage*clip, sampled_texture.rgb);
 }
 @fragment fn fs_cutout(in: Output) -> FragmentOutput {
+    let clip = clip_coverage(in);
     let sampled_alpha=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0).a;
     let mask_alpha=grain_coverage(in,sampled_alpha);
-    if mask_alpha*in.opacity<0.5 { discard; }
+    if mask_alpha*in.opacity*clip<0.5 { discard; }
     return FragmentOutput(scene.background,vec4<f32>(0.0));
 }
 fn transparent_output(in: Output) -> FragmentOutput {
+    let clip = clip_coverage(in);
     let sampled_texture=textureSampleLevel(brush_mask,brush_sampler,in.uv,0.0);
     let mask_alpha=grain_coverage(in,sampled_texture.a);
-    if mask_alpha<0.001 { discard; }
-    return material_output(in, in.opacity*mask_alpha, sampled_texture.rgb);
+    if mask_alpha*clip<0.001 { discard; }
+    return material_output(in, in.opacity*mask_alpha*clip, sampled_texture.rgb);
 }
 fn premultiplied_transparent_output(in: Output) -> FragmentOutput {
     var output = transparent_output(in);
@@ -108,4 +121,16 @@ fn premultiplied_transparent_output(in: Output) -> FragmentOutput {
 }
 @fragment fn fs_add(in: Output) -> FragmentOutput {
     return premultiplied_transparent_output(in);
+}
+@fragment fn fs_clip_mask(in: Output) -> @location(0) vec4<f32> {
+    let sampled_texture = textureSampleLevel(brush_mask, brush_sampler, in.uv, 0.0);
+    let mask_alpha = grain_coverage(in, sampled_texture.a) * in.opacity * parent_clip_coverage(in);
+    if mask_alpha < 0.001 { discard; }
+    return vec4<f32>(1.0, 1.0, 1.0, clamp(mask_alpha, 0.0, 1.0));
+}
+@fragment fn fs_clip_mask_cutout(in: Output) -> @location(0) vec4<f32> {
+    let sampled_alpha = textureSampleLevel(brush_mask, brush_sampler, in.uv, 0.0).a;
+    let mask_alpha = grain_coverage(in, sampled_alpha) * in.opacity * parent_clip_coverage(in);
+    if mask_alpha < 0.5 { discard; }
+    return vec4<f32>(0.0);
 }
