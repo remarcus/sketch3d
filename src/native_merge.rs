@@ -238,6 +238,50 @@ pub fn prepare_insert(
         }
     }
 
+    let mut used_swatch_names: Vec<String> = destination
+        .color_swatches
+        .swatches
+        .iter()
+        .map(|swatch| swatch.name.clone())
+        .collect();
+    let mut swatch_id_map = HashMap::new();
+    let mut inserted_swatches = Vec::new();
+    for swatch in &source.color_swatches.swatches {
+        if let Some(existing) = destination
+            .color_swatches
+            .swatches
+            .iter()
+            .find(|existing| existing.name == swatch.name && existing.color == swatch.color)
+        {
+            swatch_id_map.insert(swatch.id, existing.id);
+            continue;
+        }
+        let id = group_ids.take()?;
+        let name = unique_name(&swatch.name, &mut used_swatch_names, 64);
+        swatch_id_map.insert(swatch.id, id);
+        inserted_swatches.push(crate::document::DocumentColorSwatch {
+            id,
+            name,
+            color: swatch.color,
+        });
+    }
+    let inserted_swatch_bindings = source
+        .color_swatches
+        .bindings
+        .iter()
+        .filter_map(|binding| {
+            Some(crate::document::StrokeSwatchBinding {
+                stroke_id: *stroke_id_map.get(&binding.stroke_id)?,
+                swatch_id: *swatch_id_map.get(&binding.swatch_id)?,
+                role: binding.role,
+            })
+        })
+        .collect::<Vec<_>>();
+    let inserted_color_swatches = crate::document::DocumentColorSwatches {
+        swatches: inserted_swatches,
+        bindings: inserted_swatch_bindings,
+    };
+
     let image_map: HashMap<u64, u64> = source
         .image_planes
         .iter()
@@ -324,6 +368,7 @@ pub fn prepare_insert(
         guides: source.guide_resources.clone(),
         model_references: source.model_references.clone(),
         linked_stroke_groups,
+        color_swatches: inserted_color_swatches,
         previous_active_layer: destination.active_layer,
         inserted_active_layer: destination.active_layer,
     };

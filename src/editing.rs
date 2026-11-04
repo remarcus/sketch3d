@@ -34,6 +34,23 @@ pub struct ArtworkAnimationState {
     pub strokes: Vec<Stroke>,
 }
 
+#[derive(Clone)]
+pub struct DocumentColorState {
+    pub swatches: crate::document::DocumentColorSwatches,
+    pub strokes: Vec<Stroke>,
+    pub animation: crate::animation::ArtworkAnimation,
+}
+
+impl DocumentColorState {
+    pub fn capture(doc: &Document) -> Self {
+        Self {
+            swatches: doc.color_swatches.clone(),
+            strokes: doc.strokes.clone(),
+            animation: doc.animation.clone(),
+        }
+    }
+}
+
 /// Content introduced by one native-drawing insertion. Undo removes document
 /// references while deliberately leaving copied managed assets in place; a
 /// later merge may share those files and must not lose them on undo.
@@ -45,6 +62,7 @@ pub struct MergeEdit {
     pub guides: Vec<crate::document::guide_resources::GuideResource>,
     pub model_references: Vec<crate::document::model_references::ObjReferenceResource>,
     pub linked_stroke_groups: LinkedStrokeGroups,
+    pub color_swatches: crate::document::DocumentColorSwatches,
     pub previous_active_layer: u64,
     pub inserted_active_layer: u64,
 }
@@ -220,6 +238,12 @@ pub enum Edit {
         before: ArtworkAnimationState,
         after: ArtworkAnimationState,
     },
+    /// One undoable named-swatch edit, including all stored animation poses
+    /// whose literal fallback colors are kept in sync for render and export.
+    DocumentColorSwatches {
+        before: DocumentColorState,
+        after: DocumentColorState,
+    },
     Merge(MergeEdit),
 }
 impl Edit {
@@ -358,6 +382,12 @@ impl Edit {
                 doc.animation = state.animation.clone();
                 doc.strokes = state.strokes.clone();
             }
+            Self::DocumentColorSwatches { before, after } => {
+                let state = if forward { after } else { before };
+                doc.color_swatches = state.swatches.clone();
+                doc.strokes = state.strokes.clone();
+                doc.animation = state.animation.clone();
+            }
             Self::Merge(merge) => {
                 if forward {
                     doc.strokes.extend(merge.strokes.iter().cloned());
@@ -372,6 +402,12 @@ impl Edit {
                     doc.linked_stroke_groups
                         .instances
                         .extend(merge.linked_stroke_groups.instances.iter().cloned());
+                    doc.color_swatches
+                        .swatches
+                        .extend(merge.color_swatches.swatches.iter().cloned());
+                    doc.color_swatches
+                        .bindings
+                        .extend(merge.color_swatches.bindings.iter().copied());
                     doc.active_layer = merge.inserted_active_layer;
                 } else {
                     let stroke_ids: HashSet<_> = merge.strokes.iter().map(|s| s.id).collect();
@@ -392,6 +428,12 @@ impl Edit {
                         .iter()
                         .map(|instance| instance.id)
                         .collect();
+                    let swatch_ids: HashSet<_> = merge
+                        .color_swatches
+                        .swatches
+                        .iter()
+                        .map(|swatch| swatch.id)
+                        .collect();
                     doc.strokes.retain(|s| !stroke_ids.contains(&s.id));
                     doc.layers.retain(|l| !layer_ids.contains(&l.id));
                     doc.image_planes.retain(|p| !plane_ids.contains(&p.id));
@@ -403,6 +445,12 @@ impl Edit {
                     doc.linked_stroke_groups
                         .instances
                         .retain(|instance| !instance_ids.contains(&instance.id));
+                    doc.color_swatches
+                        .bindings
+                        .retain(|binding| !stroke_ids.contains(&binding.stroke_id));
+                    doc.color_swatches
+                        .swatches
+                        .retain(|swatch| !swatch_ids.contains(&swatch.id));
                     doc.active_layer = merge.previous_active_layer;
                 }
             }

@@ -319,6 +319,8 @@ mod brushes;
 mod camera_ui;
 #[path = "color_editor.rs"]
 mod color_editor;
+#[path = "swatches_ui.rs"]
+mod swatches_ui;
 #[path = "curve_tool.rs"]
 mod curve_tool;
 #[path = "cylinders.rs"]
@@ -558,6 +560,7 @@ pub struct SketchApp {
     guide_bend_draft: Option<guide_resource_ui::GuideBendDraft>,
     guide_bend_verification: bool,
     palette_ui: palette_ui::PaletteUi,
+    swatches_ui: swatches_ui::SwatchesUi,
     reference_board: reference_board::ReferenceBoard,
     sampling_contact: bool,
     preset_ui: crate::presets_ui::PresetUi,
@@ -2117,6 +2120,7 @@ impl SketchApp {
             guide_bend_draft: None,
             guide_bend_verification: false,
             palette_ui: palette_ui::PaletteUi::new(),
+            swatches_ui: Default::default(),
             reference_board: reference_board::ReferenceBoard::new(&cc.egui_ctx),
             sampling_contact: false,
             preset_ui,
@@ -5640,6 +5644,11 @@ impl SketchApp {
                 self.presentation.set_ui_theme(theme);
                 self.presentation.apply_theme(ui.ctx());
             }
+            if ui.button("Document color swatches…").clicked() {
+                ui.close_menu();
+                self.finish();
+                self.swatches_ui.open = true;
+            }
             if ui.button("Camera and guide controls").clicked() {
                 ui.close_menu();
                 self.finish();
@@ -7857,6 +7866,7 @@ impl eframe::App for SketchApp {
         }
         self.show_recovery(ctx);
         self.show_color_editor(ctx);
+        self.show_document_color_swatches(ctx);
         self.quick_palette_ui(ctx);
         self.tick_recovery(ctx);
         self.construction_history.record_camera(&self.camera);
@@ -9523,6 +9533,7 @@ mod native_merge_apply_tests {
                 guides: Vec::new(),
                 model_references: Vec::new(),
                 linked_stroke_groups: Default::default(),
+                color_swatches: Default::default(),
                 previous_active_layer: 1,
                 inserted_active_layer: 2,
             },

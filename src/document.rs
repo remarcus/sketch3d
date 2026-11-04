@@ -718,6 +718,128 @@ pub struct LinkedStrokeGroups {
     pub instances: Vec<LinkedStrokeGroupInstance>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwatchRole {
+    Stroke,
+    Fill,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DocumentColorSwatch {
+    pub id: u64,
+    pub name: String,
+    pub color: [f32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StrokeSwatchBinding {
+    pub stroke_id: u64,
+    pub swatch_id: u64,
+    pub role: SwatchRole,
+}
+
+/// Named document colors and stable stroke bindings. Strokes without bindings
+/// continue to use their literal stored colors.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DocumentColorSwatches {
+    #[serde(default)]
+    pub swatches: Vec<DocumentColorSwatch>,
+    #[serde(default)]
+    pub bindings: Vec<StrokeSwatchBinding>,
+}
+
+impl DocumentColorSwatches {
+    pub fn swatch(&self, id: u64) -> Option<&DocumentColorSwatch> {
+        self.swatches.iter().find(|swatch| swatch.id == id)
+    }
+
+    pub fn binding(&self, stroke_id: u64, role: SwatchRole) -> Option<StrokeSwatchBinding> {
+        self.bindings
+            .iter()
+            .copied()
+            .find(|binding| binding.stroke_id == stroke_id && binding.role == role)
+    }
+
+    /// Resolve linked colors into the literal base-color fields consumed by
+    /// renderers and exporters. Unbound marks retain their stored colors.
+    pub fn resolve_strokes(&self, strokes: &mut [Stroke]) {
+        let colors: std::collections::HashMap<_, _> = self
+            .swatches
+            .iter()
+            .map(|swatch| (swatch.id, swatch.color))
+            .collect();
+        for stroke in strokes {
+            let role = if stroke.fill.is_some() {
+                SwatchRole::Fill
+            } else {
+                SwatchRole::Stroke
+            };
+            if let Some(binding) = self.binding(stroke.id, role) {
+                if let Some(color) = colors.get(&binding.swatch_id) {
+                    stroke.color = *color;
+                }
+            }
+        }
+    }
+
+    pub fn validate(&self, document: &Document) -> Result<(), String> {
+        if self.swatches.len() > 512 || self.bindings.len() > 100_000 {
+            return Err("Document color swatches exceed their item limits".into());
+        }
+        let mut ids = std::collections::HashSet::new();
+        let mut names = std::collections::HashSet::new();
+        for swatch in &self.swatches {
+            if swatch.id == 0
+                || swatch.id == u64::MAX
+                || !ids.insert(swatch.id)
+                || swatch.name.trim() != swatch.name
+                || swatch.name.is_empty()
+                || swatch.name.chars().count() > 64
+                || swatch.name.chars().any(char::is_control)
+                || !names.insert(swatch.name.to_lowercase())
+                || swatch.color.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+            {
+                return Err("Invalid or duplicate document color swatch".into());
+            }
+        }
+        let mut bound = std::collections::HashSet::new();
+        for binding in &self.bindings {
+            if binding.stroke_id == 0
+                || binding.stroke_id == u64::MAX
+                || !ids.contains(&binding.swatch_id)
+                || !bound.insert((binding.stroke_id, binding.role))
+            {
+                return Err("Invalid or duplicate document color swatch binding".into());
+            }
+            let stroke = document
+                .strokes
+                .iter()
+                .find(|stroke| stroke.id == binding.stroke_id)
+                .or_else(|| {
+                    document
+                        .animation
+                        .base_strokes
+                        .as_ref()
+                        .and_then(|strokes| strokes.iter().find(|stroke| stroke.id == binding.stroke_id))
+                })
+                .or_else(|| {
+                    document.animation.keyframes.iter().find_map(|key| key.strokes.iter().find(|stroke| stroke.id == binding.stroke_id))
+                })
+                .or_else(|| {
+                    document.animation.layer_tracks.iter().find_map(|track| {
+                        track.keyframes.iter().find_map(|key| key.strokes.iter().find(|stroke| stroke.id == binding.stroke_id))
+                    })
+                })
+                .ok_or("Swatch binding refers to a missing stroke")?;
+            if matches!(binding.role, SwatchRole::Fill) != stroke.fill.is_some() {
+                return Err("Swatch binding color role does not match its stroke".into());
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CurveAnchor {
     pub position: Vec3,
@@ -1042,6 +1164,8 @@ impl FillGradient {
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Document {
+    #[serde(default)]
+    pub color_swatches: DocumentColorSwatches,
     pub layers: Vec<Layer>,
     pub active_layer: u64,
     pub version: u32,
@@ -1070,6 +1194,7 @@ pub struct Document {
 impl Default for Document {
     fn default() -> Self {
         Self {
+            color_swatches: DocumentColorSwatches::default(),
             layers: layers_default(),
             active_layer: 1,
             version: 30,
@@ -1138,6 +1263,7 @@ impl Document {
         self.strokes
             .iter()
             .filter_map(|stroke| stroke.group_id)
+            .chain(self.color_swatches.swatches.iter().map(|swatch| swatch.id))
             .chain(
                 self.linked_stroke_groups
                     .definitions
@@ -1487,6 +1613,19 @@ impl Document {
             }
         }
         let mut doc: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        let swatches = doc.color_swatches.clone();
+        swatches.resolve_strokes(&mut doc.strokes);
+        if let Some(strokes) = &mut doc.animation.base_strokes {
+            swatches.resolve_strokes(strokes);
+        }
+        for key in &mut doc.animation.keyframes {
+            swatches.resolve_strokes(&mut key.strokes);
+        }
+        for track in &mut doc.animation.layer_tracks {
+            for key in &mut track.keyframes {
+                swatches.resolve_strokes(&mut key.strokes);
+            }
+        }
         if doc.animation.version == 1 {
             // Version 2 adds independent layer tracks and exposure lengths;
             // both fields default empty so existing whole-drawing tracks stay intact.
@@ -1543,6 +1682,7 @@ impl Document {
             .collect();
         doc.animation
             .validate(&layer_ids, &tip_assets.keys().copied().collect())?;
+        doc.color_swatches.validate(&doc)?;
         if doc.active_image_plane.is_some_and(|id| {
             !doc.image_planes
                 .iter()

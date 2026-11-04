@@ -90,7 +90,8 @@ pub(super) fn build_export_document_snapshot(
     include_scene_resources: bool,
 ) -> Document {
     let include_scene_resources = include_scene_resources && selection.is_none();
-    Document {
+    let mut snapshot = Document {
+        color_swatches: Default::default(),
         linked_stroke_groups: Default::default(),
         layers: document.layers.clone(),
         active_layer: document.active_layer,
@@ -117,7 +118,9 @@ pub(super) fn build_export_document_snapshot(
             .filter(|stroke| selection.is_none_or(|ids| ids.contains(&stroke.id)))
             .cloned()
             .collect(),
-    }
+    };
+    document.color_swatches.resolve_strokes(&mut snapshot.strokes);
+    snapshot
 }
 
 impl SketchApp {
