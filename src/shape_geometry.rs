@@ -152,6 +152,154 @@ pub fn ellipse_from_bounds(
     )
 }
 
+/// Builds a bounded editable rectangle on a planar target. Rounded rectangles
+/// use six samples per corner; filled variants retain the same semantic shape
+/// controls and use the ordinary planar-fill mesh path.
+pub fn planar_rectangle(
+    plane: DrawingPlane,
+    center: Vec3,
+    half_width: f32,
+    half_height: f32,
+    corner_radius: f32,
+    aspect_locked: bool,
+    filled: bool,
+    half_extent: Option<glam::Vec2>,
+    id: u64,
+    layer_id: u64,
+    color: [f32; 3],
+    stroke_radius: f32,
+    pressure: f32,
+    brush: Brush,
+) -> Result<Stroke, String> {
+    validate_common(plane, color, stroke_radius, pressure, brush)?;
+    validate_extent(half_width, "Width")?;
+    validate_extent(half_height, "Height")?;
+    if !corner_radius.is_finite() || !(0.0..=half_width.min(half_height)).contains(&corner_radius) {
+        return Err("Corner radius must be between zero and the smaller half-size".into());
+    }
+    let (origin, u, v, normal) = plane_frame(plane)?;
+    let center = project_to_plane(center, origin, u, v)?;
+    let center_local = Vec3::new((center - origin).dot(u), (center - origin).dot(v), 0.0);
+    if half_extent.is_some_and(|extent| {
+        !extent.is_finite() || extent.min_element() <= 0.0 || extent.max_element() > 10_000.0
+    }) {
+        return Err("Active image plane has invalid rectangle bounds".into());
+    }
+    let (left, right) = (center_local.x - half_width, center_local.x + half_width);
+    let (bottom, top) = (center_local.y - half_height, center_local.y + half_height);
+    if half_extent.is_some_and(|extent| {
+        left < -extent.x || right > extent.x || bottom < -extent.y || top > extent.y
+    }) {
+        return Err("Rectangle exceeds the active image plane bounds".into());
+    }
+
+    let mut local_points = Vec::with_capacity(if corner_radius == 0.0 { 4 } else { 24 });
+    if corner_radius == 0.0 {
+        local_points.extend([
+            glam::Vec2::new(left, bottom),
+            glam::Vec2::new(right, bottom),
+            glam::Vec2::new(right, top),
+            glam::Vec2::new(left, top),
+        ]);
+    } else {
+        for (corner_x, corner_y, start_angle) in [
+            (right - corner_radius, top - corner_radius, 0.0_f32),
+            (left + corner_radius, top - corner_radius, 90.0),
+            (left + corner_radius, bottom + corner_radius, 180.0),
+            (right - corner_radius, bottom + corner_radius, 270.0),
+        ] {
+            for step in 0..6 {
+                let angle = (start_angle + step as f32 * 90.0 / 5.0).to_radians();
+                local_points.push(glam::Vec2::new(
+                    corner_x + corner_radius * angle.cos(),
+                    corner_y + corner_radius * angle.sin(),
+                ));
+            }
+        }
+    }
+    let mut points: Vec<Point> = local_points
+        .iter()
+        .map(|point| Point {
+            position: origin + u * point.x + v * point.y,
+            pressure,
+            tilt: None,
+            time_ms: 0,
+        })
+        .collect();
+    if !filled {
+        points.push(points[0]);
+    }
+    if points.iter().any(|point| !point.is_valid()) {
+        return Err("Rectangle geometry exceeds the valid document bounds".into());
+    }
+    let mut frame_brush = Brush {
+        normal,
+        tangent: u,
+        ..brush
+    };
+    frame_brush.dabs.enabled = false;
+    let kind = if corner_radius > 0.0 {
+        crate::document::CurvedShapeKind::RoundedRectangle
+    } else {
+        crate::document::CurvedShapeKind::Rectangle
+    };
+    let anchors = [local_points[0], *local_points.last().unwrap()]
+        .into_iter()
+        .map(|point| crate::document::CurveAnchor {
+            position: origin + u * point.x + v * point.y,
+            pressure,
+            incoming: Vec3::ZERO,
+            outgoing: Vec3::ZERO,
+            manual: true,
+        })
+        .collect();
+    let curve = crate::document::CurveData {
+        anchors,
+        frame_origin: origin,
+        frame_normal: normal,
+        frame_tangent: u,
+        half_extent,
+        tension: 1.0,
+        surface_target: None,
+        shape: Some(crate::document::CurvedShapeData {
+            kind,
+            center: center_local,
+            radius_u: half_width,
+            radius_v: half_height,
+            corner_radius,
+            aspect_locked,
+        }),
+    };
+    if !curve.is_valid() {
+        return Err("Rectangle parameters exceed the supported drawing bounds".into());
+    }
+    let stroke = Stroke {
+        model_surface: None,
+        curve: Some(curve),
+        material: Default::default(),
+        point_thickness: None,
+        point_colors: None,
+        modifiers: None,
+        fill: filled.then_some(crate::document::PlanarFill {
+            offset: 0.003,
+            gradient: None,
+            texture: None,
+        }),
+        group_id: None,
+        layer_id,
+        id,
+        color,
+        gradient: None,
+        radius: stroke_radius,
+        brush: frame_brush,
+        points,
+    };
+    if filled {
+        crate::polygon::triangulate(&stroke)?;
+    }
+    Ok(stroke)
+}
+
 /// Builds a circle in the cylinder's unwrapped surface chart. `center` and
 /// dimensions are chart coordinates: X is circumferential arc length and Y
 /// is axial distance. The result wraps continuously across the cylinder seam.
@@ -182,6 +330,7 @@ pub fn cylinder_circle(
     )?;
     if let Some(shape) = stroke.curve.as_mut().and_then(|curve| curve.shape.as_mut()) {
         shape.kind = crate::document::CurvedShapeKind::Circle;
+        shape.aspect_locked = true;
     }
     Ok(stroke)
 }
@@ -294,6 +443,8 @@ pub fn cylinder_ellipse(
             center,
             radius_u,
             radius_v,
+            corner_radius: 0.0,
+            aspect_locked: false,
         }),
     };
     if !curve.is_valid() {

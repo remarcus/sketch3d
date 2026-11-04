@@ -4075,6 +4075,8 @@ impl SketchApp {
                 for (shape, label) in [
                     (shape_tool::ShapeMode::Circle, "Circle"),
                     (shape_tool::ShapeMode::Ellipse, "Ellipse"),
+                    (shape_tool::ShapeMode::Rectangle, "Rectangle"),
+                    (shape_tool::ShapeMode::RoundedRectangle, "Rounded rectangle"),
                 ] {
                     if ui
                         .selectable_value(&mut self.shape_tool.mode, Some(shape), label)
@@ -4105,6 +4107,21 @@ impl SketchApp {
                 }
                 ui.separator();
                 ui.label(format!("{} selected", self.selected.len()));
+                let editable_shape = self.selected.len() == 1
+                    && self.doc.strokes.iter().any(|stroke| {
+                        self.selected.contains(&stroke.id)
+                            && self.doc.editable(stroke)
+                            && stroke
+                                .curve
+                                .as_ref()
+                                .is_some_and(|curve| curve.shape.is_some() && curve.is_valid())
+                    });
+                if ui
+                    .add_enabled(editable_shape, egui::Button::new("Edit shape…"))
+                    .clicked()
+                {
+                    self.open_selected_curved_shape();
+                }
                 let editable_points = self.selected.len() == 1
                     && self.doc.strokes.iter().any(|stroke| {
                         self.selected.contains(&stroke.id)

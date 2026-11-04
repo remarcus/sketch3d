@@ -632,6 +632,9 @@ pub fn transformed_with_scale(
             let old_normal = curve.frame_normal;
             let old_tangent = curve.frame_tangent;
             let old_bitangent = old_normal.cross(old_tangent).normalize_or_zero();
+            let shape_center_world = curve.shape.map(|shape| {
+                old_origin + old_tangent * shape.center.x + old_bitangent * shape.center.y
+            });
             let transform_point = |point: Vec3| pivot + linear * (point - pivot) + translation;
             let next_origin = transform_point(old_origin);
             let next_normal = (normal_matrix * old_normal)
@@ -641,6 +644,28 @@ pub fn transformed_with_scale(
             let next_tangent = (tangent_raw - next_normal * tangent_raw.dot(next_normal))
                 .try_normalize()
                 .ok_or("Curve frame collapsed")?;
+            if curve.shape.is_some() && curve.surface_target.is_none() {
+                let transformed_bitangent = linear * old_bitangent;
+                let next_bitangent = next_normal.cross(next_tangent);
+                let tangent_scale = tangent_raw.length();
+                let bitangent_scale = transformed_bitangent.length();
+                if curve.shape.is_some_and(|shape| {
+                    shape.kind == crate::document::CurvedShapeKind::RoundedRectangle
+                        && (tangent_scale - bitangent_scale).abs() > 0.001
+                }) {
+                    return Err(
+                        "Rounded rectangles require uniform in-plane scaling to preserve circular corners.",
+                    );
+                }
+                if transformed_bitangent
+                    .try_normalize()
+                    .is_none_or(|axis| axis.dot(next_bitangent).abs() < 0.999)
+                {
+                    return Err(
+                        "Parametric planar shapes cannot be sheared; use rotation or axis-aligned scaling.",
+                    );
+                }
+            }
             if let Some(extent) = curve.half_extent {
                 let mut next_extent = glam::Vec2::ZERO;
                 for x in [-extent.x, extent.x] {
@@ -674,12 +699,24 @@ pub fn transformed_with_scale(
                     shape.center *= average_scale;
                     shape.radius_u *= average_scale;
                     shape.radius_v *= average_scale;
+                    shape.corner_radius *= average_scale;
                 }
             } else {
                 for anchor in &mut curve.anchors {
                     anchor.position = transform_point(anchor.position);
                     anchor.incoming = linear * anchor.incoming;
                     anchor.outgoing = linear * anchor.outgoing;
+                }
+                if let (Some(shape), Some(center_world)) = (&mut curve.shape, shape_center_world) {
+                    let center = transform_point(center_world) - next_origin;
+                    let next_bitangent = next_normal.cross(next_tangent);
+                    shape.center =
+                        Vec3::new(center.dot(next_tangent), center.dot(next_bitangent), 0.0);
+                    shape.radius_u *= (linear * old_tangent).length();
+                    shape.radius_v *= (linear * old_bitangent).length();
+                    shape.corner_radius *= ((linear * old_tangent).length()
+                        * (linear * old_bitangent).length())
+                    .sqrt();
                 }
             }
             if !curve.is_valid() {

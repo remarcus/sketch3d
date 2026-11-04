@@ -15,6 +15,7 @@ Sketch3D is independently developed and inspired by Feather 3D and Blender's Gre
 - Stipple and spray brushes with reproducible spacing, bounded planar scatter, and pressure response.
 - Freely placed drawing planes and curved guides, including cylinders, revolved surfaces, and saved custom guides.
 - Selection, transforms, groups, layers, fills, shapes, curves, mirroring, and partial erasing.
+- Planar rectangle and rounded-rectangle tools with numeric sizing, square constraint, optional fills, and editable parameters.
 - Image planes and OBJ references for drawing over references or onto model surfaces.
 - Automatic recovery and a local drawing library for organizing native drawings.
 - Artwork image, OBJ, and GLB exports, plus animated GIF and MP4 exports.
@@ -63,6 +64,8 @@ Draw in the central canvas. The Input lab reports pen samples, pressure, and til
 The **Help** menu and in-app tutorial describe the drawing tools and workflows. Essential controls do not require touch. An edge-on drawing plane cannot accept strokes; press F to align the view or orbit away from the edge.
 
 To refine an ordinary stroke, select it with **V** and choose **Edit points…** in the top toolbar. Click and drag its point handles in the view plane, or enter coordinates in the inspector. **Apply point edits** commits the session as one undo step; **Cancel point edits** or **Escape** discards it. The preview shows the edited centerline over the committed stroke. Handles include points behind artwork; orbit to inspect depth. Canvas editing supports up to 4,096 samples and excludes fills, semantic curves, and linked groups.
+
+Use the **Shape** tool to choose Circle, Ellipse, Rectangle, or Rounded rectangle from the contextual bar. Rectangle tools work on planar guides and image planes. Drag opposite corners, or enable typed dimensions to place from a center point. Square constraint, snapping, optional fill, and corner radius are available. Select a created rectangle and choose **Edit shape…** to reopen its dimensions; Apply creates one undoable edit and Cancel preserves the original.
 
 ## Capability gallery
 

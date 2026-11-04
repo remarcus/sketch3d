@@ -5,6 +5,8 @@ use super::*;
 pub(super) enum ShapeMode {
     Circle,
     Ellipse,
+    Rectangle,
+    RoundedRectangle,
 }
 
 impl ShapeMode {
@@ -12,6 +14,8 @@ impl ShapeMode {
         match self {
             Self::Circle => "Circle",
             Self::Ellipse => "Ellipse",
+            Self::Rectangle => "Rectangle",
+            Self::RoundedRectangle => "Rounded rectangle",
         }
     }
 }
@@ -59,6 +63,9 @@ pub(super) struct ShapeTool {
     pub radius: f32,
     pub width: f32,
     pub height: f32,
+    pub corner_radius: f32,
+    pub constrain_aspect: bool,
+    pub filled: bool,
     draft: Option<ShapeDraft>,
 }
 
@@ -70,6 +77,9 @@ impl Default for ShapeTool {
             radius: 0.5,
             width: 1.0,
             height: 0.75,
+            corner_radius: 0.12,
+            constrain_aspect: false,
+            filled: false,
             draft: None,
         }
     }
@@ -111,9 +121,15 @@ impl SketchApp {
     }
 
     pub(super) fn start_shape_tool(&mut self, mode: ShapeMode) {
+        if matches!(mode, ShapeMode::Rectangle | ShapeMode::RoundedRectangle)
+            && matches!(self.shape_target(), Some(ShapeTarget::Cylinder(_)))
+        {
+            self.status = "Rectangles currently work on planar guides and image planes.".into();
+            return;
+        }
         if self.shape_target().is_none() && !self.has_selected_curved_shape() {
             self.status =
-                "Circles and ellipses require a plane or cylinder guide. Activate a supported guide first.".into();
+                "Shapes require a planar guide, image plane, or supported cylinder. Activate a supported guide first.".into();
             return;
         }
         self.finish();
@@ -125,7 +141,7 @@ impl SketchApp {
         self.select_mode = false;
         self.eraser = false;
         self.status = format!(
-            "{} tool ready. Drag on the active plane or cylinder to preview.",
+            "{} tool ready. Drag on the active drawing surface to preview.",
             mode.label()
         );
     }
@@ -197,33 +213,59 @@ impl SketchApp {
                     .as_ref()
                     .is_some_and(|curve| curve.shape.is_some() && curve.is_valid())
         }) else {
-            self.status = "Select one visible, unlocked cylinder shape to edit.".into();
+            self.status = "Select one visible, unlocked parametric shape to edit.".into();
             return;
         };
         let Some(curve) = stroke.curve.as_ref() else {
             return;
         };
-        let (Some(shape), Some(snapshot)) = (curve.shape, curve.surface_target) else {
+        let Some(shape) = curve.shape else {
             return;
         };
-        let Some(target @ ShapeTarget::Cylinder(cylinder)) =
-            Self::shape_target_from_snapshot(snapshot)
-        else {
-            self.status = "The selected shape has an unsupported captured target.".into();
-            return;
+        let target = if let Some(snapshot) = curve.surface_target {
+            let Some(target @ ShapeTarget::Cylinder(_)) =
+                Self::shape_target_from_snapshot(snapshot)
+            else {
+                self.status = "The selected shape has an unsupported captured target.".into();
+                return;
+            };
+            target
+        } else {
+            let Some(target) = PlanarTarget::from_curve_frame(
+                curve.frame_origin,
+                curve.frame_normal,
+                curve.frame_tangent,
+                curve.half_extent,
+            ) else {
+                self.status = "The selected shape has an invalid captured plane.".into();
+                return;
+            };
+            ShapeTarget::Planar(target)
         };
-        let Some(center) = cylinder.point_from_parameter(shape.center) else {
-            self.status = "The saved shape center is outside its cylinder.".into();
+        let center = match target {
+            ShapeTarget::Cylinder(cylinder) => cylinder.point_from_parameter(shape.center),
+            ShapeTarget::Planar(planar) => {
+                let (u, v, _) = planar.plane.basis();
+                Some(planar.plane.origin() + u * shape.center.x + v * shape.center.y)
+            }
+        };
+        let Some(center) = center else {
+            self.status = "The saved shape center is outside its captured surface.".into();
             return;
         };
         self.shape_tool.mode = Some(match shape.kind {
             crate::document::CurvedShapeKind::Circle => ShapeMode::Circle,
             crate::document::CurvedShapeKind::Ellipse => ShapeMode::Ellipse,
+            crate::document::CurvedShapeKind::Rectangle => ShapeMode::Rectangle,
+            crate::document::CurvedShapeKind::RoundedRectangle => ShapeMode::RoundedRectangle,
         });
         self.shape_tool.precise = true;
         self.shape_tool.radius = shape.radius_u;
         self.shape_tool.width = shape.radius_u * 2.0;
         self.shape_tool.height = shape.radius_v * 2.0;
+        self.shape_tool.corner_radius = shape.corner_radius;
+        self.shape_tool.constrain_aspect = shape.aspect_locked;
+        self.shape_tool.filled = stroke.fill.is_some();
         self.shape_tool.draft = Some(ShapeDraft {
             mode: self.shape_tool.mode.unwrap(),
             target,
@@ -237,15 +279,14 @@ impl SketchApp {
             editing_stroke_id: Some(stroke.id),
         });
         self.status =
-            "Cylinder shape edit preview ready. Apply to commit once or Escape to cancel.".into();
+            "Shape parameter preview ready. Apply to commit once or Escape to cancel.".into();
     }
 
     pub(super) fn refresh_curved_shape_edit(&mut self) {
         let Some(draft) = self.shape_tool.draft.as_ref() else {
             return;
         };
-        let (Some(id), ShapeTarget::Cylinder(cylinder)) = (draft.editing_stroke_id, draft.target)
-        else {
+        let Some(id) = draft.editing_stroke_id else {
             return;
         };
         let Some(layer_id) = self
@@ -258,7 +299,7 @@ impl SketchApp {
             self.status = "The source shape no longer exists. Reopen it to edit.".into();
             return;
         };
-        let Some(center) = self
+        let Some(center_chart) = self
             .doc
             .strokes
             .iter()
@@ -270,39 +311,95 @@ impl SketchApp {
             self.status = "The source shape no longer has semantic dimensions.".into();
             return;
         };
+        let center = match draft.target {
+            ShapeTarget::Cylinder(cylinder) => cylinder.point_from_parameter(center_chart),
+            ShapeTarget::Planar(target) => {
+                let (u, v, _) = target.plane.basis();
+                Some(target.plane.origin() + u * center_chart.x + v * center_chart.y)
+            }
+        };
+        let Some(center) = center else {
+            self.status = "The shape center is outside its captured surface.".into();
+            return;
+        };
         let tolerance = (self.camera.world_per_pixel(draft.first, 900.0) * 0.75).clamp(
             crate::curve_geometry::MIN_TOLERANCE_WORLD,
             crate::curve_geometry::MAX_TOLERANCE_WORLD,
         );
-        let preview = match draft.mode {
-            ShapeMode::Circle => crate::shape_geometry::cylinder_circle(
-                cylinder,
-                center,
-                self.shape_tool.radius,
-                id,
-                layer_id,
-                draft.color,
-                draft.radius,
-                draft.pressure,
-                draft.brush,
-                tolerance,
-            ),
-            ShapeMode::Ellipse => crate::shape_geometry::cylinder_ellipse(
-                cylinder,
-                center,
-                self.shape_tool.width * 0.5,
-                self.shape_tool.height * 0.5,
-                id,
-                layer_id,
-                draft.color,
-                draft.radius,
-                draft.pressure,
-                draft.brush,
-                tolerance,
-            ),
+        let preview = match draft.target {
+            ShapeTarget::Cylinder(cylinder) => match draft.mode {
+                ShapeMode::Circle => crate::shape_geometry::cylinder_circle(
+                    cylinder,
+                    center,
+                    self.shape_tool.radius,
+                    id,
+                    layer_id,
+                    draft.color,
+                    draft.radius,
+                    draft.pressure,
+                    draft.brush,
+                    tolerance,
+                ),
+                ShapeMode::Ellipse => crate::shape_geometry::cylinder_ellipse(
+                    cylinder,
+                    center,
+                    self.shape_tool.width * 0.5,
+                    self.shape_tool.height * 0.5,
+                    id,
+                    layer_id,
+                    draft.color,
+                    draft.radius,
+                    draft.pressure,
+                    draft.brush,
+                    tolerance,
+                ),
+                _ => Err("Rectangles currently require a planar drawing guide.".into()),
+            },
+            ShapeTarget::Planar(target) => {
+                let half_width = match draft.mode {
+                    ShapeMode::Circle => self.shape_tool.radius,
+                    _ => self.shape_tool.width * 0.5,
+                };
+                let half_height = match draft.mode {
+                    ShapeMode::Circle => self.shape_tool.radius,
+                    _ => self.shape_tool.height * 0.5,
+                };
+                crate::shape_geometry::planar_rectangle(
+                    target.plane,
+                    center,
+                    half_width,
+                    half_height,
+                    if draft.mode == ShapeMode::RoundedRectangle {
+                        self.shape_tool.corner_radius
+                    } else {
+                        0.0
+                    },
+                    self.shape_tool.constrain_aspect,
+                    self.shape_tool.filled,
+                    target.half_extent(),
+                    id,
+                    layer_id,
+                    draft.color,
+                    draft.radius,
+                    draft.pressure,
+                    draft.brush,
+                )
+            }
         };
         match preview {
-            Ok(preview) => {
+            Ok(mut preview) => {
+                if let Some(before) = self.doc.strokes.iter().find(|stroke| stroke.id == id) {
+                    preview.material = before.material;
+                    preview.gradient = before.gradient;
+                    preview.group_id = before.group_id;
+                    preview.modifiers = before.modifiers.clone();
+                    if let (Some(after_fill), Some(before_fill)) = (&mut preview.fill, before.fill)
+                    {
+                        after_fill.offset = before_fill.offset;
+                        after_fill.gradient = before_fill.gradient;
+                        after_fill.texture = before_fill.texture;
+                    }
+                }
                 if let Some(draft) = &mut self.shape_tool.draft {
                     draft.preview = Some(preview);
                 }
@@ -325,7 +422,7 @@ impl SketchApp {
             return;
         };
         let Some(mut after) = draft.preview.take() else {
-            self.status = "Shape edit is outside its captured cylinder bounds.".into();
+            self.status = "Shape edit is outside its captured drawing surface.".into();
             self.shape_tool.draft = Some(draft);
             return;
         };
@@ -362,9 +459,9 @@ impl SketchApp {
         self.undo.push(edit);
         self.redo.clear();
         self.dirty = true;
-        self.record_recovery_edit_labeled("Edit cylinder shape");
+        self.record_recovery_edit_labeled("Edit shape parameters");
         self.renderer.invalidate();
-        self.status = "Cylinder shape edit applied as one undo step.".into();
+        self.status = "Shape parameters applied as one undo step.".into();
     }
 
     pub(super) fn cancel_shape_draft(&mut self) {
@@ -390,10 +487,10 @@ impl SketchApp {
             .as_ref()
             .is_some_and(|draft| draft.editing_stroke_id.is_some());
         ui.strong(format!("{} TOOL", mode.label().to_ascii_uppercase()));
-        ui.label("Shapes follow the active plane or cylinder and use uniform start pressure.");
+        ui.label("Shapes use uniform start pressure and remain editable after creation.");
         if self.shape_tool.draft.is_none()
             && self.has_selected_curved_shape()
-            && ui.button("Edit selected cylinder shape").clicked()
+            && ui.button("Edit selected shape parameters").clicked()
         {
             self.open_selected_curved_shape();
             return;
@@ -435,6 +532,50 @@ impl SketchApp {
                     )
                     .changed();
                 }
+                ShapeMode::Rectangle | ShapeMode::RoundedRectangle => {
+                    dimensions_changed |= ui_style::numeric_row(
+                        ui,
+                        "Width",
+                        "shape-width",
+                        &mut self.shape_tool.width,
+                        Some(0.002..=20000.0),
+                        "wu",
+                    )
+                    .changed();
+                    dimensions_changed |= ui
+                        .checkbox(&mut self.shape_tool.constrain_aspect, "Constrain to square")
+                        .changed();
+                    if self.shape_tool.constrain_aspect {
+                        if (self.shape_tool.height - self.shape_tool.width).abs() > f32::EPSILON {
+                            self.shape_tool.height = self.shape_tool.width;
+                            dimensions_changed = true;
+                        }
+                        ui.small("Height matches width.");
+                    } else {
+                        dimensions_changed |= ui_style::numeric_row(
+                            ui,
+                            "Height",
+                            "shape-height",
+                            &mut self.shape_tool.height,
+                            Some(0.002..=20000.0),
+                            "wu",
+                        )
+                        .changed();
+                    }
+                    dimensions_changed |=
+                        ui.checkbox(&mut self.shape_tool.filled, "Filled").changed();
+                    if mode == ShapeMode::RoundedRectangle {
+                        dimensions_changed |= ui_style::numeric_row(
+                            ui,
+                            "Corner radius",
+                            "shape-corner-radius",
+                            &mut self.shape_tool.corner_radius,
+                            Some(0.0..=10000.0),
+                            "wu",
+                        )
+                        .changed();
+                    }
+                }
             }
             ui.small("Click a center point to place the typed shape.");
             if cylinder_target {
@@ -445,11 +586,36 @@ impl SketchApp {
             if cylinder_target {
                 ui.small("Radius is measured in the cylinder surface chart and may cross the angular seam.");
             }
-        } else {
+        } else if mode == ShapeMode::Ellipse {
             ui.small("Drag opposite corners of the ellipse bounds.");
             if cylinder_target {
                 ui.small("Ellipse width follows circumferential arc length; height follows the cylinder axis.");
             }
+        } else {
+            dimensions_changed |= ui
+                .checkbox(&mut self.shape_tool.constrain_aspect, "Constrain to square")
+                .changed();
+            dimensions_changed |= ui.checkbox(&mut self.shape_tool.filled, "Filled").changed();
+            if mode == ShapeMode::RoundedRectangle {
+                dimensions_changed |= ui_style::numeric_row(
+                    ui,
+                    "Corner radius",
+                    "shape-corner-radius",
+                    &mut self.shape_tool.corner_radius,
+                    Some(0.0..=10000.0),
+                    "wu",
+                )
+                .changed();
+            }
+            ui.small(
+                "Drag opposite corners. Grid and artwork snapping are available on planar guides.",
+            );
+        }
+        if cylinder_target && matches!(mode, ShapeMode::Rectangle | ShapeMode::RoundedRectangle) {
+            ui.colored_label(
+                ui_style::colors(ui.ctx()).warning,
+                "Switch to a planar guide to use rectangle tools.",
+            );
         }
         if editing && dimensions_changed {
             self.refresh_curved_shape_edit();
@@ -538,6 +704,12 @@ impl SketchApp {
                     self.prepare_planar_snap(planar, rect, &excluded);
                 }
                 world = self.snap_planar_point(world, pos, planar, rect, None);
+            }
+            if matches!(mode, ShapeMode::Rectangle | ShapeMode::RoundedRectangle)
+                && matches!(target, ShapeTarget::Cylinder(_))
+            {
+                self.status = "Rectangles currently work on planar guides and image planes.".into();
+                return;
             }
             let id = self.next_id;
             let result = match (target, mode, self.shape_tool.precise) {
@@ -689,6 +861,62 @@ impl SketchApp {
                         brush,
                     )
                 }
+                (
+                    ShapeTarget::Planar(target),
+                    ShapeMode::Rectangle | ShapeMode::RoundedRectangle,
+                    precise,
+                ) => {
+                    let (u, v, _) = target.plane.basis();
+                    let (center, half_width, mut half_height) = if precise {
+                        (
+                            first,
+                            self.shape_tool.width * 0.5,
+                            self.shape_tool.height * 0.5,
+                        )
+                    } else {
+                        let mut delta = world - first;
+                        let mut width = delta.dot(u);
+                        let mut height = delta.dot(v);
+                        if self.shape_tool.constrain_aspect {
+                            let side = width.abs().max(height.abs());
+                            width = if width < 0.0 { -side } else { side };
+                            height = if height < 0.0 { -side } else { side };
+                            delta = u * width + v * height;
+                        }
+                        (first + delta * 0.5, width.abs() * 0.5, height.abs() * 0.5)
+                    };
+                    if self.shape_tool.constrain_aspect {
+                        half_height = half_width;
+                    }
+                    let corner_radius = if mode == ShapeMode::RoundedRectangle {
+                        self.shape_tool
+                            .corner_radius
+                            .min(half_width.min(half_height))
+                    } else {
+                        0.0
+                    };
+                    crate::shape_geometry::planar_rectangle(
+                        target.plane,
+                        center,
+                        half_width,
+                        half_height,
+                        corner_radius,
+                        self.shape_tool.constrain_aspect,
+                        self.shape_tool.filled,
+                        target.half_extent(),
+                        id,
+                        self.doc.active_layer,
+                        color,
+                        radius,
+                        pressure,
+                        brush,
+                    )
+                }
+                (
+                    ShapeTarget::Cylinder(_),
+                    ShapeMode::Rectangle | ShapeMode::RoundedRectangle,
+                    _,
+                ) => Err("Rectangles currently work on planar guides and image planes.".into()),
             };
             let draft = self
                 .shape_tool

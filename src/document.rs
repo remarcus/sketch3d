@@ -728,15 +728,21 @@ pub struct CurveAnchor {
 pub enum CurvedShapeKind {
     Circle,
     Ellipse,
+    Rectangle,
+    RoundedRectangle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CurvedShapeData {
     pub kind: CurvedShapeKind,
-    /// Center in the captured cylinder's unwrapped chart.
+    /// Center in the captured target's local chart.
     pub center: Vec3,
     pub radius_u: f32,
     pub radius_v: f32,
+    #[serde(default)]
+    pub corner_radius: f32,
+    #[serde(default)]
+    pub aspect_locked: bool,
 }
 
 impl CurveData {
@@ -764,20 +770,37 @@ impl CurveData {
                 && anchor.outgoing.is_finite()
                 && anchor.outgoing.abs().max_element() <= 10_000.0
         });
+        let shape_valid = self.shape.is_none_or(|shape| {
+            shape.center.is_finite()
+                && shape.center.abs().max_element() <= 10_000.0
+                && shape.center.z.abs() <= 1.0e-4
+                && (0.001..=10_000.0).contains(&shape.radius_u)
+                && (0.001..=10_000.0).contains(&shape.radius_v)
+                && shape.corner_radius.is_finite()
+                && (0.0..=shape.radius_u.min(shape.radius_v)).contains(&shape.corner_radius)
+                && match shape.kind {
+                    CurvedShapeKind::Circle => {
+                        shape.corner_radius == 0.0
+                            && (shape.radius_u - shape.radius_v).abs() <= 1.0e-5
+                    }
+                    CurvedShapeKind::Ellipse | CurvedShapeKind::Rectangle => {
+                        shape.corner_radius == 0.0
+                    }
+                    CurvedShapeKind::RoundedRectangle => shape.corner_radius > 0.0,
+                }
+        });
         common
             && anchors_valid
+            && shape_valid
             && match self.surface_target {
-                None => {
-                    self.shape.is_none()
-                        && self.anchors.iter().all(|anchor| {
-                            anchor.incoming.dot(self.frame_normal).abs() <= 0.01
-                                && anchor.outgoing.dot(self.frame_normal).abs() <= 0.01
-                                && (anchor.position - self.frame_origin)
-                                    .dot(self.frame_normal)
-                                    .abs()
-                                    <= 0.01
-                        })
-                }
+                None => self.anchors.iter().all(|anchor| {
+                    anchor.incoming.dot(self.frame_normal).abs() <= 0.01
+                        && anchor.outgoing.dot(self.frame_normal).abs() <= 0.01
+                        && (anchor.position - self.frame_origin)
+                            .dot(self.frame_normal)
+                            .abs()
+                            <= 0.01
+                }),
                 Some(target) => {
                     let crate::dynamics::DabSurfaceTarget::Cylinder {
                         center,
@@ -832,9 +855,20 @@ impl CurveData {
         }
         match self.surface_target {
             None => {
-                self.shape.is_none()
-                    && first.position == self.anchors[0].position
-                    && last.position == self.anchors[self.anchors.len() - 1].position
+                if let Some(shape) = self.shape {
+                    let bitangent = self.frame_normal.cross(self.frame_tangent);
+                    stroke.points.iter().all(|point| {
+                        let offset = point.position - self.frame_origin;
+                        let local =
+                            glam::Vec2::new(offset.dot(self.frame_tangent), offset.dot(bitangent));
+                        offset.dot(self.frame_normal).abs() <= 0.002
+                            && (local.x - shape.center.x).abs() <= shape.radius_u + 0.002
+                            && (local.y - shape.center.y).abs() <= shape.radius_v + 0.002
+                    }) && (stroke.fill.is_some() || first.position.distance(last.position) <= 0.002)
+                } else {
+                    first.position == self.anchors[0].position
+                        && last.position == self.anchors[self.anchors.len() - 1].position
+                }
             }
             Some(crate::dynamics::DabSurfaceTarget::Cylinder {
                 center,
