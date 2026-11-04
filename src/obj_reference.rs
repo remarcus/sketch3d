@@ -43,6 +43,8 @@ pub struct ObjMaterial {
     /// Linearized as written by MTL; callers can convert color space at draw time.
     pub diffuse: [f32; 3],
     pub opacity: f32,
+    /// Optional decoded base-color texture for self-contained GLB references.
+    pub base_color_texture: Option<crate::image_planes::ImageAsset>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -427,6 +429,7 @@ fn parse_mtl(
                     name,
                     diffuse: [1.0; 3],
                     opacity: 1.0,
+                    base_color_texture: None,
                 });
                 current = Some(materials.len() - 1);
             }

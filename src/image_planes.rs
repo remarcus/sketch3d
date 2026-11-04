@@ -195,6 +195,7 @@ pub fn validate_catalog(planes: &[ImagePlane]) -> Result<(), String> {
 }
 
 /// Decoded, premultiplied-independent RGBA asset data for a renderer texture.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ImageAsset {
     pub pixels: Vec<u8>,
     pub size: [u32; 2],

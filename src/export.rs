@@ -1801,17 +1801,53 @@ pub fn encode_with_images(
                         material.map_or_else(|| "Default".to_owned(), |m| m.name.clone());
                     let diffuse = material.map_or([1.0; 3], |m| m.diffuse);
                     let opacity = material.map_or(1.0, |m| m.opacity);
+                    let mut base_color_texture = None;
+                    let texture_has_alpha = if let Some(texture) =
+                        material.and_then(|material| material.base_color_texture.as_ref())
+                    {
+                        let png = image_asset_png(texture)?;
+                        ensure_binary_budget(
+                            binary.len(),
+                            png.len().saturating_add(320),
+                            "GLB model textures",
+                        )?;
+                        while !binary.len().is_multiple_of(4) {
+                            binary.push(0);
+                        }
+                        let offset = binary.len();
+                        binary.extend_from_slice(&png);
+                        let view = views.len();
+                        views.push(json!({"buffer":0,"byteOffset":offset,"byteLength":png.len()}));
+                        while !binary.len().is_multiple_of(4) {
+                            binary.push(0);
+                        }
+                        let image_index = images.len();
+                        images.push(json!({"name":format!("GLB model texture {} - {}",resource.name,material_name),"bufferView":view,"mimeType":"image/png"}));
+                        let texture_index = textures.len();
+                        textures.push(json!({"sampler":2,"source":image_index}));
+                        image_samplers = true;
+                        fill_repeat_sampler = true;
+                        base_color_texture = Some(texture_index);
+                        texture.pixels.chunks_exact(4).any(|pixel| pixel[3] < 255)
+                    } else {
+                        false
+                    };
                     let material_index = materials.len();
-                    materials.push(json!({
+                    let mut exported_material = json!({
                         "name": format!("OBJ {} - {}", resource.name, material_name),
                         "pbrMetallicRoughness": {
                             "baseColorFactor": [diffuse[0], diffuse[1], diffuse[2], opacity],
                             "metallicFactor": 0.0,
                             "roughnessFactor": 0.8
                         },
-                        "alphaMode": if opacity < 0.999_999 {"BLEND"} else {"OPAQUE"},
+                        "alphaMode": if opacity < 0.999_999 || texture_has_alpha {"BLEND"} else {"OPAQUE"},
                         "doubleSided": true
-                    }));
+                    });
+                    if let Some(index) = base_color_texture {
+                        exported_material["pbrMetallicRoughness"]["baseColorTexture"] =
+                            json!({"index":index,"texCoord":0});
+                    }
+                    materials.push(exported_material);
                     let mesh_index = meshes.len();
                     meshes.push(json!({"name":format!("OBJ_{}_{}",resource.id,material_name),"primitives":[{"attributes":{"POSITION":position_accessor,"NORMAL":normal_accessor,"TEXCOORD_0":uv_accessor},"indices":index_accessor,"material":material_index,"mode":4}]}));
                     primitives.push(mesh_index);
@@ -1837,7 +1873,7 @@ pub fn encode_with_images(
                 let mut extras = json!({
                     "spatialSketchObjReferenceId": resource.id.to_string(),
                     "spatialSketchAsset": resource.asset.bundle_dir,
-                    "spatialSketchObjMaterials": "MTL Kd diffuse color and d/Tr opacity"
+                    "spatialSketchObjMaterials": if model.source_format == crate::obj_reference::ObjSourceFormat::Glb { "GLB base-color factors and embedded textures" } else { "MTL Kd diffuse color and d/Tr opacity" }
                 });
                 if !model.warnings.is_empty() {
                     extras["spatialSketchIgnoredObjMaterialProperties"] = json!(model.warnings);

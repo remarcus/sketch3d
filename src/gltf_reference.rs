@@ -44,6 +44,8 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
         return Err("GLB must use one self-contained binary buffer".into());
     }
     let mut image_bytes = 0usize;
+    let mut decoded_images: Vec<Option<crate::image_planes::ImageAsset>> = Vec::new();
+    let mut total_image_pixels = 0u64;
     for image in gltf.images() {
         let gltf::image::Source::View { view, mime_type } = image.source() else {
             return Err(
@@ -64,12 +66,46 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
         if image_bytes > MAX_EMBEDDED_IMAGE_BYTES {
             return Err("GLB embedded images exceed the 64 MiB limit".into());
         }
+        let format = match mime_type {
+            "image/png" => image::ImageFormat::Png,
+            "image/jpeg" => image::ImageFormat::Jpeg,
+            "image/webp" => {
+                decoded_images.push(None);
+                continue;
+            }
+            _ => unreachable!(),
+        };
+        let image_data = &blob[view.offset()..view.offset() + view.length()];
+        let (width, height) =
+            image::ImageReader::with_format(std::io::Cursor::new(image_data), format)
+                .into_dimensions()
+                .map_err(|error| format!("Cannot read embedded GLB image dimensions: {error}"))?;
+        let pixels = u64::from(width).saturating_mul(u64::from(height));
+        total_image_pixels = total_image_pixels.saturating_add(pixels);
+        if width == 0
+            || height == 0
+            || pixels > crate::image_planes::MAX_IMAGE_PIXELS
+            || total_image_pixels > crate::image_planes::MAX_CATALOG_PIXELS
+        {
+            return Err("GLB embedded images exceed the 24 megapixel decoded limit".into());
+        }
+        let rgba = image::load_from_memory_with_format(image_data, format)
+            .map_err(|error| format!("Cannot decode embedded GLB image: {error}"))?
+            .to_rgba8();
+        if rgba.width() != width || rgba.height() != height {
+            return Err("Decoded GLB image dimensions changed unexpectedly".into());
+        }
+        decoded_images.push(Some(crate::image_planes::ImageAsset {
+            pixels: rgba.into_raw(),
+            size: [width, height],
+        }));
     }
 
     let mut materials = vec![ObjMaterial {
         name: "Default".into(),
         diffuse: [1.0; 3],
         opacity: 1.0,
+        base_color_texture: None,
     }];
     let mut warnings = Vec::new();
     for material in gltf.materials() {
@@ -82,9 +118,30 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
                 .unwrap_or_else(|| format!("Material {}", material.index().unwrap_or(0) + 1)),
             diffuse: [color[0], color[1], color[2]],
             opacity: color[3],
+            base_color_texture: pbr.base_color_texture().and_then(|info| {
+                (info.tex_coord() == 0)
+                    .then(|| {
+                        decoded_images
+                            .get(info.texture().source().index())
+                            .cloned()
+                            .flatten()
+                    })
+                    .flatten()
+            }),
         });
         if pbr.base_color_texture().is_some() {
-            warnings.push("Embedded base-color textures are retained in the bundled GLB; viewport shading uses the material base-color factor.".into());
+            if pbr
+                .base_color_texture()
+                .is_some_and(|info| info.tex_coord() != 0)
+            {
+                warnings.push("Base-color textures using a nonzero UV set are retained in the bundled GLB; viewport shading uses the material base-color factor.".into());
+            } else if pbr.base_color_texture().is_some_and(|info| {
+                decoded_images
+                    .get(info.texture().source().index())
+                    .is_none_or(Option::is_none)
+            }) {
+                warnings.push("WebP base-color textures are retained in the bundled GLB; viewport shading uses the material base-color factor because WebP decoding is unavailable.".into());
+            }
         }
         if material.alpha_mode() == gltf::material::AlphaMode::Mask {
             warnings.push("Alpha-mask materials use their base-color opacity; alpha cutoffs are not reproduced by the reference renderer.".into());
@@ -118,6 +175,7 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
             &mut objects,
             &mut groups,
             &materials,
+            &mut warnings,
             &mut triangles,
         )?;
     }
@@ -160,6 +218,7 @@ fn visit_node(
     objects: &mut Vec<String>,
     groups: &mut Vec<String>,
     materials: &[ObjMaterial],
+    warnings: &mut Vec<String>,
     triangles: &mut Vec<ObjTriangle>,
 ) -> Result<(), String> {
     let local = Mat4::from_cols_array_2d(&node.transform().matrix());
@@ -226,6 +285,7 @@ fn visit_node(
                 .read_tex_coords(0)
                 .map(|uvs| uvs.into_f32().map(Vec2::from_array).collect())
                 .unwrap_or_default();
+            let has_local_uvs = !local_uvs.is_empty();
             let uv_base = texcoords.len() as u32;
             texcoords.extend(local_uvs);
             let position_count = positions.len() as u32 - position_base;
@@ -246,6 +306,14 @@ fn visit_node(
                 .unwrap_or(0);
             if material as usize >= materials.len() {
                 return Err("GLB material index is invalid".into());
+            }
+            if !has_local_uvs
+                && materials[material as usize].base_color_texture.is_some()
+                && !warnings
+                    .iter()
+                    .any(|warning| warning.contains("without TEXCOORD_0"))
+            {
+                warnings.push("A textured primitive without TEXCOORD_0 samples a single texture corner in the viewport; the bundled GLB retains the source primitive.".into());
             }
             for triangle in primitive_indices {
                 if triangle.iter().any(|index| *index >= position_count) {
@@ -278,7 +346,7 @@ fn visit_node(
     for child in node.children() {
         visit_node(
             child, transform, blob, positions, texcoords, normals, objects, groups, materials,
-            triangles,
+            warnings, triangles,
         )?;
     }
     Ok(())

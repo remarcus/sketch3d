@@ -118,10 +118,15 @@ pub enum BackgroundImageFit {
     Fill,
 }
 
+struct ObjReferenceMaterialMesh {
+    mesh: Mesh,
+    texture: Option<ImagePlaneTexture>,
+}
+
 #[derive(Default)]
 struct ObjReferenceMeshes {
-    opaque: Option<Mesh>,
-    translucent: Option<Mesh>,
+    opaque: Vec<ObjReferenceMaterialMesh>,
+    translucent: Vec<ObjReferenceMaterialMesh>,
 }
 
 fn canvas_sample_count(adapter: &wgpu::Adapter) -> u32 {
@@ -1662,16 +1667,31 @@ impl SceneRenderer {
         {
             return Err("OBJ reference transform is invalid".into());
         }
-        let mut opaque = Vec::new();
-        let mut translucent = Vec::new();
+        let texture_has_alpha: Vec<_> = model
+            .materials
+            .iter()
+            .map(|material| {
+                material.base_color_texture.as_ref().is_some_and(|texture| {
+                    texture.pixels.chunks_exact(4).any(|pixel| pixel[3] < 255)
+                })
+            })
+            .collect();
+        let mut opaque: HashMap<usize, Vec<Vertex>> = HashMap::new();
+        let mut translucent: HashMap<usize, Vec<Vertex>> = HashMap::new();
         for triangle in &model.triangles {
             let material = model.material(triangle);
+            let material_index = triangle.material.unwrap_or(0) as usize;
             let color = material.map_or([1.0; 3], |material| material.diffuse);
             let opacity = material.map_or(1.0, |material| material.opacity);
-            let target = if opacity < 0.999_999 {
-                &mut translucent
+            let target = if opacity < 0.999_999
+                || texture_has_alpha
+                    .get(material_index)
+                    .copied()
+                    .unwrap_or(false)
+            {
+                translucent.entry(material_index).or_default()
             } else {
-                &mut opaque
+                opaque.entry(material_index).or_default()
             };
             for source in model.render_vertices(triangle)? {
                 let position = center + rotation * (source.position * scale);
@@ -1691,13 +1711,33 @@ impl SceneRenderer {
                 });
             }
         }
+        let build_material_meshes = |this: &Self,
+                                     vertices: HashMap<usize, Vec<Vertex>>|
+         -> Result<Vec<ObjReferenceMaterialMesh>, String> {
+            let mut batches = vertices.into_iter().collect::<Vec<_>>();
+            batches.sort_by_key(|(index, _)| *index);
+            batches
+                .into_iter()
+                .map(|(material_index, vertices)| {
+                    let material = model.materials.get(material_index);
+                    let texture = material
+                        .and_then(|material| material.base_color_texture.as_ref())
+                        .map(|image| {
+                            this.create_image_texture(image, true, "GLB base-color texture")
+                        })
+                        .transpose()?;
+                    Ok(ObjReferenceMaterialMesh {
+                        mesh: this.mesh(&vertices, 0, BrushKind::Round, StrokeMaterial::Shaded),
+                        texture,
+                    })
+                })
+                .collect()
+        };
         self.obj_reference_meshes.insert(
             id,
             ObjReferenceMeshes {
-                opaque: (!opaque.is_empty())
-                    .then(|| self.mesh(&opaque, 0, BrushKind::Round, StrokeMaterial::Shaded)),
-                translucent: (!translucent.is_empty())
-                    .then(|| self.mesh(&translucent, 0, BrushKind::Round, StrokeMaterial::Shaded)),
+                opaque: build_material_meshes(self, opaque)?,
+                translucent: build_material_meshes(self, translucent)?,
             },
         );
         Ok(())
@@ -2596,18 +2636,28 @@ impl SceneRenderer {
             pass.set_pipeline(triangles);
             for model in doc.model_references.iter().filter(|model| model.visible) {
                 if let Some(meshes) = self.obj_reference_meshes.get(&model.id) {
-                    if let Some(mesh) = &meshes.opaque {
-                        pass.set_vertex_buffer(0, mesh.buffer.slice(..));
-                        pass.draw(0..mesh.count, 0..1);
+                    for batch in &meshes.opaque {
+                        if let Some(texture) = &batch.texture {
+                            pass.set_bind_group(1, &texture.bind, &[]);
+                        } else {
+                            pass.set_bind_group(1, &self.textures[&texture::key(solid)], &[]);
+                        }
+                        pass.set_vertex_buffer(0, batch.mesh.buffer.slice(..));
+                        pass.draw(0..batch.mesh.count, 0..1);
                     }
                 }
             }
             pass.set_pipeline(transparent_triangles);
             for model in doc.model_references.iter().filter(|model| model.visible) {
                 if let Some(meshes) = self.obj_reference_meshes.get(&model.id) {
-                    if let Some(mesh) = &meshes.translucent {
-                        pass.set_vertex_buffer(0, mesh.buffer.slice(..));
-                        pass.draw(0..mesh.count, 0..1);
+                    for batch in &meshes.translucent {
+                        if let Some(texture) = &batch.texture {
+                            pass.set_bind_group(1, &texture.bind, &[]);
+                        } else {
+                            pass.set_bind_group(1, &self.textures[&texture::key(solid)], &[]);
+                        }
+                        pass.set_vertex_buffer(0, batch.mesh.buffer.slice(..));
+                        pass.draw(0..batch.mesh.count, 0..1);
                     }
                 }
             }
