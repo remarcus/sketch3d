@@ -11,13 +11,28 @@ pub const MAX_SVG_SEGMENTS: usize = 4096;
 pub const MAX_IMPORTED_POINTS: usize = 262_144;
 const MAX_STYLESHEET_BYTES: usize = 64 * 1024;
 const MAX_CSS_RULES: usize = 256;
+const MAX_SVG_CONTOURS: usize = 512;
+const MAX_SVG_CONTOUR_TESTS: usize = 5_000_000;
 
 #[derive(Clone, Debug)]
 pub struct SvgPath {
-    pub segments: Vec<CubicBezier>,
-    pub closed: bool,
+    pub contours: Vec<SvgContour>,
     pub fill: Option<([f32; 3], f32)>,
     pub stroke: Option<([f32; 3], f32, f32)>,
+    pub fill_rule: SvgFillRule,
+}
+
+#[derive(Clone, Debug)]
+pub struct SvgContour {
+    pub segments: Vec<CubicBezier>,
+    pub closed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum SvgFillRule {
+    #[default]
+    NonZero,
+    EvenOdd,
 }
 
 #[derive(Clone, Debug)]
@@ -222,11 +237,12 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
                         .unwrap_or(Some(Affine::IDENTITY));
                     let transform = own.map(|local| local.then(parent_transform));
                     let geometry = if let Some(transform) = transform {
-                        parse_element_geometry(&name, &attrs)
-                            .ok()
-                            .map(|(segments, closed)| {
-                                (
-                                    segments
+                        parse_element_geometry(&name, &attrs).ok().map(|contours| {
+                            contours
+                                .into_iter()
+                                .map(|contour| SvgContour {
+                                    segments: contour
+                                        .segments
                                         .into_iter()
                                         .map(|s| CubicBezier {
                                             p0: transform.apply(s.p0.truncate()).extend(0.0),
@@ -235,15 +251,21 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
                                             p3: transform.apply(s.p3.truncate()).extend(0.0),
                                         })
                                         .collect(),
-                                    closed,
-                                )
-                            })
+                                    closed: contour.closed,
+                                })
+                                .collect::<Vec<_>>()
+                        })
                     } else {
                         None
                     };
-                    if let Some((segments, closed)) =
-                        geometry.filter(|(s, _)| !s.is_empty() && s.len() <= MAX_SVG_SEGMENTS)
-                    {
+                    if let Some(contours) = geometry.filter(|contours| {
+                        !contours.is_empty()
+                            && contours
+                                .iter()
+                                .map(|contour| contour.segments.len())
+                                .sum::<usize>()
+                                <= MAX_SVG_SEGMENTS
+                    }) {
                         let transform_scale = transform
                             .map(|matrix| (matrix.a * matrix.d - matrix.b * matrix.c).abs().sqrt())
                             .unwrap_or(1.0);
@@ -265,10 +287,17 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
                             skipped += 1;
                         } else {
                             paths.push(SvgPath {
-                                segments,
-                                closed,
+                                contours,
                                 fill,
                                 stroke,
+                                fill_rule: match attrs
+                                    .get("fill-rule")
+                                    .map(|value| value.trim().to_ascii_lowercase())
+                                    .as_deref()
+                                {
+                                    Some("evenodd") => SvgFillRule::EvenOdd,
+                                    _ => SvgFillRule::NonZero,
+                                },
                             });
                         }
                     } else {
@@ -301,10 +330,12 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
         let mut min = Vec2::splat(f32::INFINITY);
         let mut max = Vec2::splat(f32::NEG_INFINITY);
         for path in &paths {
-            for s in &path.segments {
-                for p in [s.p0, s.p1, s.p2, s.p3] {
-                    min = min.min(p.truncate());
-                    max = max.max(p.truncate());
+            for contour in &path.contours {
+                for s in &contour.segments {
+                    for p in [s.p0, s.p1, s.p2, s.p3] {
+                        min = min.min(p.truncate());
+                        max = max.max(p.truncate());
+                    }
                 }
             }
         }
@@ -441,7 +472,13 @@ fn parse_declarations(declarations: &str) -> std::collections::HashMap<String, S
             let value = value.trim().trim_end_matches("!important").trim();
             matches!(
                 key.as_str(),
-                "fill" | "stroke" | "opacity" | "fill-opacity" | "stroke-opacity" | "stroke-width"
+                "fill"
+                    | "stroke"
+                    | "fill-rule"
+                    | "opacity"
+                    | "fill-opacity"
+                    | "stroke-opacity"
+                    | "stroke-width"
             )
             .then(|| (key, value.to_owned()))
         })
@@ -611,7 +648,7 @@ fn parse_transform(s: &str) -> Option<Affine> {
     Some(result)
 }
 
-fn parse_path(s: &str) -> Result<(Vec<CubicBezier>, bool), String> {
+fn parse_path(s: &str) -> Result<Vec<SvgContour>, String> {
     let mut tokens = Vec::<String>::new();
     let b = s.as_bytes();
     let mut i = 0;
@@ -647,6 +684,7 @@ fn parse_path(s: &str) -> Result<(Vec<CubicBezier>, bool), String> {
         tokens.push(s[start..i].into());
     }
     let mut seg = Vec::new();
+    let mut contours = Vec::new();
     let mut cursor = Vec2::ZERO;
     let mut start = Vec2::ZERO;
     let mut cmd = ' ';
@@ -701,11 +739,18 @@ fn parse_path(s: &str) -> Result<(Vec<CubicBezier>, bool), String> {
                 let p = point(read(&mut index)?, read(&mut index)?, cursor, rel);
                 if upper == 'M' {
                     if !seg.is_empty() {
-                        return Err(
-                            "Multiple SVG subpaths in one path are not supported yet".into()
-                        );
+                        contours.push(SvgContour {
+                            segments: std::mem::take(&mut seg),
+                            closed,
+                        });
+                        if contours.len() > MAX_SVG_CONTOURS {
+                            return Err("SVG path exceeds the 512 contour import limit".into());
+                        }
+                        closed = false;
                     }
                     start = p;
+                    last_cubic_control = None;
+                    last_quadratic_control = None;
                     cmd = if rel { 'l' } else { 'L' };
                 } else {
                     seg.push(line(cursor, p));
@@ -817,10 +862,19 @@ fn parse_path(s: &str) -> Result<(Vec<CubicBezier>, bool), String> {
             return Err("SVG path exceeds the segment limit".into());
         }
     }
-    if seg.is_empty() {
+    if !seg.is_empty() {
+        if contours.len() >= MAX_SVG_CONTOURS {
+            return Err("SVG path exceeds the 512 contour import limit".into());
+        }
+        contours.push(SvgContour {
+            segments: seg,
+            closed,
+        });
+    }
+    if contours.is_empty() {
         return Err("SVG path is empty".into());
     }
-    Ok((seg, closed))
+    Ok(contours)
 }
 
 fn read_svg_flag(tokens: &mut [String], index: &mut usize) -> Result<bool, String> {
@@ -965,7 +1019,7 @@ fn arc_segments(
 fn parse_element_geometry(
     name: &str,
     attrs: &std::collections::HashMap<String, String>,
-) -> Result<(Vec<CubicBezier>, bool), String> {
+) -> Result<Vec<SvgContour>, String> {
     let value = |key: &str, default: f32| -> Result<f32, String> {
         let result = attrs
             .get(key)
@@ -986,7 +1040,8 @@ fn parse_element_geometry(
         "polygon" | "polyline" => attrs
             .get("points")
             .ok_or_else(|| "SVG point shape is missing its points attribute".to_owned())
-            .and_then(|points| parse_poly(points, name == "polygon")),
+            .and_then(|points| parse_poly(points, name == "polygon"))
+            .map(|(segments, closed)| vec![SvgContour { segments, closed }]),
         "rect" => {
             let x = value("x", 0.0)?;
             let y = value("y", 0.0)?;
@@ -1006,8 +1061,8 @@ fn parse_element_geometry(
             rx = rx.min(width * 0.5);
             ry = ry.min(height * 0.5);
             if rx <= 0.0 || ry <= 0.0 {
-                Ok((
-                    segments_for_points(
+                Ok(vec![SvgContour {
+                    segments: segments_for_points(
                         &[
                             Vec2::new(x, y),
                             Vec2::new(x + width, y),
@@ -1016,10 +1071,13 @@ fn parse_element_geometry(
                         ],
                         true,
                     ),
-                    true,
-                ))
+                    closed: true,
+                }])
             } else {
-                Ok((rounded_rect_segments(x, y, width, height, rx, ry), true))
+                Ok(vec![SvgContour {
+                    segments: rounded_rect_segments(x, y, width, height, rx, ry),
+                    closed: true,
+                }])
             }
         }
         "circle" | "ellipse" => {
@@ -1034,7 +1092,10 @@ fn parse_element_geometry(
             if rx <= 0.0 || ry <= 0.0 {
                 return Err("SVG circle or ellipse radii must be positive".into());
             }
-            Ok((ellipse_segments(cx, cy, rx, ry), true))
+            Ok(vec![SvgContour {
+                segments: ellipse_segments(cx, cy, rx, ry),
+                closed: true,
+            }])
         }
         "line" => {
             let start = Vec2::new(value("x1", 0.0)?, value("y1", 0.0)?);
@@ -1042,7 +1103,10 @@ fn parse_element_geometry(
             if start.distance_squared(end) <= 1e-10 {
                 return Err("SVG line endpoints must be distinct".into());
             }
-            Ok((vec![line(start, end)], false))
+            Ok(vec![SvgContour {
+                segments: vec![line(start, end)],
+                closed: false,
+            }])
         }
         _ => Err("Unsupported SVG element".into()),
     }
@@ -1196,27 +1260,18 @@ pub fn to_strokes(
     let mut id = first_id;
     let mut total_points = 0_usize;
     for path in &art.paths {
-        let mut segments = path.segments.clone();
-        if path.fill.is_some() && !path.closed {
-            if let (Some(first), Some(last)) = (segments.first().copied(), segments.last().copied())
-            {
-                if first.p0.distance_squared(last.p3) > 1e-10 {
-                    segments.push(CubicBezier {
-                        p0: last.p3,
-                        p1: last.p3.lerp(first.p0, 1.0 / 3.0),
-                        p2: last.p3.lerp(first.p0, 2.0 / 3.0),
-                        p3: first.p0,
-                    });
-                }
-            }
-        }
-        for s in &mut segments {
-            s.p0 = world(s.p0);
-            s.p1 = world(s.p1);
-            s.p2 = world(s.p2);
-            s.p3 = world(s.p3);
-        }
-        let make = |color: [f32; 3],
+        let stroke_contours = path
+            .contours
+            .iter()
+            .map(|contour| transform_contour(contour, &world, false))
+            .collect::<Vec<_>>();
+        let fill_contours = path
+            .contours
+            .iter()
+            .map(|contour| transform_contour(contour, &world, path.fill.is_some()))
+            .collect::<Vec<_>>();
+        let make = |segments: &[CubicBezier],
+                    color: [f32; 3],
                     opacity: f32,
                     radius: f32,
                     fill: bool,
@@ -1318,24 +1373,206 @@ pub fn to_strokes(
             Ok(stroke)
         };
         if let Some((color, opacity)) = path.fill {
-            let stroke = make(color, opacity, 0.001, true, id)?;
-            total_points = total_points.saturating_add(stroke.points.len());
-            if total_points > MAX_IMPORTED_POINTS {
-                return Err("SVG artwork exceeds the 262,144 imported-point limit".into());
+            let local_fill_contours = path
+                .contours
+                .iter()
+                .map(|contour| transform_contour(contour, &|point| point, true))
+                .collect::<Vec<_>>();
+            for (outer, holes) in compound_fill_groups(&local_fill_contours, path.fill_rule)? {
+                let mut stroke = make(&fill_contours[outer], color, opacity, 0.001, true, id)?;
+                total_points = total_points.saturating_add(stroke.points.len());
+                if total_points > MAX_IMPORTED_POINTS {
+                    return Err("SVG artwork exceeds the 262,144 imported-point limit".into());
+                }
+                let mut hole_points = Vec::with_capacity(holes.len());
+                for hole in holes {
+                    let contour = make(&fill_contours[hole], color, opacity, 0.001, false, id)?
+                        .points
+                        .into_iter()
+                        .map(|point| point.position)
+                        .collect::<Vec<_>>();
+                    let contour = without_repeated_closure(contour);
+                    if contour.len() < 3 {
+                        return Err("Filled SVG hole has too few points".into());
+                    }
+                    total_points = total_points.saturating_add(contour.len());
+                    if total_points > MAX_IMPORTED_POINTS {
+                        return Err("SVG artwork exceeds the 262,144 imported-point limit".into());
+                    }
+                    hole_points.push(contour);
+                }
+                if let Some(fill) = stroke.fill.as_mut() {
+                    fill.holes = hole_points;
+                }
+                result.push(stroke);
+                id = id.checked_add(1).ok_or("Stroke IDs exhausted")?;
             }
-            result.push(stroke);
-            id = id.checked_add(1).ok_or("Stroke IDs exhausted")?;
         }
         if let Some((color, opacity, width)) = path.stroke {
             let radius = (width * scale * 0.5).clamp(0.001, 1.0);
-            let stroke = make(color, opacity, radius, false, id)?;
-            total_points = total_points.saturating_add(stroke.points.len());
-            if total_points > MAX_IMPORTED_POINTS {
-                return Err("SVG artwork exceeds the 262,144 imported-point limit".into());
+            for contour in &stroke_contours {
+                let stroke = make(contour, color, opacity, radius, false, id)?;
+                total_points = total_points.saturating_add(stroke.points.len());
+                if total_points > MAX_IMPORTED_POINTS {
+                    return Err("SVG artwork exceeds the 262,144 imported-point limit".into());
+                }
+                result.push(stroke);
+                id = id.checked_add(1).ok_or("Stroke IDs exhausted")?;
             }
-            result.push(stroke);
-            id = id.checked_add(1).ok_or("Stroke IDs exhausted")?;
         }
     }
     Ok(result)
+}
+
+fn transform_contour(
+    contour: &SvgContour,
+    world: &impl Fn(Vec3) -> Vec3,
+    close_for_fill: bool,
+) -> Vec<CubicBezier> {
+    let mut segments = contour.segments.clone();
+    if close_for_fill && !contour.closed {
+        if let (Some(first), Some(last)) = (segments.first().copied(), segments.last().copied()) {
+            if first.p0.distance_squared(last.p3) > 1e-10 {
+                segments.push(CubicBezier {
+                    p0: last.p3,
+                    p1: last.p3.lerp(first.p0, 1.0 / 3.0),
+                    p2: last.p3.lerp(first.p0, 2.0 / 3.0),
+                    p3: first.p0,
+                });
+            }
+        }
+    }
+    for segment in &mut segments {
+        segment.p0 = world(segment.p0);
+        segment.p1 = world(segment.p1);
+        segment.p2 = world(segment.p2);
+        segment.p3 = world(segment.p3);
+    }
+    segments
+}
+
+fn without_repeated_closure(mut points: Vec<Vec3>) -> Vec<Vec3> {
+    if points.len() > 2 && points[0].distance_squared(*points.last().unwrap()) <= 1e-10 {
+        points.pop();
+    }
+    points
+}
+
+fn compound_fill_groups(
+    contours: &[Vec<CubicBezier>],
+    fill_rule: SvgFillRule,
+) -> Result<Vec<(usize, Vec<usize>)>, String> {
+    if contours.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut polygons = Vec::with_capacity(contours.len());
+    let mut point_count = 0_usize;
+    for contour in contours {
+        let polygon = flatten_contour(contour);
+        point_count = point_count.saturating_add(polygon.len());
+        if point_count > MAX_IMPORTED_POINTS {
+            return Err("SVG compound path exceeds the contour point budget".into());
+        }
+        polygons.push(polygon);
+    }
+    if point_count.saturating_mul(polygons.len()) > MAX_SVG_CONTOUR_TESTS {
+        return Err("SVG compound path exceeds the contour nesting work limit".into());
+    }
+    if polygons.iter().any(|polygon| polygon.len() < 3) {
+        return Err("Filled SVG subpath has too few points".into());
+    }
+    let areas = polygons
+        .iter()
+        .map(|polygon| signed_area(polygon))
+        .collect::<Vec<_>>();
+    let mut parents = vec![None; polygons.len()];
+    for child in 0..polygons.len() {
+        let sample = polygons[child][0];
+        parents[child] = (0..polygons.len())
+            .filter(|&candidate| {
+                candidate != child
+                    && areas[candidate].abs() > areas[child].abs()
+                    && point_in_polygon(sample, &polygons[candidate])
+            })
+            .min_by(|&a, &b| areas[a].abs().total_cmp(&areas[b].abs()));
+    }
+    let mut depths = vec![0_usize; polygons.len()];
+    let mut filled = vec![false; polygons.len()];
+    for index in 0..polygons.len() {
+        let mut ancestors = Vec::new();
+        let mut parent = parents[index];
+        while let Some(ancestor) = parent {
+            if ancestors.len() >= polygons.len() {
+                return Err("SVG compound path contains cyclic contour nesting".into());
+            }
+            ancestors.push(ancestor);
+            parent = parents[ancestor];
+        }
+        depths[index] = ancestors.len();
+        filled[index] = match fill_rule {
+            SvgFillRule::EvenOdd => depths[index] % 2 == 0,
+            SvgFillRule::NonZero => {
+                let winding = ancestors
+                    .iter()
+                    .map(|&ancestor| areas[ancestor].signum() as i32)
+                    .sum::<i32>()
+                    + areas[index].signum() as i32;
+                winding != 0
+            }
+        };
+    }
+    let mut groups = Vec::new();
+    for outer in 0..polygons.len() {
+        if !filled[outer] || parents[outer].is_some_and(|parent| filled[parent]) {
+            continue;
+        }
+        let holes = (0..polygons.len())
+            .filter(|&index| parents[index] == Some(outer) && !filled[index])
+            .collect();
+        groups.push((outer, holes));
+    }
+    Ok(groups)
+}
+
+fn flatten_contour(segments: &[CubicBezier]) -> Vec<Vec2> {
+    const STEPS_PER_SEGMENT: usize = 8;
+    let mut points = Vec::with_capacity(segments.len() * STEPS_PER_SEGMENT);
+    for segment in segments {
+        for step in 0..STEPS_PER_SEGMENT {
+            let t = step as f32 / STEPS_PER_SEGMENT as f32;
+            let one_minus_t = 1.0 - t;
+            let point = segment.p0.truncate() * one_minus_t.powi(3)
+                + segment.p1.truncate() * (3.0 * one_minus_t.powi(2) * t)
+                + segment.p2.truncate() * (3.0 * one_minus_t * t.powi(2))
+                + segment.p3.truncate() * t.powi(3);
+            points.push(point);
+        }
+    }
+    points
+}
+
+fn signed_area(points: &[Vec2]) -> f32 {
+    (0..points.len())
+        .map(|index| {
+            let next = (index + 1) % points.len();
+            points[index].perp_dot(points[next])
+        })
+        .sum::<f32>()
+        * 0.5
+}
+
+fn point_in_polygon(point: Vec2, polygon: &[Vec2]) -> bool {
+    let mut inside = false;
+    let mut previous = polygon.len() - 1;
+    for current in 0..polygon.len() {
+        let a = polygon[current];
+        let b = polygon[previous];
+        if (a.y > point.y) != (b.y > point.y)
+            && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x
+        {
+            inside = !inside;
+        }
+        previous = current;
+    }
+    inside
 }
