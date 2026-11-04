@@ -1803,6 +1803,9 @@ pub fn encode_with_images(
                         material.map_or_else(|| "Default".to_owned(), |m| m.name.clone());
                     let diffuse = material.map_or([1.0; 3], |m| m.diffuse);
                     let opacity = material.map_or(1.0, |m| m.opacity);
+                    let metallic = material.map_or(0.0, |m| m.metallic);
+                    let roughness = material.map_or(0.8, |m| m.roughness);
+                    let emissive_factor = material.map_or([0.0; 3], |m| m.emissive_factor);
                     let alpha_mode = material.map_or(
                         crate::obj_reference::ObjMaterialAlphaMode::Opaque,
                         |material| material.alpha_mode,
@@ -1853,8 +1856,8 @@ pub fn encode_with_images(
                         "name": format!("OBJ {} - {}", resource.name, material_name),
                         "pbrMetallicRoughness": {
                             "baseColorFactor": [diffuse[0], diffuse[1], diffuse[2], opacity],
-                            "metallicFactor": 0.0,
-                            "roughnessFactor": 0.8
+                            "metallicFactor": metallic,
+                            "roughnessFactor": roughness
                         },
                         "alphaMode": match alpha_mode {
                             crate::obj_reference::ObjMaterialAlphaMode::Opaque => "OPAQUE",
@@ -1865,6 +1868,9 @@ pub fn encode_with_images(
                     });
                     if alpha_mode == crate::obj_reference::ObjMaterialAlphaMode::Mask {
                         exported_material["alphaCutoff"] = json!(alpha_cutoff);
+                    }
+                    if emissive_factor != [0.0; 3] {
+                        exported_material["emissiveFactor"] = json!(emissive_factor);
                     }
                     if let Some(index) = base_color_texture {
                         exported_material["pbrMetallicRoughness"]["baseColorTexture"] =

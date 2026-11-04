@@ -105,6 +105,9 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
         name: "Default".into(),
         diffuse: [1.0; 3],
         opacity: 1.0,
+        metallic: 1.0,
+        roughness: 1.0,
+        emissive_factor: [0.0; 3],
         base_color_texture: None,
         base_color_tex_coord: None,
         texture_sampler: None,
@@ -115,6 +118,19 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
     for material in gltf.materials() {
         let pbr = material.pbr_metallic_roughness();
         let color = pbr.base_color_factor();
+        let metallic = pbr.metallic_factor();
+        let roughness = pbr.roughness_factor();
+        let emissive_factor = material.emissive_factor();
+        if !metallic.is_finite()
+            || !(0.0..=1.0).contains(&metallic)
+            || !roughness.is_finite()
+            || !(0.0..=1.0).contains(&roughness)
+            || emissive_factor
+                .iter()
+                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+        {
+            return Err("GLB PBR material factors must be finite and between 0 and 1".into());
+        }
         let alpha_cutoff = material.alpha_cutoff().unwrap_or(0.5);
         if material.alpha_mode() == gltf::material::AlphaMode::Mask
             && (!alpha_cutoff.is_finite() || !(0.0..=1.0).contains(&alpha_cutoff))
@@ -132,6 +148,9 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
             } else {
                 color[3]
             },
+            metallic,
+            roughness,
+            emissive_factor,
             base_color_texture: pbr.base_color_texture().and_then(|info| {
                 decoded_images
                     .get(info.texture().source().index())
@@ -220,8 +239,8 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
                 warnings.push("WebP base-color textures are retained in the bundled GLB; viewport shading uses the material base-color factor because WebP decoding is unavailable.".into());
             }
         }
-        if material.emissive_factor() != [0.0; 3] {
-            warnings.push("Emissive material values are retained in the source GLB but are not applied by the reference renderer.".into());
+        if metallic > 0.0 || roughness < 1.0 || emissive_factor != [0.0; 3] {
+            warnings.push("GLB metallic, roughness, and emissive factors are preserved in whole-scene GLB export; the viewport uses a diffuse lighting approximation.".into());
         }
     }
     if materials.len() > crate::obj_reference::MAX_MATERIALS {

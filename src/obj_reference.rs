@@ -43,6 +43,11 @@ pub struct ObjMaterial {
     /// Linearized as written by MTL; callers can convert color space at draw time.
     pub diffuse: [f32; 3],
     pub opacity: f32,
+    /// PBR factors are retained for GLB references and whole-scene export.
+    /// OBJ/MTL imports use diffuse-only defaults.
+    pub metallic: f32,
+    pub roughness: f32,
+    pub emissive_factor: [f32; 3],
     /// Optional decoded base-color texture for self-contained GLB references.
     pub base_color_texture: Option<crate::image_planes::ImageAsset>,
     pub base_color_tex_coord: Option<u32>,
@@ -477,6 +482,9 @@ fn parse_mtl(
                     name,
                     diffuse: [1.0; 3],
                     opacity: 1.0,
+                    metallic: 0.0,
+                    roughness: 0.8,
+                    emissive_factor: [0.0; 3],
                     base_color_texture: None,
                     base_color_tex_coord: None,
                     texture_sampler: None,
