@@ -3,7 +3,7 @@
 use crate::curve_geometry::{CubicBezier, PressureSegment};
 use crate::document::{Brush, CurveAnchor, CurveData, PlanarFill, Point, Stroke};
 use glam::{Vec2, Vec3};
-use quick_xml::{events::Event, Reader};
+use quick_xml::{events::Event, Reader, XmlVersion};
 
 pub const MAX_SVG_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_SVG_ELEMENTS: usize = 512;
@@ -172,7 +172,7 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
                     let attr = attr.map_err(|e| format!("Invalid SVG attribute: {e}"))?;
                     let key = String::from_utf8_lossy(attr.key.as_ref()).to_ascii_lowercase();
                     let value = attr
-                        .decode_and_unescape_value(reader.decoder())
+                        .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
                         .map_err(|e| format!("Invalid SVG attribute value: {e}"))?
                         .into_owned();
                     attrs.insert(key, value);
@@ -196,7 +196,7 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
                         }
                     }
                 }
-                let attrs = styled_attrs;
+                let mut attrs = styled_attrs;
                 let parent_transform = *transforms.last().unwrap_or(&Affine::IDENTITY);
                 let parent_style = styles.last().cloned().unwrap_or_default();
                 if name == "svg" {
@@ -722,21 +722,14 @@ fn parse_path(s: &str) -> Result<Vec<SvgContour>, String> {
                 Vec2::new(x, y)
             }
         };
-        let read = |idx: &mut usize| -> Result<f32, String> {
-            let v = tokens
-                .get(*idx)
-                .ok_or("Incomplete SVG path command")?
-                .parse::<f32>()
-                .map_err(|_| "Invalid SVG path number")?;
-            *idx += 1;
-            if !v.is_finite() || v.abs() > 1_000_000.0 {
-                return Err("SVG path coordinate exceeds the import limit".into());
-            }
-            Ok(v)
-        };
         match upper {
             'M' | 'L' => {
-                let p = point(read(&mut index)?, read(&mut index)?, cursor, rel);
+                let p = point(
+                    read_path_number(&tokens, &mut index)?,
+                    read_path_number(&tokens, &mut index)?,
+                    cursor,
+                    rel,
+                );
                 if upper == 'M' {
                     if !seg.is_empty() {
                         contours.push(SvgContour {
@@ -758,21 +751,36 @@ fn parse_path(s: &str) -> Result<Vec<SvgContour>, String> {
                 cursor = p;
             }
             'H' => {
-                let x = read(&mut index)?;
+                let x = read_path_number(&tokens, &mut index)?;
                 let p = Vec2::new(if rel { cursor.x + x } else { x }, cursor.y);
                 seg.push(line(cursor, p));
                 cursor = p;
             }
             'V' => {
-                let y = read(&mut index)?;
+                let y = read_path_number(&tokens, &mut index)?;
                 let p = Vec2::new(cursor.x, if rel { cursor.y + y } else { y });
                 seg.push(line(cursor, p));
                 cursor = p;
             }
             'C' => {
-                let p1 = point(read(&mut index)?, read(&mut index)?, cursor, rel);
-                let p2 = point(read(&mut index)?, read(&mut index)?, cursor, rel);
-                let p3 = point(read(&mut index)?, read(&mut index)?, cursor, rel);
+                let p1 = point(
+                    read_path_number(&tokens, &mut index)?,
+                    read_path_number(&tokens, &mut index)?,
+                    cursor,
+                    rel,
+                );
+                let p2 = point(
+                    read_path_number(&tokens, &mut index)?,
+                    read_path_number(&tokens, &mut index)?,
+                    cursor,
+                    rel,
+                );
+                let p3 = point(
+                    read_path_number(&tokens, &mut index)?,
+                    read_path_number(&tokens, &mut index)?,
+                    cursor,
+                    rel,
+                );
                 seg.push(CubicBezier {
                     p0: cursor.extend(0.0),
                     p1: p1.extend(0.0),
@@ -789,8 +797,18 @@ fn parse_path(s: &str) -> Result<Vec<SvgContour>, String> {
                 } else {
                     cursor
                 };
-                let p2 = point(read(&mut index)?, read(&mut index)?, cursor, rel);
-                let p3 = point(read(&mut index)?, read(&mut index)?, cursor, rel);
+                let p2 = point(
+                    read_path_number(&tokens, &mut index)?,
+                    read_path_number(&tokens, &mut index)?,
+                    cursor,
+                    rel,
+                );
+                let p3 = point(
+                    read_path_number(&tokens, &mut index)?,
+                    read_path_number(&tokens, &mut index)?,
+                    cursor,
+                    rel,
+                );
                 seg.push(CubicBezier {
                     p0: cursor.extend(0.0),
                     p1: p1.extend(0.0),
@@ -802,8 +820,18 @@ fn parse_path(s: &str) -> Result<Vec<SvgContour>, String> {
                 last_quadratic_control = None;
             }
             'Q' => {
-                let q = point(read(&mut index)?, read(&mut index)?, cursor, rel);
-                let p = point(read(&mut index)?, read(&mut index)?, cursor, rel);
+                let q = point(
+                    read_path_number(&tokens, &mut index)?,
+                    read_path_number(&tokens, &mut index)?,
+                    cursor,
+                    rel,
+                );
+                let p = point(
+                    read_path_number(&tokens, &mut index)?,
+                    read_path_number(&tokens, &mut index)?,
+                    cursor,
+                    rel,
+                );
                 let p1 = cursor.lerp(q, 2.0 / 3.0);
                 let p2 = p.lerp(q, 2.0 / 3.0);
                 seg.push(CubicBezier {
@@ -822,7 +850,12 @@ fn parse_path(s: &str) -> Result<Vec<SvgContour>, String> {
                 } else {
                     cursor
                 };
-                let p = point(read(&mut index)?, read(&mut index)?, cursor, rel);
+                let p = point(
+                    read_path_number(&tokens, &mut index)?,
+                    read_path_number(&tokens, &mut index)?,
+                    cursor,
+                    rel,
+                );
                 let p1 = cursor.lerp(q, 2.0 / 3.0);
                 let p2 = p.lerp(q, 2.0 / 3.0);
                 seg.push(CubicBezier {
@@ -836,12 +869,17 @@ fn parse_path(s: &str) -> Result<Vec<SvgContour>, String> {
                 last_cubic_control = None;
             }
             'A' => {
-                let rx = read(&mut index)?.abs();
-                let ry = read(&mut index)?.abs();
-                let rotation_degrees = read(&mut index)?;
+                let rx = read_path_number(&tokens, &mut index)?.abs();
+                let ry = read_path_number(&tokens, &mut index)?.abs();
+                let rotation_degrees = read_path_number(&tokens, &mut index)?;
                 let large_arc = read_svg_flag(&mut tokens, &mut index)?;
                 let sweep = read_svg_flag(&mut tokens, &mut index)?;
-                let end = point(read(&mut index)?, read(&mut index)?, cursor, rel);
+                let end = point(
+                    read_path_number(&tokens, &mut index)?,
+                    read_path_number(&tokens, &mut index)?,
+                    cursor,
+                    rel,
+                );
                 seg.extend(arc_segments(
                     cursor,
                     end,
@@ -889,6 +927,19 @@ fn read_svg_flag(tokens: &mut [String], index: &mut usize) -> Result<bool, Strin
         *token = token[1..].to_owned();
     }
     Ok(first == '1')
+}
+
+fn read_path_number(tokens: &[String], index: &mut usize) -> Result<f32, String> {
+    let value = tokens
+        .get(*index)
+        .ok_or("Incomplete SVG path command")?
+        .parse::<f32>()
+        .map_err(|_| "Invalid SVG path number")?;
+    *index += 1;
+    if !value.is_finite() || value.abs() > 1_000_000.0 {
+        return Err("SVG path coordinate exceeds the import limit".into());
+    }
+    Ok(value)
 }
 
 fn line(a: Vec2, b: Vec2) -> CubicBezier {
