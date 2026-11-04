@@ -6,6 +6,17 @@ pub(super) struct PlacementUi {
     pub offset: f32,
     pub flip: bool,
     pub verification_frame: Option<u32>,
+    pub stamp: Option<StampPlacement>,
+}
+
+pub(super) struct StampPlacement {
+    pub definition_id: u64,
+    pub position: Option<Vec3>,
+    pub rotation_degrees: f32,
+    pub scale: f32,
+    pub linked: bool,
+    pub snap: bool,
+    pub repeat: bool,
 }
 impl Default for PlacementUi {
     fn default() -> Self {
@@ -15,6 +26,7 @@ impl Default for PlacementUi {
             offset: 0.005,
             flip: false,
             verification_frame: None,
+            stamp: None,
         }
     }
 }

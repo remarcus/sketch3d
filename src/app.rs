@@ -3063,6 +3063,7 @@ impl SketchApp {
         }
     }
     fn cancel(&mut self) {
+        self.placement.stamp = None;
         self.finish_canvas_point_edit(false);
         self.finish_multi_point_edit(false);
         self.cancel_multi_point_region();
@@ -6181,6 +6182,10 @@ impl SketchApp {
             self.fill_contour_pointer(pos, rect, begin);
             return;
         }
+        if self.placement.stamp.is_some() {
+            self.stamp_pointer_action(pos, rect, begin);
+            return;
+        }
         if self.placement.active {
             if begin {
                 self.pick_placement(pos, rect);
@@ -6784,6 +6789,7 @@ impl eframe::App for SketchApp {
             self.status = "Loft preview cancelled.".into();
         }
         self.partial_eraser_shortcuts(ctx);
+        self.stamp_shortcuts(ctx);
         self.local_color_shortcuts(ctx);
         self.shape_shortcuts(ctx);
         self.quick_palette_shortcuts(ctx);
@@ -7729,6 +7735,7 @@ impl eframe::App for SketchApp {
                     self.selection_overlay(ui, rect);
                     self.plane_overlay(ui, rect);
                     self.placement_overlay(ui, rect);
+                    self.stamp_overlay(ui, rect);
                     let badge = Rect::from_min_size(
                         rect.min + egui::vec2(20.0, 20.0),
                         egui::vec2(200.0, 32.0),
@@ -7840,6 +7847,7 @@ impl eframe::App for SketchApp {
         self.show_view(ctx);
         self.show_diagnostics_window(ctx);
         self.show_placement(ctx);
+        self.show_stamp_placement(ctx);
         self.show_lighting(ctx);
         self.show_drawing_library(ctx);
         self.show_insert_preview(ctx);
