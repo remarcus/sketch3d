@@ -16,6 +16,131 @@ type LoadedDrawing = (
     HashMap<u64, crate::image_planes::ImageAsset>,
     HashMap<u64, crate::obj_reference::ObjModel>,
 );
+
+fn tool_icon_button(
+    ui: &mut egui::Ui,
+    icon: &str,
+    name: &str,
+    detail: &str,
+    selected: bool,
+) -> egui::Response {
+    let response = ui.add_sized([44.0, 44.0], egui::Button::new("").selected(selected));
+    let accessible_name = if icon == "shape" {
+        "Shape tool, choose Circle or Ellipse".to_owned()
+    } else if detail.starts_with("Shortcut:") {
+        format!("{name}, {}", detail.trim_start_matches("Shortcut: ").trim())
+    } else {
+        name.to_owned()
+    };
+    let response = ui_style::accessible_button(response, &accessible_name, Some(selected));
+    let response = response.on_hover_text(format!("{name} — {detail}"));
+    let painter = ui.painter_at(response.rect);
+    let color = if selected {
+        ui_style::colors(ui.ctx()).focus
+    } else {
+        ui_style::colors(ui.ctx()).text
+    };
+    let stroke = egui::Stroke::new(1.8_f32, color);
+    let center = response.rect.center();
+    let point = |x: f32, y: f32| center + egui::vec2(x, y);
+    let line = |a, b| painter.line_segment([a, b], stroke);
+    match icon {
+        "brush" => {
+            line(point(-9.0, 8.0), point(7.0, -8.0));
+            line(point(7.0, -8.0), point(10.0, -4.0));
+            line(point(10.0, -4.0), point(-6.0, 12.0));
+            line(point(-6.0, 12.0), point(-11.0, 13.0));
+            line(point(-11.0, 13.0), point(-9.0, 8.0));
+            line(point(-2.0, 2.0), point(3.0, 7.0));
+        }
+        "line" => {
+            line(point(-11.0, 9.0), point(11.0, -9.0));
+            painter.circle_filled(point(-11.0, 9.0), 2.5, color);
+            painter.circle_filled(point(11.0, -9.0), 2.5, color);
+        }
+        "curve" => {
+            let p0 = point(-11.0, 7.0);
+            let p1 = point(-4.0, -10.0);
+            let p2 = point(4.0, 10.0);
+            let p3 = point(11.0, -7.0);
+            let mut previous = p0;
+            for step in 1..=16 {
+                let t = step as f32 / 16.0;
+                let s = 1.0 - t;
+                let next = egui::pos2(
+                    s.powi(3) * p0.x
+                        + 3.0 * s.powi(2) * t * p1.x
+                        + 3.0 * s * t.powi(2) * p2.x
+                        + t.powi(3) * p3.x,
+                    s.powi(3) * p0.y
+                        + 3.0 * s.powi(2) * t * p1.y
+                        + 3.0 * s * t.powi(2) * p2.y
+                        + t.powi(3) * p3.y,
+                );
+                line(previous, next);
+                previous = next;
+            }
+        }
+        "shape" => {
+            painter.circle_stroke(center, 9.0, stroke);
+            line(point(-12.0, 12.0), point(12.0, 12.0));
+            line(point(-12.0, 12.0), point(-12.0, -12.0));
+            line(point(-12.0, -12.0), point(12.0, -12.0));
+            line(point(12.0, -12.0), point(12.0, 12.0));
+        }
+        "fill" => {
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    point(-10.0, 7.0),
+                    point(-4.0, -8.0),
+                    point(10.0, -5.0),
+                    point(7.0, 9.0),
+                ],
+                color.gamma_multiply(0.32),
+                stroke,
+            ));
+        }
+        "erase" => {
+            let corners = [
+                point(-10.0, -2.0),
+                point(-2.0, -10.0),
+                point(10.0, 2.0),
+                point(2.0, 10.0),
+            ];
+            for i in 0..4 {
+                line(corners[i], corners[(i + 1) % 4]);
+            }
+            line(point(-4.0, 4.0), point(4.0, -4.0));
+        }
+        "tint" => {
+            painter.circle_filled(point(0.0, 0.0), 8.0, color.gamma_multiply(0.24));
+            painter.circle_stroke(point(0.0, 0.0), 8.0, stroke);
+            line(point(-3.0, 0.0), point(3.0, 0.0));
+            line(point(0.0, -3.0), point(0.0, 3.0));
+        }
+        "select" => {
+            let r = response.rect.shrink(13.0);
+            let dash = 4.0;
+            let mut x = r.left();
+            while x < r.right() {
+                let end = (x + dash).min(r.right());
+                line(egui::pos2(x, r.top()), egui::pos2(end, r.top()));
+                line(egui::pos2(x, r.bottom()), egui::pos2(end, r.bottom()));
+                x += dash * 1.7;
+            }
+            let mut y = r.top();
+            while y < r.bottom() {
+                let end = (y + dash).min(r.bottom());
+                line(egui::pos2(r.left(), y), egui::pos2(r.left(), end));
+                line(egui::pos2(r.right(), y), egui::pos2(r.right(), end));
+                y += dash * 1.7;
+            }
+        }
+        _ => {}
+    }
+    response
+}
+
 #[path = "animation_ui.rs"]
 mod animation_ui;
 #[path = "brush_dynamics.rs"]
@@ -3846,61 +3971,86 @@ impl SketchApp {
             .id_salt("tool-rail-scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.add_space(8.0);
+                ui.add_space(6.0);
+                let active_tool = if self.select_mode {
+                    "Select"
+                } else if self.local_color_brush.enabled {
+                    "Tint"
+                } else if self.eraser {
+                    "Erase"
+                } else if self.fills.enabled {
+                    "Fill"
+                } else if self.line.enabled {
+                    "Line"
+                } else if self.curve_tool.enabled {
+                    "Curve"
+                } else if let Some(mode) = self.shape_tool.mode {
+                    mode.label()
+                } else {
+                    "Brush"
+                };
                 ui.label(
                     RichText::new("TOOLS")
                         .small()
                         .color(ui_style::colors(ui.ctx()).muted_text),
                 );
-                for (tool, label, selected) in [
-                    (
-                        "Brush",
-                        "Brush [B]",
-                        !self.eraser
-                            && !self.local_color_brush.enabled
-                            && !self.select_mode
-                            && !self.fills.enabled
-                            && !self.line.enabled
-                            && !self.curve_tool.enabled
-                            && self.shape_tool.mode.is_none(),
-                    ),
-                    ("Line", "Line [L]", self.line.enabled && !self.select_mode),
-                    (
-                        "Curve",
-                        "Curve [C]",
-                        self.curve_tool.enabled && !self.select_mode,
-                    ),
-                    (
-                        "Circle",
-                        "Circle",
-                        self.shape_tool.mode == Some(shape_tool::ShapeMode::Circle),
-                    ),
-                    (
-                        "Ellipse",
-                        "Ellipse",
-                        self.shape_tool.mode == Some(shape_tool::ShapeMode::Ellipse),
-                    ),
-                    ("Fill", "Fill [P]", self.fills.enabled && !self.select_mode),
-                    ("Erase", "Erase [E]", self.eraser && !self.select_mode),
-                    (
-                        "Paint",
-                        "Tint [T]",
-                        self.local_color_brush.enabled && !self.select_mode,
-                    ),
-                    ("Select", "Select [V]", self.select_mode),
-                ] {
-                    if ui
-                        .add_sized(
-                            [ui.available_width(), 38.0],
-                            egui::Button::new(label).selected(selected),
-                        )
-                        .clicked()
-                    {
-                        self.choose_tool(tool);
-                    }
-                }
-                ui.add_space(8.0);
-                if ui.button("Artwork [Tab]").clicked() {
+                ui.label(RichText::new(format!("Active: {active_tool}")).strong());
+                ui.add_space(4.0);
+                let selected = [
+                    !self.eraser
+                        && !self.local_color_brush.enabled
+                        && !self.select_mode
+                        && !self.fills.enabled
+                        && !self.line.enabled
+                        && !self.curve_tool.enabled
+                        && self.shape_tool.mode.is_none(),
+                    self.line.enabled && !self.select_mode,
+                    self.curve_tool.enabled && !self.select_mode,
+                    self.shape_tool.mode.is_some(),
+                    self.fills.enabled && !self.select_mode,
+                    self.eraser && !self.select_mode,
+                    self.local_color_brush.enabled && !self.select_mode,
+                    self.select_mode,
+                ];
+                let tools = [
+                    ("Brush", "Brush", "B", "brush"),
+                    ("Line", "Line", "L", "line"),
+                    ("Curve", "Curve", "C", "curve"),
+                    ("Circle", "Shape", "", "shape"),
+                    ("Fill", "Fill", "P", "fill"),
+                    ("Erase", "Erase", "E", "erase"),
+                    ("Paint", "Tint", "T", "tint"),
+                    ("Select", "Select", "V", "select"),
+                ];
+                egui::Grid::new("compact-tool-grid")
+                    .num_columns(2)
+                    .spacing(Vec2::new(6.0, 6.0))
+                    .show(ui, |ui| {
+                        for (index, (command, name, shortcut, icon)) in
+                            tools.into_iter().enumerate()
+                        {
+                            let suffix = if shortcut.is_empty() {
+                                "Choose Circle or Ellipse from the contextual options".to_owned()
+                            } else {
+                                format!("Shortcut: {shortcut}")
+                            };
+                            if tool_icon_button(ui, icon, name, &suffix, selected[index]).clicked()
+                            {
+                                self.choose_tool(command);
+                            }
+                            if index % 2 == 1 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+                ui.add_space(6.0);
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 32.0],
+                        egui::Button::new("Artwork [Tab]"),
+                    )
+                    .clicked()
+                {
                     self.toggle_artwork();
                 }
             });
@@ -3910,6 +4060,19 @@ impl SketchApp {
         ui.horizontal_wrapped(|ui| {
             if let Some(mode) = self.shape_tool.mode {
                 ui.label(RichText::new(mode.label()).strong());
+                ui.separator();
+                for (shape, label) in [
+                    (shape_tool::ShapeMode::Circle, "Circle"),
+                    (shape_tool::ShapeMode::Ellipse, "Ellipse"),
+                ] {
+                    if ui
+                        .selectable_value(&mut self.shape_tool.mode, Some(shape), label)
+                        .changed()
+                    {
+                        self.cancel_shape_draft();
+                        self.shape_tool.mode = Some(shape);
+                    }
+                }
                 if self.shape_tool.precise {
                     ui.label("Typed dimensions");
                 } else {
