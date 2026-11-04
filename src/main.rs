@@ -388,8 +388,21 @@ fn main() -> eframe::Result {
             })
             .unwrap_or([1440.0, 940.0])
     };
+    let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(mut setup) = wgpu_options.wgpu_setup {
+        let default_device_descriptor = std::sync::Arc::clone(&setup.device_descriptor);
+        setup.device_descriptor = std::sync::Arc::new(move |adapter| {
+            let mut descriptor = default_device_descriptor(adapter);
+            if adapter.limits().max_bind_groups >= 5 {
+                descriptor.required_limits.max_bind_groups = 5;
+            }
+            descriptor
+        });
+        wgpu_options.wgpu_setup = setup.into();
+    }
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options,
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Sketch3D")
             .with_icon(
