@@ -9,6 +9,8 @@ pub const MAX_SVG_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_SVG_ELEMENTS: usize = 512;
 pub const MAX_SVG_SEGMENTS: usize = 4096;
 pub const MAX_IMPORTED_POINTS: usize = 262_144;
+const MAX_STYLESHEET_BYTES: usize = 64 * 1024;
+const MAX_CSS_RULES: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct SvgPath {
@@ -43,6 +45,45 @@ struct SvgStyle {
     fill_opacity: f32,
     stroke_opacity: f32,
     stroke_width: f32,
+}
+
+#[derive(Clone, Debug)]
+struct CssRule {
+    selector: CssSelector,
+    declarations: std::collections::HashMap<String, String>,
+    order: usize,
+}
+
+#[derive(Clone, Debug)]
+enum CssSelector {
+    Element(String),
+    Class(String),
+    Id(String),
+    ElementClass(String, String),
+}
+
+impl CssSelector {
+    fn specificity(&self) -> u8 {
+        match self {
+            Self::Element(_) => 1,
+            Self::Class(_) | Self::ElementClass(_, _) => 10,
+            Self::Id(_) => 100,
+        }
+    }
+
+    fn matches(&self, element: &str, attrs: &std::collections::HashMap<String, String>) -> bool {
+        let has_class = |class: &str| {
+            attrs
+                .get("class")
+                .is_some_and(|classes| classes.split_ascii_whitespace().any(|item| item == class))
+        };
+        match self {
+            Self::Element(name) => element == name,
+            Self::Class(class) => has_class(class),
+            Self::Id(id) => attrs.get("id").is_some_and(|value| value == id),
+            Self::ElementClass(name, class) => element == name && has_class(class),
+        }
+    }
 }
 
 impl Default for SvgStyle {
@@ -90,6 +131,7 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
         return Err("SVG file is empty or exceeds the 4 MiB import limit".into());
     }
     let text = std::str::from_utf8(bytes).map_err(|_| "SVG must be UTF-8")?;
+    let css_rules = parse_stylesheets(text)?;
     let mut reader = Reader::from_str(text);
     reader.config_mut().trim_text(true);
     let mut view_box = None;
@@ -120,13 +162,26 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
                         .into_owned();
                     attrs.insert(key, value);
                 }
-                if let Some(inline) = attrs.remove("style") {
+                let inline_style = attrs.remove("style");
+                let mut matching_rules: Vec<_> = css_rules
+                    .iter()
+                    .filter(|rule| rule.selector.matches(&name, &attrs))
+                    .collect();
+                matching_rules.sort_by_key(|rule| (rule.selector.specificity(), rule.order));
+                let mut styled_attrs = std::collections::HashMap::new();
+                for rule in matching_rules {
+                    styled_attrs.extend(rule.declarations.clone());
+                }
+                styled_attrs.extend(attrs);
+                if let Some(inline) = inline_style {
                     for declaration in inline.split(';') {
                         if let Some((key, value)) = declaration.split_once(':') {
-                            attrs.insert(key.trim().to_ascii_lowercase(), value.trim().into());
+                            styled_attrs
+                                .insert(key.trim().to_ascii_lowercase(), value.trim().into());
                         }
                     }
                 }
+                let attrs = styled_attrs;
                 let parent_transform = *transforms.last().unwrap_or(&Affine::IDENTITY);
                 let parent_style = styles.last().cloned().unwrap_or_default();
                 if name == "svg" {
@@ -219,7 +274,10 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
                     } else {
                         skipped += 1;
                     }
-                } else if !matches!(name.as_str(), "svg" | "g" | "title" | "desc" | "metadata") {
+                } else if !matches!(
+                    name.as_str(),
+                    "svg" | "g" | "title" | "desc" | "metadata" | "style"
+                ) {
                     skipped += 1;
                 }
             }
@@ -269,6 +327,125 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
         paths,
         skipped,
     })
+}
+
+fn parse_stylesheets(svg: &str) -> Result<Vec<CssRule>, String> {
+    let lower = svg.to_ascii_lowercase();
+    let mut cursor = 0;
+    let mut rules = Vec::new();
+    let mut stylesheet_bytes = 0;
+    while let Some(start) = lower[cursor..].find("<style") {
+        let start = cursor + start;
+        if lower
+            .as_bytes()
+            .get(start + "<style".len())
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'/' | b'>'))
+        {
+            cursor = start + "<style".len();
+            continue;
+        }
+        let Some(open_end) = lower[start..].find('>') else {
+            break;
+        };
+        let content_start = start + open_end + 1;
+        let Some(close_start) = lower[content_start..].find("</style") else {
+            break;
+        };
+        let content_end = content_start + close_start;
+        let stylesheet = &svg[content_start..content_end];
+        stylesheet_bytes += stylesheet.len();
+        if stylesheet_bytes > MAX_STYLESHEET_BYTES {
+            return Err("SVG embedded styles exceed the 64 KiB import limit".into());
+        }
+        let clean = strip_css_comments(stylesheet);
+        for rule in clean.split('}') {
+            let Some((selectors, declarations)) = rule.split_once('{') else {
+                continue;
+            };
+            let declarations = parse_declarations(declarations);
+            if declarations.is_empty() {
+                continue;
+            }
+            for selector in selectors.split(',').filter_map(parse_simple_selector) {
+                if rules.len() >= MAX_CSS_RULES {
+                    return Err("SVG exceeds the 256 embedded CSS rule import limit".into());
+                }
+                let order = rules.len();
+                rules.push(CssRule {
+                    selector,
+                    declarations: declarations.clone(),
+                    order,
+                });
+            }
+        }
+        cursor = content_end + "</style".len();
+    }
+    Ok(rules)
+}
+
+fn strip_css_comments(css: &str) -> String {
+    let mut output = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(start) = rest.find("/*") {
+        output.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("*/") else {
+            return output;
+        };
+        rest = &after[end + 2..];
+    }
+    output.push_str(rest);
+    output
+}
+
+fn parse_simple_selector(selector: &str) -> Option<CssSelector> {
+    let selector = selector.trim();
+    if selector.is_empty()
+        || selector
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '>' | '+' | '~' | ':' | '[' | ']'))
+    {
+        return None;
+    }
+    if let Some(id) = selector.strip_prefix('#') {
+        return valid_css_identifier(id).then(|| CssSelector::Id(id.to_owned()));
+    }
+    if let Some(class) = selector.strip_prefix('.') {
+        return valid_css_identifier(class).then(|| CssSelector::Class(class.to_owned()));
+    }
+    if let Some((element, class)) = selector.split_once('.') {
+        if valid_css_identifier(element) && valid_css_identifier(class) {
+            return Some(CssSelector::ElementClass(
+                element.to_ascii_lowercase(),
+                class.to_owned(),
+            ));
+        }
+        return None;
+    }
+    valid_css_identifier(selector).then(|| CssSelector::Element(selector.to_ascii_lowercase()))
+}
+
+fn valid_css_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn parse_declarations(declarations: &str) -> std::collections::HashMap<String, String> {
+    declarations
+        .split(';')
+        .filter_map(|declaration| {
+            let (key, value) = declaration.split_once(':')?;
+            let key = key.trim().to_ascii_lowercase();
+            let value = value.trim().trim_end_matches("!important").trim();
+            matches!(
+                key.as_str(),
+                "fill" | "stroke" | "opacity" | "fill-opacity" | "stroke-opacity" | "stroke-width"
+            )
+            .then(|| (key, value.to_owned()))
+        })
+        .collect()
 }
 
 fn derive_style(parent: &SvgStyle, attrs: &std::collections::HashMap<String, String>) -> SvgStyle {
