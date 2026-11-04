@@ -153,7 +153,7 @@ impl SketchApp {
             ) else {
                 return;
             };
-            painter.line_segment([a, b], egui::Stroke::new(1.8, color));
+            painter.line_segment([a, b], egui::Stroke::new(1.8_f32, color));
             painter.circle_filled(a, 3.5, color);
             painter.circle_filled(b, 3.5, color);
             let (distance, angle) = Self::measurement_values(start, end, u, v);

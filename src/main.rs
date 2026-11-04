@@ -63,8 +63,8 @@ mod still_export_check;
 mod stroke_modifiers;
 mod stroke_sculpt;
 mod surface;
-mod svg_import;
 mod svg_export;
+mod svg_import;
 mod texture;
 mod texture_check;
 mod tutorial;
@@ -91,7 +91,9 @@ fn main() -> eframe::Result {
         .position(|argument| argument == "--mcp-verification-execution-server")
     {
         let Some(root) = args.get(index + 1) else {
-            eprintln!("Usage: sketch3d --mcp-verification-execution-server <verification-directory>");
+            eprintln!(
+                "Usage: sketch3d --mcp-verification-execution-server <verification-directory>"
+            );
             std::process::exit(2);
         };
         if let Err(error) = verification_mcp::serve_with_execution(std::path::Path::new(root)) {

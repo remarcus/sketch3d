@@ -333,7 +333,11 @@ impl SketchApp {
                 ui.label(format!(
                     "Group {definition_id}: {strokes} strokes, {instances} copies"
                 ));
-                if ui.button("Stamp").on_hover_text("Place this saved linked group on the active plane").clicked() {
+                if ui
+                    .button("Stamp")
+                    .on_hover_text("Place this saved linked group on the active plane")
+                    .clicked()
+                {
                     self.begin_stamp_placement(definition_id);
                 }
                 if ui.button("Add copy").clicked() {
@@ -548,7 +552,8 @@ impl SketchApp {
 
     fn begin_stamp_placement(&mut self, definition_id: u64) {
         if self.fills.draft.is_some() || self.line.draft.is_some() {
-            self.status = "Finish or cancel the current drawing draft before placing a stamp.".into();
+            self.status =
+                "Finish or cancel the current drawing draft before placing a stamp.".into();
             return;
         }
         if !self.doc.active_editable() {
@@ -559,7 +564,13 @@ impl SketchApp {
             self.status = "Artwork stamps currently place on planar guides or image planes.".into();
             return;
         }
-        if !self.doc.linked_stroke_groups.definitions.iter().any(|definition| definition.id == definition_id) {
+        if !self
+            .doc
+            .linked_stroke_groups
+            .definitions
+            .iter()
+            .any(|definition| definition.id == definition_id)
+        {
             self.status = "The saved artwork group is no longer available.".into();
             return;
         }
@@ -585,26 +596,47 @@ impl SketchApp {
     }
 
     fn stamp_definition_sources(&self, definition_id: u64) -> Option<(Vec<Stroke>, Vec3)> {
-        let definition = self.doc.linked_stroke_groups.definitions.iter().find(|item| item.id == definition_id)?;
-        let sources = definition.source_stroke_ids.iter().map(|id| {
-            self.doc.strokes.iter().find(|stroke| stroke.id == *id).cloned()
-        }).collect::<Option<Vec<_>>>()?;
+        let definition = self
+            .doc
+            .linked_stroke_groups
+            .definitions
+            .iter()
+            .find(|item| item.id == definition_id)?;
+        let sources = definition
+            .source_stroke_ids
+            .iter()
+            .map(|id| {
+                self.doc
+                    .strokes
+                    .iter()
+                    .find(|stroke| stroke.id == *id)
+                    .cloned()
+            })
+            .collect::<Option<Vec<_>>>()?;
         Some((sources, definition.pivot))
     }
 
     fn update_stamp_pointer(&mut self, cursor: Pos2, rect: Rect) {
         let Some(target) = self.planar_drawing_target() else {
-            if let Some(stamp) = self.placement.stamp.as_mut() { stamp.position = None; }
+            if let Some(stamp) = self.placement.stamp.as_mut() {
+                stamp.position = None;
+            }
             self.clear_planar_snap_cue();
             return;
         };
         let (origin, direction) = crate::gizmo::ray(&self.camera, rect, cursor);
         let Some(hit) = target.hit(origin, direction) else {
-            if let Some(stamp) = self.placement.stamp.as_mut() { stamp.position = None; }
+            if let Some(stamp) = self.placement.stamp.as_mut() {
+                stamp.position = None;
+            }
             self.clear_planar_snap_cue();
             return;
         };
-        let snap = self.placement.stamp.as_ref().is_some_and(|stamp| stamp.snap);
+        let snap = self
+            .placement
+            .stamp
+            .as_ref()
+            .is_some_and(|stamp| stamp.snap);
         let position = if snap {
             if self.planar_snap_index_stale(target, rect, &HashSet::new()) {
                 self.prepare_planar_snap(target, rect, &HashSet::new());
@@ -625,13 +657,21 @@ impl SketchApp {
 
     pub(super) fn stamp_pointer_action(&mut self, cursor: Pos2, rect: Rect, begin: bool) {
         self.update_stamp_pointer(cursor, rect);
-        if begin && self.placement.stamp.as_ref().is_some_and(|stamp| stamp.position.is_some()) {
+        if begin
+            && self
+                .placement
+                .stamp
+                .as_ref()
+                .is_some_and(|stamp| stamp.position.is_some())
+        {
             self.commit_stamp_placement();
         }
     }
 
     fn commit_stamp_placement(&mut self) {
-        let Some(stamp) = self.placement.stamp.as_ref() else { return; };
+        let Some(stamp) = self.placement.stamp.as_ref() else {
+            return;
+        };
         let Some(position) = stamp.position else {
             self.status = "Move the stamp onto the active plane before placing it.".into();
             return;
@@ -662,7 +702,10 @@ impl SketchApp {
             self.status = "The active target no longer supports planar stamps.".into();
             return;
         };
-        let rotation = glam::Quat::from_axis_angle(target.plane.basis().2, stamp.rotation_degrees.to_radians());
+        let rotation = glam::Quat::from_axis_angle(
+            target.plane.basis().2,
+            stamp.rotation_degrees.to_radians(),
+        );
         let translation = position - pivot;
         let linked = stamp.linked;
         let repeat = stamp.repeat;
@@ -676,26 +719,31 @@ impl SketchApp {
         let edit = if linked {
             let ids: Vec<_> = (self.next_id..end_id).collect();
             let mut after = self.doc.linked_stroke_groups.clone();
-            after.instances.push(crate::document::LinkedStrokeGroupInstance {
-                id: resource_id,
-                definition_id,
-                layer_id: self.doc.active_layer,
-                translation,
-                rotation,
-                scale,
-                stroke_ids: ids.clone(),
-            });
+            after
+                .instances
+                .push(crate::document::LinkedStrokeGroupInstance {
+                    id: resource_id,
+                    definition_id,
+                    layer_id: self.doc.active_layer,
+                    translation,
+                    rotation,
+                    scale,
+                    stroke_ids: ids.clone(),
+                });
             let mut preview = self.doc.clone();
             preview.linked_stroke_groups = after.clone();
             if let Err(error) = preview.refresh_linked_instances() {
                 self.status = format!("Linked stamp placement is invalid: {error}.");
                 return;
             }
-            Some((editing::Edit::LinkedStrokeGroups {
-                before: self.doc.linked_stroke_groups.clone(),
-                after,
-                detached: Vec::new(),
-            }, ids.into_iter().collect()))
+            Some((
+                editing::Edit::LinkedStrokeGroups {
+                    before: self.doc.linked_stroke_groups.clone(),
+                    after,
+                    detached: Vec::new(),
+                },
+                ids.into_iter().collect(),
+            ))
         } else {
             let before: editing::Snapshot = sources.into_iter().map(|stroke| (0, stroke)).collect();
             match editing::transformed(&before, pivot, translation, rotation, scale) {
@@ -708,7 +756,12 @@ impl SketchApp {
                         stroke.group_id = Some(group_id);
                         ids.insert(stroke.id);
                     }
-                    Some((editing::Edit::AddBatch(copies.into_iter().map(|(_, stroke)| stroke).collect()), ids))
+                    Some((
+                        editing::Edit::AddBatch(
+                            copies.into_iter().map(|(_, stroke)| stroke).collect(),
+                        ),
+                        ids,
+                    ))
                 }
                 Err(error) => {
                     self.status = format!("Stamp transform is invalid: {error}.");
@@ -734,7 +787,9 @@ impl SketchApp {
     }
 
     pub(super) fn show_stamp_placement(&mut self, ctx: &egui::Context) {
-        let Some(stamp) = self.placement.stamp.as_mut() else { return; };
+        let Some(stamp) = self.placement.stamp.as_mut() else {
+            return;
+        };
         let mut cancel = false;
         egui::Window::new("Artwork stamp")
             .id(egui::Id::new("artwork-stamp-placement"))
@@ -764,23 +819,53 @@ impl SketchApp {
     }
 
     pub(super) fn stamp_overlay(&self, ui: &egui::Ui, rect: Rect) {
-        let Some(stamp) = self.placement.stamp.as_ref() else { return; };
-        let Some((sources, pivot)) = self.stamp_definition_sources(stamp.definition_id) else { return; };
-        let Some(position) = stamp.position else { return; };
-        let Some(target) = self.planar_drawing_target() else { return; };
-        let rotation = glam::Quat::from_axis_angle(target.plane.basis().2, stamp.rotation_degrees.to_radians());
+        let Some(stamp) = self.placement.stamp.as_ref() else {
+            return;
+        };
+        let Some((sources, pivot)) = self.stamp_definition_sources(stamp.definition_id) else {
+            return;
+        };
+        let Some(position) = stamp.position else {
+            return;
+        };
+        let Some(target) = self.planar_drawing_target() else {
+            return;
+        };
+        let rotation = glam::Quat::from_axis_angle(
+            target.plane.basis().2,
+            stamp.rotation_degrees.to_radians(),
+        );
         let before: editing::Snapshot = sources.into_iter().map(|stroke| (0, stroke)).collect();
-        let Ok(after) = editing::transformed(&before, pivot, position - pivot, rotation, stamp.scale) else { return; };
+        let Ok(after) =
+            editing::transformed(&before, pivot, position - pivot, rotation, stamp.scale)
+        else {
+            return;
+        };
         let painter = ui.painter().with_clip_rect(rect);
         let ghost = Color32::from_rgba_unmultiplied(86, 220, 225, 190);
         for (_, stroke) in after {
-            let positions: Vec<_> = stroke.points.iter().filter_map(|point| crate::gizmo::project(&self.camera, rect, point.position).map(|(p, _)| p)).collect();
-            if positions.len() == 1 { painter.circle_filled(positions[0], 3.0, ghost); }
-            for pair in positions.windows(2) { painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.4, ghost)); }
-            if stroke.fill.is_some() && positions.len() > 2 { painter.line_segment([*positions.last().unwrap(), positions[0]], egui::Stroke::new(2.4, ghost)); }
+            let positions: Vec<_> = stroke
+                .points
+                .iter()
+                .filter_map(|point| {
+                    crate::gizmo::project(&self.camera, rect, point.position).map(|(p, _)| p)
+                })
+                .collect();
+            if positions.len() == 1 {
+                painter.circle_filled(positions[0], 3.0, ghost);
+            }
+            for pair in positions.windows(2) {
+                painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.4_f32, ghost));
+            }
+            if stroke.fill.is_some() && positions.len() > 2 {
+                painter.line_segment(
+                    [*positions.last().unwrap(), positions[0]],
+                    egui::Stroke::new(2.4_f32, ghost),
+                );
+            }
         }
         if let Some((screen, _)) = crate::gizmo::project(&self.camera, rect, position) {
-            painter.circle_stroke(screen, 7.0, egui::Stroke::new(1.5, Color32::WHITE));
+            painter.circle_stroke(screen, 7.0, egui::Stroke::new(1.5_f32, Color32::WHITE));
         }
     }
     fn set_individual_selection(&mut self, individual: bool) {

@@ -470,7 +470,10 @@ impl ReferenceBoard {
                             }
                         });
                         if let Some(point) = self.guide_pick {
-                            ui.small(format!("Click the reference image to set vanishing point {}.", point + 1));
+                            ui.small(format!(
+                                "Click the reference image to set vanishing point {}.",
+                                point + 1
+                            ));
                         } else {
                             ui.small("Points use normalized image coordinates and stay fixed through fit, zoom, pan and window changes.");
                         }
@@ -560,15 +563,25 @@ impl ReferenceBoard {
                     .collect();
                 for (index, marker) in guide_points.iter().enumerate() {
                     guide_painter.line_segment(
-                        [Pos2::new(marker.x, image_rect.top()), Pos2::new(marker.x, image_rect.bottom())],
-                        egui::Stroke::new(1.0, guide_color),
+                        [
+                            Pos2::new(marker.x, image_rect.top()),
+                            Pos2::new(marker.x, image_rect.bottom()),
+                        ],
+                        egui::Stroke::new(1.0_f32, guide_color),
                     );
                     guide_painter.line_segment(
-                        [Pos2::new(image_rect.left(), marker.y), Pos2::new(image_rect.right(), marker.y)],
-                        egui::Stroke::new(1.0, guide_color),
+                        [
+                            Pos2::new(image_rect.left(), marker.y),
+                            Pos2::new(image_rect.right(), marker.y),
+                        ],
+                        egui::Stroke::new(1.0_f32, guide_color),
                     );
                     guide_painter.circle_filled(*marker, 5.0, guide_color);
-                    guide_painter.circle_stroke(*marker, 8.0, egui::Stroke::new(1.0, Color32::BLACK));
+                    guide_painter.circle_stroke(
+                        *marker,
+                        8.0,
+                        egui::Stroke::new(1.0_f32, Color32::BLACK),
+                    );
                     guide_painter.text(
                         *marker + Vec2::new(9.0, 8.0),
                         egui::Align2::LEFT_TOP,
@@ -580,7 +593,7 @@ impl ReferenceBoard {
                 if guide_points.len() == 2 {
                     guide_painter.line_segment(
                         [guide_points[0], guide_points[1]],
-                        egui::Stroke::new(2.0, guide_color),
+                        egui::Stroke::new(2.0_f32, guide_color),
                     );
                 }
                 if response.drag_started() {
@@ -608,21 +621,27 @@ impl ReferenceBoard {
                         {
                             let uv = (pos - image_rect.min) / image_rect.size();
                             if let Some(slot) = self.guide_pick.take() {
-                                image.record.perspective.points[slot.min(1)] = Some([
-                                    uv.x.clamp(-4.0, 5.0),
-                                    uv.y.clamp(-4.0, 5.0),
-                                ]);
+                                image.record.perspective.points[slot.min(1)] =
+                                    Some([uv.x.clamp(-4.0, 5.0), uv.y.clamp(-4.0, 5.0)]);
                                 guide_changed = true;
                             } else if image_rect.contains(pos) {
-                                let x = ((uv.x.clamp(0.0, 0.999999) * image.size[0] as f32) as usize)
+                                let x = ((uv.x.clamp(0.0, 0.999999) * image.size[0] as f32)
+                                    as usize)
                                     .min(image.size[0] - 1);
-                                let y = ((uv.y.clamp(0.0, 0.999999) * image.size[1] as f32) as usize)
+                                let y = ((uv.y.clamp(0.0, 0.999999) * image.size[1] as f32)
+                                    as usize)
                                     .min(image.size[1] - 1);
                                 let offset = (y * image.size[0] + x) * 4;
                                 sampled = Some([
-                                    crate::presentation::srgb_to_linear(image.pixels[offset] as f32 / 255.0),
-                                    crate::presentation::srgb_to_linear(image.pixels[offset + 1] as f32 / 255.0),
-                                    crate::presentation::srgb_to_linear(image.pixels[offset + 2] as f32 / 255.0),
+                                    crate::presentation::srgb_to_linear(
+                                        image.pixels[offset] as f32 / 255.0,
+                                    ),
+                                    crate::presentation::srgb_to_linear(
+                                        image.pixels[offset + 1] as f32 / 255.0,
+                                    ),
+                                    crate::presentation::srgb_to_linear(
+                                        image.pixels[offset + 2] as f32 / 255.0,
+                                    ),
                                 ]);
                             }
                         }
@@ -650,15 +669,17 @@ impl ReferenceBoard {
     /// Directions are normalized to the image center and remain independent of
     /// board fit, pan, zoom, and viewer dimensions.
     pub fn perspective_directions(&self) -> Option<[Vec2; 2]> {
-        let image = self.images.iter().find(|image| Some(image.record.id) == self.selected)?;
+        let image = self
+            .images
+            .iter()
+            .find(|image| Some(image.record.id) == self.selected)?;
         let center = Vec2::splat(0.5);
         match image.record.perspective.mode {
             PerspectiveMode::Off => None,
             PerspectiveMode::OnePoint => {
                 let point = image.record.perspective.points[0]?;
                 let depth = Vec2::new(point[0], point[1]) - center;
-                (depth.length_sq() > 1e-6)
-                    .then_some([Vec2::new(1.0, 0.0), depth.normalized()])
+                (depth.length_sq() > 1e-6).then_some([Vec2::new(1.0, 0.0), depth.normalized()])
             }
             PerspectiveMode::TwoPoint => {
                 let left_point = image.record.perspective.points[0]?;
@@ -723,7 +744,11 @@ fn valid_record(record: &ReferenceRecord) -> bool {
             .points
             .into_iter()
             .flatten()
-            .all(|point| point.into_iter().all(|value| value.is_finite() && (-4.0..=5.0).contains(&value)))
+            .all(|point| {
+                point
+                    .into_iter()
+                    .all(|value| value.is_finite() && (-4.0..=5.0).contains(&value))
+            })
 }
 
 fn decode(path: &Path) -> Result<(Vec<u8>, [usize; 2]), String> {

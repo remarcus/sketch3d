@@ -2069,7 +2069,7 @@ impl SceneRenderer {
             {
                 continue;
             }
-            if !cache.contains_key(&layer.id) {
+            if let std::collections::hash_map::Entry::Vacant(entry) = cache.entry(layer.id) {
                 let texture = self.state.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("Layer coverage mask"),
                     size: wgpu::Extent3d {
@@ -2103,15 +2103,12 @@ impl SceneRenderer {
                             },
                         ],
                     });
-                cache.insert(
-                    layer.id,
-                    Rc::new(ClipMaskTexture {
-                        _texture: texture,
-                        view,
-                        bind,
-                        size: mask_size,
-                    }),
-                );
+                entry.insert(Rc::new(ClipMaskTexture {
+                    _texture: texture,
+                    view,
+                    bind,
+                    size: mask_size,
+                }));
             }
             let mask = Rc::clone(&cache[&layer.id]);
             let parent_mask = if layer.clip_to_below && index > 0 {

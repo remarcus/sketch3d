@@ -576,14 +576,14 @@ fn triangulate_indices(indices: &[u32], mode: gltf::mesh::Mode) -> Result<Vec<[u
     let mut triangles = Vec::new();
     match mode {
         gltf::mesh::Mode::Triangles => {
-            if indices.len() % 3 != 0 {
+            if !indices.len().is_multiple_of(3) {
                 return Err("GLB triangle index count is not divisible by three".into());
             }
-            triangles.extend(indices.chunks_exact(3).map(|tri| [tri[0], tri[1], tri[2]]));
+            triangles.extend(indices.as_chunks::<3>().0.iter().copied());
         }
         gltf::mesh::Mode::TriangleStrip => {
             for index in 2..indices.len() {
-                triangles.push(if index % 2 == 0 {
+                triangles.push(if index.is_multiple_of(2) {
                     [indices[index - 2], indices[index - 1], indices[index]]
                 } else {
                     [indices[index - 1], indices[index - 2], indices[index]]

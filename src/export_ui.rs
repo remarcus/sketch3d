@@ -121,7 +121,9 @@ pub(super) fn build_export_document_snapshot(
             .cloned()
             .collect(),
     };
-    document.color_swatches.resolve_strokes(&mut snapshot.strokes);
+    document
+        .color_swatches
+        .resolve_strokes(&mut snapshot.strokes);
     snapshot
 }
 
@@ -148,18 +150,28 @@ impl SketchApp {
         else {
             return;
         };
-        if !path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("svg")) {
+        if !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
+        {
             self.status = "Choose an export filename ending in .svg.".into();
             return;
         }
-        if self.file.as_ref().is_some_and(|source| export::same_destination(source, &path)) {
-            self.status = "Choose an SVG destination different from the open native drawing.".into();
+        if self
+            .file
+            .as_ref()
+            .is_some_and(|source| export::same_destination(source, &path))
+        {
+            self.status =
+                "Choose an SVG destination different from the open native drawing.".into();
             return;
         }
-        match crate::svg_export::build(&self.doc, self.guide)
-            .and_then(|svg| std::fs::write(&path, svg).map_err(|error| format!("Could not write SVG: {error}")))
-        {
-            Ok(()) => self.status = format!("Exported the active plane as SVG to {}.", path.display()),
+        match crate::svg_export::build(&self.doc, self.guide).and_then(|svg| {
+            std::fs::write(&path, svg).map_err(|error| format!("Could not write SVG: {error}"))
+        }) {
+            Ok(()) => {
+                self.status = format!("Exported the active plane as SVG to {}.", path.display())
+            }
             Err(error) => self.status = format!("SVG export failed: {error}"),
         }
     }

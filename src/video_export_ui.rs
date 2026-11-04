@@ -1852,7 +1852,18 @@ mod tests {
     }
 
     fn headless_render_state_for_test() -> Option<eframe::egui_wgpu::RenderState> {
-        let config = eframe::egui_wgpu::WgpuConfiguration::default();
+        let mut config = eframe::egui_wgpu::WgpuConfiguration::default();
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(mut setup) = config.wgpu_setup {
+            let default_device_descriptor = std::sync::Arc::clone(&setup.device_descriptor);
+            setup.device_descriptor = std::sync::Arc::new(move |adapter| {
+                let mut descriptor = default_device_descriptor(adapter);
+                if adapter.limits().max_bind_groups >= 5 {
+                    descriptor.required_limits.max_bind_groups = 5;
+                }
+                descriptor
+            });
+            config.wgpu_setup = setup.into();
+        }
         let instance = block_on(config.wgpu_setup.new_instance());
         match block_on(eframe::egui_wgpu::RenderState::create(
             &config, &instance, None, None, 1, false,

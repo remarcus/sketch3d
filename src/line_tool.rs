@@ -226,7 +226,9 @@ impl SketchApp {
                     let delta = world - start;
                     let direction = directions
                         .into_iter()
-                        .map(|image_direction| (u * image_direction.x - v * image_direction.y).normalize())
+                        .map(|image_direction| {
+                            (u * image_direction.x - v * image_direction.y).normalize()
+                        })
                         .max_by(|left, right| {
                             left.dot(delta).abs().total_cmp(&right.dot(delta).abs())
                         })

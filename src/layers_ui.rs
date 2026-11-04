@@ -202,7 +202,7 @@ impl SketchApp {
                     let folder_rename_id = egui::Id::new(("folder-rename", folder_id));
                     let editing_name = ui.memory(|memory| memory.data.get_temp::<bool>(folder_rename_id)).unwrap_or(false);
                     ui.horizontal(|ui| {
-                        let mut collapsed = folder.collapsed;
+                        let collapsed = folder.collapsed;
                         if ui.button(if collapsed { "▶" } else { "▼" }).clicked() {
                             action = Some(LayerAction::FolderCollapsed(folder_id, !collapsed));
                         }

@@ -200,15 +200,20 @@ impl SketchApp {
         // Saved planes are independent guide resources, so display every
         // visible planar one at once. Curved guides keep their existing
         // dedicated interaction and rendering paths.
-        for guide in self.doc.guide_resources.iter().filter(|guide| guide.visible) {
+        for guide in self
+            .doc
+            .guide_resources
+            .iter()
+            .filter(|guide| guide.visible)
+        {
             let crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } =
                 &guide.geometry
             else {
                 continue;
             };
             let active = self.doc.active_guide == Some(guide.id);
-            let hovered = self.plane_picker.active
-                && self.plane_picker.hovered_guide == Some(guide.id);
+            let hovered =
+                self.plane_picker.active && self.plane_picker.hovered_guide == Some(guide.id);
             let color = if hovered {
                 Color32::from_rgb(255, 210, 90)
             } else if active {
@@ -223,9 +228,11 @@ impl SketchApp {
                 *origin,
                 *rotation * Vec3::X,
                 *rotation * Vec3::Y,
-                color,
-                active || hovered,
-                if hovered { "Pick" } else { &guide.name },
+                PlaneGridStyle {
+                    color,
+                    active: active || hovered,
+                    label: if hovered { "Pick" } else { &guide.name },
+                },
             );
         }
 
@@ -245,9 +252,11 @@ impl SketchApp {
                 self.guide.origin(),
                 u,
                 v,
-                active_color,
-                true,
-                self.guide.label(),
+                PlaneGridStyle {
+                    color: active_color,
+                    active: true,
+                    label: self.guide.label(),
+                },
             );
         }
     }
@@ -291,9 +300,7 @@ impl SketchApp {
     }
 
     pub(super) fn plane_picker_shortcuts(&mut self, ctx: &egui::Context) {
-        let (pressed, modifiers) = ctx.input(|input| {
-            (input.key_pressed(Key::K), input.modifiers)
-        });
+        let (pressed, modifiers) = ctx.input(|input| (input.key_pressed(Key::K), input.modifiers));
         if pressed
             && modifiers.shift
             && !modifiers.command
@@ -323,7 +330,12 @@ impl SketchApp {
     fn pick_saved_plane(&self, cursor: Pos2, rect: Rect) -> Option<u64> {
         let (ray_origin, ray_direction) = gizmo::ray(&self.camera, rect, cursor);
         let mut best: Option<(f32, u64)> = None;
-        for guide in self.doc.guide_resources.iter().filter(|guide| guide.visible && !guide.locked) {
+        for guide in self
+            .doc
+            .guide_resources
+            .iter()
+            .filter(|guide| guide.visible && !guide.locked)
+        {
             let crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } =
                 &guide.geometry
             else {
@@ -490,6 +502,12 @@ impl SketchApp {
     }
 }
 
+struct PlaneGridStyle<'a> {
+    color: Color32,
+    active: bool,
+    label: &'a str,
+}
+
 fn draw_plane_grid(
     painter: &egui::Painter,
     camera: &Camera,
@@ -497,9 +515,7 @@ fn draw_plane_grid(
     origin: Vec3,
     u: Vec3,
     v: Vec3,
-    color: Color32,
-    active: bool,
-    label: &str,
+    style: PlaneGridStyle<'_>,
 ) {
     if !origin.is_finite() || !u.is_finite() || !v.is_finite() {
         return;
@@ -525,16 +541,21 @@ fn draw_plane_grid(
         return;
     };
 
-    let edge_width = if active { 1.8 } else { 1.0 };
-    let edge = egui::Stroke::new(edge_width, color);
+    let edge_width = if style.active { 1.8_f32 } else { 1.0_f32 };
+    let edge = egui::Stroke::new(edge_width, style.color);
     for index in 0..4 {
         painter.line_segment([projected[index], projected[(index + 1) % 4]], edge);
     }
 
     // Three interior divisions in each direction make plane orientation
     // visible without flooding the viewport with a dense infinite grid.
-    let grid_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), if active { 90 } else { 44 });
-    let grid = egui::Stroke::new(0.8, grid_color);
+    let grid_color = Color32::from_rgba_unmultiplied(
+        style.color.r(),
+        style.color.g(),
+        style.color.b(),
+        if style.active { 90 } else { 44 },
+    );
+    let grid = egui::Stroke::new(0.8_f32, grid_color);
     for step in 1..4 {
         let offset = -extent + extent * 0.5 * step as f32;
         let u_start = origin - u * extent + v * offset;
@@ -556,13 +577,13 @@ fn draw_plane_grid(
     }
 
     if let Some((screen, _)) = gizmo::project(camera, rect, origin) {
-        painter.circle_filled(screen, if active { 4.0 } else { 2.5 }, color);
+        painter.circle_filled(screen, if style.active { 4.0 } else { 2.5 }, style.color);
         painter.text(
             screen + egui::vec2(7.0, -8.0),
             egui::Align2::LEFT_BOTTOM,
-            label,
-            egui::FontId::proportional(if active { 12.0 } else { 10.0 }),
-            color,
+            style.label,
+            egui::FontId::proportional(if style.active { 12.0 } else { 10.0 }),
+            style.color,
         );
     }
 }

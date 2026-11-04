@@ -278,7 +278,10 @@ impl SketchApp {
             self.status = "Pause playback and choose a visible, unlocked layer before creating the prototype.".into();
             return;
         }
-        let layer_strokes = self.doc.strokes.iter()
+        let layer_strokes = self
+            .doc
+            .strokes
+            .iter()
             .filter(|stroke| stroke.layer_id == self.doc.active_layer)
             .cloned()
             .collect::<Vec<_>>();
@@ -289,10 +292,19 @@ impl SketchApp {
             &self.doc.strokes,
         ) {
             Ok(animation) => animation,
-            Err(error) => { self.status = error; return; }
+            Err(error) => {
+                self.status = error;
+                return;
+            }
         };
-        let strokes = next.resolve(next.current_frame).unwrap_or_else(|| self.doc.strokes.clone());
-        if let Err(error) = self.commit_animation_state(next, strokes, "Created a two-bone cutout prototype for the active layer.") {
+        let strokes = next
+            .resolve(next.current_frame)
+            .unwrap_or_else(|| self.doc.strokes.clone());
+        if let Err(error) = self.commit_animation_state(
+            next,
+            strokes,
+            "Created a two-bone cutout prototype for the active layer.",
+        ) {
             self.status = error;
         } else {
             self.animation_ui.rig_pose_frame = None;
@@ -311,10 +323,19 @@ impl SketchApp {
             self.animation_ui.rig_child_degrees.to_radians(),
         ) {
             Ok(animation) => animation,
-            Err(error) => { self.status = error; return; }
+            Err(error) => {
+                self.status = error;
+                return;
+            }
         };
-        let strokes = next.resolve(frame).unwrap_or_else(|| self.doc.strokes.clone());
-        if let Err(error) = self.commit_animation_state(next, strokes, "Keyed the two-bone pose as one undoable animation edit.") {
+        let strokes = next
+            .resolve(frame)
+            .unwrap_or_else(|| self.doc.strokes.clone());
+        if let Err(error) = self.commit_animation_state(
+            next,
+            strokes,
+            "Keyed the two-bone pose as one undoable animation edit.",
+        ) {
             self.status = error;
         }
     }
@@ -322,10 +343,19 @@ impl SketchApp {
     fn remove_two_bone_prototype(&mut self) {
         let next = match self.doc.animation.remove_two_bone_rig() {
             Ok(animation) => animation,
-            Err(error) => { self.status = error; return; }
+            Err(error) => {
+                self.status = error;
+                return;
+            }
         };
-        let strokes = next.resolve(next.current_frame).unwrap_or_else(|| self.doc.strokes.clone());
-        if let Err(error) = self.commit_animation_state(next, strokes, "Removed the two-bone prototype and restored its source strokes.") {
+        let strokes = next
+            .resolve(next.current_frame)
+            .unwrap_or_else(|| self.doc.strokes.clone());
+        if let Err(error) = self.commit_animation_state(
+            next,
+            strokes,
+            "Removed the two-bone prototype and restored its source strokes.",
+        ) {
             self.status = error;
         }
         self.animation_ui.rig_pose_frame = None;
@@ -405,12 +435,15 @@ impl SketchApp {
             self.status = "Preview the multi-key edit before applying it.".into();
             return;
         };
-        let Some((source_animation, source_strokes)) = self.animation_ui.preview_source.take() else {
-            self.status = "The multi-key edit preview expired. Preview it again before applying.".into();
+        let Some((source_animation, source_strokes)) = self.animation_ui.preview_source.take()
+        else {
+            self.status =
+                "The multi-key edit preview expired. Preview it again before applying.".into();
             return;
         };
         if self.doc.animation != source_animation || self.doc.strokes != source_strokes {
-            self.status = "The drawing changed after the preview. Preview the multi-key edit again.".into();
+            self.status =
+                "The drawing changed after the preview. Preview the multi-key edit again.".into();
             return;
         }
         let strokes = animation
@@ -640,7 +673,7 @@ impl SketchApp {
                                 if ui.add(egui::DragValue::new(component).speed(0.01).range(0.0..=2.0)).changed() { self.animation_ui.preview_animation = None; }
                             }
                             let count = self.animation_ui.selected_key_frames.len();
-                            if ui.add_enabled(count >= 2 && count <= 16 && !self.animation_ui.playing, egui::Button::new("Preview edit")).clicked() {
+                            if ui.add_enabled((2..=16).contains(&count) && !self.animation_ui.playing, egui::Button::new("Preview edit")).clicked() {
                                 self.preview_animation_keys_edit();
                             }
                             if ui.add_enabled(self.animation_ui.preview_animation.is_some() && !self.animation_ui.playing, egui::Button::new("Apply to selected keys")).clicked() {
@@ -660,7 +693,9 @@ impl SketchApp {
 
     pub(super) fn paint_animation_onion_skins(&self, painter: &egui::Painter, rect: Rect) {
         let animation = &self.doc.animation;
-        if self.animation_ui.preview_animation.is_none() && (!animation.onion_skins || animation.is_empty()) {
+        if self.animation_ui.preview_animation.is_none()
+            && (!animation.onion_skins || animation.is_empty())
+        {
             return;
         }
         if animation.onion_skins {
@@ -696,7 +731,10 @@ impl SketchApp {
                         painter.circle_filled(positions[0], 2.0, color);
                     }
                     for segment in positions.windows(2) {
-                        painter.line_segment([segment[0], segment[1]], egui::Stroke::new(1.5_f32, color));
+                        painter.line_segment(
+                            [segment[0], segment[1]],
+                            egui::Stroke::new(1.5_f32, color),
+                        );
                     }
                 }
             }
@@ -706,10 +744,9 @@ impl SketchApp {
             if self.animation_ui.selected_key_frames.contains(&frame) {
                 if let Some(strokes) = preview.resolve(frame) {
                     let color = Color32::from_rgba_unmultiplied(255, 210, 70, 225);
-                    for stroke in strokes
-                        .iter()
-                        .filter(|stroke| stroke.layer_id == self.doc.active_layer && self.doc.visible(stroke))
-                    {
+                    for stroke in strokes.iter().filter(|stroke| {
+                        stroke.layer_id == self.doc.active_layer && self.doc.visible(stroke)
+                    }) {
                         let positions: Vec<_> = stroke
                             .points
                             .iter()
@@ -722,7 +759,10 @@ impl SketchApp {
                             painter.circle_filled(positions[0], 3.0, color);
                         }
                         for segment in positions.windows(2) {
-                            painter.line_segment([segment[0], segment[1]], egui::Stroke::new(2.5_f32, color));
+                            painter.line_segment(
+                                [segment[0], segment[1]],
+                                egui::Stroke::new(2.5_f32, color),
+                            );
                         }
                     }
                 }

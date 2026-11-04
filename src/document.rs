@@ -413,7 +413,9 @@ pub struct LayerFolder {
     #[serde(default)]
     pub locked: bool,
 }
-fn default_folder_visible() -> bool { true }
+fn default_folder_visible() -> bool {
+    true
+}
 pub fn default_layer_id() -> u64 {
     1
 }
@@ -814,7 +816,10 @@ impl DocumentColorSwatches {
                 || swatch.name.chars().count() > 64
                 || swatch.name.chars().any(char::is_control)
                 || !names.insert(swatch.name.to_lowercase())
-                || swatch.color.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+                || swatch
+                    .color
+                    .iter()
+                    .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
             {
                 return Err("Invalid or duplicate document color swatch".into());
             }
@@ -837,14 +842,24 @@ impl DocumentColorSwatches {
                         .animation
                         .base_strokes
                         .as_ref()
-                        .and_then(|strokes| strokes.iter().find(|stroke| stroke.id == binding.stroke_id))
+                        .and_then(|strokes| {
+                            strokes.iter().find(|stroke| stroke.id == binding.stroke_id)
+                        })
                 })
                 .or_else(|| {
-                    document.animation.keyframes.iter().find_map(|key| key.strokes.iter().find(|stroke| stroke.id == binding.stroke_id))
+                    document.animation.keyframes.iter().find_map(|key| {
+                        key.strokes
+                            .iter()
+                            .find(|stroke| stroke.id == binding.stroke_id)
+                    })
                 })
                 .or_else(|| {
                     document.animation.layer_tracks.iter().find_map(|track| {
-                        track.keyframes.iter().find_map(|key| key.strokes.iter().find(|stroke| stroke.id == binding.stroke_id))
+                        track.keyframes.iter().find_map(|key| {
+                            key.strokes
+                                .iter()
+                                .find(|stroke| stroke.id == binding.stroke_id)
+                        })
                     })
                 })
                 .ok_or("Swatch binding refers to a missing stroke")?;
@@ -1522,14 +1537,22 @@ impl Document {
             .any(|l| l.id == stroke.layer_id && l.visible && self.layer_folder_visible(l.id))
     }
     pub fn layer_folder_visible(&self, layer_id: u64) -> bool {
-        self.layer_folders.iter().find(|folder| folder.layer_ids.contains(&layer_id)).map_or(true, |folder| folder.visible)
+        self.layer_folders
+            .iter()
+            .find(|folder| folder.layer_ids.contains(&layer_id))
+            .is_none_or(|folder| folder.visible)
     }
     pub fn layer_folder_locked(&self, layer_id: u64) -> bool {
-        self.layer_folders.iter().any(|folder| folder.locked && folder.layer_ids.contains(&layer_id))
+        self.layer_folders
+            .iter()
+            .any(|folder| folder.locked && folder.layer_ids.contains(&layer_id))
     }
     pub fn layer_is_editable(&self, layer_id: u64) -> bool {
-        self.layers.iter().any(|l| l.id == layer_id && l.visible && !l.locked)
-            && self.layer_folder_visible(layer_id) && !self.layer_folder_locked(layer_id)
+        self.layers
+            .iter()
+            .any(|l| l.id == layer_id && l.visible && !l.locked)
+            && self.layer_folder_visible(layer_id)
+            && !self.layer_folder_locked(layer_id)
     }
     pub fn layer_opacity(&self, layer_id: u64) -> f32 {
         self.layers
@@ -1548,11 +1571,19 @@ impl Document {
         (self.layers[index].clip_to_below && index > 0).then(|| self.layers[index - 1].id)
     }
     pub fn editable(&self, stroke: &Stroke) -> bool {
-        !self.animation.two_bone_rig.as_ref().is_some_and(|rig| rig.layer_id == stroke.layer_id)
+        !self
+            .animation
+            .two_bone_rig
+            .as_ref()
+            .is_some_and(|rig| rig.layer_id == stroke.layer_id)
             && self.layer_is_editable(stroke.layer_id)
     }
     pub fn active_editable(&self) -> bool {
-        !self.animation.two_bone_rig.as_ref().is_some_and(|rig| rig.layer_id == self.active_layer)
+        !self
+            .animation
+            .two_bone_rig
+            .as_ref()
+            .is_some_and(|rig| rig.layer_id == self.active_layer)
             && self.layer_is_editable(self.active_layer)
     }
     pub fn group_members(&self, id: u64) -> std::collections::HashSet<u64> {
@@ -1734,20 +1765,29 @@ impl Document {
                 return Err("Invalid or duplicate layer metadata".into());
             }
         }
-        if doc.layer_folders.len() > 128 { return Err("Too many layer folders".into()); }
+        if doc.layer_folders.len() > 128 {
+            return Err("Too many layer folders".into());
+        }
         let mut folder_ids = std::collections::HashSet::new();
         let mut folder_names = std::collections::HashSet::new();
         let mut folder_members = std::collections::HashSet::new();
         for folder in &doc.layer_folders {
-            if folder.id == 0 || folder.id == u64::MAX || !folder_ids.insert(folder.id)
-                || folder.name.trim() != folder.name || folder.name.is_empty()
-                || folder.name.chars().count() > 64 || folder.name.chars().any(char::is_control)
-                || !folder_names.insert(folder.name.to_lowercase()) {
+            if folder.id == 0
+                || folder.id == u64::MAX
+                || !folder_ids.insert(folder.id)
+                || folder.name.trim() != folder.name
+                || folder.name.is_empty()
+                || folder.name.chars().count() > 64
+                || folder.name.chars().any(char::is_control)
+                || !folder_names.insert(folder.name.to_lowercase())
+            {
                 return Err("Invalid or duplicate layer folder".into());
             }
             for layer_id in &folder.layer_ids {
                 if !layer_ids.contains(layer_id) || !folder_members.insert(*layer_id) {
-                    return Err("Layer folders must reference existing layers without duplicates".into());
+                    return Err(
+                        "Layer folders must reference existing layers without duplicates".into(),
+                    );
                 }
             }
         }
@@ -1995,6 +2035,8 @@ mod tests {
             s.points[0].tilt = Some(Vec3::X);
             let doc = Document {
                 linked_stroke_groups: Default::default(),
+                color_swatches: Default::default(),
+                layer_folders: Vec::new(),
                 layers: layers_default(),
                 active_layer: 1,
                 version: 8,
@@ -2019,6 +2061,8 @@ mod tests {
         let original = stroke();
         let mut old = serde_json::to_value(Document {
             linked_stroke_groups: Default::default(),
+            color_swatches: Default::default(),
+            layer_folders: Vec::new(),
             layers: layers_default(),
             active_layer: 1,
             version: 1,
@@ -2140,6 +2184,8 @@ mod tests {
             s.brush = brush;
             let doc = Document {
                 linked_stroke_groups: Default::default(),
+                color_swatches: Default::default(),
+                layer_folders: Vec::new(),
                 layers: layers_default(),
                 active_layer: 1,
                 version: 7,
@@ -2177,6 +2223,8 @@ mod tests {
         assert!(Document::from_json("{\"version\":99,\"strokes\":[]}").is_err());
         let mut doc = Document {
             linked_stroke_groups: Default::default(),
+            color_swatches: Default::default(),
+            layer_folders: Vec::new(),
             layers: layers_default(),
             active_layer: 1,
             version: 7,
@@ -2204,6 +2252,8 @@ mod tests {
         original.brush.angle_degrees = 43.0;
         let mut value = serde_json::to_value(Document {
             linked_stroke_groups: Default::default(),
+            color_swatches: Default::default(),
+            layer_folders: Vec::new(),
             layers: layers_default(),
             active_layer: 1,
             version: 2,
@@ -2229,6 +2279,8 @@ mod tests {
     fn rejects_invalid_dynamics_and_tilt_metadata() {
         let original = Document {
             linked_stroke_groups: Default::default(),
+            color_swatches: Default::default(),
+            layer_folders: Vec::new(),
             layers: layers_default(),
             active_layer: 1,
             version: 7,
@@ -2307,6 +2359,8 @@ mod tests {
         };
         let doc = Document {
             linked_stroke_groups: Default::default(),
+            color_swatches: Default::default(),
+            layer_folders: Vec::new(),
             layers: layers_default(),
             active_layer: 1,
             version: 7,
@@ -2341,6 +2395,8 @@ mod tests {
         ] {
             let mut doc = serde_json::to_value(Document {
                 linked_stroke_groups: Default::default(),
+                color_swatches: Default::default(),
+                layer_folders: Vec::new(),
                 layers: layers_default(),
                 active_layer: 1,
                 version: 7,

@@ -148,7 +148,7 @@ fn lyon_mesh(contours: &[Vec<DVec2>]) -> Result<(Vec<DVec2>, Vec<[usize; 3]>), S
         .map_err(|error| format!("Could not triangulate fill contours: {error:?}"))?;
     if buffers.vertices.len() > MAX_FILL_MESH_VERTICES
         || buffers.indices.len() > MAX_FILL_MESH_INDICES
-        || buffers.indices.len() % 3 != 0
+        || !buffers.indices.len().is_multiple_of(3)
     {
         return Err("Fill contour tessellation exceeds the mesh budget".into());
     }
@@ -159,7 +159,9 @@ fn lyon_mesh(contours: &[Vec<DVec2>]) -> Result<(Vec<DVec2>, Vec<[usize; 3]>), S
         .collect();
     let triangles = buffers
         .indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|triangle| {
             [
                 triangle[0] as usize,

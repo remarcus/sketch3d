@@ -110,11 +110,10 @@ impl SketchApp {
         }
         self.edit_document_swatches(
             move |state| {
-                state.swatches.swatches.push(crate::document::DocumentColorSwatch {
-                    id,
-                    name,
-                    color,
-                });
+                state
+                    .swatches
+                    .swatches
+                    .push(crate::document::DocumentColorSwatch { id, name, color });
                 Ok(())
             },
             "Added a document color swatch.",
@@ -132,8 +131,16 @@ impl SketchApp {
             .collect();
         let mut names = std::collections::BTreeSet::new();
         let mut visit = |strokes: &[Stroke]| {
-            for stroke in strokes.iter().filter(|stroke| bound_ids.contains(&stroke.id)) {
-                if let Some(layer) = self.doc.layers.iter().find(|layer| layer.id == stroke.layer_id) {
+            for stroke in strokes
+                .iter()
+                .filter(|stroke| bound_ids.contains(&stroke.id))
+            {
+                if let Some(layer) = self
+                    .doc
+                    .layers
+                    .iter()
+                    .find(|layer| layer.id == stroke.layer_id)
+                {
                     if !layer.visible || layer.locked {
                         names.insert(layer.name.clone());
                     }
@@ -171,7 +178,9 @@ impl SketchApp {
             .iter()
             .filter(|stroke| selected.contains(&stroke.id))
             .collect::<Vec<_>>();
-        if strokes.len() != selected.len() || strokes.iter().any(|stroke| !self.doc.editable(stroke)) {
+        if strokes.len() != selected.len()
+            || strokes.iter().any(|stroke| !self.doc.editable(stroke))
+        {
             self.status = "Hidden, locked, or missing artwork cannot be linked to a swatch.".into();
             return;
         }
@@ -179,16 +188,20 @@ impl SketchApp {
             self.doc.has_linked_source(stroke.id)
                 || self.doc.linked_instance_for_stroke(stroke.id).is_some()
                 || stroke.gradient.is_some()
-                || (stroke.fill.as_ref().is_some_and(|fill| {
-                    fill.gradient.is_some() || fill.texture.is_some()
-                }))
+                || (stroke
+                    .fill
+                    .as_ref()
+                    .is_some_and(|fill| fill.gradient.is_some() || fill.texture.is_some()))
         }) {
             self.status = "Swatches apply to solid stroke/fill colors. Make linked or gradient artwork unique first.".into();
             return;
         }
         let mut ids = selected;
         for id in ids.clone() {
-            ids.extend(self.doc.linked_affected_stroke_ids(&std::collections::HashSet::from([id])));
+            ids.extend(
+                self.doc
+                    .linked_affected_stroke_ids(&std::collections::HashSet::from([id])),
+            );
         }
         self.edit_document_swatches(
             move |state| {
@@ -210,15 +223,18 @@ impl SketchApp {
                             })
                         })
                         .is_some_and(|stroke| stroke.fill.is_some());
-                    state.swatches.bindings.push(crate::document::StrokeSwatchBinding {
-                        stroke_id: id,
-                        swatch_id,
-                        role: if is_fill {
-                            crate::document::SwatchRole::Fill
-                        } else {
-                            crate::document::SwatchRole::Stroke
-                        },
-                    });
+                    state
+                        .swatches
+                        .bindings
+                        .push(crate::document::StrokeSwatchBinding {
+                            stroke_id: id,
+                            swatch_id,
+                            role: if is_fill {
+                                crate::document::SwatchRole::Fill
+                            } else {
+                                crate::document::SwatchRole::Stroke
+                            },
+                        });
                 }
                 Ok(())
             },
@@ -232,13 +248,21 @@ impl SketchApp {
             self.status = "Select swatch-linked marks to detach.".into();
             return;
         }
-        if self.doc.strokes.iter().any(|stroke| ids.contains(&stroke.id) && !self.doc.editable(stroke)) {
+        if self
+            .doc
+            .strokes
+            .iter()
+            .any(|stroke| ids.contains(&stroke.id) && !self.doc.editable(stroke))
+        {
             self.status = "Hidden or locked artwork cannot be detached from a swatch.".into();
             return;
         }
         self.edit_document_swatches(
             move |state| {
-                state.swatches.bindings.retain(|binding| !ids.contains(&binding.stroke_id));
+                state
+                    .swatches
+                    .bindings
+                    .retain(|binding| !ids.contains(&binding.stroke_id));
                 Ok(())
             },
             "Detached selected marks from their swatches; their displayed colors are retained.",
@@ -256,8 +280,14 @@ impl SketchApp {
         }
         self.edit_document_swatches(
             move |state| {
-                state.swatches.swatches.retain(|swatch| swatch.id != swatch_id);
-                state.swatches.bindings.retain(|binding| binding.swatch_id != swatch_id);
+                state
+                    .swatches
+                    .swatches
+                    .retain(|swatch| swatch.id != swatch_id);
+                state
+                    .swatches
+                    .bindings
+                    .retain(|binding| binding.swatch_id != swatch_id);
                 Ok(())
             },
             "Deleted the swatch and detached its marks while retaining their literal colors.",
@@ -339,15 +369,26 @@ impl SketchApp {
             self.add_document_swatch(&name, color);
         }
         if let Some(draft) = edit {
-            if self.swatches_ui.draft.as_ref().is_some_and(|current| current.id == draft.id) {
+            if self
+                .swatches_ui
+                .draft
+                .as_ref()
+                .is_some_and(|current| current.id == draft.id)
+            {
                 self.update_document_swatch(draft);
             } else {
                 self.swatches_ui.draft = Some(draft);
             }
         }
-        if let Some(id) = bind { self.assign_selected_to_swatch(id); }
-        if detach { self.detach_selected_from_swatches(); }
-        if let Some(id) = delete { self.delete_document_swatch(id); }
+        if let Some(id) = bind {
+            self.assign_selected_to_swatch(id);
+        }
+        if detach {
+            self.detach_selected_from_swatches();
+        }
+        if let Some(id) = delete {
+            self.delete_document_swatch(id);
+        }
     }
 
     fn update_document_swatch(&mut self, draft: SwatchDraft) {
@@ -356,9 +397,13 @@ impl SketchApp {
             self.status = "Swatch names must contain 1–64 printable characters.".into();
             return;
         }
-        if self.doc.color_swatches.swatches.iter().any(|swatch| {
-            swatch.id != draft.id && swatch.name.eq_ignore_ascii_case(&name)
-        }) {
+        if self
+            .doc
+            .color_swatches
+            .swatches
+            .iter()
+            .any(|swatch| swatch.id != draft.id && swatch.name.eq_ignore_ascii_case(&name))
+        {
             self.status = "A swatch already uses that name.".into();
             return;
         }
@@ -373,7 +418,12 @@ impl SketchApp {
         let id = draft.id;
         self.edit_document_swatches(
             move |state| {
-                let swatch = state.swatches.swatches.iter_mut().find(|swatch| swatch.id == id).ok_or("The swatch was removed")?;
+                let swatch = state
+                    .swatches
+                    .swatches
+                    .iter_mut()
+                    .find(|swatch| swatch.id == id)
+                    .ok_or("The swatch was removed")?;
                 swatch.name = name;
                 swatch.color = draft.color;
                 Ok(())

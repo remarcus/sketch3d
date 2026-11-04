@@ -327,8 +327,6 @@ mod brushes;
 mod camera_ui;
 #[path = "color_editor.rs"]
 mod color_editor;
-#[path = "swatches_ui.rs"]
-mod swatches_ui;
 #[path = "curve_tool.rs"]
 mod curve_tool;
 #[path = "cylinders.rs"]
@@ -359,12 +357,12 @@ mod lighting_ui;
 mod line_checks;
 #[path = "line_tool.rs"]
 mod line_tool;
-#[path = "measure_tool.rs"]
-mod measure_tool;
 #[path = "liquify_ui.rs"]
 mod liquify_ui;
 #[path = "local_color_ui.rs"]
 mod local_color_ui;
+#[path = "measure_tool.rs"]
+mod measure_tool;
 #[path = "mirror_checks.rs"]
 mod mirror_checks;
 #[path = "mirror_ui.rs"]
@@ -384,6 +382,8 @@ mod obj_reference_checks;
 #[path = "obj_reference_ui.rs"]
 mod obj_reference_ui;
 mod share_ui;
+#[path = "swatches_ui.rs"]
+mod swatches_ui;
 #[derive(Clone, Copy)]
 enum LineArtCommand {
     Create,
@@ -5901,11 +5901,11 @@ impl SketchApp {
                                 true,
                                 None,
                             );
-                            if response.clicked() {
-                                if self.presentation.preferences.layout.inspector_tab != tab {
-                                    self.presentation.preferences.layout.inspector_tab = tab;
-                                    self.presentation.schedule_layout_save();
-                                }
+                            if response.clicked()
+                                && self.presentation.preferences.layout.inspector_tab != tab
+                            {
+                                self.presentation.preferences.layout.inspector_tab = tab;
+                                self.presentation.schedule_layout_save();
                             }
                         }
                         ui.separator();
@@ -6296,7 +6296,6 @@ impl SketchApp {
                 tilt,
             );
         }
-
     }
     fn canvas_input(&mut self, ctx: &egui::Context, rect: Rect, mut pen: Vec<PenSample>) {
         self.sync_canvas_point_edit();
@@ -6365,11 +6364,16 @@ impl SketchApp {
             || (self.liquify_active() && !self.liquify_brush_active());
         let inside_canvas = |p| canvas_pointer_allowed(ctx, rect, p);
         self.update_plane_picker_hover(
-            pointer.hover_pos().filter(|position| inside_canvas(*position)),
+            pointer
+                .hover_pos()
+                .filter(|position| inside_canvas(*position)),
             rect,
         );
         if self.measure.enabled {
-            if let Some(position) = pointer.hover_pos().filter(|position| inside_canvas(*position)) {
+            if let Some(position) = pointer
+                .hover_pos()
+                .filter(|position| inside_canvas(*position))
+            {
                 self.measure_input(position, rect, false);
             }
             if ctx.input(|input| input.key_pressed(Key::Escape)) {

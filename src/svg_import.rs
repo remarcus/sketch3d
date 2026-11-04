@@ -312,11 +312,9 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
             }
             Event::End(ref e) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).to_ascii_lowercase();
-                if name == "svg" || name == "g" {
-                    if transforms.len() > 1 {
-                        transforms.pop();
-                        styles.pop();
-                    }
+                if (name == "svg" || name == "g") && transforms.len() > 1 {
+                    transforms.pop();
+                    styles.pop();
                 }
             }
             Event::Eof => break,
@@ -1270,11 +1268,13 @@ fn ellipse_arc_piece(cx: f32, cy: f32, rx: f32, ry: f32, start: f32, end: f32) -
 
 fn parse_poly(s: &str, closed: bool) -> Result<(Vec<CubicBezier>, bool), String> {
     let n = numbers(s).ok_or("Invalid SVG points")?;
-    if n.len() < 4 || n.len() % 2 != 0 || n.len() / 2 > MAX_SVG_SEGMENTS {
+    if n.len() < 4 || !n.len().is_multiple_of(2) || n.len() / 2 > MAX_SVG_SEGMENTS {
         return Err("SVG polygon has invalid or excessive points".into());
     }
     let pts = n
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|p| Vec2::new(p[0], p[1]))
         .collect::<Vec<_>>();
     Ok((segments_for_points(&pts, closed), closed))

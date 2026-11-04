@@ -172,20 +172,38 @@ pub fn prepare_insert(
         })
         .collect::<Result<_, String>>()?;
     let mut folder_ids = Ids::new(
-        destination.layer_folders.iter().map(|folder| folder.id).max().unwrap_or(0).saturating_add(1),
+        destination
+            .layer_folders
+            .iter()
+            .map(|folder| folder.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1),
         destination_assets.to_path_buf(),
     );
-    let mut used_folder_names: Vec<String> = destination.layer_folders.iter().map(|folder| folder.name.clone()).collect();
-    let inserted_folders: Vec<crate::document::LayerFolder> = source.layer_folders.iter().map(|folder| {
-        Ok(crate::document::LayerFolder {
-            id: folder_ids.take()?,
-            name: unique_name(&folder.name, &mut used_folder_names, 64),
-            layer_ids: folder.layer_ids.iter().filter_map(|id| layer_map.get(id).copied()).collect(),
-            collapsed: folder.collapsed,
-            visible: folder.visible,
-            locked: folder.locked,
+    let mut used_folder_names: Vec<String> = destination
+        .layer_folders
+        .iter()
+        .map(|folder| folder.name.clone())
+        .collect();
+    let inserted_folders: Vec<crate::document::LayerFolder> = source
+        .layer_folders
+        .iter()
+        .map(|folder| {
+            Ok(crate::document::LayerFolder {
+                id: folder_ids.take()?,
+                name: unique_name(&folder.name, &mut used_folder_names, 64),
+                layer_ids: folder
+                    .layer_ids
+                    .iter()
+                    .filter_map(|id| layer_map.get(id).copied())
+                    .collect(),
+                collapsed: folder.collapsed,
+                visible: folder.visible,
+                locked: folder.locked,
+            })
         })
-    }).collect::<Result<_, String>>()?;
+        .collect::<Result<_, String>>()?;
 
     let mut group_map = HashMap::new();
     for group in source.strokes.iter().filter_map(|stroke| stroke.group_id) {

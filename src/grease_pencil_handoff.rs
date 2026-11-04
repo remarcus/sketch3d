@@ -57,7 +57,8 @@ pub fn build_script(document: &Document, name: &str) -> Result<(String, Vec<Stri
     let source_strokes = if document.animation.two_bone_rig.is_some() {
         let mut source_animation = document.animation.clone();
         source_animation.two_bone_rig = None;
-        source_animation.resolve(document.animation.current_frame)
+        source_animation
+            .resolve(document.animation.current_frame)
             .unwrap_or_else(|| document.strokes.clone())
     } else {
         document.strokes.clone()
@@ -151,22 +152,37 @@ pub fn build_script(document: &Document, name: &str) -> Result<(String, Vec<Stri
                 }
             })
             .collect();
-        layers[layer_index].strokes.push(StrokePayload { id: stroke.id, points });
+        layers[layer_index].strokes.push(StrokePayload {
+            id: stroke.id,
+            points,
+        });
     }
-    let two_bone_rig = document.animation.two_bone_rig.as_ref().map(|rig| TwoBoneRigPayload {
-        layer_id: rig.layer_id,
-        root: rig.root.to_array(),
-        joint: rig.joint.to_array(),
-        bindings: rig.point_weights.iter().map(|binding| BoneBindingPayload {
-            stroke_id: binding.stroke_id,
-            child_weights: binding.child_weights.clone(),
-        }).collect(),
-        poses: rig.poses.iter().map(|pose| BonePosePayload {
-            frame: pose.frame,
-            root_angle: pose.root_angle,
-            child_angle: pose.child_angle,
-        }).collect(),
-    });
+    let two_bone_rig = document
+        .animation
+        .two_bone_rig
+        .as_ref()
+        .map(|rig| TwoBoneRigPayload {
+            layer_id: rig.layer_id,
+            root: rig.root.to_array(),
+            joint: rig.joint.to_array(),
+            bindings: rig
+                .point_weights
+                .iter()
+                .map(|binding| BoneBindingPayload {
+                    stroke_id: binding.stroke_id,
+                    child_weights: binding.child_weights.clone(),
+                })
+                .collect(),
+            poses: rig
+                .poses
+                .iter()
+                .map(|pose| BonePosePayload {
+                    frame: pose.frame,
+                    root_angle: pose.root_angle,
+                    child_angle: pose.child_angle,
+                })
+                .collect(),
+        });
     let payload = Payload {
         name: name.chars().take(80).collect(),
         layers,

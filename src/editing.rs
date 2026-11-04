@@ -428,8 +428,10 @@ impl Edit {
                 } else {
                     let stroke_ids: HashSet<_> = merge.strokes.iter().map(|s| s.id).collect();
                     let layer_ids: HashSet<_> = merge.layers.iter().map(|l| l.id).collect();
-                    let folder_ids: HashSet<_> = merge.folders.iter().map(|folder| folder.id).collect();
-                    doc.layer_folders.retain(|folder| !folder_ids.contains(&folder.id));
+                    let folder_ids: HashSet<_> =
+                        merge.folders.iter().map(|folder| folder.id).collect();
+                    doc.layer_folders
+                        .retain(|folder| !folder_ids.contains(&folder.id));
                     let plane_ids: HashSet<_> = merge.image_planes.iter().map(|p| p.id).collect();
                     let guide_ids: HashSet<_> = merge.guides.iter().map(|g| g.id).collect();
                     let model_ids: HashSet<_> =
@@ -1147,7 +1149,7 @@ mod tests {
         assert!(after[0].1.brush.normal.dot(after[0].1.brush.tangent).abs() < 1e-5);
 
         let normal_factor = (linear.inverse().transpose() * Vec3::Z).length();
-        assert!((after[0].1.fill.unwrap().offset - 0.2 / normal_factor).abs() < 1e-6);
+        assert!((after[0].1.fill.as_ref().unwrap().offset - 0.2 / normal_factor).abs() < 1e-6);
         let expected_first = pivot + linear * (Vec3::ZERO - pivot) + translation;
         assert!(after[0].1.points[0].position.distance(expected_first) < 1e-6);
 
@@ -1157,7 +1159,7 @@ mod tests {
         };
         edit.apply(&mut doc, true);
         let bounds = bounds(&doc, &ids).unwrap();
-        let fill_offset = after[0].1.fill.unwrap().offset;
+        let fill_offset = after[0].1.fill.as_ref().unwrap().offset;
         let filled_positions = after[0]
             .1
             .points
@@ -1457,7 +1459,11 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 .iter()
                 .find(|l| l.id == target)
                 .ok_or("Target layer not found")?;
-            if !layer.visible || layer.locked || !doc.layer_folder_visible(target) || doc.layer_folder_locked(target) {
+            if !layer.visible
+                || layer.locked
+                || !doc.layer_folder_visible(target)
+                || doc.layer_folder_locked(target)
+            {
                 return Err("Target layer must be visible and unlocked".into());
             }
             if ids.is_empty() {
@@ -1543,7 +1549,9 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 return Err("Move or delete this layer's static animation artwork before deleting the layer".into());
             }
             after.layers.retain(|l| l.id != id);
-            for folder in &mut after.folders { folder.layer_ids.retain(|layer_id| *layer_id != id); }
+            for folder in &mut after.folders {
+                folder.layer_ids.retain(|layer_id| *layer_id != id);
+            }
             after.folders.retain(|folder| !folder.layer_ids.is_empty());
             if after.active_layer == id {
                 after.active_layer = after.layers[0].id;
@@ -1554,42 +1562,140 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
             if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
                 return Err("Folder name must contain 1–64 characters".into());
             }
-            if after.folders.len() >= 128 { return Err("Folder limit reached".into()); }
-            let id = after.folders.iter().map(|folder| folder.id).max().unwrap_or(0)
-                .checked_add(1).filter(|id| *id != u64::MAX).ok_or("No folder IDs available")?;
-            if after.folders.iter().any(|folder| folder.name.eq_ignore_ascii_case(name)) { return Err("Folder names must be unique".into()); }
-            for folder in &mut after.folders { folder.layer_ids.retain(|layer_id| *layer_id != after.active_layer); }
+            if after.folders.len() >= 128 {
+                return Err("Folder limit reached".into());
+            }
+            let id = after
+                .folders
+                .iter()
+                .map(|folder| folder.id)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .filter(|id| *id != u64::MAX)
+                .ok_or("No folder IDs available")?;
+            if after
+                .folders
+                .iter()
+                .any(|folder| folder.name.eq_ignore_ascii_case(name))
+            {
+                return Err("Folder names must be unique".into());
+            }
+            for folder in &mut after.folders {
+                folder
+                    .layer_ids
+                    .retain(|layer_id| *layer_id != after.active_layer);
+            }
             after.folders.retain(|folder| !folder.layer_ids.is_empty());
-            after.folders.push(crate::document::LayerFolder { id, name: name.into(), layer_ids: vec![after.active_layer], collapsed: false, visible: true, locked: false });
+            after.folders.push(crate::document::LayerFolder {
+                id,
+                name: name.into(),
+                layer_ids: vec![after.active_layer],
+                collapsed: false,
+                visible: true,
+                locked: false,
+            });
         }
         LayerAction::RenameFolder(id, name) => {
             let name = name.trim();
-            if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) { return Err("Folder name must contain 1–64 characters".into()); }
-            if after.folders.iter().any(|folder| folder.id != id && folder.name.eq_ignore_ascii_case(name)) { return Err("Folder names must be unique".into()); }
-            after.folders.iter_mut().find(|folder| folder.id == id).ok_or("Folder not found")?.name = name.into();
+            if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
+                return Err("Folder name must contain 1–64 characters".into());
+            }
+            if after
+                .folders
+                .iter()
+                .any(|folder| folder.id != id && folder.name.eq_ignore_ascii_case(name))
+            {
+                return Err("Folder names must be unique".into());
+            }
+            after
+                .folders
+                .iter_mut()
+                .find(|folder| folder.id == id)
+                .ok_or("Folder not found")?
+                .name = name.into();
         }
-        LayerAction::FolderCollapsed(id, value) => after.folders.iter_mut().find(|folder| folder.id == id).ok_or("Folder not found")?.collapsed = value,
-        LayerAction::FolderVisible(id, value) => after.folders.iter_mut().find(|folder| folder.id == id).ok_or("Folder not found")?.visible = value,
-        LayerAction::FolderLock(id, value) => after.folders.iter_mut().find(|folder| folder.id == id).ok_or("Folder not found")?.locked = value,
+        LayerAction::FolderCollapsed(id, value) => {
+            after
+                .folders
+                .iter_mut()
+                .find(|folder| folder.id == id)
+                .ok_or("Folder not found")?
+                .collapsed = value
+        }
+        LayerAction::FolderVisible(id, value) => {
+            after
+                .folders
+                .iter_mut()
+                .find(|folder| folder.id == id)
+                .ok_or("Folder not found")?
+                .visible = value
+        }
+        LayerAction::FolderLock(id, value) => {
+            after
+                .folders
+                .iter_mut()
+                .find(|folder| folder.id == id)
+                .ok_or("Folder not found")?
+                .locked = value
+        }
         LayerAction::MoveLayerToFolder(layer_id, folder_id) => {
-            if !after.layers.iter().any(|layer| layer.id == layer_id) { return Err("Layer not found".into()); }
-            if let Some(id) = folder_id { if !after.folders.iter().any(|folder| folder.id == id) { return Err("Folder not found".into()); } }
-            for folder in &mut after.folders { folder.layer_ids.retain(|id| *id != layer_id); }
-            if let Some(id) = folder_id { after.folders.iter_mut().find(|folder| folder.id == id).unwrap().layer_ids.push(layer_id); }
+            if !after.layers.iter().any(|layer| layer.id == layer_id) {
+                return Err("Layer not found".into());
+            }
+            if let Some(id) = folder_id {
+                if !after.folders.iter().any(|folder| folder.id == id) {
+                    return Err("Folder not found".into());
+                }
+            }
+            for folder in &mut after.folders {
+                folder.layer_ids.retain(|id| *id != layer_id);
+            }
+            if let Some(id) = folder_id {
+                after
+                    .folders
+                    .iter_mut()
+                    .find(|folder| folder.id == id)
+                    .unwrap()
+                    .layer_ids
+                    .push(layer_id);
+            }
         }
         LayerAction::MoveFolder(id, delta) => {
-            let index = after.folders.iter().position(|folder| folder.id == id).ok_or("Folder not found")?;
-            let target = (index as isize + delta).clamp(0, after.folders.len().saturating_sub(1) as isize) as usize;
+            let index = after
+                .folders
+                .iter()
+                .position(|folder| folder.id == id)
+                .ok_or("Folder not found")?;
+            let target = (index as isize + delta)
+                .clamp(0, after.folders.len().saturating_sub(1) as isize)
+                as usize;
             if target != index {
                 let folder = after.folders.remove(index);
                 after.folders.insert(target, folder);
                 // Folder moves carry their member layers as a stable-order block.
-                let member_ids: HashSet<_> = after.folders[target].layer_ids.iter().copied().collect();
-                let members: Vec<_> = after.layers.iter().filter(|layer| member_ids.contains(&layer.id)).cloned().collect();
+                let member_ids: HashSet<_> =
+                    after.folders[target].layer_ids.iter().copied().collect();
+                let members: Vec<_> = after
+                    .layers
+                    .iter()
+                    .filter(|layer| member_ids.contains(&layer.id))
+                    .cloned()
+                    .collect();
                 after.layers.retain(|layer| !member_ids.contains(&layer.id));
-                let insertion = if target == 0 { 0 } else {
-                    let previous_ids: HashSet<_> = after.folders[target - 1].layer_ids.iter().copied().collect();
-                    after.layers.iter().rposition(|layer| previous_ids.contains(&layer.id)).map_or(after.layers.len(), |i| i + 1)
+                let insertion = if target == 0 {
+                    0
+                } else {
+                    let previous_ids: HashSet<_> = after.folders[target - 1]
+                        .layer_ids
+                        .iter()
+                        .copied()
+                        .collect();
+                    after
+                        .layers
+                        .iter()
+                        .rposition(|layer| previous_ids.contains(&layer.id))
+                        .map_or(after.layers.len(), |i| i + 1)
                 };
                 after.layers.splice(insertion..insertion, members);
             }
@@ -1610,11 +1716,21 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
     let mut folder_ids = HashSet::new();
     let mut member_ids = HashSet::new();
     for folder in &after.folders {
-        if folder.id == 0 || !folder_ids.insert(folder.id) || folder.name.trim().is_empty() || folder.name.chars().count() > 64 || folder.name.chars().any(char::is_control) || !names.insert(format!("folder:{}", folder.name.to_lowercase())) {
+        if folder.id == 0
+            || !folder_ids.insert(folder.id)
+            || folder.name.trim().is_empty()
+            || folder.name.chars().count() > 64
+            || folder.name.chars().any(char::is_control)
+            || !names.insert(format!("folder:{}", folder.name.to_lowercase()))
+        {
             return Err("Folder IDs and names must be valid and unique".into());
         }
         for layer_id in &folder.layer_ids {
-            if !after.layers.iter().any(|layer| layer.id == *layer_id) || !member_ids.insert(*layer_id) { return Err("Each layer can belong to only one folder".into()); }
+            if !after.layers.iter().any(|layer| layer.id == *layer_id)
+                || !member_ids.insert(*layer_id)
+            {
+                return Err("Each layer can belong to only one folder".into());
+            }
         }
     }
     Ok(Edit::Layers { before, after })
@@ -1854,7 +1970,11 @@ fn validate_instance_layer(doc: &Document, layer_id: u64) -> Result<(), String> 
         .iter()
         .find(|layer| layer.id == layer_id)
         .ok_or("Linked instance target layer does not exist")?;
-    if !layer.visible || layer.locked || !doc.layer_folder_visible(layer_id) || doc.layer_folder_locked(layer_id) {
+    if !layer.visible
+        || layer.locked
+        || !doc.layer_folder_visible(layer_id)
+        || doc.layer_folder_locked(layer_id)
+    {
         return Err("Linked instance target layer must be visible and unlocked".into());
     }
     Ok(())

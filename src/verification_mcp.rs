@@ -71,11 +71,13 @@ enum ServerConfig {
         root: PathBuf,
         execution_enabled: bool,
     },
-    Drawings { input: PathBuf, output: PathBuf },
+    Drawings {
+        input: PathBuf,
+        output: PathBuf,
+    },
 }
 
 fn serve_config(config: ServerConfig) -> Result<(), String> {
-
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut input = stdin.lock();
@@ -196,7 +198,7 @@ fn handle_message(config: &ServerConfig, message: Value) -> Option<Value> {
 
     match method {
         "initialize" => {
-            let Some(id) = id else { return None };
+            let id = id?;
             let requested = message
                 .pointer("/params/protocolVersion")
                 .and_then(Value::as_str)
@@ -224,10 +226,13 @@ fn handle_message(config: &ServerConfig, message: Value) -> Option<Value> {
         "ping" => id.map(|id| rpc_result(id, json!({}))),
         "tools/list" => id.map(|id| rpc_result(id, json!({ "tools": tool_definitions(config) }))),
         "tools/call" => {
-            let Some(id) = id else { return None };
+            let id = id?;
             let params = message.get("params").cloned().unwrap_or(Value::Null);
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-            let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let arguments = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             let result = call_configured_tool(config, name, &arguments);
             Some(rpc_result(id, result))
         }
@@ -237,10 +242,7 @@ fn handle_message(config: &ServerConfig, message: Value) -> Option<Value> {
 }
 
 fn supported_protocol(version: &str) -> bool {
-    matches!(
-        version,
-        "2025-06-18" | "2025-11-25"
-    )
+    matches!(version, "2025-06-18" | "2025-11-25")
 }
 
 fn rpc_result(id: Value, result: Value) -> Value {
@@ -311,10 +313,14 @@ fn tool_definitions(config: &ServerConfig) -> Value {
         }
     ]);
     match config {
-        ServerConfig::Reports { execution_enabled, .. } => {
+        ServerConfig::Reports {
+            execution_enabled, ..
+        } => {
             if !execution_enabled {
                 if let Some(tools) = reports.as_array_mut() {
-                    tools.retain(|tool| tool.get("name").and_then(Value::as_str) != Some("verification_run_check"));
+                    tools.retain(|tool| {
+                        tool.get("name").and_then(Value::as_str) != Some("verification_run_check")
+                    });
                 }
             }
             reports
@@ -325,8 +331,13 @@ fn tool_definitions(config: &ServerConfig) -> Value {
 
 fn call_configured_tool(config: &ServerConfig, name: &str, arguments: &Value) -> Value {
     match config {
-        ServerConfig::Reports { root, execution_enabled } => call_tool(root, name, arguments, *execution_enabled),
-        ServerConfig::Drawings { input, output } => call_drawing_tool(input, output, name, arguments),
+        ServerConfig::Reports {
+            root,
+            execution_enabled,
+        } => call_tool(root, name, arguments, *execution_enabled),
+        ServerConfig::Drawings { input, output } => {
+            call_drawing_tool(input, output, name, arguments)
+        }
     }
 }
 
@@ -345,12 +356,20 @@ fn call_tool(root: &Path, name: &str, arguments: &Value, execution_enabled: bool
             })
         });
         return match result {
-            Ok(ReadArtifact::Text { path, text, size_bytes }) => json!({
+            Ok(ReadArtifact::Text {
+                path,
+                text,
+                size_bytes,
+            }) => json!({
                 "content": [{"type": "text", "text": text}],
                 "structuredContent": {"path": path, "artifact_type": "text/plain", "size_bytes": size_bytes},
                 "isError": false
             }),
-            Ok(ReadArtifact::Png { path, data, size_bytes }) => json!({
+            Ok(ReadArtifact::Png {
+                path,
+                data,
+                size_bytes,
+            }) => json!({
                 "content": [{"type": "image", "data": data, "mimeType": "image/png"}],
                 "structuredContent": {"path": path, "artifact_type": "image/png", "size_bytes": size_bytes},
                 "isError": false
@@ -363,8 +382,9 @@ fn call_tool(root: &Path, name: &str, arguments: &Value, execution_enabled: bool
     }
     let result = match name {
         "verification_list_checks" => list_checks(root),
-        "verification_read_result" => required_string(arguments, "run_id")
-            .and_then(|run_id| read_result(root, run_id)),
+        "verification_read_result" => {
+            required_string(arguments, "run_id").and_then(|run_id| read_result(root, run_id))
+        }
         "verification_list_artifacts" => required_string(arguments, "run_id").and_then(|run_id| {
             required_string(arguments, "check_id")
                 .and_then(|check_id| list_artifacts(root, run_id, check_id))
@@ -392,12 +412,11 @@ fn call_tool(root: &Path, name: &str, arguments: &Value, execution_enabled: bool
 fn call_drawing_tool(input: &Path, output: &Path, name: &str, arguments: &Value) -> Value {
     let result = match name {
         "drawing_create_native_copy" => create_native_drawing(output, arguments),
-        "drawing_inspect_native" | "drawing_export_glb" => {
-            required_string(arguments, "path").and_then(|relative| match name {
+        "drawing_inspect_native" | "drawing_export_glb" => required_string(arguments, "path")
+            .and_then(|relative| match name {
                 "drawing_inspect_native" => inspect_native_drawing(input, relative),
                 _ => export_native_drawing(input, output, relative),
-            })
-        }
+            }),
         _ => Err("Unknown drawing tool".into()),
     };
     match result {
@@ -421,24 +440,34 @@ fn native_file(input: &Path, relative: &str) -> Result<PathBuf, String> {
     if relative.len() > 512
         || relative_path.is_absolute()
         || relative_path.as_os_str().is_empty()
-        || relative_path.components().any(|component| !matches!(component, Component::Normal(_)))
-        || relative_path.extension().and_then(|extension| extension.to_str()).is_none_or(|extension| !extension.eq_ignore_ascii_case("json"))
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        || relative_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_none_or(|extension| !extension.eq_ignore_ascii_case("json"))
     {
         return Err("Native drawing path must be a safe relative .json path".into());
     }
     let mut candidate = input.to_path_buf();
     for component in relative_path.components() {
         candidate.push(component.as_os_str());
-        let metadata = fs::symlink_metadata(&candidate)
-            .map_err(|_| "Native drawing was not found beneath the configured input directory".to_owned())?;
+        let metadata = fs::symlink_metadata(&candidate).map_err(|_| {
+            "Native drawing was not found beneath the configured input directory".to_owned()
+        })?;
         if metadata.file_type().is_symlink() {
             return Err("Native drawing path cannot contain symlinks".into());
         }
     }
-    let canonical = candidate.canonicalize().map_err(|error| error.to_string())?;
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
     let metadata = fs::metadata(&canonical).map_err(|error| error.to_string())?;
     if !canonical.starts_with(input) || !metadata.is_file() {
-        return Err("Native drawing is outside the configured input directory or is not a file".into());
+        return Err(
+            "Native drawing is outside the configured input directory or is not a file".into(),
+        );
     }
     if metadata.len() > MAX_NATIVE_BYTES {
         return Err("Native drawing exceeds the 64 MiB read limit".into());
@@ -446,7 +475,10 @@ fn native_file(input: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-fn load_native_document(input: &Path, relative: &str) -> Result<(PathBuf, crate::document::Document), String> {
+fn load_native_document(
+    input: &Path,
+    relative: &str,
+) -> Result<(PathBuf, crate::document::Document), String> {
     let path = native_file(input, relative)?;
     let file = fs::File::open(&path).map_err(|error| error.to_string())?;
     let mut text = String::new();
@@ -465,20 +497,26 @@ fn inspect_native_drawing(input: &Path, relative: &str) -> Result<Value, String>
     let (path, document) = load_native_document(input, relative)?;
     let asset_root = crate::image_plane_storage::asset_root(&path)?;
     let asset_root_metadata = fs::symlink_metadata(&asset_root).ok();
-    let asset_root_safe = asset_root_metadata.as_ref().is_some_and(|metadata| {
-        metadata.is_dir() && !metadata.file_type().is_symlink()
-    });
+    let asset_root_safe = asset_root_metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
     let mut min = glam::Vec3::splat(f32::INFINITY);
     let mut max = glam::Vec3::splat(f32::NEG_INFINITY);
     let mut samples = 0usize;
-    for point in document.strokes.iter().flat_map(|stroke| stroke.points.iter()) {
+    for point in document
+        .strokes
+        .iter()
+        .flat_map(|stroke| stroke.points.iter())
+    {
         if point.position.is_finite() {
             min = min.min(point.position);
             max = max.max(point.position);
             samples += 1;
         }
     }
-    let bounds = if samples == 0 { Value::Null } else {
+    let bounds = if samples == 0 {
+        Value::Null
+    } else {
         json!({"min":[min.x,min.y,min.z],"max":[max.x,max.y,max.z],"sample_count":samples})
     };
     let image_assets: Vec<_> = document.image_planes.iter().map(|plane| {
@@ -502,9 +540,10 @@ fn inspect_native_drawing(input: &Path, relative: &str) -> Result<Value, String>
     }).collect();
     let models_root = asset_root.join("models");
     let models_metadata = fs::symlink_metadata(&models_root).ok();
-    let models_root_safe = asset_root_safe && models_metadata.as_ref().is_some_and(|metadata| {
-        metadata.is_dir() && !metadata.file_type().is_symlink()
-    });
+    let models_root_safe = asset_root_safe
+        && models_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
     let model_assets: Vec<_> = document.model_references.iter().map(|resource| {
         let bundle = models_root.join(resource.asset.id.to_string());
         let metadata = models_root_safe.then(|| fs::symlink_metadata(&bundle).ok()).flatten();
@@ -535,14 +574,21 @@ fn directory_size_bounded(path: &Path, limit: u64) -> Result<u64, String> {
     while let Some(directory) = pending.pop() {
         for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
             seen += 1;
-            if seen > 4096 { return Err("Model bundle has too many entries".into()); }
+            if seen > 4096 {
+                return Err("Model bundle has too many entries".into());
+            }
             let entry = entry.map_err(|error| error.to_string())?;
             let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
-            if metadata.file_type().is_symlink() { return Err("Model bundle contains a symlink".into()); }
-            if metadata.is_dir() { pending.push(entry.path()); }
-            else if metadata.is_file() {
+            if metadata.file_type().is_symlink() {
+                return Err("Model bundle contains a symlink".into());
+            }
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if metadata.is_file() {
                 total = total.saturating_add(metadata.len());
-                if total > limit { return Err("Model bundle exceeds its size limit".into()); }
+                if total > limit {
+                    return Err("Model bundle exceeds its size limit".into());
+                }
             }
         }
     }
@@ -554,7 +600,9 @@ fn export_native_drawing(input: &Path, output: &Path, relative: &str) -> Result<
     let filename = path.file_stem().ok_or("Native drawing has no filename")?;
     let destination = output.join(filename).with_extension("glb");
     if fs::symlink_metadata(&destination).is_ok() {
-        return Err("A GLB export with that name already exists in the configured output directory".into());
+        return Err(
+            "A GLB export with that name already exists in the configured output directory".into(),
+        );
     }
     let asset_root = crate::image_plane_storage::asset_root(&path)?;
     let summary = crate::export::write_glb_with_images(&document, None, &asset_root, &destination)?;
@@ -563,7 +611,9 @@ fn export_native_drawing(input: &Path, output: &Path, relative: &str) -> Result<
         let _ = fs::remove_file(&destination);
         return Err("Export exceeded the 128 MiB output limit and was removed".into());
     }
-    Ok(json!({"source":relative,"output":destination.file_name().unwrap_or_default().to_string_lossy(),"size_bytes":metadata.len(),"strokes":summary.strokes,"vertices":summary.vertices,"triangles":summary.triangles,"image_planes":summary.image_planes,"model_references":summary.model_references}))
+    Ok(
+        json!({"source":relative,"output":destination.file_name().unwrap_or_default().to_string_lossy(),"size_bytes":metadata.len(),"strokes":summary.strokes,"vertices":summary.vertices,"triangles":summary.triangles,"image_planes":summary.image_planes,"model_references":summary.model_references}),
+    )
 }
 
 const MAX_CREATE_COMMANDS: usize = 64;
@@ -615,28 +665,46 @@ enum CreateDrawingCommand {
     },
 }
 
-fn default_stroke_color() -> [f32; 3] { [0.08, 0.08, 0.08] }
-fn default_stroke_radius() -> f32 { 0.025 }
+fn default_stroke_color() -> [f32; 3] {
+    [0.08, 0.08, 0.08]
+}
+fn default_stroke_radius() -> f32 {
+    0.025
+}
 
 fn create_native_drawing(output: &Path, arguments: &Value) -> Result<Value, String> {
     let request: CreateNativeRequest = serde_json::from_value(arguments.clone())
         .map_err(|error| format!("Invalid typed drawing command batch: {error}"))?;
     if request.commands.len() < 3 || request.commands.len() > MAX_CREATE_COMMANDS {
-        return Err(format!("Command batch must contain 3–{MAX_CREATE_COMMANDS} commands"));
+        return Err(format!(
+            "Command batch must contain 3–{MAX_CREATE_COMMANDS} commands"
+        ));
     }
     if request.output_name.len() > 96
         || request.output_name.trim() != request.output_name
         || request.output_name.chars().any(char::is_control)
-        || request.output_name.chars().any(|character| matches!(character, '/' | '\\' | ':'))
+        || request
+            .output_name
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | ':'))
         || Path::new(&request.output_name).components().count() != 1
-        || !matches!(Path::new(&request.output_name).components().next(), Some(Component::Normal(_)))
-        || Path::new(&request.output_name).extension().and_then(|ext| ext.to_str()).is_none_or(|ext| !ext.eq_ignore_ascii_case("json"))
+        || !matches!(
+            Path::new(&request.output_name).components().next(),
+            Some(Component::Normal(_))
+        )
+        || Path::new(&request.output_name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_none_or(|ext| !ext.eq_ignore_ascii_case("json"))
     {
         return Err("output_name must be a simple .json filename of at most 96 characters".into());
     }
     let destination = output.join(&request.output_name);
     if fs::symlink_metadata(&destination).is_ok() {
-        return Err("A native drawing with that name already exists in the configured output directory".into());
+        return Err(
+            "A native drawing with that name already exists in the configured output directory"
+                .into(),
+        );
     }
 
     let mut plane: Option<crate::document::guide_resources::GuideResource> = None;
@@ -645,7 +713,11 @@ fn create_native_drawing(output: &Path, arguments: &Value) -> Result<Value, Stri
     let mut total_points = 0usize;
     for command in request.commands {
         match command {
-            CreateDrawingCommand::CreatePlane { name, origin, rotation } => {
+            CreateDrawingCommand::CreatePlane {
+                name,
+                origin,
+                rotation,
+            } => {
                 if plane.is_some() || !marks.is_empty() {
                     return Err("Create exactly one plane before any drawing commands".into());
                 }
@@ -656,7 +728,12 @@ fn create_native_drawing(output: &Path, arguments: &Value) -> Result<Value, Stri
                     locked: false,
                     geometry: crate::document::guide_resources::GuideGeometry::Plane {
                         origin: glam::Vec3::from_array(origin),
-                        rotation: glam::Quat::from_xyzw(rotation[0], rotation[1], rotation[2], rotation[3]),
+                        rotation: glam::Quat::from_xyzw(
+                            rotation[0],
+                            rotation[1],
+                            rotation[2],
+                            rotation[3],
+                        ),
                     },
                 };
                 guide.validate()?;
@@ -675,36 +752,70 @@ fn create_native_drawing(output: &Path, arguments: &Value) -> Result<Value, Stri
                     blend_mode: crate::document::LayerBlendMode::Normal,
                     clip_to_below: false,
                 };
-                let mut validation_doc = crate::document::Document::default();
-                validation_doc.layers = vec![layer];
-                let encoded = serde_json::to_string(&validation_doc).map_err(|error| error.to_string())?;
+                let validation_doc = crate::document::Document {
+                    layers: vec![layer],
+                    ..crate::document::Document::default()
+                };
+                let encoded =
+                    serde_json::to_string(&validation_doc).map_err(|error| error.to_string())?;
                 crate::document::Document::from_json(&encoded)?;
                 layer_name = Some(name);
             }
-            CreateDrawingCommand::Line { start, end, color, radius } => {
-                if plane.is_none() || layer_name.is_none() { return Err("Create a plane and layer before adding strokes".into()); }
+            CreateDrawingCommand::Line {
+                start,
+                end,
+                color,
+                radius,
+            } => {
+                if plane.is_none() || layer_name.is_none() {
+                    return Err("Create a plane and layer before adding strokes".into());
+                }
                 validate_mark_style(color, radius)?;
                 total_points = total_points.saturating_add(2);
                 marks.push((vec![start, end], color, radius));
             }
-            CreateDrawingCommand::Polyline { points, color, radius } => {
-                if plane.is_none() || layer_name.is_none() { return Err("Create a plane and layer before adding strokes".into()); }
+            CreateDrawingCommand::Polyline {
+                points,
+                color,
+                radius,
+            } => {
+                if plane.is_none() || layer_name.is_none() {
+                    return Err("Create a plane and layer before adding strokes".into());
+                }
                 validate_mark_style(color, radius)?;
-                if !(2..=512).contains(&points.len()) { return Err("Polyline commands require 2–512 points".into()); }
+                if !(2..=512).contains(&points.len()) {
+                    return Err("Polyline commands require 2–512 points".into());
+                }
                 total_points = total_points.saturating_add(points.len());
                 marks.push((points, color, radius));
             }
-            CreateDrawingCommand::Rectangle { min, max, color, radius } => {
-                if plane.is_none() || layer_name.is_none() { return Err("Create a plane and layer before adding strokes".into()); }
+            CreateDrawingCommand::Rectangle {
+                min,
+                max,
+                color,
+                radius,
+            } => {
+                if plane.is_none() || layer_name.is_none() {
+                    return Err("Create a plane and layer before adding strokes".into());
+                }
                 validate_mark_style(color, radius)?;
                 let (min_x, min_y) = (min[0], min[1]);
                 let (max_x, max_y) = (max[0], max[1]);
-                if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite()
-                    || min_x >= max_x || min_y >= max_y {
+                if !min_x.is_finite()
+                    || !min_y.is_finite()
+                    || !max_x.is_finite()
+                    || !max_y.is_finite()
+                    || min_x >= max_x
+                    || min_y >= max_y
+                {
                     return Err("Rectangle bounds must be finite and ordered".into());
                 }
                 total_points = total_points.saturating_add(5);
-                marks.push((vec![min, [max_x, min_y], max, [min_x, max_y], min], color, radius));
+                marks.push((
+                    vec![min, [max_x, min_y], max, [min_x, max_y], min],
+                    color,
+                    radius,
+                ));
             }
         }
         if marks.len() > MAX_CREATE_STROKES || total_points > MAX_CREATE_POINTS {
@@ -713,10 +824,14 @@ fn create_native_drawing(output: &Path, arguments: &Value) -> Result<Value, Stri
     }
     let plane = plane.ok_or("Command batch must create one planar guide")?;
     let layer_name = layer_name.ok_or("Command batch must create one layer")?;
-    if marks.is_empty() { return Err("Command batch must contain at least one supported stroke".into()); }
+    if marks.is_empty() {
+        return Err("Command batch must contain at least one supported stroke".into());
+    }
 
     let (origin, rotation) = match &plane.geometry {
-        crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } => (*origin, *rotation),
+        crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } => {
+            (*origin, *rotation)
+        }
         _ => return Err("Only a planar drawing guide is supported".into()),
     };
     let mut document = crate::document::Document::default();
@@ -725,7 +840,6 @@ fn create_native_drawing(output: &Path, arguments: &Value) -> Result<Value, Stri
     document.guide_resources.push(plane);
     document.active_guide = Some(1);
     let axis_u = rotation * glam::Vec3::X;
-    let axis_v = rotation * glam::Vec3::Y;
     let normal = rotation * glam::Vec3::Z;
     for (index, (coordinates, color, radius)) in marks.into_iter().enumerate() {
         let stroke_id = index as u64 + 1;
@@ -749,15 +863,19 @@ fn create_native_drawing(output: &Path, arguments: &Value) -> Result<Value, Stri
                 tangent: axis_u,
                 ..crate::document::Brush::default()
             },
-            points: coordinates.into_iter().enumerate().map(|(point_index, point)| {
-                let local = glam::Vec3::new(point[0], point[1], 0.0);
-                crate::document::Point {
-                    position: origin + rotation * local,
-                    pressure: 1.0,
-                    tilt: None,
-                    time_ms: point_index as u32,
-                }
-            }).collect(),
+            points: coordinates
+                .into_iter()
+                .enumerate()
+                .map(|(point_index, point)| {
+                    let local = glam::Vec3::new(point[0], point[1], 0.0);
+                    crate::document::Point {
+                        position: origin + rotation * local,
+                        pressure: 1.0,
+                        tilt: None,
+                        time_ms: point_index as u32,
+                    }
+                })
+                .collect(),
         });
     }
     let encoded = serde_json::to_vec(&document).map_err(|error| error.to_string())?;
@@ -765,21 +883,37 @@ fn create_native_drawing(output: &Path, arguments: &Value) -> Result<Value, Stri
         return Err("Created native document exceeds the 1 MiB output limit".into());
     }
     let validated = crate::document::Document::from_json(
-        std::str::from_utf8(&encoded).map_err(|error| error.to_string())?
+        std::str::from_utf8(&encoded).map_err(|error| error.to_string())?,
     )?;
     let encoded = serde_json::to_vec(&validated).map_err(|error| error.to_string())?;
     if fs::symlink_metadata(&destination).is_ok() {
-        return Err("A native drawing with that name already exists in the configured output directory".into());
+        return Err(
+            "A native drawing with that name already exists in the configured output directory"
+                .into(),
+        );
     }
-    let mut temporary = tempfile::NamedTempFile::new_in(output).map_err(|error| error.to_string())?;
-    temporary.write_all(&encoded).map_err(|error| error.to_string())?;
-    temporary.as_file().sync_all().map_err(|error| error.to_string())?;
-    temporary.persist_noclobber(&destination).map_err(|error| format!("Could not atomically create native copy: {}", error.error))?;
-    Ok(json!({"output": request.output_name,"bytes":encoded.len(),"layer":created_layer_name,"plane":"Planar guide","strokes":document.strokes.len(),"points":total_points,"editable":true}))
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(output).map_err(|error| error.to_string())?;
+    temporary
+        .write_all(&encoded)
+        .map_err(|error| error.to_string())?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    temporary
+        .persist_noclobber(&destination)
+        .map_err(|error| format!("Could not atomically create native copy: {}", error.error))?;
+    Ok(
+        json!({"output": request.output_name,"bytes":encoded.len(),"layer":created_layer_name,"plane":"Planar guide","strokes":document.strokes.len(),"points":total_points,"editable":true}),
+    )
 }
 
 fn validate_mark_style(color: [f32; 3], radius: f32) -> Result<(), String> {
-    if color.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value)) {
+    if color
+        .iter()
+        .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+    {
         return Err("Stroke colors must be finite linear RGB values from 0 to 1".into());
     }
     if !radius.is_finite() || !(0.001..=1.0).contains(&radius) {
@@ -835,7 +969,7 @@ fn list_checks(root: &Path) -> Result<Value, String> {
             name,
         ));
     }
-    runs.sort_by(|left, right| right.0.cmp(&left.0));
+    runs.sort_by_key(|left| std::cmp::Reverse(left.0));
     let completed = runs
         .into_iter()
         .take(MAX_RUNS)
@@ -855,7 +989,8 @@ fn list_checks(root: &Path) -> Result<Value, String> {
 
 fn read_result(root: &Path, run_id: &str) -> Result<Value, String> {
     let (_, _, bytes) = result_file(root, run_id)?;
-    let value: Value = serde_json::from_slice(&bytes).map_err(|error| format!("Invalid result JSON: {error}"))?;
+    let value: Value =
+        serde_json::from_slice(&bytes).map_err(|error| format!("Invalid result JSON: {error}"))?;
     if value.get("schema_version").and_then(Value::as_u64) != Some(1)
         || !value.get("results").is_some_and(Value::is_array)
     {
@@ -903,14 +1038,19 @@ fn list_artifacts(root: &Path, run_id: &str, check_id: &str) -> Result<Value, St
         return Err("Unsupported check ID".into());
     }
     let (_, run_directory, bytes) = result_file(root, run_id)?;
-    let result: Value = serde_json::from_slice(&bytes).map_err(|error| format!("Invalid result JSON: {error}"))?;
+    let result: Value =
+        serde_json::from_slice(&bytes).map_err(|error| format!("Invalid result JSON: {error}"))?;
     if result.get("schema_version").and_then(Value::as_u64) != Some(1) {
         return Err("Run result does not use schema version 1".into());
     }
     let check = result
         .get("results")
         .and_then(Value::as_array)
-        .and_then(|checks| checks.iter().find(|item| item.get("check_id").and_then(Value::as_str) == Some(check_id)))
+        .and_then(|checks| {
+            checks
+                .iter()
+                .find(|item| item.get("check_id").and_then(Value::as_str) == Some(check_id))
+        })
         .ok_or("Check is not present in this completed run")?;
     let declared = check
         .get("artifacts")
@@ -921,9 +1061,7 @@ fn list_artifacts(root: &Path, run_id: &str, check_id: &str) -> Result<Value, St
     }
     let mut artifacts = Vec::with_capacity(declared.len());
     for relative in declared {
-        let relative = relative
-            .as_str()
-            .ok_or("Artifact path is not a string")?;
+        let relative = relative.as_str().ok_or("Artifact path is not a string")?;
         let canonical = resolve_artifact_path(&run_directory, relative)?;
         let metadata = fs::metadata(&canonical).map_err(|error| error.to_string())?;
         artifacts.push(json!({
@@ -941,8 +1079,16 @@ fn list_artifacts(root: &Path, run_id: &str, check_id: &str) -> Result<Value, St
 }
 
 enum ReadArtifact {
-    Text { path: String, text: String, size_bytes: u64 },
-    Png { path: String, data: String, size_bytes: u64 },
+    Text {
+        path: String,
+        text: String,
+        size_bytes: u64,
+    },
+    Png {
+        path: String,
+        data: String,
+        size_bytes: u64,
+    },
 }
 
 fn read_artifact(
@@ -955,17 +1101,19 @@ fn read_artifact(
         return Err("Unsupported check ID".into());
     }
     let (_, run_directory, bytes) = result_file(root, run_id)?;
-    let result: Value = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("Invalid result JSON: {error}"))?;
+    let result: Value =
+        serde_json::from_slice(&bytes).map_err(|error| format!("Invalid result JSON: {error}"))?;
     if result.get("schema_version").and_then(Value::as_u64) != Some(1) {
         return Err("Run result does not use schema version 1".into());
     }
     let check = result
         .get("results")
         .and_then(Value::as_array)
-        .and_then(|checks| checks.iter().find(|item| {
-            item.get("check_id").and_then(Value::as_str) == Some(check_id)
-        }))
+        .and_then(|checks| {
+            checks
+                .iter()
+                .find(|item| item.get("check_id").and_then(Value::as_str) == Some(check_id))
+        })
         .ok_or("Check is not present in this completed run")?;
     let declared = check
         .get("artifacts")
@@ -1076,14 +1224,18 @@ fn validate_png(bytes: &[u8]) -> Result<(), String> {
         if header_end > bytes.len() {
             return Err("Declared PNG artifact has a truncated chunk header".into());
         }
-        let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap_or_default()) as usize;
-        let data_end = header_end.checked_add(length).ok_or("PNG chunk length overflow")?;
+        let length =
+            u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap_or_default()) as usize;
+        let data_end = header_end
+            .checked_add(length)
+            .ok_or("PNG chunk length overflow")?;
         let chunk_end = data_end.checked_add(4).ok_or("PNG chunk length overflow")?;
         if chunk_end > bytes.len() {
             return Err("Declared PNG artifact has a truncated chunk".into());
         }
         let chunk_type = &bytes[offset + 4..header_end];
-        let expected_crc = u32::from_be_bytes(bytes[data_end..chunk_end].try_into().unwrap_or_default());
+        let expected_crc =
+            u32::from_be_bytes(bytes[data_end..chunk_end].try_into().unwrap_or_default());
         if png_crc32(&bytes[offset + 4..data_end]) != expected_crc {
             return Err("Declared PNG artifact has a corrupt chunk checksum".into());
         }
@@ -1091,8 +1243,16 @@ fn validate_png(bytes: &[u8]) -> Result<(), String> {
             if chunk_type != b"IHDR" || length != 13 {
                 return Err("PNG must begin with one valid IHDR chunk".into());
             }
-            let width = u32::from_be_bytes(bytes[header_end..header_end + 4].try_into().unwrap_or_default());
-            let height = u32::from_be_bytes(bytes[header_end + 4..header_end + 8].try_into().unwrap_or_default());
+            let width = u32::from_be_bytes(
+                bytes[header_end..header_end + 4]
+                    .try_into()
+                    .unwrap_or_default(),
+            );
+            let height = u32::from_be_bytes(
+                bytes[header_end + 4..header_end + 8]
+                    .try_into()
+                    .unwrap_or_default(),
+            );
             if width == 0
                 || height == 0
                 || width > MAX_PNG_DIMENSION
@@ -1144,8 +1304,16 @@ fn encode_base64(bytes: &[u8]) -> String {
         let third = chunk.get(2).copied().unwrap_or(0);
         output.push(TABLE[(first >> 2) as usize] as char);
         output.push(TABLE[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
-        output.push(if chunk.len() > 1 { TABLE[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char } else { '=' });
-        output.push(if chunk.len() > 2 { TABLE[(third & 0x3f) as usize] as char } else { '=' });
+        output.push(if chunk.len() > 1 {
+            TABLE[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            TABLE[(third & 0x3f) as usize] as char
+        } else {
+            '='
+        });
     }
     output
 }
@@ -1173,7 +1341,9 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
         .canonicalize()
         .map_err(|error| format!("Cannot resolve shared verification runner: {error}"))?;
     if !runner.starts_with(project_root) {
-        return Err("Shared verification runner is outside the application source directory".into());
+        return Err(
+            "Shared verification runner is outside the application source directory".into(),
+        );
     }
 
     let mut command = Command::new(if cfg!(windows) { "pwsh.exe" } else { "pwsh" });
@@ -1274,7 +1444,10 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
             if detail.trim().is_empty() {
                 "Shared runner did not report its normalized result path".to_owned()
             } else {
-                format!("Shared runner failed: {}", detail.lines().last().unwrap_or_default())
+                format!(
+                    "Shared runner failed: {}",
+                    detail.lines().last().unwrap_or_default()
+                )
             }
         })?;
     let result_path = result_path
@@ -1300,7 +1473,11 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
     let check_result = result
         .get("results")
         .and_then(Value::as_array)
-        .and_then(|checks| checks.iter().find(|item| item.get("check_id").and_then(Value::as_str) == Some(check_id)))
+        .and_then(|checks| {
+            checks
+                .iter()
+                .find(|item| item.get("check_id").and_then(Value::as_str) == Some(check_id))
+        })
         .ok_or("Normalized result omitted the requested check")?;
     let artifacts = list_artifacts(root, run_id, check_id)?;
     let exit_code = status.and_then(|status| status.code());
@@ -1401,7 +1578,8 @@ fn utc_timestamp() -> String {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let day_of_era = z - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let mut year = year_of_era + era * 400;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_piece = (5 * day_of_year + 2) / 153;
