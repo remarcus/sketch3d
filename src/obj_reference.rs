@@ -46,6 +46,7 @@ pub struct ObjMaterial {
     /// Optional decoded base-color texture for self-contained GLB references.
     pub base_color_texture: Option<crate::image_planes::ImageAsset>,
     pub base_color_tex_coord: Option<u32>,
+    pub texture_sampler: Option<ObjTextureSampler>,
     pub alpha_mode: ObjMaterialAlphaMode,
     pub alpha_cutoff: f32,
 }
@@ -56,6 +57,42 @@ pub enum ObjMaterialAlphaMode {
     Opaque,
     Mask,
     Blend,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ObjTextureWrap {
+    Repeat,
+    Clamp,
+    MirroredRepeat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ObjTextureFilter {
+    Nearest,
+    Linear,
+    NearestMipmapNearest,
+    LinearMipmapNearest,
+    NearestMipmapLinear,
+    LinearMipmapLinear,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ObjTextureSampler {
+    pub wrap_s: ObjTextureWrap,
+    pub wrap_t: ObjTextureWrap,
+    pub mag_filter: ObjTextureFilter,
+    pub min_filter: ObjTextureFilter,
+}
+
+impl Default for ObjTextureSampler {
+    fn default() -> Self {
+        Self {
+            wrap_s: ObjTextureWrap::Repeat,
+            wrap_t: ObjTextureWrap::Repeat,
+            mag_filter: ObjTextureFilter::Linear,
+            min_filter: ObjTextureFilter::LinearMipmapLinear,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -442,6 +479,7 @@ fn parse_mtl(
                     opacity: 1.0,
                     base_color_texture: None,
                     base_color_tex_coord: None,
+                    texture_sampler: None,
                     alpha_mode: ObjMaterialAlphaMode::Opaque,
                     alpha_cutoff: 0.5,
                 });

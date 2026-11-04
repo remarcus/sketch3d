@@ -1198,6 +1198,29 @@ impl SceneRenderer {
         repeat: bool,
         label: &'static str,
     ) -> Result<ImagePlaneTexture, String> {
+        let wrap = if repeat {
+            crate::obj_reference::ObjTextureWrap::Repeat
+        } else {
+            crate::obj_reference::ObjTextureWrap::Clamp
+        };
+        self.create_image_texture_with_sampler(
+            image,
+            crate::obj_reference::ObjTextureSampler {
+                wrap_s: wrap,
+                wrap_t: wrap,
+                mag_filter: crate::obj_reference::ObjTextureFilter::Linear,
+                min_filter: crate::obj_reference::ObjTextureFilter::Linear,
+            },
+            label,
+        )
+    }
+
+    fn create_image_texture_with_sampler(
+        &self,
+        image: &crate::image_planes::ImageAsset,
+        sampler_settings: crate::obj_reference::ObjTextureSampler,
+        label: &'static str,
+    ) -> Result<ImagePlaneTexture, String> {
         let (width, height) = (image.size[0], image.size[1]);
         let expected_bytes = u64::from(width) * u64::from(height) * 4;
         if width == 0 || height == 0 || expected_bytes != image.pixels.len() as u64 {
@@ -1237,20 +1260,37 @@ impl SceneRenderer {
             },
         );
         let view = texture.create_view(&Default::default());
+        let wrap = |mode| match mode {
+            crate::obj_reference::ObjTextureWrap::Repeat => wgpu::AddressMode::Repeat,
+            crate::obj_reference::ObjTextureWrap::Clamp => wgpu::AddressMode::ClampToEdge,
+            crate::obj_reference::ObjTextureWrap::MirroredRepeat => wgpu::AddressMode::MirrorRepeat,
+        };
+        let filter = |mode| match mode {
+            crate::obj_reference::ObjTextureFilter::Nearest
+            | crate::obj_reference::ObjTextureFilter::NearestMipmapNearest
+            | crate::obj_reference::ObjTextureFilter::NearestMipmapLinear => {
+                wgpu::FilterMode::Nearest
+            }
+            crate::obj_reference::ObjTextureFilter::Linear
+            | crate::obj_reference::ObjTextureFilter::LinearMipmapNearest
+            | crate::obj_reference::ObjTextureFilter::LinearMipmapLinear => {
+                wgpu::FilterMode::Linear
+            }
+        };
+        let mipmap_filter = |mode| match mode {
+            crate::obj_reference::ObjTextureFilter::NearestMipmapLinear
+            | crate::obj_reference::ObjTextureFilter::LinearMipmapLinear => {
+                wgpu::FilterMode::Linear
+            }
+            _ => wgpu::FilterMode::Nearest,
+        };
         let sampler = self.state.device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Portable image sampler"),
-            address_mode_u: if repeat {
-                wgpu::AddressMode::Repeat
-            } else {
-                wgpu::AddressMode::ClampToEdge
-            },
-            address_mode_v: if repeat {
-                wgpu::AddressMode::Repeat
-            } else {
-                wgpu::AddressMode::ClampToEdge
-            },
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            label: Some(label),
+            address_mode_u: wrap(sampler_settings.wrap_s),
+            address_mode_v: wrap(sampler_settings.wrap_t),
+            mag_filter: filter(sampler_settings.mag_filter),
+            min_filter: filter(sampler_settings.min_filter),
+            mipmap_filter: mipmap_filter(sampler_settings.min_filter),
             ..Default::default()
         });
         let bind = self
@@ -1720,7 +1760,13 @@ impl SceneRenderer {
                     let texture = material
                         .and_then(|material| material.base_color_texture.as_ref())
                         .map(|image| {
-                            this.create_image_texture(image, true, "GLB base-color texture")
+                            this.create_image_texture_with_sampler(
+                                image,
+                                material
+                                    .and_then(|material| material.texture_sampler)
+                                    .unwrap_or_default(),
+                                "GLB base-color texture",
+                            )
                         })
                         .transpose()?;
                     Ok(ObjReferenceMaterialMesh {

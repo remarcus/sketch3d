@@ -107,6 +107,7 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
         opacity: 1.0,
         base_color_texture: None,
         base_color_tex_coord: None,
+        texture_sampler: None,
         alpha_mode: crate::obj_reference::ObjMaterialAlphaMode::Opaque,
         alpha_cutoff: 0.5,
     }];
@@ -138,6 +139,67 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
                     .flatten()
             }),
             base_color_tex_coord: pbr.base_color_texture().map(|info| info.tex_coord()),
+            texture_sampler: pbr.base_color_texture().map(|info| {
+                let sampler = info.texture().sampler();
+                crate::obj_reference::ObjTextureSampler {
+                    wrap_s: match sampler.wrap_s() {
+                        gltf::texture::WrappingMode::Repeat => {
+                            crate::obj_reference::ObjTextureWrap::Repeat
+                        }
+                        gltf::texture::WrappingMode::ClampToEdge => {
+                            crate::obj_reference::ObjTextureWrap::Clamp
+                        }
+                        gltf::texture::WrappingMode::MirroredRepeat => {
+                            crate::obj_reference::ObjTextureWrap::MirroredRepeat
+                        }
+                    },
+                    wrap_t: match sampler.wrap_t() {
+                        gltf::texture::WrappingMode::Repeat => {
+                            crate::obj_reference::ObjTextureWrap::Repeat
+                        }
+                        gltf::texture::WrappingMode::ClampToEdge => {
+                            crate::obj_reference::ObjTextureWrap::Clamp
+                        }
+                        gltf::texture::WrappingMode::MirroredRepeat => {
+                            crate::obj_reference::ObjTextureWrap::MirroredRepeat
+                        }
+                    },
+                    mag_filter: match sampler
+                        .mag_filter()
+                        .unwrap_or(gltf::texture::MagFilter::Linear)
+                    {
+                        gltf::texture::MagFilter::Nearest => {
+                            crate::obj_reference::ObjTextureFilter::Nearest
+                        }
+                        gltf::texture::MagFilter::Linear => {
+                            crate::obj_reference::ObjTextureFilter::Linear
+                        }
+                    },
+                    min_filter: match sampler
+                        .min_filter()
+                        .unwrap_or(gltf::texture::MinFilter::LinearMipmapLinear)
+                    {
+                        gltf::texture::MinFilter::Nearest => {
+                            crate::obj_reference::ObjTextureFilter::Nearest
+                        }
+                        gltf::texture::MinFilter::Linear => {
+                            crate::obj_reference::ObjTextureFilter::Linear
+                        }
+                        gltf::texture::MinFilter::NearestMipmapNearest => {
+                            crate::obj_reference::ObjTextureFilter::NearestMipmapNearest
+                        }
+                        gltf::texture::MinFilter::LinearMipmapNearest => {
+                            crate::obj_reference::ObjTextureFilter::LinearMipmapNearest
+                        }
+                        gltf::texture::MinFilter::NearestMipmapLinear => {
+                            crate::obj_reference::ObjTextureFilter::NearestMipmapLinear
+                        }
+                        gltf::texture::MinFilter::LinearMipmapLinear => {
+                            crate::obj_reference::ObjTextureFilter::LinearMipmapLinear
+                        }
+                    },
+                }
+            }),
             alpha_mode: match material.alpha_mode() {
                 gltf::material::AlphaMode::Opaque => {
                     crate::obj_reference::ObjMaterialAlphaMode::Opaque
@@ -156,24 +218,6 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
                     .is_none_or(Option::is_none)
             }) {
                 warnings.push("WebP base-color textures are retained in the bundled GLB; viewport shading uses the material base-color factor because WebP decoding is unavailable.".into());
-            }
-            if pbr.base_color_texture().is_some_and(|info| {
-                let sampler = info.texture().sampler();
-                sampler.wrap_s() != gltf::texture::WrappingMode::Repeat
-                    || sampler.wrap_t() != gltf::texture::WrappingMode::Repeat
-                    || sampler
-                        .mag_filter()
-                        .is_some_and(|filter| filter != gltf::texture::MagFilter::Linear)
-                    || sampler.min_filter().is_some_and(|filter| {
-                        !matches!(
-                            filter,
-                            gltf::texture::MinFilter::Linear
-                                | gltf::texture::MinFilter::LinearMipmapNearest
-                                | gltf::texture::MinFilter::LinearMipmapLinear
-                        )
-                    })
-            }) {
-                warnings.push("GLB texture sampler wrap/filter settings use the viewport's linear-repeat fallback.".into());
             }
         }
         if material.emissive_factor() != [0.0; 3] {

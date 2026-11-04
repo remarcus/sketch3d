@@ -1078,6 +1078,8 @@ pub fn encode_with_images(
     let mut fill_image_keys = HashMap::new();
     let mut images = Vec::new();
     let mut textures = Vec::new();
+    let mut model_sampler_indices = HashMap::new();
+    let mut model_samplers = Vec::new();
     let mut image_samplers = false;
     let mut composite_sampler = false;
     let mut fill_repeat_sampler = false;
@@ -1810,6 +1812,18 @@ pub fn encode_with_images(
                     if let Some(texture) =
                         material.and_then(|material| material.base_color_texture.as_ref())
                     {
+                        let sampler_settings = material
+                            .and_then(|material| material.texture_sampler)
+                            .unwrap_or_default();
+                        let sampler_index =
+                            if let Some(index) = model_sampler_indices.get(&sampler_settings) {
+                                *index
+                            } else {
+                                let index = 4 + model_samplers.len();
+                                model_samplers.push(sampler_settings);
+                                model_sampler_indices.insert(sampler_settings, index);
+                                index
+                            };
                         let png = image_asset_png(texture)?;
                         ensure_binary_budget(
                             binary.len(),
@@ -1829,7 +1843,7 @@ pub fn encode_with_images(
                         let image_index = images.len();
                         images.push(json!({"name":format!("GLB model texture {} - {}",resource.name,material_name),"bufferView":view,"mimeType":"image/png"}));
                         let texture_index = textures.len();
-                        textures.push(json!({"sampler":2,"source":image_index}));
+                        textures.push(json!({"sampler":sampler_index,"source":image_index}));
                         image_samplers = true;
                         fill_repeat_sampler = true;
                         base_color_texture = Some(texture_index);
@@ -1926,6 +1940,32 @@ pub fn encode_with_images(
                     .push(json!({"magFilter":9729,"minFilter":9987,"wrapS":10497,"wrapT":10497}));
             }
             samplers.push(json!({"magFilter":9729,"minFilter":9729,"wrapS":33071,"wrapT":33071}));
+        }
+        if !model_samplers.is_empty() {
+            while samplers.len() < 4 {
+                samplers
+                    .push(json!({"magFilter":9729,"minFilter":9987,"wrapS":10497,"wrapT":10497}));
+            }
+            for sampler in model_samplers {
+                let wrap = |mode| match mode {
+                    crate::obj_reference::ObjTextureWrap::Repeat => 10497,
+                    crate::obj_reference::ObjTextureWrap::Clamp => 33071,
+                    crate::obj_reference::ObjTextureWrap::MirroredRepeat => 33648,
+                };
+                let mag_filter = match sampler.mag_filter {
+                    crate::obj_reference::ObjTextureFilter::Nearest => 9728,
+                    _ => 9729,
+                };
+                let min_filter = match sampler.min_filter {
+                    crate::obj_reference::ObjTextureFilter::Nearest => 9728,
+                    crate::obj_reference::ObjTextureFilter::Linear => 9729,
+                    crate::obj_reference::ObjTextureFilter::NearestMipmapNearest => 9984,
+                    crate::obj_reference::ObjTextureFilter::LinearMipmapNearest => 9985,
+                    crate::obj_reference::ObjTextureFilter::NearestMipmapLinear => 9986,
+                    crate::obj_reference::ObjTextureFilter::LinearMipmapLinear => 9987,
+                };
+                samplers.push(json!({"magFilter":mag_filter,"minFilter":min_filter,"wrapS":wrap(sampler.wrap_s),"wrapT":wrap(sampler.wrap_t)}));
+            }
         }
         root["samplers"] = json!(samplers);
     }
