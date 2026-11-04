@@ -1,7 +1,7 @@
-//! Drawing-local persistence for imported OBJ reference resources.
+//! Drawing-local persistence for imported OBJ and GLB model reference resources.
 //!
-//! A document stores only the generated `bundle_dir` metadata. The source OBJ
-//! and each referenced MTL are normalized into a per-resource folder below the
+//! A document stores only the generated `bundle_dir` metadata. The source model
+//! and its dependencies are normalized into a per-resource folder below the
 //! document's managed `.assets` directory, so reload does not depend on the
 //! original files remaining in place.
 
@@ -49,7 +49,7 @@ impl ObjReferenceAsset {
     }
 }
 
-/// Store a parsed/imported model and its MTL files under `asset_root`.
+/// Store a parsed/imported model and its dependencies under `asset_root`.
 /// Returns generated document metadata; caller should append it to its model
 /// catalog only after this function succeeds.
 pub fn import_bundle(
@@ -59,6 +59,9 @@ pub fn import_bundle(
 ) -> Result<ObjReferenceAsset, String> {
     if id == 0 || id == u64::MAX {
         return Err("OBJ reference ID is invalid".into());
+    }
+    if model.source_format == crate::obj_reference::ObjSourceFormat::Glb {
+        return import_glb_bundle(model, asset_root, id);
     }
     if model.source_materials.len() > MAX_MODEL_MATERIAL_FILES {
         return Err(format!(
@@ -123,7 +126,40 @@ pub fn import_bundle(
     Ok(metadata)
 }
 
-/// Parse an OBJ source, install its managed bundle, then reload the installed
+fn import_glb_bundle(
+    model: &ObjModel,
+    asset_root: &Path,
+    id: u64,
+) -> Result<ObjReferenceAsset, String> {
+    let source = regular_canonical_file(&model.source_obj, "GLB source")?;
+    let metadata = fs::metadata(&source).map_err(|error| error.to_string())?;
+    if metadata.len() > crate::gltf_reference::MAX_GLB_BYTES {
+        return Err("GLB source exceeds the 64 MiB bundle limit".into());
+    }
+    let bytes = read_bounded(&source, crate::gltf_reference::MAX_GLB_BYTES, "GLB")?;
+    crate::gltf_reference::parse(&bytes, &source)?;
+
+    let models_root = safe_models_root(asset_root, true)?;
+    let destination = models_root.join(id.to_string());
+    if fs::symlink_metadata(&destination).is_ok() {
+        return Err("A model reference asset with this ID already exists".into());
+    }
+    let staging = tempfile::Builder::new()
+        .prefix(".glb-import-")
+        .tempdir_in(&models_root)
+        .map_err(|error| format!("Cannot create temporary GLB bundle: {error}"))?;
+    write_new_file(&staging.path().join("model.glb"), &bytes)?;
+    fs::rename(staging.path(), &destination)
+        .map_err(|error| format!("Cannot install GLB asset bundle: {error}"))?;
+    let asset = ObjReferenceAsset {
+        id,
+        bundle_dir: format!("{MODELS_DIRECTORY}/{id}"),
+    };
+    asset.validate()?;
+    Ok(asset)
+}
+
+/// Parse a model source, install its managed bundle, then reload the installed
 /// bytes before returning the model that the viewport should use. A bundle
 /// that cannot be reopened is removed so failed imports do not leave an
 /// orphaned resource directory.
@@ -132,7 +168,16 @@ pub fn import_source_bundle(
     asset_root: &Path,
     id: u64,
 ) -> Result<(ObjReferenceAsset, ObjModel), String> {
-    let source_model = obj_reference::load(source_obj)?;
+    let source_model = match source_obj
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("glb") => crate::gltf_reference::load(source_obj)?,
+        Some("obj") => obj_reference::load(source_obj)?,
+        _ => return Err("Choose a Wavefront OBJ or binary glTF (.glb) file".into()),
+    };
     let asset = import_bundle(&source_model, asset_root, id)?;
     match load_bundle(asset_root, &asset) {
         Ok(model) => {
@@ -150,7 +195,7 @@ pub fn import_source_bundle(
     }
 }
 
-/// Load a resource from the managed bundle. The original OBJ and MTL files may
+/// Load a resource from the managed bundle. The original source files may
 /// have been deleted or moved after import.
 pub fn load_bundle(asset_root: &Path, asset: &ObjReferenceAsset) -> Result<ObjModel, String> {
     asset.validate()?;
@@ -171,7 +216,23 @@ pub fn load_bundle(asset_root: &Path, asset: &ObjReferenceAsset) -> Result<ObjMo
                 .into(),
         );
     }
+    let glb = canonical_bundle.join("model.glb");
     let obj = canonical_bundle.join("model.obj");
+    if fs::symlink_metadata(&glb).is_ok() {
+        if fs::symlink_metadata(&obj).is_ok() {
+            return Err("Model bundle contains ambiguous OBJ and GLB sources".into());
+        }
+        let metadata = fs::symlink_metadata(&glb)
+            .map_err(|error| format!("Cannot inspect bundled GLB: {error}"))?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() > crate::gltf_reference::MAX_GLB_BYTES
+        {
+            return Err("Bundled GLB is missing or exceeds the 64 MiB limit".into());
+        }
+        let bytes = read_bounded(&glb, crate::gltf_reference::MAX_GLB_BYTES, "bundled GLB")?;
+        return crate::gltf_reference::parse(&bytes, &glb);
+    }
     let metadata = fs::symlink_metadata(&obj)
         .map_err(|error| format!("Cannot inspect bundled OBJ: {error}"))?;
     if !metadata.is_file()

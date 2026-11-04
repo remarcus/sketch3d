@@ -20,6 +20,7 @@ mod export;
 mod export_check;
 mod geometry;
 mod gizmo;
+mod gltf_reference;
 mod image_plane_storage;
 mod image_planes;
 mod input;

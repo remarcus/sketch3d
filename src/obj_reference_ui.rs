@@ -625,7 +625,7 @@ impl SketchApp {
             return;
         }
         let mut open = self.obj_reference_window_open;
-        egui::Window::new("OBJ references")
+        egui::Window::new("Model references")
             .open(&mut open)
             .default_width(460.0)
             .show(ctx, |ui| self.obj_reference_controls(ui));
@@ -678,7 +678,7 @@ impl SketchApp {
     }
 
     pub(super) fn obj_reference_controls(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("OBJ references")
+        egui::CollapsingHeader::new("Model references")
             .default_open(true)
             .show(ui, |ui| {
             let import_response = import_obj_reference_button(ui);
@@ -695,7 +695,7 @@ impl SketchApp {
                 }
                 self.import_obj_reference();
             }
-            ui.small("OBJ models are read-only references. Whole-scene GLB includes visible models; selected-stroke export remains ink-only. Supported MTL properties: Kd diffuse color and d/Tr opacity. Texture maps and other MTL properties are ignored and listed in the GLB metadata.");
+            ui.small("OBJ and self-contained GLB models are read-only references. Whole-scene GLB includes visible models; selected-stroke export remains ink-only. GLB node transforms and base-color materials are imported, and embedded files are kept with the drawing. External dependencies are rejected.");
 
             ui.separator();
             ui.strong("Model line art");
@@ -916,7 +916,7 @@ impl SketchApp {
             .take()
             .unwrap_or_else(|| {
                 rfd::FileDialog::new()
-                    .add_filter("Wavefront OBJ", &["obj"])
+                    .add_filter("3D model reference", &["obj", "glb"])
                     .pick_file()
             });
         let Some(path) = path else {
@@ -929,7 +929,7 @@ impl SketchApp {
         if self.doc.model_references.len()
             >= crate::document::model_references::MAX_MODEL_REFERENCES
         {
-            self.status = "This drawing already has the maximum number of OBJ references.".into();
+            self.status = "This drawing already has the maximum number of model references.".into();
             return;
         }
         let mut id = self.next_id;
@@ -941,6 +941,15 @@ impl SketchApp {
             self.status = "No more resource IDs are available.".into();
             return;
         }
+        let format = if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("glb"))
+        {
+            "GLB"
+        } else {
+            "OBJ"
+        };
         let (asset, model) = match crate::obj_reference_storage::import_source_bundle(
             path,
             &self.image_asset_root,
@@ -948,14 +957,14 @@ impl SketchApp {
         ) {
             Ok(imported) => imported,
             Err(error) => {
-                self.status = format!("OBJ import failed: {error}");
+                self.status = format!("{format} import failed: {error}");
                 return;
             }
         };
         let size = model.bounds[1] - model.bounds[0];
         let extent = size.max_element();
         if !extent.is_finite() || extent <= 1.0e-5 {
-            self.status = "OBJ geometry has no usable bounds.".into();
+            self.status = "Model geometry has no usable bounds.".into();
             return;
         }
         let scale = (2.0 / extent).clamp(0.001, 1000.0);
@@ -965,14 +974,14 @@ impl SketchApp {
         let name = path
             .file_stem()
             .and_then(|value| value.to_str())
-            .unwrap_or("OBJ reference")
+            .unwrap_or("Model reference")
             .chars()
             .take(crate::document::model_references::MAX_MODEL_NAME_CHARS)
             .collect::<String>()
             .trim()
             .to_owned();
         let mut name = if name.is_empty() {
-            format!("OBJ {id}")
+            format!("Model {id}")
         } else {
             name
         };
@@ -982,7 +991,7 @@ impl SketchApp {
             .iter()
             .any(|existing| existing.name.eq_ignore_ascii_case(&name))
         {
-            name = format!("OBJ {id}");
+            name = format!("Model {id}");
         }
         let resource = ObjReferenceResource {
             id,
@@ -999,7 +1008,7 @@ impl SketchApp {
         let material_count = model.materials.len();
         let warning_count = model.warnings.len();
         if let Err(error) = resource.validate() {
-            self.status = format!("OBJ resource is invalid: {error}");
+            self.status = format!("Model reference is invalid: {error}");
             let _ = crate::obj_reference_storage::remove_bundle(
                 &self.image_asset_root,
                 &resource.asset,
@@ -1017,11 +1026,10 @@ impl SketchApp {
         });
         self.redo.clear();
         self.dirty = true;
-        self.record_recovery_edit_labeled("Import OBJ reference");
+        self.record_recovery_edit_labeled("Import model reference");
         self.renderer.invalidate();
         self.status = format!(
-            "Imported {} triangles and {} materials. Unsupported MTL features: {}.",
-            triangle_count, material_count, warning_count
+            "Imported {format}: {triangle_count} triangles, {material_count} materials, {warning_count} import notes."
         );
     }
 
@@ -1078,10 +1086,17 @@ impl SketchApp {
             {
                 return false;
             }
-            let mut names = vec!["model.obj".to_owned()];
-            names.extend(
-                (0..model.source_materials.len()).map(|index| format!("material-{index:03}.mtl")),
-            );
+            let names = match model.source_format {
+                crate::obj_reference::ObjSourceFormat::Obj => {
+                    let mut names = vec!["model.obj".to_owned()];
+                    names.extend(
+                        (0..model.source_materials.len())
+                            .map(|index| format!("material-{index:03}.mtl")),
+                    );
+                    names
+                }
+                crate::obj_reference::ObjSourceFormat::Glb => vec!["model.glb".to_owned()],
+            };
             for name in names {
                 let asset_file = format!("{}/{name}", resource.asset.bundle_dir);
                 let path = directory.join(&name);
@@ -1091,10 +1106,10 @@ impl SketchApp {
                 let Ok(canonical_path) = path.canonicalize() else {
                     return false;
                 };
-                let limit = if name.ends_with(".obj") {
-                    crate::obj_reference_storage::MAX_MODEL_OBJ_BYTES
-                } else {
-                    crate::obj_reference_storage::MAX_MODEL_MTL_BYTES
+                let limit = match name.as_str() {
+                    "model.obj" => crate::obj_reference_storage::MAX_MODEL_OBJ_BYTES,
+                    "model.glb" => crate::gltf_reference::MAX_GLB_BYTES,
+                    _ => crate::obj_reference_storage::MAX_MODEL_MTL_BYTES,
                 };
                 if !metadata.is_file()
                     || metadata.file_type().is_symlink()
@@ -1206,7 +1221,7 @@ fn nearest_obj_reference_hit_with_depth(
 }
 
 fn import_obj_reference_button(ui: &mut egui::Ui) -> egui::Response {
-    ui.button("Import OBJ reference…")
+    ui.button("Import model reference…")
 }
 
 fn transform_controls(ui: &mut egui::Ui, resource: &mut ObjReferenceResource) -> bool {

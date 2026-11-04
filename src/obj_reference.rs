@@ -30,6 +30,13 @@ pub const MAX_MATERIALS: usize = 256;
 pub const MAX_FACE_CORNERS: usize = 256;
 pub const MAX_NAME_CHARS: usize = 128;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ObjSourceFormat {
+    #[default]
+    Obj,
+    Glb,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjMaterial {
     pub name: String,
@@ -64,6 +71,7 @@ pub struct RenderVertex {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjModel {
+    pub source_format: ObjSourceFormat,
     pub positions: Vec<Vec3>,
     pub texcoords: Vec<Vec2>,
     pub normals: Vec<Vec3>,
@@ -361,6 +369,7 @@ pub fn parse(bytes: &[u8], source_obj: &Path) -> Result<ObjModel, String> {
         }
     }
     Ok(ObjModel {
+        source_format: ObjSourceFormat::Obj,
         positions,
         texcoords,
         normals,
