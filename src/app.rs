@@ -143,13 +143,83 @@ fn tool_icon_button(
 
 fn inspector_rail_button(
     ui: &mut egui::Ui,
-    glyph: &str,
+    icon: &str,
     label: &str,
     selected: bool,
 ) -> egui::Response {
-    let response = ui.add_sized([44.0, 44.0], egui::Button::new(glyph).selected(selected));
+    let response = ui.add_sized(
+        [44.0, 44.0],
+        egui::Button::new(
+            if matches!(icon, "properties" | "layers" | "references" | "images") {
+                ""
+            } else {
+                icon
+            },
+        )
+        .selected(selected),
+    );
     let response = ui_style::accessible_button(response, label, Some(selected));
-    response.on_hover_text(label)
+    let response = response.on_hover_text(label);
+    if matches!(icon, "properties" | "layers" | "references" | "images") {
+        let painter = ui.painter_at(response.rect);
+        let color = if selected {
+            ui_style::colors(ui.ctx()).focus
+        } else {
+            ui_style::colors(ui.ctx()).text
+        };
+        let stroke = egui::Stroke::new(1.8_f32, color);
+        let center = response.rect.center();
+        let p = |x: f32, y: f32| center + egui::vec2(x, y);
+        match icon {
+            "properties" => {
+                for (y, knob_x) in [(-8.0, -4.0), (0.0, 5.0), (8.0, -1.0)] {
+                    painter.line_segment([p(-10.0, y), p(10.0, y)], stroke);
+                    painter.circle_filled(p(knob_x, y), 2.6, color);
+                }
+            }
+            "layers" => {
+                for (x, y) in [(-3.0, -8.0), (0.0, -2.0), (3.0, 4.0)] {
+                    painter.rect_stroke(
+                        egui::Rect::from_center_size(p(x, y), egui::vec2(16.0, 9.0)),
+                        1.5,
+                        stroke,
+                        egui::StrokeKind::Middle,
+                    );
+                }
+            }
+            "references" => {
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(p(-2.0, -2.0), egui::vec2(17.0, 19.0)),
+                    1.5,
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+                painter.circle_stroke(p(5.0, 5.0), 4.0, stroke);
+                painter.line_segment([p(8.0, 8.0), p(11.0, 11.0)], stroke);
+            }
+            "images" => {
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(p(0.0, 0.0), egui::vec2(22.0, 18.0)),
+                    1.5,
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+                painter.circle_filled(p(6.0, -4.0), 2.0, color);
+                painter.add(egui::Shape::line(
+                    vec![
+                        p(-9.0, 6.0),
+                        p(-3.0, 0.0),
+                        p(1.0, 4.0),
+                        p(5.0, 0.0),
+                        p(10.0, 6.0),
+                    ],
+                    stroke,
+                ));
+            }
+            _ => {}
+        }
+    }
+    response
 }
 
 #[path = "animation_ui.rs"]
@@ -5209,18 +5279,22 @@ impl SketchApp {
                         for (tab, glyph, label) in [
                             (
                                 crate::presentation::InspectorTab::Properties,
-                                "P",
+                                "properties",
                                 "Properties",
                             ),
-                            (crate::presentation::InspectorTab::Layers, "L", "Layers"),
+                            (
+                                crate::presentation::InspectorTab::Layers,
+                                "layers",
+                                "Layers",
+                            ),
                             (
                                 crate::presentation::InspectorTab::References,
-                                "R",
+                                "references",
                                 "References",
                             ),
                             (
                                 crate::presentation::InspectorTab::ImagePlanes,
-                                "I",
+                                "images",
                                 "Images",
                             ),
                         ] {
