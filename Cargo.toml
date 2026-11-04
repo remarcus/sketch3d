@@ -9,7 +9,7 @@ keywords = ["3d", "sketching", "tablet", "feather-3d", "grease-pencil"]
 [dependencies]
 lyon_tessellation = { version = "=1.0.23" }
 eframe = { version = "0.31.1", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland", "accesskit"] }
-gltf = { version = "1.4.1", default-features = false, features = ["utils", "names"] }
+gltf = { version = "1.4.1", default-features = false, features = ["utils", "names", "extensions", "allow_empty_texture"] }
 glam = { version = "0.30", features = ["serde", "bytemuck"] }
 bytemuck = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

@@ -8,6 +8,68 @@ use std::{fs, io::Read, path::Path};
 pub const MAX_GLB_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_EMBEDDED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
+fn decode_embedded_image(
+    mime_type: &str,
+    data: &[u8],
+    cumulative_pixels: &mut u64,
+) -> Result<crate::image_planes::ImageAsset, String> {
+    let (width, height, decoded) = if mime_type == "image/webp" {
+        let decoder = image::codecs::webp::WebPDecoder::new(std::io::Cursor::new(data))
+            .map_err(|error| format!("Cannot decode embedded GLB WebP: {error}"))?;
+        if decoder.has_animation() {
+            return Err(
+                "Animated WebP textures are unsupported; GLB model textures must be static".into(),
+            );
+        }
+        let (width, height) = decoder.dimensions();
+        validate_image_dimensions(width, height, *cumulative_pixels)?;
+        let rgba = image::DynamicImage::from_decoder(decoder)
+            .map_err(|error| format!("Cannot decode embedded GLB WebP pixels: {error}"))?
+            .to_rgba8();
+        (width, height, rgba)
+    } else {
+        let format = match mime_type {
+            "image/png" => image::ImageFormat::Png,
+            "image/jpeg" => image::ImageFormat::Jpeg,
+            _ => return Err(format!("Unsupported embedded GLB image type ‘{mime_type}’")),
+        };
+        let (width, height) = image::ImageReader::with_format(std::io::Cursor::new(data), format)
+            .into_dimensions()
+            .map_err(|error| format!("Cannot read embedded GLB image dimensions: {error}"))?;
+        validate_image_dimensions(width, height, *cumulative_pixels)?;
+        let rgba = image::load_from_memory_with_format(data, format)
+            .map_err(|error| format!("Cannot decode embedded GLB image: {error}"))?
+            .to_rgba8();
+        (width, height, rgba)
+    };
+    if decoded.width() != width || decoded.height() != height {
+        return Err("Decoded GLB image dimensions changed unexpectedly".into());
+    }
+    *cumulative_pixels += u64::from(width) * u64::from(height);
+    Ok(crate::image_planes::ImageAsset {
+        pixels: decoded.into_raw(),
+        size: [width, height],
+    })
+}
+
+fn validate_image_dimensions(
+    width: u32,
+    height: u32,
+    cumulative_pixels: u64,
+) -> Result<(), String> {
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
+    if width == 0
+        || height == 0
+        || pixels > crate::image_planes::MAX_IMAGE_PIXELS
+        || cumulative_pixels.saturating_add(pixels) > crate::image_planes::MAX_CATALOG_PIXELS
+    {
+        return Err(
+            "GLB embedded images exceed 12 megapixels per image or 24 megapixels total".into(),
+        );
+    }
+    Ok(())
+}
+
 pub fn load(path: &Path) -> Result<ObjModel, String> {
     let metadata =
         fs::metadata(path).map_err(|error| format!("Cannot inspect GLB file: {error}"))?;
@@ -46,6 +108,7 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
     }
     let mut image_bytes = 0usize;
     let mut decoded_images: Vec<Option<crate::image_planes::ImageAsset>> = Vec::new();
+    let mut image_decode_errors = Vec::new();
     let mut embedded_images = Vec::new();
     let mut total_image_pixels = 0u64;
     for image in gltf.images() {
@@ -77,64 +140,80 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
                 Vec::new()
             },
         });
-        if mime_type == "image/webp" {
-            let decoder = image::codecs::webp::WebPDecoder::new(std::io::Cursor::new(image_data))
-                .map_err(|error| format!("Cannot decode embedded GLB WebP: {error}"))?;
-            if decoder.has_animation() {
-                return Err(
-                    "Animated WebP textures are unsupported; GLB model textures must be static"
-                        .into(),
-                );
+        match decode_embedded_image(mime_type, image_data, &mut total_image_pixels) {
+            Ok(image) => {
+                decoded_images.push(Some(image));
+                image_decode_errors.push(None);
             }
-            let (width, height) = decoder.dimensions();
-            let pixels = u64::from(width).saturating_mul(u64::from(height));
-            total_image_pixels = total_image_pixels.saturating_add(pixels);
-            if width == 0
-                || height == 0
-                || pixels > crate::image_planes::MAX_IMAGE_PIXELS
-                || total_image_pixels > crate::image_planes::MAX_CATALOG_PIXELS
-            {
-                return Err("GLB embedded images exceed the decoded image pixel limit".into());
+            Err(error) => {
+                decoded_images.push(None);
+                image_decode_errors.push(Some(error));
             }
-            let rgba = image::DynamicImage::from_decoder(decoder)
-                .map_err(|error| format!("Cannot decode embedded GLB WebP pixels: {error}"))?
-                .to_rgba8();
-            decoded_images.push(Some(crate::image_planes::ImageAsset {
-                pixels: rgba.into_raw(),
-                size: [width, height],
-            }));
-            continue;
         }
-        let format = match mime_type {
-            "image/png" => image::ImageFormat::Png,
-            "image/jpeg" => image::ImageFormat::Jpeg,
-            _ => unreachable!(),
+    }
+
+    let mut texture_image_sources = Vec::new();
+    for texture in gltf.textures() {
+        let core_source = texture.source().map(|source| source.index());
+        let webp_source = if let Some(extension) = texture.extension_value("EXT_texture_webp") {
+            let source = extension
+                .get("source")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|source| usize::try_from(source).ok())
+                .ok_or("EXT_texture_webp must contain a non-negative image source index")?;
+            if source >= decoded_images.len() {
+                return Err(format!(
+                    "EXT_texture_webp source index {source} is outside the {} embedded images",
+                    decoded_images.len()
+                ));
+            }
+            if embedded_images[source].mime_type != "image/webp" {
+                return Err(format!(
+                    "EXT_texture_webp source {source} is not an image/webp image"
+                ));
+            }
+            Some(source)
+        } else {
+            None
         };
-        let (width, height) =
-            image::ImageReader::with_format(std::io::Cursor::new(image_data), format)
-                .into_dimensions()
-                .map_err(|error| format!("Cannot read embedded GLB image dimensions: {error}"))?;
-        let pixels = u64::from(width).saturating_mul(u64::from(height));
-        total_image_pixels = total_image_pixels.saturating_add(pixels);
-        if width == 0
-            || height == 0
-            || pixels > crate::image_planes::MAX_IMAGE_PIXELS
-            || total_image_pixels > crate::image_planes::MAX_CATALOG_PIXELS
-        {
-            return Err(
-                "GLB embedded images exceed 12 megapixels per image or 24 megapixels total".into(),
-            );
+        if core_source.is_none() && webp_source.is_none() {
+            return Err(format!(
+                "GLB texture {} has neither a core image source nor an EXT_texture_webp source",
+                texture.index()
+            ));
         }
-        let rgba = image::load_from_memory_with_format(image_data, format)
-            .map_err(|error| format!("Cannot decode embedded GLB image: {error}"))?
-            .to_rgba8();
-        if rgba.width() != width || rgba.height() != height {
-            return Err("Decoded GLB image dimensions changed unexpectedly".into());
-        }
-        decoded_images.push(Some(crate::image_planes::ImageAsset {
-            pixels: rgba.into_raw(),
-            size: [width, height],
-        }));
+        let selected = webp_source
+            .filter(|source| decoded_images[*source].is_some())
+            .or_else(|| {
+                core_source.filter(|source| {
+                    matches!(
+                        embedded_images[*source].mime_type.as_str(),
+                        "image/png" | "image/jpeg"
+                    ) && decoded_images.get(*source).is_some_and(Option::is_some)
+                })
+            });
+        let selected = selected.ok_or_else(|| {
+            let webp_error = webp_source.and_then(|source| image_decode_errors[source].as_deref());
+            let core_error = core_source.and_then(|source| {
+                image_decode_errors.get(source).and_then(Option::as_deref)
+            });
+            match (webp_error, core_error) {
+                (Some(webp), Some(core)) => format!(
+                    "GLB texture {} could not decode its WebP source ({webp}) or core fallback ({core})",
+                    texture.index()
+                ),
+                (Some(error), _) => format!(
+                    "GLB texture {} could not decode its EXT_texture_webp source: {error}",
+                    texture.index()
+                ),
+                (_, Some(error)) => format!(
+                    "GLB texture {} could not decode its core image source: {error}",
+                    texture.index()
+                ),
+                _ => format!("GLB texture {} has no readable image source", texture.index()),
+            }
+        })?;
+        texture_image_sources.push(selected);
     }
 
     let mut materials = vec![ObjMaterial {
@@ -189,14 +268,16 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
             roughness,
             emissive_factor,
             base_color_texture: pbr.base_color_texture().and_then(|info| {
-                decoded_images
-                    .get(info.texture().source().index())
+                texture_image_sources
+                    .get(info.texture().index())
+                    .and_then(|source| decoded_images.get(*source))
                     .cloned()
                     .flatten()
             }),
             base_color_embedded_image: pbr
                 .base_color_texture()
-                .map(|info| info.texture().source().index() as u32),
+                .and_then(|info| texture_image_sources.get(info.texture().index()))
+                .and_then(|source| u32::try_from(*source).ok()),
             base_color_tex_coord: pbr.base_color_texture().map(|info| info.tex_coord()),
             texture_sampler: pbr.base_color_texture().map(|info| {
                 let sampler = info.texture().sampler();
