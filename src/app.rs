@@ -26,7 +26,7 @@ fn tool_icon_button(
 ) -> egui::Response {
     let response = ui.add_sized([44.0, 44.0], egui::Button::new("").selected(selected));
     let accessible_name = if icon == "shape" {
-        "Shape tool, choose Circle or Ellipse".to_owned()
+        "Shape tool, choose Circle, Ellipse, Rectangle, or Rounded rectangle".to_owned()
     } else if detail.starts_with("Shortcut:") {
         format!("{name}, {}", detail.trim_start_matches("Shortcut: ").trim())
     } else {
@@ -4111,7 +4111,7 @@ impl SketchApp {
                             tools.into_iter().enumerate()
                         {
                             let suffix = if shortcut.is_empty() {
-                                "Choose Circle or Ellipse from the contextual options".to_owned()
+                                "Choose Circle, Ellipse, Rectangle, or Rounded rectangle from the contextual options".to_owned()
                             } else {
                                 format!("Shortcut: {shortcut}")
                             };
