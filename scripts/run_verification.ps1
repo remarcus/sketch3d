@@ -174,7 +174,7 @@ function Invoke-VerificationCheck([string]$Id, [string[]]$Arguments, [string[]]$
                 $stderr = $stderrTask.GetAwaiter().GetResult()
                 $stdout = $stdoutTask.GetAwaiter().GetResult()
                 $combined = "$stderr`n$stdout"
-                if ($combined -match '(?i)(no (suitable )?(gpu|graphics|vulkan|wgpu).*adapter|adapter.*(not found|unsupported)|no suitable adapter found|NoSuitableAdapterFound|could not create headless gpu renderer|unsupported environment|feature .* not supported)') {
+                if ($combined -match '(?i)(no (suitable )?(gpu|graphics|vulkan|wgpu).*adapter|adapter.*(not found|unsupported)|no suitable adapter found|NoSuitableAdapterFound|FailedToCreateSurfaceForAnyBackend|CreateSurfaceError|could not create headless gpu renderer|unsupported environment|feature .* not supported)') {
                     $outcome = 'unsupported'
                     $failureReason = ($combined.Trim() -split "`r?`n" | Select-Object -Last 1)
                 } else {

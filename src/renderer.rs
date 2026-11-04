@@ -628,7 +628,10 @@ impl SceneRenderer {
                             operation: wgpu::BlendOperation::Add,
                         },
                     }),
-                    _ if alpha_blend => Some(wgpu::BlendState::ALPHA_BLENDING),
+                    // Transparent export targets must accumulate opaque stroke
+                    // coverage too, so their edge RGB is premultiplied before
+                    // the PNG readback is converted to straight alpha.
+                    _ if alpha_blend || transparent => Some(wgpu::BlendState::ALPHA_BLENDING),
                     _ => None,
                 }
             };
