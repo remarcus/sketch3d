@@ -25,6 +25,9 @@ const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RUN_TIMEOUT_SECONDS: u64 = 600;
 const RUNNER_TIMEOUT_PADDING_SECONDS: u64 = 30;
 const MAX_PROCESS_LOG_BYTES: usize = 64 * 1024;
+const MAX_TEXT_ARTIFACT_BYTES: u64 = 256 * 1024;
+const MAX_PNG_ARTIFACT_BYTES: u64 = 1_000_000;
+const MAX_PNG_DIMENSION: u32 = 16_384;
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn serve(configured_root: &Path) -> Result<(), String> {
@@ -226,6 +229,12 @@ fn tool_definitions() -> Value {
             "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
         },
         {
+            "name": "verification_read_artifact",
+            "description": "Read one bounded text log or PNG preview recorded in a completed verification result.",
+            "inputSchema": {"type": "object", "properties": {"run_id": {"type": "string", "maxLength": 64}, "check_id": {"type": "string", "enum": ["startup", "save-reopen", "export"]}, "path": {"type": "string", "maxLength": 512}}, "required": ["run_id", "check_id", "path"], "additionalProperties": false},
+            "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
+        },
+        {
             "name": "verification_run_check",
             "description": "Run one allowlisted local verifier in a unique output run directory and return its normalized result. This starts the configured Sketch3D executable and is bounded by timeout_seconds.",
             "inputSchema": {"type": "object", "properties": {"check_id": {"type": "string", "enum": ["startup", "save-reopen", "export"]}, "timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 600, "default": 180}}, "required": ["check_id"], "additionalProperties": false},
@@ -235,6 +244,30 @@ fn tool_definitions() -> Value {
 }
 
 fn call_tool(root: &Path, name: &str, arguments: &Value) -> Value {
+    if name == "verification_read_artifact" {
+        let result = required_string(arguments, "run_id").and_then(|run_id| {
+            required_string(arguments, "check_id").and_then(|check_id| {
+                required_string(arguments, "path")
+                    .and_then(|path| read_artifact(root, run_id, check_id, path))
+            })
+        });
+        return match result {
+            Ok(ReadArtifact::Text { path, text, size_bytes }) => json!({
+                "content": [{"type": "text", "text": text}],
+                "structuredContent": {"path": path, "artifact_type": "text/plain", "size_bytes": size_bytes},
+                "isError": false
+            }),
+            Ok(ReadArtifact::Png { path, data, size_bytes }) => json!({
+                "content": [{"type": "image", "data": data, "mimeType": "image/png"}],
+                "structuredContent": {"path": path, "artifact_type": "image/png", "size_bytes": size_bytes},
+                "isError": false
+            }),
+            Err(error) => json!({
+                "content": [{"type": "text", "text": error}],
+                "isError": true
+            }),
+        };
+    }
     let result = match name {
         "verification_list_checks" => list_checks(root),
         "verification_read_result" => required_string(arguments, "run_id")
@@ -399,23 +432,13 @@ fn list_artifacts(root: &Path, run_id: &str, check_id: &str) -> Result<Value, St
         let relative = relative
             .as_str()
             .ok_or("Artifact path is not a string")?;
-        let path = Path::new(relative);
-        if path.is_absolute()
-            || path
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err("Artifact path is not a safe relative path".into());
-        }
-        let canonical = run_directory
-            .join(path)
-            .canonicalize()
-            .map_err(|_| format!("Artifact is unavailable: {relative}"))?;
-        if !canonical.starts_with(&run_directory) || !canonical.is_file() {
-            return Err("Artifact path escapes its run directory".into());
-        }
+        let canonical = resolve_artifact_path(&run_directory, relative)?;
         let metadata = fs::metadata(&canonical).map_err(|error| error.to_string())?;
-        artifacts.push(json!({"path": relative, "size_bytes": metadata.len()}));
+        artifacts.push(json!({
+            "path": relative,
+            "size_bytes": metadata.len(),
+            "artifact_type": artifact_type(relative).unwrap_or("unsupported")
+        }));
     }
     Ok(json!({
         "run_id": run_id,
@@ -423,6 +446,216 @@ fn list_artifacts(root: &Path, run_id: &str, check_id: &str) -> Result<Value, St
         "artifacts": artifacts,
         "artifact_limit": MAX_ARTIFACTS
     }))
+}
+
+enum ReadArtifact {
+    Text { path: String, text: String, size_bytes: u64 },
+    Png { path: String, data: String, size_bytes: u64 },
+}
+
+fn read_artifact(
+    root: &Path,
+    run_id: &str,
+    check_id: &str,
+    relative: &str,
+) -> Result<ReadArtifact, String> {
+    if !matches!(check_id, "startup" | "save-reopen" | "export") {
+        return Err("Unsupported check ID".into());
+    }
+    let (_, run_directory, bytes) = result_file(root, run_id)?;
+    let result: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Invalid result JSON: {error}"))?;
+    if result.get("schema_version").and_then(Value::as_u64) != Some(1) {
+        return Err("Run result does not use schema version 1".into());
+    }
+    let check = result
+        .get("results")
+        .and_then(Value::as_array)
+        .and_then(|checks| checks.iter().find(|item| {
+            item.get("check_id").and_then(Value::as_str) == Some(check_id)
+        }))
+        .ok_or("Check is not present in this completed run")?;
+    let declared = check
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or("Completed check has no artifact list")?;
+    if declared.len() > MAX_ARTIFACTS {
+        return Err("Artifact list exceeds the 256 item limit".into());
+    }
+    if !declared.iter().any(|item| item.as_str() == Some(relative)) {
+        return Err("Artifact path is not recorded for this check".into());
+    }
+    let kind = artifact_type(relative).ok_or("Only .log, .txt, and .png artifacts can be read")?;
+    let path = resolve_artifact_path(&run_directory, relative)?;
+    let limit = if kind == "image/png" {
+        MAX_PNG_ARTIFACT_BYTES
+    } else {
+        MAX_TEXT_ARTIFACT_BYTES
+    };
+    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+    if metadata.len() > limit {
+        return Err(format!("Artifact exceeds the {limit} byte read limit"));
+    }
+    let file = fs::File::open(&path).map_err(|error| error.to_string())?;
+    let mut content = Vec::with_capacity(metadata.len() as usize);
+    file.take(limit + 1)
+        .read_to_end(&mut content)
+        .map_err(|error| error.to_string())?;
+    if content.len() as u64 > limit {
+        return Err(format!("Artifact grew beyond the {limit} byte read limit"));
+    }
+    match kind {
+        "text/plain" => {
+            let text = std::str::from_utf8(&content)
+                .map_err(|_| "Declared text artifact is not valid UTF-8")?;
+            if text.chars().any(|character| character == '\0') {
+                return Err("Declared text artifact contains binary data".into());
+            }
+            Ok(ReadArtifact::Text {
+                path: relative.to_owned(),
+                text: text.to_owned(),
+                size_bytes: content.len() as u64,
+            })
+        }
+        "image/png" => {
+            validate_png(&content)?;
+            Ok(ReadArtifact::Png {
+                path: relative.to_owned(),
+                data: encode_base64(&content),
+                size_bytes: content.len() as u64,
+            })
+        }
+        _ => Err("Unsupported artifact type".into()),
+    }
+}
+
+fn artifact_type(relative: &str) -> Option<&'static str> {
+    match Path::new(relative)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("log" | "txt") => Some("text/plain"),
+        Some("png") => Some("image/png"),
+        _ => None,
+    }
+}
+
+fn resolve_artifact_path(run_directory: &Path, relative: &str) -> Result<PathBuf, String> {
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute()
+        || relative_path.as_os_str().is_empty()
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("Artifact path is not a safe relative path".into());
+    }
+    let mut candidate = run_directory.to_path_buf();
+    for component in relative_path.components() {
+        candidate.push(component.as_os_str());
+        let metadata = fs::symlink_metadata(&candidate)
+            .map_err(|_| format!("Artifact is unavailable: {relative}"))?;
+        if metadata.file_type().is_symlink() {
+            return Err("Artifact path contains a symlink".into());
+        }
+    }
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|_| format!("Artifact is unavailable: {relative}"))?;
+    if !canonical.starts_with(run_directory) || !canonical.is_file() {
+        return Err("Artifact path escapes its run directory or is not a file".into());
+    }
+    Ok(canonical)
+}
+
+fn validate_png(bytes: &[u8]) -> Result<(), String> {
+    const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.len() < SIGNATURE.len() + 25 || !bytes.starts_with(SIGNATURE) {
+        return Err("Declared PNG artifact has an invalid PNG structure".into());
+    }
+    let mut offset = SIGNATURE.len();
+    let mut seen_header = false;
+    let mut seen_image_data = false;
+    let mut seen_end = false;
+    while offset < bytes.len() {
+        let header_end = offset.checked_add(8).ok_or("PNG chunk offset overflow")?;
+        if header_end > bytes.len() {
+            return Err("Declared PNG artifact has a truncated chunk header".into());
+        }
+        let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap_or_default()) as usize;
+        let data_end = header_end.checked_add(length).ok_or("PNG chunk length overflow")?;
+        let chunk_end = data_end.checked_add(4).ok_or("PNG chunk length overflow")?;
+        if chunk_end > bytes.len() {
+            return Err("Declared PNG artifact has a truncated chunk".into());
+        }
+        let chunk_type = &bytes[offset + 4..header_end];
+        let expected_crc = u32::from_be_bytes(bytes[data_end..chunk_end].try_into().unwrap_or_default());
+        if png_crc32(&bytes[offset + 4..data_end]) != expected_crc {
+            return Err("Declared PNG artifact has a corrupt chunk checksum".into());
+        }
+        if !seen_header {
+            if chunk_type != b"IHDR" || length != 13 {
+                return Err("PNG must begin with one valid IHDR chunk".into());
+            }
+            let width = u32::from_be_bytes(bytes[header_end..header_end + 4].try_into().unwrap_or_default());
+            let height = u32::from_be_bytes(bytes[header_end + 4..header_end + 8].try_into().unwrap_or_default());
+            if width == 0
+                || height == 0
+                || width > MAX_PNG_DIMENSION
+                || height > MAX_PNG_DIMENSION
+                || u64::from(width) * u64::from(height) > 64_000_000
+            {
+                return Err("PNG dimensions exceed the supported image bounds".into());
+            }
+            seen_header = true;
+        } else if chunk_type == b"IHDR" {
+            return Err("PNG contains more than one IHDR chunk".into());
+        }
+        if chunk_type == b"IDAT" {
+            seen_image_data = true;
+        }
+        if chunk_type == b"IEND" {
+            if length != 0 || chunk_end != bytes.len() {
+                return Err("PNG has an invalid IEND chunk".into());
+            }
+            seen_end = true;
+            break;
+        }
+        offset = chunk_end;
+    }
+    if !seen_header || !seen_image_data || !seen_end {
+        return Err("Declared PNG artifact is incomplete".into());
+    }
+    Ok(())
+}
+
+fn png_crc32(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().saturating_add(2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(TABLE[(first >> 2) as usize] as char);
+        output.push(TABLE[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        output.push(if chunk.len() > 1 { TABLE[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char } else { '=' });
+        output.push(if chunk.len() > 2 { TABLE[(third & 0x3f) as usize] as char } else { '=' });
+    }
+    output
 }
 
 fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, String> {
