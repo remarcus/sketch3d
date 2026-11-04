@@ -473,6 +473,9 @@ fn parse_path(s: &str) -> Result<(Vec<CubicBezier>, bool), String> {
     let mut cursor = Vec2::ZERO;
     let mut start = Vec2::ZERO;
     let mut cmd = ' ';
+    let mut previous_command = ' ';
+    let mut last_cubic_control: Option<Vec2> = None;
+    let mut last_quadratic_control: Option<Vec2> = None;
     let mut index = 0;
     let mut closed = false;
     while index < tokens.len() {
@@ -480,9 +483,14 @@ fn parse_path(s: &str) -> Result<(Vec<CubicBezier>, bool), String> {
             cmd = tokens[index].chars().next().unwrap();
             index += 1;
             if cmd == 'Z' || cmd == 'z' {
-                seg.push(line(cursor, start));
+                if cursor.distance_squared(start) > 1e-12 {
+                    seg.push(line(cursor, start));
+                }
                 cursor = start;
                 closed = true;
+                previous_command = 'Z';
+                last_cubic_control = None;
+                last_quadratic_control = None;
                 cmd = ' ';
                 continue;
             }
@@ -550,6 +558,26 @@ fn parse_path(s: &str) -> Result<(Vec<CubicBezier>, bool), String> {
                     p3: p3.extend(0.0),
                 });
                 cursor = p3;
+                last_cubic_control = Some(p2);
+                last_quadratic_control = None;
+            }
+            'S' => {
+                let p1 = if matches!(previous_command, 'C' | 'S') {
+                    last_cubic_control.map_or(cursor, |control| cursor * 2.0 - control)
+                } else {
+                    cursor
+                };
+                let p2 = point(read(&mut index)?, read(&mut index)?, cursor, rel);
+                let p3 = point(read(&mut index)?, read(&mut index)?, cursor, rel);
+                seg.push(CubicBezier {
+                    p0: cursor.extend(0.0),
+                    p1: p1.extend(0.0),
+                    p2: p2.extend(0.0),
+                    p3: p3.extend(0.0),
+                });
+                cursor = p3;
+                last_cubic_control = Some(p2);
+                last_quadratic_control = None;
             }
             'Q' => {
                 let q = point(read(&mut index)?, read(&mut index)?, cursor, rel);
@@ -563,6 +591,27 @@ fn parse_path(s: &str) -> Result<(Vec<CubicBezier>, bool), String> {
                     p3: p.extend(0.0),
                 });
                 cursor = p;
+                last_quadratic_control = Some(q);
+                last_cubic_control = None;
+            }
+            'T' => {
+                let q = if matches!(previous_command, 'Q' | 'T') {
+                    last_quadratic_control.map_or(cursor, |control| cursor * 2.0 - control)
+                } else {
+                    cursor
+                };
+                let p = point(read(&mut index)?, read(&mut index)?, cursor, rel);
+                let p1 = cursor.lerp(q, 2.0 / 3.0);
+                let p2 = p.lerp(q, 2.0 / 3.0);
+                seg.push(CubicBezier {
+                    p0: cursor.extend(0.0),
+                    p1: p1.extend(0.0),
+                    p2: p2.extend(0.0),
+                    p3: p.extend(0.0),
+                });
+                cursor = p;
+                last_quadratic_control = Some(q);
+                last_cubic_control = None;
             }
             'A' => {
                 let rx = read(&mut index)?.abs();
@@ -581,9 +630,12 @@ fn parse_path(s: &str) -> Result<(Vec<CubicBezier>, bool), String> {
                     sweep,
                 )?);
                 cursor = end;
+                last_cubic_control = None;
+                last_quadratic_control = None;
             }
             _ => return Err(format!("Unsupported SVG path command {cmd}")),
         }
+        previous_command = upper;
         if seg.len() > MAX_SVG_SEGMENTS {
             return Err("SVG path exceeds the segment limit".into());
         }
