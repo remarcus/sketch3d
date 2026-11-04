@@ -815,26 +815,35 @@ fn parse_element_geometry(
             let y = value("y", 0.0)?;
             let width = value("width", 0.0)?;
             let height = value("height", 0.0)?;
-            let rx = value("rx", 0.0)?;
-            let ry = value("ry", 0.0)?;
-            if width <= 0.0 || height <= 0.0 || rx < 0.0 || ry < 0.0 || rx > 0.0 || ry > 0.0 {
-                return Err(
-                    "SVG rectangles need positive dimensions; rounded rectangles are not supported yet"
-                        .into(),
-                );
+            let mut rx = value("rx", 0.0)?;
+            let mut ry = value("ry", 0.0)?;
+            if width <= 0.0 || height <= 0.0 || rx < 0.0 || ry < 0.0 {
+                return Err("SVG rectangle dimensions and corner radii must be nonnegative".into());
             }
-            Ok((
-                segments_for_points(
-                    &[
-                        Vec2::new(x, y),
-                        Vec2::new(x + width, y),
-                        Vec2::new(x + width, y + height),
-                        Vec2::new(x, y + height),
-                    ],
+            if !attrs.contains_key("rx") {
+                rx = ry;
+            }
+            if !attrs.contains_key("ry") {
+                ry = rx;
+            }
+            rx = rx.min(width * 0.5);
+            ry = ry.min(height * 0.5);
+            if rx <= 0.0 || ry <= 0.0 {
+                Ok((
+                    segments_for_points(
+                        &[
+                            Vec2::new(x, y),
+                            Vec2::new(x + width, y),
+                            Vec2::new(x + width, y + height),
+                            Vec2::new(x, y + height),
+                        ],
+                        true,
+                    ),
                     true,
-                ),
-                true,
-            ))
+                ))
+            } else {
+                Ok((rounded_rect_segments(x, y, width, height, rx, ry), true))
+            }
         }
         "circle" | "ellipse" => {
             let cx = value("cx", 0.0)?;
@@ -896,6 +905,77 @@ fn ellipse_segments(cx: f32, cy: f32, rx: f32, ry: f32) -> Vec<CubicBezier> {
         },
     ]
 }
+
+fn rounded_rect_segments(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    rx: f32,
+    ry: f32,
+) -> Vec<CubicBezier> {
+    let right = x + width;
+    let bottom = y + height;
+    let mut segments = vec![line(Vec2::new(x + rx, y), Vec2::new(right - rx, y))];
+    segments.push(ellipse_arc_piece(
+        right - rx,
+        y + ry,
+        rx,
+        ry,
+        -std::f32::consts::FRAC_PI_2,
+        0.0,
+    ));
+    segments.push(line(
+        Vec2::new(right, y + ry),
+        Vec2::new(right, bottom - ry),
+    ));
+    segments.push(ellipse_arc_piece(
+        right - rx,
+        bottom - ry,
+        rx,
+        ry,
+        0.0,
+        std::f32::consts::FRAC_PI_2,
+    ));
+    segments.push(line(
+        Vec2::new(right - rx, bottom),
+        Vec2::new(x + rx, bottom),
+    ));
+    segments.push(ellipse_arc_piece(
+        x + rx,
+        bottom - ry,
+        rx,
+        ry,
+        std::f32::consts::FRAC_PI_2,
+        std::f32::consts::PI,
+    ));
+    segments.push(line(Vec2::new(x, bottom - ry), Vec2::new(x, y + ry)));
+    segments.push(ellipse_arc_piece(
+        x + rx,
+        y + ry,
+        rx,
+        ry,
+        std::f32::consts::PI,
+        3.0 * std::f32::consts::FRAC_PI_2,
+    ));
+    segments
+}
+
+fn ellipse_arc_piece(cx: f32, cy: f32, rx: f32, ry: f32, start: f32, end: f32) -> CubicBezier {
+    let center = Vec2::new(cx, cy);
+    let point = |angle: f32| center + Vec2::new(rx * angle.cos(), ry * angle.sin());
+    let tangent = |angle: f32| Vec2::new(-rx * angle.sin(), ry * angle.cos());
+    let alpha = 4.0 / 3.0 * ((end - start) * 0.25).tan();
+    let p0 = point(start);
+    let p3 = point(end);
+    CubicBezier {
+        p0: p0.extend(0.0),
+        p1: (p0 + tangent(start) * alpha).extend(0.0),
+        p2: (p3 - tangent(end) * alpha).extend(0.0),
+        p3: p3.extend(0.0),
+    }
+}
+
 fn parse_poly(s: &str, closed: bool) -> Result<(Vec<CubicBezier>, bool), String> {
     let n = numbers(s).ok_or("Invalid SVG points")?;
     if n.len() < 4 || n.len() % 2 != 0 || n.len() / 2 > MAX_SVG_SEGMENTS {
