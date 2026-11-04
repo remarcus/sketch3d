@@ -98,7 +98,7 @@ impl SketchApp {
                 i.modifiers,
             )
         });
-        if k && !mods.command && !mods.alt {
+        if k && !mods.shift && !mods.command && !mods.alt {
             self.begin_placement();
         }
         if self.placement.active {

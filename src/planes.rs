@@ -2,6 +2,12 @@ use super::ui_style;
 use super::*;
 use crate::{editing, gizmo};
 
+#[derive(Default)]
+pub(super) struct PlanePickUi {
+    pub active: bool,
+    pub hovered_guide: Option<u64>,
+}
+
 impl SketchApp {
     pub(super) fn plane_from_view(&mut self) {
         self.finish();
@@ -13,6 +19,31 @@ impl SketchApp {
     }
     pub(super) fn plane_controls(&mut self, ui: &mut egui::Ui) {
         self.saved_guide_controls(ui);
+        let has_pickable_plane = self.doc.guide_resources.iter().any(|guide| {
+            guide.visible
+                && !guide.locked
+                && matches!(
+                    &guide.geometry,
+                    crate::document::guide_resources::GuideGeometry::Plane { .. }
+                )
+        });
+        if ui
+            .add_enabled(
+                has_pickable_plane || self.plane_picker.active,
+                egui::Button::new(if self.plane_picker.active {
+                    "Picking plane… [Escape]"
+                } else {
+                    "Pick plane on canvas [Shift+K]"
+                }),
+            )
+            .clicked()
+        {
+            if self.plane_picker.active {
+                self.cancel_plane_picker();
+            } else {
+                self.begin_plane_picker();
+            }
+        }
         if self.doc.active_guide.is_some() {
             return;
         }
@@ -176,6 +207,15 @@ impl SketchApp {
                 continue;
             };
             let active = self.doc.active_guide == Some(guide.id);
+            let hovered = self.plane_picker.active
+                && self.plane_picker.hovered_guide == Some(guide.id);
+            let color = if hovered {
+                Color32::from_rgb(255, 210, 90)
+            } else if active {
+                active_color
+            } else {
+                inactive_color
+            };
             draw_plane_grid(
                 &painter,
                 &self.camera,
@@ -183,9 +223,9 @@ impl SketchApp {
                 *origin,
                 *rotation * Vec3::X,
                 *rotation * Vec3::Y,
-                if active { active_color } else { inactive_color },
-                active,
-                &guide.name,
+                color,
+                active || hovered,
+                if hovered { "Pick" } else { &guide.name },
             );
         }
 
@@ -210,6 +250,163 @@ impl SketchApp {
                 self.guide.label(),
             );
         }
+    }
+
+    pub(super) fn begin_plane_picker(&mut self) {
+        if self.presentation.artwork {
+            self.status = "Exit artwork-only view before picking a drawing plane.".into();
+            return;
+        }
+        if self.placement.active || self.placement.stamp.is_some() {
+            self.status = "Finish or cancel the current plane or stamp placement first.".into();
+            return;
+        }
+        if !self.doc.guide_resources.iter().any(|guide| {
+            guide.visible
+                && !guide.locked
+                && matches!(
+                    &guide.geometry,
+                    crate::document::guide_resources::GuideGeometry::Plane { .. }
+                )
+        }) {
+            self.status = "There are no visible, unlocked saved planes to pick.".into();
+            return;
+        }
+        self.finish();
+        self.cancel_line_tool();
+        self.cancel_curve_tool();
+        self.cancel_shape_draft();
+        self.cancel_fill_tool();
+        self.plane_picker.active = true;
+        self.plane_picker.hovered_guide = None;
+        self.status = "Move over a visible saved plane and click to make it active. Shift+K starts picking; Escape cancels.".into();
+    }
+
+    pub(super) fn cancel_plane_picker(&mut self) {
+        if self.plane_picker.active {
+            self.plane_picker.active = false;
+            self.plane_picker.hovered_guide = None;
+            self.status = "Plane picking cancelled; the active drawing plane is unchanged.".into();
+        }
+    }
+
+    pub(super) fn plane_picker_shortcuts(&mut self, ctx: &egui::Context) {
+        let (pressed, modifiers) = ctx.input(|input| {
+            (input.key_pressed(Key::K), input.modifiers)
+        });
+        if pressed
+            && modifiers.shift
+            && !modifiers.command
+            && !modifiers.alt
+            && !ctx.wants_keyboard_input()
+        {
+            if self.plane_picker.active {
+                self.cancel_plane_picker();
+            } else {
+                self.begin_plane_picker();
+            }
+        }
+        if self.plane_picker.active && ctx.input(|input| input.key_pressed(Key::Escape)) {
+            self.cancel_plane_picker();
+        }
+    }
+
+    pub(super) fn update_plane_picker_hover(&mut self, cursor: Option<Pos2>, rect: Rect) {
+        if !self.plane_picker.active {
+            return;
+        }
+        self.plane_picker.hovered_guide = cursor
+            .filter(|position| rect.contains(*position))
+            .and_then(|position| self.pick_saved_plane(position, rect));
+    }
+
+    fn pick_saved_plane(&self, cursor: Pos2, rect: Rect) -> Option<u64> {
+        let (ray_origin, ray_direction) = gizmo::ray(&self.camera, rect, cursor);
+        let mut best: Option<(f32, u64)> = None;
+        for guide in self.doc.guide_resources.iter().filter(|guide| guide.visible && !guide.locked) {
+            let crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } =
+                &guide.geometry
+            else {
+                continue;
+            };
+            let plane = DrawingPlane {
+                anchor: *origin,
+                rotation_degrees: super::guide_resource_ui::rotation_degrees(*rotation),
+                depth: 0.0,
+            };
+            let Some(hit) = intersect_plane(ray_origin, ray_direction, plane) else {
+                continue;
+            };
+            if gizmo::project(&self.camera, rect, hit).is_none() {
+                continue;
+            }
+            let distance = hit.distance(ray_origin);
+            if !distance.is_finite() {
+                continue;
+            }
+            let Some((best_distance, best_id)) = best else {
+                best = Some((distance, guide.id));
+                continue;
+            };
+            let tie_tolerance = 1.0e-5 * distance.max(best_distance).max(1.0);
+            if distance < best_distance - tie_tolerance
+                || ((distance - best_distance).abs() <= tie_tolerance && guide.id < best_id)
+            {
+                best = Some((distance, guide.id));
+            }
+        }
+        best.map(|(_, id)| id)
+    }
+
+    pub(super) fn pick_saved_plane_at(&mut self, cursor: Pos2, rect: Rect) {
+        let Some(guide_id) = self.pick_saved_plane(cursor, rect) else {
+            self.status = "No visible saved plane intersects this canvas position.".into();
+            self.plane_picker.hovered_guide = None;
+            return;
+        };
+        self.finish();
+        self.cancel_line_tool();
+        self.cancel_curve_tool();
+        self.cancel_shape_draft();
+        self.cancel_fill_tool();
+
+        let before = (
+            self.doc.guide_resources.clone(),
+            self.doc.active_guide,
+            self.doc.image_planes.clone(),
+            self.doc.active_image_plane,
+            self.doc.active_model_reference,
+        );
+        let mut after = before.clone();
+        after.1 = Some(guide_id);
+        after.3 = None;
+        after.4 = None;
+        for image in &mut after.2 {
+            image.drawable = false;
+        }
+        if before != after {
+            let edit = Edit::Guides { before, after };
+            edit.apply(&mut self.doc, true);
+            self.undo.push(edit);
+            self.redo.clear();
+            self.dirty = true;
+            self.record_recovery_edit();
+            self.renderer.invalidate();
+        }
+        self.use_cylinder = false;
+        self.use_revolved = false;
+        self.guide_visible = true;
+        self.shape_tool.mode = None;
+        self.plane_picker.active = false;
+        self.plane_picker.hovered_guide = None;
+        self.status = format!(
+            "{} is now the active drawing plane.",
+            self.doc
+                .guide_resources
+                .iter()
+                .find(|guide| guide.id == guide_id)
+                .map_or("Saved plane", |guide| guide.name.as_str())
+        );
     }
     pub(super) fn verify_planes(&mut self, rect: Rect) {
         let original = self.doc.strokes.clone();

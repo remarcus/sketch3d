@@ -515,6 +515,7 @@ pub struct SketchApp {
     view_verification_frame: Option<u32>,
     presentation: presentation_ui::PresentationUi,
     placement: placement_ui::PlacementUi,
+    plane_picker: planes::PlanePickUi,
     fills: fills_ui::FillUi,
     show_scene: bool,
     lighting_verification_frame: Option<u32>,
@@ -2072,6 +2073,7 @@ impl SketchApp {
             view_verification_frame: None,
             presentation: presentation_ui::PresentationUi::new(),
             placement: Default::default(),
+            plane_picker: Default::default(),
             fills: Default::default(),
             show_scene: false,
             lighting_verification_frame: None,
@@ -3068,6 +3070,8 @@ impl SketchApp {
     }
     fn cancel(&mut self) {
         self.placement.stamp = None;
+        self.plane_picker.active = false;
+        self.plane_picker.hovered_guide = None;
         self.finish_canvas_point_edit(false);
         self.finish_multi_point_edit(false);
         self.cancel_multi_point_region();
@@ -5662,6 +5666,10 @@ impl SketchApp {
                 ui.close_menu();
                 self.begin_placement();
             }
+            if ui.button("Pick saved plane on canvas   Shift+K").clicked() {
+                ui.close_menu();
+                self.begin_plane_picker();
+            }
             if ui.button("Scene lighting and ground").clicked() {
                 ui.close_menu();
                 self.finish();
@@ -6145,6 +6153,17 @@ impl SketchApp {
         if self.selection_cleanup_draft.is_some() {
             return;
         }
+        if self.plane_picker.active {
+            if self.presentation.artwork {
+                self.cancel_plane_picker();
+                return;
+            }
+            if begin {
+                self.pick_saved_plane_at(pos, rect);
+                self.mouse_down = false;
+            }
+            return;
+        }
         let pressure_samples_available = pressure.is_some();
         let pressure = pressure.unwrap_or(1.0);
         if self.presentation.artwork {
@@ -6225,6 +6244,7 @@ impl SketchApp {
                 tilt,
             );
         }
+
     }
     fn canvas_input(&mut self, ctx: &egui::Context, rect: Rect, mut pen: Vec<PenSample>) {
         self.sync_canvas_point_edit();
@@ -6292,6 +6312,10 @@ impl SketchApp {
             || self.mixed_resource_preview_active()
             || (self.liquify_active() && !self.liquify_brush_active());
         let inside_canvas = |p| canvas_pointer_allowed(ctx, rect, p);
+        self.update_plane_picker_hover(
+            pointer.hover_pos().filter(|position| inside_canvas(*position)),
+            rect,
+        );
         let scale = ctx.pixels_per_point();
         for sample in &mut pen {
             sample.position.x /= scale;
@@ -6315,6 +6339,9 @@ impl SketchApp {
             }
             let inside = inside_canvas(sample.position);
             let previous = self.pen_previous.replace(sample.position);
+            if self.plane_picker.active && sample.phase == Phase::Move && !sample.contact {
+                self.update_plane_picker_hover(inside.then_some(sample.position), rect);
+            }
             if blocked {
                 self.cancel_brush_selection();
                 self.cancel_partial_erase();
@@ -6792,6 +6819,7 @@ impl eframe::App for SketchApp {
         if self.palette_ui.sampling && ctx.input(|input| input.key_pressed(Key::Escape)) {
             self.cancel_color_sampling();
         }
+        self.plane_picker_shortcuts(ctx);
         if self.loft_preview.is_some() && ctx.input(|input| input.key_pressed(Key::Escape)) {
             self.loft_preview = None;
             self.renderer.invalidate();
