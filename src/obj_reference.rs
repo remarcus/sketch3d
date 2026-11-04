@@ -50,10 +50,18 @@ pub struct ObjMaterial {
     pub emissive_factor: [f32; 3],
     /// Optional decoded base-color texture for self-contained GLB references.
     pub base_color_texture: Option<crate::image_planes::ImageAsset>,
+    /// Source image index for formats retained as encoded bytes, such as WebP.
+    pub base_color_embedded_image: Option<u32>,
     pub base_color_tex_coord: Option<u32>,
     pub texture_sampler: Option<ObjTextureSampler>,
     pub alpha_mode: ObjMaterialAlphaMode,
     pub alpha_cutoff: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjEmbeddedImage {
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -133,6 +141,8 @@ pub struct ObjModel {
     pub objects: Vec<String>,
     pub groups: Vec<String>,
     pub materials: Vec<ObjMaterial>,
+    /// Bounded source image bytes shared by all materials that reference them.
+    pub embedded_images: Vec<ObjEmbeddedImage>,
     pub triangles: Vec<ObjTriangle>,
     pub bounds: [Vec3; 2],
     /// MTL features outside the supported diffuse-color/opacity subset.
@@ -431,6 +441,7 @@ pub fn parse(bytes: &[u8], source_obj: &Path) -> Result<ObjModel, String> {
         objects,
         groups,
         materials,
+        embedded_images: Vec::new(),
         triangles,
         bounds: [min, max],
         warnings,
@@ -486,6 +497,7 @@ fn parse_mtl(
                     roughness: 0.8,
                     emissive_factor: [0.0; 3],
                     base_color_texture: None,
+                    base_color_embedded_image: None,
                     base_color_tex_coord: None,
                     texture_sampler: None,
                     alpha_mode: ObjMaterialAlphaMode::Opaque,

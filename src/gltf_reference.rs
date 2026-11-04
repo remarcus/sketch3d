@@ -45,6 +45,7 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
     }
     let mut image_bytes = 0usize;
     let mut decoded_images: Vec<Option<crate::image_planes::ImageAsset>> = Vec::new();
+    let mut embedded_images = Vec::new();
     let mut total_image_pixels = 0u64;
     for image in gltf.images() {
         let gltf::image::Source::View { view, mime_type } = image.source() else {
@@ -66,6 +67,15 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
         if image_bytes > MAX_EMBEDDED_IMAGE_BYTES {
             return Err("GLB embedded images exceed the 64 MiB limit".into());
         }
+        let image_data = &blob[view.offset()..view.offset() + view.length()];
+        embedded_images.push(crate::obj_reference::ObjEmbeddedImage {
+            mime_type: mime_type.to_owned(),
+            bytes: if mime_type == "image/webp" {
+                image_data.to_vec()
+            } else {
+                Vec::new()
+            },
+        });
         let format = match mime_type {
             "image/png" => image::ImageFormat::Png,
             "image/jpeg" => image::ImageFormat::Jpeg,
@@ -75,7 +85,6 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
             }
             _ => unreachable!(),
         };
-        let image_data = &blob[view.offset()..view.offset() + view.length()];
         let (width, height) =
             image::ImageReader::with_format(std::io::Cursor::new(image_data), format)
                 .into_dimensions()
@@ -109,6 +118,7 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
         roughness: 1.0,
         emissive_factor: [0.0; 3],
         base_color_texture: None,
+        base_color_embedded_image: None,
         base_color_tex_coord: None,
         texture_sampler: None,
         alpha_mode: crate::obj_reference::ObjMaterialAlphaMode::Opaque,
@@ -157,6 +167,9 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
                     .cloned()
                     .flatten()
             }),
+            base_color_embedded_image: pbr
+                .base_color_texture()
+                .map(|info| info.texture().source().index() as u32),
             base_color_tex_coord: pbr.base_color_texture().map(|info| info.tex_coord()),
             texture_sampler: pbr.base_color_texture().map(|info| {
                 let sampler = info.texture().sampler();
@@ -236,7 +249,7 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
                     .get(info.texture().source().index())
                     .is_none_or(Option::is_none)
             }) {
-                warnings.push("WebP base-color textures are retained in the bundled GLB; viewport shading uses the material base-color factor because WebP decoding is unavailable.".into());
+                warnings.push("WebP base-color textures are preserved in whole-scene GLB export; viewport shading uses the material factor because WebP decoding is unavailable.".into());
             }
         }
         if metallic > 0.0 || roughness < 1.0 {
@@ -292,6 +305,7 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
         objects,
         groups,
         materials,
+        embedded_images,
         triangles,
         bounds: [min, max],
         warnings,

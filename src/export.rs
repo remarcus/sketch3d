@@ -1812,9 +1812,17 @@ pub fn encode_with_images(
                     );
                     let alpha_cutoff = material.map_or(0.5, |material| material.alpha_cutoff);
                     let mut base_color_texture = None;
-                    if let Some(texture) =
+                    let texture_data = if let Some(texture) =
                         material.and_then(|material| material.base_color_texture.as_ref())
                     {
+                        Some((image_asset_png(texture)?, "image/png".to_owned()))
+                    } else {
+                        material
+                            .and_then(|material| material.base_color_embedded_image)
+                            .and_then(|index| model.embedded_images.get(index as usize))
+                            .map(|image| (image.bytes.clone(), image.mime_type.clone()))
+                    };
+                    if let Some((encoded_image, mime_type)) = texture_data {
                         let sampler_settings = material
                             .and_then(|material| material.texture_sampler)
                             .unwrap_or_default();
@@ -1827,24 +1835,23 @@ pub fn encode_with_images(
                                 model_sampler_indices.insert(sampler_settings, index);
                                 index
                             };
-                        let png = image_asset_png(texture)?;
                         ensure_binary_budget(
                             binary.len(),
-                            png.len().saturating_add(320),
+                            encoded_image.len().saturating_add(320),
                             "GLB model textures",
                         )?;
                         while !binary.len().is_multiple_of(4) {
                             binary.push(0);
                         }
                         let offset = binary.len();
-                        binary.extend_from_slice(&png);
+                        binary.extend_from_slice(&encoded_image);
                         let view = views.len();
-                        views.push(json!({"buffer":0,"byteOffset":offset,"byteLength":png.len()}));
+                        views.push(json!({"buffer":0,"byteOffset":offset,"byteLength":encoded_image.len()}));
                         while !binary.len().is_multiple_of(4) {
                             binary.push(0);
                         }
                         let image_index = images.len();
-                        images.push(json!({"name":format!("GLB model texture {} - {}",resource.name,material_name),"bufferView":view,"mimeType":"image/png"}));
+                        images.push(json!({"name":format!("GLB model texture {} - {}",resource.name,material_name),"bufferView":view,"mimeType":mime_type}));
                         let texture_index = textures.len();
                         textures.push(json!({"sampler":sampler_index,"source":image_index}));
                         image_samplers = true;
