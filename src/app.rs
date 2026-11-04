@@ -650,6 +650,11 @@ pub struct SketchApp {
     region_select_contained: bool,
     region_select_drag: Option<selection::RegionSelectionDrag>,
     appearance_draft: Option<selection::AppearanceDraft>,
+    alignment_preview: Option<(crate::editing::Snapshot, crate::editing::Snapshot)>,
+    alignment_axis: usize,
+    alignment_guide_axis: bool,
+    alignment_target: usize,
+    alignment_distribute: bool,
     point_draft: Option<crate::point_edit::Draft>,
     selection_cleanup_draft: Option<crate::point_edit::SelectionCleanupDraft>,
     point_drag: Option<point_edit_ui::PointDrag>,
@@ -2212,6 +2217,11 @@ impl SketchApp {
             region_select_contained: false,
             region_select_drag: None,
             appearance_draft: None,
+            alignment_preview: None,
+            alignment_axis: 0,
+            alignment_guide_axis: false,
+            alignment_target: 0,
+            alignment_distribute: false,
             point_draft: None,
             selection_cleanup_draft: None,
             point_drag: None,
@@ -3687,6 +3697,10 @@ impl SketchApp {
         }
     }
     fn undo(&mut self) {
+        if self.alignment_preview.is_some() {
+            self.status = "Apply or cancel the alignment preview before undoing.".into();
+            return;
+        }
         if self.mixed_resource_preview_active() {
             self.status = "Apply or cancel the mixed-resource preview before undoing.".into();
             return;
@@ -3732,6 +3746,10 @@ impl SketchApp {
         }
     }
     fn redo(&mut self) {
+        if self.alignment_preview.is_some() {
+            self.status = "Apply or cancel the alignment preview before redoing.".into();
+            return;
+        }
         if self.mixed_resource_preview_active() {
             self.status = "Apply or cancel the mixed-resource preview before redoing.".into();
             return;
@@ -3793,6 +3811,10 @@ impl SketchApp {
         }
         if self.mixed_resource_preview_active() {
             self.status = "Apply or cancel the mixed-resource preview before saving.".into();
+            return false;
+        }
+        if self.alignment_preview.is_some() {
+            self.status = "Apply or cancel the alignment preview before saving.".into();
             return false;
         }
         if self.liquify_active() {

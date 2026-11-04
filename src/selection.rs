@@ -183,6 +183,83 @@ fn region_polygon(drag: &RegionSelectionDrag) -> Vec<Pos2> {
 }
 
 impl SketchApp {
+    fn alignment_transform(&mut self) {
+        self.cancel_alignment_preview();
+        let before = editing::snapshot(&self.doc, &self.selected);
+        if before.is_empty() || before.len() != self.selected.len() {
+            self.status = "Select only visible strokes on unlocked layers to align or distribute.".into();
+            return;
+        }
+        if self.selected.iter().any(|id| self.doc.linked_instance_for_stroke(*id).is_some() || self.doc.has_linked_source(*id)) {
+            self.status = "Make linked instances unique before aligning or distributing.".into();
+            return;
+        }
+        let mut units: HashMap<(bool, u64), HashSet<u64>> = HashMap::new();
+        for (_, stroke) in &before {
+            let key = stroke.group_id.map_or((false, stroke.id), |group| (true, group));
+            units.entry(key).or_default().insert(stroke.id);
+        }
+        for stroke in &self.doc.strokes {
+            if let Some(group) = stroke.group_id {
+                if units.contains_key(&(true, group)) && !self.selected.contains(&stroke.id) {
+                    self.status = "Select every member of each group before aligning or distributing.".into(); return;
+                }
+            }
+        }
+        let axes = if self.alignment_guide_axis { self.guide.basis() } else { (Vec3::X, Vec3::Y, Vec3::Z) };
+        let axis = [axes.0, axes.1, axes.2][self.alignment_axis.min(2)].normalize();
+        let mut ranges = Vec::new();
+        for ids in units.values() {
+            let Some((min, max)) = editing::bounds(&self.doc, ids) else { continue };
+            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+            for x in [min.x, max.x] { for y in [min.y, max.y] { for z in [min.z, max.z] {
+                let value = Vec3::new(x, y, z).dot(axis); lo = lo.min(value); hi = hi.max(value);
+            }}}
+            ranges.push((ids, lo, hi));
+        }
+        if ranges.len() < 2 { self.status = "Select at least two strokes or groups.".into(); return; }
+        let mut deltas = Vec::new();
+        if self.alignment_distribute {
+            ranges.sort_by(|a,b| a.1.total_cmp(&b.1));
+            let first = ranges.first().unwrap().1; let last = ranges.last().unwrap().2;
+            let occupied: f32 = ranges.iter().map(|r| r.2-r.1).sum();
+            let gap = (last-first-occupied)/(ranges.len()-1) as f32;
+            let mut cursor = first;
+            for (ids, lo, hi) in ranges { deltas.push((ids, cursor-lo)); cursor += (hi-lo)+gap; }
+        } else {
+            let global_min = ranges.iter().map(|r| r.1).fold(f32::INFINITY, f32::min);
+            let global_max = ranges.iter().map(|r| r.2).fold(f32::NEG_INFINITY, f32::max);
+            let target = match self.alignment_target { 1 => (global_min+global_max)*0.5, 2 => global_max, _ => global_min };
+            for (ids, lo, hi) in ranges {
+                let point = match self.alignment_target { 1 => (lo+hi)*0.5, 2 => hi, _ => lo };
+                deltas.push((ids, target-point));
+            }
+        }
+        let mut after = Vec::with_capacity(before.len());
+        for (ids, amount) in deltas {
+            let unit: Snapshot = before.iter().filter(|(_,s)| ids.contains(&s.id)).cloned().collect();
+            match editing::transformed(&unit, Vec3::ZERO, axis*amount, Quat::IDENTITY, 1.0) {
+                Ok(mut moved) => after.append(&mut moved), Err(error) => { self.status = error.into(); return; }
+            }
+        }
+        after.sort_by_key(|(index,_)| *index);
+        if before == after { self.status = "Selection is already aligned or evenly distributed.".into(); return; }
+        editing::replace(&mut self.doc, &before, &after, true);
+        self.renderer.invalidate_ids(&self.selected);
+        self.alignment_preview = Some((before, after));
+        self.status = "Preview ready. Apply creates one undo step; Cancel restores the exact source.".into();
+    }
+    pub(super) fn apply_alignment_preview(&mut self) {
+        let Some((before, after)) = self.alignment_preview.take() else { return };
+        self.undo.push(Edit::Change { before, after }); self.redo.clear(); self.dirty = true; self.record_recovery_edit();
+        self.renderer.invalidate_ids(&self.selected); self.status = "Alignment or distribution applied.".into();
+    }
+    pub(super) fn cancel_alignment_preview(&mut self) {
+        if let Some((before, _)) = self.alignment_preview.take() {
+            editing::replace(&mut self.doc, &before, &Vec::new(), false);
+            self.renderer.invalidate_ids(&self.selected); self.status = "Alignment or distribution cancelled.".into();
+        }
+    }
     fn begin_appearance_edit(&mut self) {
         let before = editing::snapshot(&self.doc, &self.selected);
         if before.is_empty() || before.len() != self.selected.len() {
@@ -462,6 +539,7 @@ impl SketchApp {
         }
     }
     pub(super) fn select_pointer(&mut self, pos: Pos2, rect: Rect, begin: bool, shift: bool) {
+        if self.alignment_preview.is_some() { return; }
         if self.selection_cleanup_draft.is_some() {
             return;
         }
@@ -1388,6 +1466,10 @@ impl SketchApp {
         }
     }
     pub(super) fn selection_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.alignment_preview.is_some() {
+            if ctx.input(|input| input.key_pressed(Key::Escape)) { self.cancel_alignment_preview(); }
+            return;
+        }
         if self.selection_cleanup_draft.is_some() {
             if ctx.input(|input| input.key_pressed(Key::Escape)) {
                 self.finish_selection_cleanup(false);
@@ -2026,6 +2108,34 @@ impl SketchApp {
             ui.horizontal(|ui|{if ui.button("Duplicate").on_hover_text("Ctrl/Cmd+D").clicked(){self.duplicate_selected();}
 if ui.button("Repeat…").on_hover_text("Create evenly spaced independent copies with a live preview").clicked(){self.begin_repeat();}
 if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete_selected();}});
+            ui.separator();
+            ui.label("Align and distribute");
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("align-axis")
+                    .selected_text(format!("{} {}", if self.alignment_guide_axis { "Guide" } else { "World" }, ["X/U", "Y/V", "Z/N"][self.alignment_axis.min(2)]))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.alignment_guide_axis, false, "World axes");
+                        ui.selectable_value(&mut self.alignment_guide_axis, true, "Active guide axes");
+                        ui.separator();
+                        ui.selectable_value(&mut self.alignment_axis, 0, "X / U");
+                        ui.selectable_value(&mut self.alignment_axis, 1, "Y / V");
+                        ui.selectable_value(&mut self.alignment_axis, 2, "Z / Normal");
+                    });
+                egui::ComboBox::from_id_salt("align-target")
+                    .selected_text(["Leading edge", "Centers", "Trailing edge"][self.alignment_target.min(2)])
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.alignment_target, 0, "Leading edge");
+                        ui.selectable_value(&mut self.alignment_target, 1, "Centers");
+                        ui.selectable_value(&mut self.alignment_target, 2, "Trailing edge");
+                    });
+            });
+            ui.checkbox(&mut self.alignment_distribute, "Distribute with equal spacing");
+            if self.alignment_preview.is_some() {
+                ui.horizontal(|ui| {
+                    if ui.button("Apply alignment").clicked() { self.apply_alignment_preview(); }
+                    if ui.button("Cancel").clicked() { self.cancel_alignment_preview(); }
+                });
+            } else if ui.button("Preview alignment").clicked() { self.alignment_transform(); }
         });
         ui.label(RichText::new("One drag = one undo step. Escape cancels a drag.").small());
     }
