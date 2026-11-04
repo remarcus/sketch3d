@@ -63,6 +63,7 @@ mod still_export_check;
 mod stroke_modifiers;
 mod stroke_sculpt;
 mod surface;
+mod svg_import;
 mod texture;
 mod texture_check;
 mod tutorial;

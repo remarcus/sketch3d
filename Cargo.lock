@@ -3410,6 +3410,7 @@ dependencies = [
  "lyon_tessellation",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
+ "quick-xml 0.41.0",
  "raw-window-handle",
  "rfd",
  "serde",

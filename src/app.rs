@@ -5449,6 +5449,10 @@ impl SketchApp {
                 ui.close_menu();
                 self.begin_insert_drawing();
             }
+            if ui.button("Import planar SVG…").clicked() {
+                ui.close_menu();
+                self.import_planar_svg();
+            }
             if ui.button("Drawing library…").clicked() {
                 ui.close_menu();
                 self.finish();
@@ -5695,6 +5699,82 @@ impl SketchApp {
                 ui.spinner();
             }
         });
+    }
+
+    fn import_planar_svg(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("SVG artwork", &["svg"])
+            .pick_file()
+        else {
+            return;
+        };
+        let Some(target) = self.planar_drawing_target() else {
+            self.status = "Activate a planar guide before importing SVG artwork.".into();
+            return;
+        };
+        if !self.doc.active_editable() {
+            self.status = "Choose a visible unlocked layer before importing SVG artwork.".into();
+            return;
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.status = format!("SVG import failed: {error}");
+                return;
+            }
+        };
+        let artwork = match crate::svg_import::parse(&bytes) {
+            Ok(artwork) => artwork,
+            Err(error) => {
+                self.status = format!("SVG import failed: {error}");
+                return;
+            }
+        };
+        self.finish();
+        self.cancel_line_tool();
+        self.cancel_curve_tool();
+        self.cancel_shape_draft();
+        self.cancel_fill_tool();
+        let before_id = self.next_id;
+        let strokes = match crate::svg_import::to_strokes(
+            &artwork,
+            target.plane,
+            self.doc.active_layer,
+            before_id,
+        ) {
+            Ok(strokes) => strokes,
+            Err(error) => {
+                self.status = format!("SVG import failed: {error}");
+                return;
+            }
+        };
+        let Some(next_id) = before_id.checked_add(strokes.len() as u64) else {
+            self.status = "No more stroke IDs are available".into();
+            return;
+        };
+        if next_id == u64::MAX || strokes.is_empty() {
+            self.status = "SVG import produced no artwork or exhausted stroke IDs".into();
+            return;
+        }
+        self.doc.strokes.extend(strokes.iter().cloned());
+        self.undo.push(Edit::AddBatch(strokes.clone()));
+        self.redo.clear();
+        self.next_id = next_id;
+        self.dirty = true;
+        self.record_recovery_edit_labeled("Import SVG artwork");
+        self.renderer.invalidate();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("SVG");
+        self.status = if artwork.skipped > 0 {
+            format!("Imported {} editable strokes from {name}; skipped {} unsupported SVG elements or effects.", strokes.len(), artwork.skipped)
+        } else {
+            format!(
+                "Imported {} editable strokes from {name} onto the active plane.",
+                strokes.len()
+            )
+        };
     }
 
     fn inspector(&mut self, ctx: &egui::Context, enabled: bool) {
