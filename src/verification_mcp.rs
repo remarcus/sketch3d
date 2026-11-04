@@ -4,6 +4,7 @@
 //! The directory is canonicalized once, and every reported file is checked
 //! against the selected run directory before it is returned.
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -196,7 +197,7 @@ fn handle_message(config: &ServerConfig, message: Value) -> Option<Value> {
                     "protocolVersion": protocol_version,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": if matches!(config, ServerConfig::Reports(_)) { "sketch3d-verification-reports" } else { "sketch3d-drawing-library" }, "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": if matches!(config, ServerConfig::Reports(_)) { "Read-only access to normalized verification results beneath the configured verification directory." } else { "Read-only inspection and bounded GLB export for native drawings beneath the configured input directory." }
+                    "instructions": if matches!(config, ServerConfig::Reports(_)) { "Read-only access to normalized verification results beneath the configured verification directory." } else { "Scoped inspection and bounded GLB export for native drawings, plus creation of new editable native copies beneath the configured output directory." }
                 }),
             ))
         }
@@ -276,6 +277,18 @@ fn tool_definitions(config: &ServerConfig) -> Value {
             "description": "Export one validated native drawing as a GLB file in the configured output directory. The native source is read-only.",
             "inputSchema": {"type":"object","properties":{"path":{"type":"string","maxLength":512}},"required":["path"],"additionalProperties":false},
             "annotations": {"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}
+        },
+        {
+            "name": "drawing_create_native_copy",
+            "description": "Create a new editable native drawing from a bounded typed command batch. The output name must be new beneath the configured output directory; existing drawings are never overwritten.",
+            "inputSchema": {"type":"object","properties":{"output_name":{"type":"string","maxLength":96},"commands":{"type":"array","minItems":3,"maxItems":64,"items":{"oneOf":[
+                {"type":"object","properties":{"type":{"const":"create_plane"},"name":{"type":"string","maxLength":96},"origin":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"rotation":{"type":"array","items":{"type":"number"},"minItems":4,"maxItems":4}},"required":["type","name","origin","rotation"],"additionalProperties":false},
+                {"type":"object","properties":{"type":{"const":"create_layer"},"name":{"type":"string","maxLength":64}},"required":["type","name"],"additionalProperties":false},
+                {"type":"object","properties":{"type":{"const":"line"},"start":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"end":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"color":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"radius":{"type":"number","minimum":0.001,"maximum":1}},"required":["type","start","end"],"additionalProperties":false},
+                {"type":"object","properties":{"type":{"const":"polyline"},"points":{"type":"array","minItems":2,"maxItems":512,"items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}},"color":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"radius":{"type":"number","minimum":0.001,"maximum":1}},"required":["type","points"],"additionalProperties":false},
+                {"type":"object","properties":{"type":{"const":"rectangle"},"min":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"max":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"color":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3},"radius":{"type":"number","minimum":0.001,"maximum":1}},"required":["type","min","max"],"additionalProperties":false}
+            ]}}},"required":["output_name","commands"],"additionalProperties":false},
+            "annotations": {"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}
         }
     ]);
     match config {
@@ -345,11 +358,16 @@ fn call_tool(root: &Path, name: &str, arguments: &Value) -> Value {
 }
 
 fn call_drawing_tool(input: &Path, output: &Path, name: &str, arguments: &Value) -> Value {
-    let result = required_string(arguments, "path").and_then(|relative| match name {
-        "drawing_inspect_native" => inspect_native_drawing(input, relative),
-        "drawing_export_glb" => export_native_drawing(input, output, relative),
+    let result = match name {
+        "drawing_create_native_copy" => create_native_drawing(output, arguments),
+        "drawing_inspect_native" | "drawing_export_glb" => {
+            required_string(arguments, "path").and_then(|relative| match name {
+                "drawing_inspect_native" => inspect_native_drawing(input, relative),
+                _ => export_native_drawing(input, output, relative),
+            })
+        }
         _ => Err("Unknown drawing tool".into()),
-    });
+    };
     match result {
         Ok(payload) => {
             let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into());
@@ -514,6 +532,228 @@ fn export_native_drawing(input: &Path, output: &Path, relative: &str) -> Result<
         return Err("Export exceeded the 128 MiB output limit and was removed".into());
     }
     Ok(json!({"source":relative,"output":destination.file_name().unwrap_or_default().to_string_lossy(),"size_bytes":metadata.len(),"strokes":summary.strokes,"vertices":summary.vertices,"triangles":summary.triangles,"image_planes":summary.image_planes,"model_references":summary.model_references}))
+}
+
+const MAX_CREATE_COMMANDS: usize = 64;
+const MAX_CREATE_STROKES: usize = 60;
+const MAX_CREATE_POINTS: usize = 2048;
+const MAX_CREATED_NATIVE_BYTES: usize = 1024 * 1024;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateNativeRequest {
+    output_name: String,
+    commands: Vec<CreateDrawingCommand>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum CreateDrawingCommand {
+    CreatePlane {
+        name: String,
+        origin: [f32; 3],
+        /// Quaternion in x, y, z, w order.
+        rotation: [f32; 4],
+    },
+    CreateLayer {
+        name: String,
+    },
+    Line {
+        start: [f32; 2],
+        end: [f32; 2],
+        #[serde(default = "default_stroke_color")]
+        color: [f32; 3],
+        #[serde(default = "default_stroke_radius")]
+        radius: f32,
+    },
+    Polyline {
+        points: Vec<[f32; 2]>,
+        #[serde(default = "default_stroke_color")]
+        color: [f32; 3],
+        #[serde(default = "default_stroke_radius")]
+        radius: f32,
+    },
+    Rectangle {
+        min: [f32; 2],
+        max: [f32; 2],
+        #[serde(default = "default_stroke_color")]
+        color: [f32; 3],
+        #[serde(default = "default_stroke_radius")]
+        radius: f32,
+    },
+}
+
+fn default_stroke_color() -> [f32; 3] { [0.08, 0.08, 0.08] }
+fn default_stroke_radius() -> f32 { 0.025 }
+
+fn create_native_drawing(output: &Path, arguments: &Value) -> Result<Value, String> {
+    let request: CreateNativeRequest = serde_json::from_value(arguments.clone())
+        .map_err(|error| format!("Invalid typed drawing command batch: {error}"))?;
+    if request.commands.len() < 3 || request.commands.len() > MAX_CREATE_COMMANDS {
+        return Err(format!("Command batch must contain 3–{MAX_CREATE_COMMANDS} commands"));
+    }
+    if request.output_name.len() > 96
+        || request.output_name.trim() != request.output_name
+        || request.output_name.chars().any(char::is_control)
+        || request.output_name.chars().any(|character| matches!(character, '/' | '\\' | ':'))
+        || Path::new(&request.output_name).components().count() != 1
+        || !matches!(Path::new(&request.output_name).components().next(), Some(Component::Normal(_)))
+        || Path::new(&request.output_name).extension().and_then(|ext| ext.to_str()).is_none_or(|ext| !ext.eq_ignore_ascii_case("json"))
+    {
+        return Err("output_name must be a simple .json filename of at most 96 characters".into());
+    }
+    let destination = output.join(&request.output_name);
+    if fs::symlink_metadata(&destination).is_ok() {
+        return Err("A native drawing with that name already exists in the configured output directory".into());
+    }
+
+    let mut plane: Option<crate::document::guide_resources::GuideResource> = None;
+    let mut layer_name: Option<String> = None;
+    let mut marks: Vec<(Vec<[f32; 2]>, [f32; 3], f32)> = Vec::new();
+    let mut total_points = 0usize;
+    for command in request.commands {
+        match command {
+            CreateDrawingCommand::CreatePlane { name, origin, rotation } => {
+                if plane.is_some() || !marks.is_empty() {
+                    return Err("Create exactly one plane before any drawing commands".into());
+                }
+                let guide = crate::document::guide_resources::GuideResource {
+                    id: 1,
+                    name,
+                    visible: true,
+                    locked: false,
+                    geometry: crate::document::guide_resources::GuideGeometry::Plane {
+                        origin: glam::Vec3::from_array(origin),
+                        rotation: glam::Quat::from_xyzw(rotation[0], rotation[1], rotation[2], rotation[3]),
+                    },
+                };
+                guide.validate()?;
+                plane = Some(guide);
+            }
+            CreateDrawingCommand::CreateLayer { name } => {
+                if layer_name.is_some() || !marks.is_empty() {
+                    return Err("Create exactly one layer before any drawing commands".into());
+                }
+                let layer = crate::document::Layer {
+                    id: 1,
+                    name: name.clone(),
+                    visible: true,
+                    locked: false,
+                    opacity: 1.0,
+                    blend_mode: crate::document::LayerBlendMode::Normal,
+                    clip_to_below: false,
+                };
+                let mut validation_doc = crate::document::Document::default();
+                validation_doc.layers = vec![layer];
+                let encoded = serde_json::to_string(&validation_doc).map_err(|error| error.to_string())?;
+                crate::document::Document::from_json(&encoded)?;
+                layer_name = Some(name);
+            }
+            CreateDrawingCommand::Line { start, end, color, radius } => {
+                if plane.is_none() || layer_name.is_none() { return Err("Create a plane and layer before adding strokes".into()); }
+                validate_mark_style(color, radius)?;
+                total_points = total_points.saturating_add(2);
+                marks.push((vec![start, end], color, radius));
+            }
+            CreateDrawingCommand::Polyline { points, color, radius } => {
+                if plane.is_none() || layer_name.is_none() { return Err("Create a plane and layer before adding strokes".into()); }
+                validate_mark_style(color, radius)?;
+                if !(2..=512).contains(&points.len()) { return Err("Polyline commands require 2–512 points".into()); }
+                total_points = total_points.saturating_add(points.len());
+                marks.push((points, color, radius));
+            }
+            CreateDrawingCommand::Rectangle { min, max, color, radius } => {
+                if plane.is_none() || layer_name.is_none() { return Err("Create a plane and layer before adding strokes".into()); }
+                validate_mark_style(color, radius)?;
+                let (min_x, min_y) = (min[0], min[1]);
+                let (max_x, max_y) = (max[0], max[1]);
+                if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite()
+                    || min_x >= max_x || min_y >= max_y {
+                    return Err("Rectangle bounds must be finite and ordered".into());
+                }
+                total_points = total_points.saturating_add(5);
+                marks.push((vec![min, [max_x, min_y], max, [min_x, max_y], min], color, radius));
+            }
+        }
+        if marks.len() > MAX_CREATE_STROKES || total_points > MAX_CREATE_POINTS {
+            return Err("Command batch exceeds the 60 stroke or 2,048 point limit".into());
+        }
+    }
+    let plane = plane.ok_or("Command batch must create one planar guide")?;
+    let layer_name = layer_name.ok_or("Command batch must create one layer")?;
+    if marks.is_empty() { return Err("Command batch must contain at least one supported stroke".into()); }
+
+    let (origin, rotation) = match &plane.geometry {
+        crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } => (*origin, *rotation),
+        _ => return Err("Only a planar drawing guide is supported".into()),
+    };
+    let mut document = crate::document::Document::default();
+    let created_layer_name = layer_name.clone();
+    document.layers[0].name = layer_name;
+    document.guide_resources.push(plane);
+    document.active_guide = Some(1);
+    let axis_u = rotation * glam::Vec3::X;
+    let axis_v = rotation * glam::Vec3::Y;
+    let normal = rotation * glam::Vec3::Z;
+    for (index, (coordinates, color, radius)) in marks.into_iter().enumerate() {
+        let stroke_id = index as u64 + 1;
+        document.strokes.push(crate::document::Stroke {
+            model_surface: None,
+            curve: None,
+            material: crate::document::StrokeMaterial::Unlit,
+            point_thickness: None,
+            point_colors: None,
+            modifiers: None,
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id: stroke_id,
+            color,
+            gradient: None,
+            radius,
+            brush: crate::document::Brush {
+                kind: crate::document::BrushKind::Round,
+                normal,
+                tangent: axis_u,
+                ..crate::document::Brush::default()
+            },
+            points: coordinates.into_iter().enumerate().map(|(point_index, point)| {
+                let local = glam::Vec3::new(point[0], point[1], 0.0);
+                crate::document::Point {
+                    position: origin + rotation * local,
+                    pressure: 1.0,
+                    tilt: None,
+                    time_ms: point_index as u32,
+                }
+            }).collect(),
+        });
+    }
+    let encoded = serde_json::to_vec(&document).map_err(|error| error.to_string())?;
+    if encoded.len() > MAX_CREATED_NATIVE_BYTES {
+        return Err("Created native document exceeds the 1 MiB output limit".into());
+    }
+    let validated = crate::document::Document::from_json(
+        std::str::from_utf8(&encoded).map_err(|error| error.to_string())?
+    )?;
+    let encoded = serde_json::to_vec(&validated).map_err(|error| error.to_string())?;
+    if fs::symlink_metadata(&destination).is_ok() {
+        return Err("A native drawing with that name already exists in the configured output directory".into());
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(output).map_err(|error| error.to_string())?;
+    temporary.write_all(&encoded).map_err(|error| error.to_string())?;
+    temporary.as_file().sync_all().map_err(|error| error.to_string())?;
+    temporary.persist_noclobber(&destination).map_err(|error| format!("Could not atomically create native copy: {}", error.error))?;
+    Ok(json!({"output": request.output_name,"bytes":encoded.len(),"layer":created_layer_name,"plane":"Planar guide","strokes":document.strokes.len(),"points":total_points,"editable":true}))
+}
+
+fn validate_mark_style(color: [f32; 3], radius: f32) -> Result<(), String> {
+    if color.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value)) {
+        return Err("Stroke colors must be finite linear RGB values from 0 to 1".into());
+    }
+    if !radius.is_finite() || !(0.001..=1.0).contains(&radius) {
+        return Err("Stroke radius must be from 0.001 to 1 world unit".into());
+    }
+    Ok(())
 }
 
 fn required_string<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, String> {

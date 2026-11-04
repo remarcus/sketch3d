@@ -58,4 +58,20 @@ Start a drawing-only server with an explicit native-file input directory and an 
 target/release/sketch3d --mcp-drawing-server drawings exports
 ```
 
-The server exposes `drawing_inspect_native` and `drawing_export_glb`. Both accept a relative `.json` path beneath the configured input directory; absolute paths, traversal, and symlinks are rejected. Inspection returns bounded layer and guide summaries, stroke point bounds, and managed image/model asset requirements. Export reads and validates the same native file, resolves its managed `.assets` bundle, and writes a GLB named after the source into the configured output directory. Existing export names are left untouched. Native files are capped at 64 MiB; summaries are capped at 512 KiB and exports at 128 MiB. Configure this drawing-only mode separately from the verification report server.
+The server exposes `drawing_inspect_native` and `drawing_export_glb`. Both accept a relative `.json` path beneath the configured input directory; absolute paths, traversal, and symlinks are rejected. Inspection returns bounded layer and guide summaries, stroke point bounds, and managed image/model asset requirements. Export reads and validates the same native file, resolves its managed `.assets` bundle, and writes a GLB named after the source into the configured output directory. Existing export names are left untouched. Native files are capped at 64 MiB; summaries are capped at 512 KiB and exports at 128 MiB.
+
+The `drawing_create_native_copy` tool accepts a typed batch of one planar guide, one layer, and supported line, polyline, or rectangle strokes. Stroke coordinates are two-dimensional points local to the guide; the guide origin is world-space and its rotation is an x/y/z/w quaternion. Stroke colors are linear RGB. Batches are capped at 64 commands, 60 strokes and 2,048 points. The tool validates the complete document before atomically creating a new `.json` file in the configured output directory; it refuses existing names and does not modify source drawings. Configure this drawing-only mode separately from the verification report server.
+
+Example batch:
+
+```json
+{
+  "output_name": "quick-study.json",
+  "commands": [
+    {"type":"create_plane","name":"Front","origin":[0,0,0],"rotation":[0,0,0,1]},
+    {"type":"create_layer","name":"Ink"},
+    {"type":"line","start":[-1,0],"end":[1,0],"color":[0.05,0.05,0.05],"radius":0.025},
+    {"type":"rectangle","min":[-0.5,-0.5],"max":[0.5,0.5]}
+  ]
+}
+```
