@@ -332,8 +332,32 @@ impl SketchApp {
     }
 
     pub(super) fn preview_selected_cleanup(&mut self, spacing: f32, max_error: f32) {
-        if self.selected.len() != 1 {
-            self.status = "Select one ordinary stroke to preview cleanup.".into();
+        if self.selection_cleanup_draft.is_some() {
+            return;
+        }
+        if self.selected.len() > 1 {
+            match crate::point_edit::SelectionCleanupDraft::cleanup(
+                &self.doc,
+                &self.selected,
+                spacing,
+                max_error,
+            ) {
+                Ok(draft) => {
+                    self.point_drag = None;
+                    self.selection_cleanup_draft = Some(draft);
+                    self.presentation.preferences.layout.inspector_open = true;
+                    self.presentation.preferences.layout.inspector_tab =
+                        crate::presentation::InspectorTab::Properties;
+                    self.brush_select_enabled = false;
+                    self.renderer.invalidate();
+                    self.status = "Selection cleanup preview is detached from the drawing. Apply commits one edit; Cancel preserves the originals.".into();
+                }
+                Err(error) => self.status = error,
+            }
+            return;
+        }
+        if self.selected.is_empty() {
+            self.status = "Select one or more ordinary strokes to preview cleanup.".into();
             return;
         }
         let id = *self.selected.iter().next().unwrap();
@@ -353,6 +377,24 @@ impl SketchApp {
     }
 
     pub(super) fn canvas_point_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.selection_cleanup_draft.is_some() {
+            let (escape, enter) = ctx.input(|input| {
+                (
+                    input.key_pressed(Key::Escape),
+                    input.key_pressed(Key::Enter),
+                )
+            });
+            if escape || enter {
+                self.finish_selection_cleanup(enter);
+                ctx.input_mut(|input| {
+                    input.consume_key(
+                        egui::Modifiers::NONE,
+                        if enter { Key::Enter } else { Key::Escape },
+                    )
+                });
+            }
+            return;
+        }
         if self.reprojection_draft.is_some() {
             let (escape, enter) = ctx.input(|input| {
                 (
@@ -753,6 +795,19 @@ impl SketchApp {
     }
 
     pub(super) fn sync_canvas_point_edit(&mut self) {
+        if self.selection_cleanup_draft.as_ref().is_some_and(|draft| {
+            let ids: HashSet<_> = draft.before.iter().map(|(_, stroke)| stroke.id).collect();
+            !self.select_mode
+                || ids != self.selected
+                || !draft.valid_for(&self.doc)
+                || self.liquify_active()
+                || self.mixed_resource_preview_active()
+                || self.appearance_draft.is_some()
+                || self.repeat.is_some()
+                || self.curve_draft_active()
+        }) {
+            self.finish_selection_cleanup(false);
+        }
         if self.point_draft.as_ref().is_some_and(|draft| {
             !self.select_mode
                 || self.selected.len() != 1
@@ -815,9 +870,11 @@ impl SketchApp {
         });
         if let Some(stats) = draft.cleanup_stats {
             ui.small(format!(
-                "{} → {} samples · max path deviation {:.4} wu · path length {:.3} → {:.3} wu · {} μs local CPU. Timed Airbrush strokes are preserved unchanged.",
+                "{} → {} samples · selected stroke data {:.1} → {:.1} KiB · max path deviation {:.4} wu · path length {:.3} → {:.3} wu · {} μs local CPU. Timed Airbrush strokes are preserved unchanged.",
                 stats.input_points,
                 stats.output_points,
+                stats.input_bytes as f64 / 1024.0,
+                stats.output_bytes as f64 / 1024.0,
                 stats.maximum_deviation,
                 stats.source_length,
                 stats.result_length,
@@ -892,7 +949,74 @@ impl SketchApp {
         }
     }
 
+    pub(super) fn selection_cleanup_controls(&mut self, ui: &mut egui::Ui) {
+        let Some(draft) = self.selection_cleanup_draft.as_ref() else {
+            return;
+        };
+        let stats = draft.stats;
+        ui.heading("Preview selection cleanup");
+        ui.small(format!("{} strokes · {} → {} points · selected stroke data {:.1} → {:.1} KiB · max geometry deviation {:.4} wu · {} μs local CPU", stats.strokes, stats.input_points, stats.output_points, stats.input_bytes as f64 / 1024.0, stats.output_bytes as f64 / 1024.0, stats.maximum_deviation, stats.elapsed_micros));
+        ui.small("The highlighted centerlines are detached previews. Brush settings and protected resources remain unchanged.");
+        let mut apply = false;
+        let mut cancel = false;
+        ui.horizontal(|ui| {
+            apply = ui
+                .add_enabled(
+                    draft.valid_for(&self.doc),
+                    egui::Button::new("Apply cleanup"),
+                )
+                .clicked();
+            cancel = ui.button("Cancel cleanup").clicked();
+        });
+        if apply || cancel {
+            self.finish_selection_cleanup(apply);
+        }
+    }
+
+    pub(super) fn finish_selection_cleanup(&mut self, apply: bool) {
+        let Some(draft) = self.selection_cleanup_draft.take() else {
+            return;
+        };
+        if !apply {
+            self.status = "Selection cleanup preview cancelled; the drawing is unchanged.".into();
+            self.renderer.invalidate();
+            return;
+        }
+        match draft.edit(&self.doc) {
+            Ok(edit) => {
+                edit.apply(&mut self.doc, true);
+                self.undo.push(edit);
+                self.redo.clear();
+                self.renderer.invalidate_ids(&self.selected);
+                self.dirty = true;
+                self.record_recovery_edit();
+                self.status = "Selection cleanup applied as one undo step.".into();
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
     pub(super) fn canvas_point_overlay(&self, ui: &egui::Ui, rect: Rect) {
+        if let Some(draft) = &self.selection_cleanup_draft {
+            let painter = ui.painter().with_clip_rect(rect);
+            let accent = super::ui_style::canvas_selection_accent(
+                self.presentation.preferences.background,
+                self.presentation.preferences.background_image.is_some(),
+            );
+            for (_, stroke) in &draft.after {
+                let projected: Vec<_> = stroke
+                    .points
+                    .iter()
+                    .map(|point| crate::gizmo::project(&self.camera, rect, point.position))
+                    .collect();
+                for pair in projected.windows(2) {
+                    if let [Some((a, _)), Some((b, _))] = pair {
+                        painter.line_segment([*a, *b], egui::Stroke::new(2.0_f32, accent));
+                    }
+                }
+            }
+            return;
+        }
         let Some(draft) = &self.point_draft else {
             return;
         };

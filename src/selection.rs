@@ -462,6 +462,9 @@ impl SketchApp {
         }
     }
     pub(super) fn select_pointer(&mut self, pos: Pos2, rect: Rect, begin: bool, shift: bool) {
+        if self.selection_cleanup_draft.is_some() {
+            return;
+        }
         if self.reprojection_draft.is_some() {
             return;
         }
@@ -1385,6 +1388,12 @@ impl SketchApp {
         }
     }
     pub(super) fn selection_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.selection_cleanup_draft.is_some() {
+            if ctx.input(|input| input.key_pressed(Key::Escape)) {
+                self.finish_selection_cleanup(false);
+            }
+            return;
+        }
         if self.mixed_resource_preview_active() {
             if ctx.input(|input| input.key_pressed(Key::Escape)) {
                 self.finish_mixed_resource_move(false);
@@ -1701,6 +1710,10 @@ impl SketchApp {
 
     pub(super) fn selection_panel(&mut self, ui: &mut egui::Ui) {
         self.sync_canvas_point_edit();
+        if self.selection_cleanup_draft.is_some() {
+            self.selection_cleanup_controls(ui);
+            return;
+        }
         if self.reprojection_draft.is_some() {
             self.reprojection_controls(ui);
             return;
@@ -1714,6 +1727,26 @@ impl SketchApp {
             return;
         }
         ui.label(format!("{} stroke(s) selected", self.selected.len()));
+        if self.selected.len() > 1 {
+            let cleanup_id = ui.make_persistent_id("selection-cleanup-settings");
+            let mut cleanup = ui
+                .ctx()
+                .data_mut(|data| data.get_temp::<(f32, f32)>(cleanup_id))
+                .unwrap_or((0.2, 0.02));
+            let mut preview = false;
+            ui.collapsing("Resample and simplify selection", |ui| {
+                ui.small("Preview bounded cleanup for editable ordinary strokes. Brush appearance and protected resources are retained.");
+                ui.horizontal(|ui| { ui.label("Spacing"); ui.add(egui::DragValue::new(&mut cleanup.0).range(0.001..=1000.0).speed(0.01).suffix(" wu")); });
+                ui.horizontal(|ui| { ui.label("Max error"); ui.add(egui::DragValue::new(&mut cleanup.1).range(0.0..=100.0).speed(0.005).suffix(" wu")); });
+                preview = ui.button("Preview cleanup…").clicked();
+            });
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(cleanup_id, cleanup));
+            if preview {
+                self.preview_selected_cleanup(cleanup.0, cleanup.1);
+                return;
+            }
+        }
         self.liquify_controls(ui);
         if self.liquify_active() {
             return;
@@ -1997,6 +2030,10 @@ if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete
         ui.label(RichText::new("One drag = one undo step. Escape cancels a drag.").small());
     }
     pub(super) fn selection_overlay(&self, ui: &egui::Ui, rect: Rect) {
+        if self.selection_cleanup_draft.is_some() {
+            self.canvas_point_overlay(ui, rect);
+            return;
+        }
         if self.reprojection_draft.is_some() {
             self.reprojection_overlay(ui, rect);
             return;

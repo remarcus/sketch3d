@@ -333,6 +333,124 @@ pub struct CleanupStats {
     pub source_length: f32,
     pub result_length: f32,
     pub elapsed_micros: u128,
+    pub input_bytes: usize,
+    pub output_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SelectionCleanupStats {
+    pub strokes: usize,
+    pub input_points: usize,
+    pub output_points: usize,
+    pub maximum_deviation: f32,
+    pub input_bytes: usize,
+    pub output_bytes: usize,
+    pub elapsed_micros: u128,
+}
+
+/// Detached cleanup preview for a bounded set of selected strokes.
+pub struct SelectionCleanupDraft {
+    pub before: crate::editing::Snapshot,
+    pub after: crate::editing::Snapshot,
+    pub stats: SelectionCleanupStats,
+}
+
+impl SelectionCleanupDraft {
+    pub fn cleanup(
+        doc: &Document,
+        ids: &HashSet<u64>,
+        spacing: f32,
+        max_error: f32,
+    ) -> Result<Self, String> {
+        use crate::editing::snapshot;
+        if ids.is_empty() || ids.len() > MAX_MULTI_STROKES {
+            return Err(format!(
+                "Select 1–{MAX_MULTI_STROKES} editable ordinary strokes."
+            ));
+        }
+        let before = snapshot(doc, ids);
+        if before.len() != ids.len() {
+            return Err("Cleanup requires every selected stroke to be editable.".into());
+        }
+        if before.iter().any(|(_, stroke)| {
+            stroke.fill.is_some()
+                || stroke.curve.is_some()
+                || doc.has_linked_source(stroke.id)
+                || doc.linked_instance_for_stroke(stroke.id).is_some()
+        }) {
+            return Err("Cleanup supports editable ordinary strokes; fills, curves and linked strokes are preserved.".into());
+        }
+        let total_points: usize = before.iter().map(|(_, stroke)| stroke.points.len()).sum();
+        if total_points > MAX_CLEANUP_POINTS {
+            return Err(format!(
+                "Selection cleanup is limited to {MAX_CLEANUP_POINTS} input points."
+            ));
+        }
+        let estimated_work = before
+            .iter()
+            .try_fold(0_usize, |total, (_, stroke)| {
+                total.checked_add(stroke.points.len().saturating_mul(stroke.points.len()))
+            })
+            .unwrap_or(usize::MAX);
+        if estimated_work > MAX_CLEANUP_WORK {
+            return Err(format!("Selection cleanup is limited to {MAX_CLEANUP_WORK} estimated geometry comparisons."));
+        }
+        let started = std::time::Instant::now();
+        let mut after = Vec::with_capacity(before.len());
+        let mut input_points = 0;
+        let mut output_points = 0;
+        let mut maximum_deviation: f32 = 0.0;
+        let mut input_bytes = 0;
+        let mut output_bytes = 0;
+        for (index, source) in &before {
+            let (preview, stats) = cleanup_stroke(source, spacing, max_error)?;
+            input_points += stats.input_points;
+            output_points += stats.output_points;
+            maximum_deviation = maximum_deviation.max(stats.maximum_deviation);
+            input_bytes += serde_json::to_vec(source)
+                .map_err(|error| error.to_string())?
+                .len();
+            output_bytes += serde_json::to_vec(&preview)
+                .map_err(|error| error.to_string())?
+                .len();
+            after.push((*index, preview));
+        }
+        if before.iter().zip(&after).all(|((_, a), (_, b))| a == b) {
+            return Err("Cleanup produced no changes for these settings.".into());
+        }
+        Ok(Self {
+            before,
+            after,
+            stats: SelectionCleanupStats {
+                strokes: ids.len(),
+                input_points,
+                output_points,
+                maximum_deviation,
+                input_bytes,
+                output_bytes,
+                elapsed_micros: started.elapsed().as_micros(),
+            },
+        })
+    }
+
+    pub fn valid_for(&self, doc: &Document) -> bool {
+        let ids: HashSet<_> = self.before.iter().map(|(_, stroke)| stroke.id).collect();
+        crate::editing::snapshot(doc, &ids) == self.before
+            && self.before.iter().all(|(_, stroke)| {
+                !doc.has_linked_source(stroke.id)
+                    && doc.linked_instance_for_stroke(stroke.id).is_none()
+            })
+    }
+
+    pub fn edit(&self, doc: &Document) -> Result<Edit, String> {
+        if !self.valid_for(doc) {
+            return Err("A source stroke changed; reopen the cleanup preview.".into());
+        }
+        Ok(Edit::Change {
+            before: self.before.clone(),
+            after: self.after.clone(),
+        })
+    }
 }
 
 /// A detached preview. Saving, picking and history see committed geometry until Apply.
@@ -521,6 +639,12 @@ pub fn cleanup_stroke(
         return Err("Cleanup exceeded the requested geometric error bound.".into());
     }
     let output_points = preview.points.len();
+    let input_bytes = serde_json::to_vec(source)
+        .map_err(|error| error.to_string())?
+        .len();
+    let output_bytes = serde_json::to_vec(&preview)
+        .map_err(|error| error.to_string())?
+        .len();
     Ok((
         preview,
         CleanupStats {
@@ -530,6 +654,8 @@ pub fn cleanup_stroke(
             source_length,
             result_length,
             elapsed_micros: started.elapsed().as_micros(),
+            input_bytes,
+            output_bytes,
         },
     ))
 }

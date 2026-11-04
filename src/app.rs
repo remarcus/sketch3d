@@ -636,6 +636,7 @@ pub struct SketchApp {
     region_select_drag: Option<selection::RegionSelectionDrag>,
     appearance_draft: Option<selection::AppearanceDraft>,
     point_draft: Option<crate::point_edit::Draft>,
+    selection_cleanup_draft: Option<crate::point_edit::SelectionCleanupDraft>,
     point_drag: Option<point_edit_ui::PointDrag>,
     point_multi_draft: Option<crate::point_edit::MultiDraft>,
     point_multi_drag: Option<point_edit_ui::MultiPointRegionDrag>,
@@ -2194,6 +2195,7 @@ impl SketchApp {
             region_select_drag: None,
             appearance_draft: None,
             point_draft: None,
+            selection_cleanup_draft: None,
             point_drag: None,
             point_multi_draft: None,
             point_multi_drag: None,
@@ -3760,7 +3762,8 @@ impl SketchApp {
             self.status = "Set or update the current artwork keyframe before saving.".into();
             return false;
         }
-        if self.point_draft.is_some()
+        if self.selection_cleanup_draft.is_some()
+            || self.point_draft.is_some()
             || self.point_multi_draft.is_some()
             || self.reprojection_draft.is_some()
         {
@@ -4286,6 +4289,7 @@ impl SketchApp {
             && !self.partial_erase_active()
             && !self.local_color_active()
             && self.point_draft.is_none()
+            && self.selection_cleanup_draft.is_none()
             && self.point_multi_draft.is_none()
             && self.reprojection_draft.is_none()
             && !self.mixed_resource_preview_active()
@@ -5847,7 +5851,9 @@ impl SketchApp {
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
-                        if self.point_draft.is_some() {
+                        if self.selection_cleanup_draft.is_some() {
+                            self.selection_cleanup_controls(ui);
+                        } else if self.point_draft.is_some() {
                             self.canvas_point_controls(ui);
                         } else if self.point_multi_draft.is_some() {
                             self.multi_point_controls(ui);
@@ -5967,6 +5973,9 @@ impl SketchApp {
         }
     }
     fn pointer_action(&mut self, pos: Pos2, _pressure: f32, rect: Rect, begin: bool, shift: bool) {
+        if self.selection_cleanup_draft.is_some() {
+            return;
+        }
         self.pointer_action_with_tilt(pos, None, rect, begin, shift, None);
     }
 
@@ -6021,6 +6030,9 @@ impl SketchApp {
         shift: bool,
         tilt: Option<Vec3>,
     ) {
+        if self.selection_cleanup_draft.is_some() {
+            return;
+        }
         let pressure_samples_available = pressure.is_some();
         let pressure = pressure.unwrap_or(1.0);
         if self.presentation.artwork {
