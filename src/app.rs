@@ -5476,6 +5476,16 @@ impl SketchApp {
                 self.save(true);
             }
             ui.menu_button("Export", |ui| {
+                if ui
+                    .add_enabled(
+                        self.can_export(false),
+                        egui::Button::new("Active plane as SVG (.svg)…"),
+                    )
+                    .clicked()
+                {
+                    ui.close_menu();
+                    self.active_plane_svg_export_dialog();
+                }
                 if ui.button("Editable Grease Pencil strokes (.py)…").clicked() {
                     ui.close_menu();
                     self.grease_pencil_handoff_dialog();

@@ -121,6 +121,44 @@ pub(super) fn build_export_document_snapshot(
 }
 
 impl SketchApp {
+    pub(super) fn active_plane_svg_export_dialog(&mut self) {
+        if !self.can_export(false)
+            || self.point_draft.is_some()
+            || self.point_multi_draft.is_some()
+            || self.selection_cleanup_draft.is_some()
+        {
+            self.status = "Finish the current edit before exporting SVG artwork.".into();
+            return;
+        }
+        let name = self
+            .file
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("drawing");
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Scalable Vector Graphics", &["svg"])
+            .set_file_name(format!("{name}.svg"))
+            .save_file()
+        else {
+            return;
+        };
+        if !path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("svg")) {
+            self.status = "Choose an export filename ending in .svg.".into();
+            return;
+        }
+        if self.file.as_ref().is_some_and(|source| export::same_destination(source, &path)) {
+            self.status = "Choose an SVG destination different from the open native drawing.".into();
+            return;
+        }
+        match crate::svg_export::build(&self.doc, self.guide)
+            .and_then(|svg| std::fs::write(&path, svg).map_err(|error| format!("Could not write SVG: {error}")))
+        {
+            Ok(()) => self.status = format!("Exported the active plane as SVG to {}.", path.display()),
+            Err(error) => self.status = format!("SVG export failed: {error}"),
+        }
+    }
+
     pub(super) fn grease_pencil_handoff_dialog(&mut self) {
         if !self.can_export(false)
             || self.point_draft.is_some()
