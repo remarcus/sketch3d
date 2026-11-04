@@ -2,6 +2,7 @@
 
 use crate::obj_reference::{ObjIndex, ObjMaterial, ObjModel, ObjSourceFormat, ObjTriangle};
 use glam::{Mat4, Vec2, Vec3};
+use image::ImageDecoder;
 use std::{fs, io::Read, path::Path};
 
 pub const MAX_GLB_BYTES: u64 = 64 * 1024 * 1024;
@@ -77,21 +78,31 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
             },
         });
         if mime_type == "image/webp" {
-            match crate::wic_webp::decode(image_data) {
-                Ok(image) => {
-                    let pixels = u64::from(image.size[0]).saturating_mul(u64::from(image.size[1]));
-                    total_image_pixels = total_image_pixels.saturating_add(pixels);
-                    if pixels > crate::image_planes::MAX_IMAGE_PIXELS
-                        || total_image_pixels > crate::image_planes::MAX_CATALOG_PIXELS
-                    {
-                        return Err(
-                            "GLB embedded images exceed the decoded image pixel limit".into()
-                        );
-                    }
-                    decoded_images.push(Some(image));
-                }
-                Err(_) => decoded_images.push(None),
+            let decoder = image::codecs::webp::WebPDecoder::new(std::io::Cursor::new(image_data))
+                .map_err(|error| format!("Cannot decode embedded GLB WebP: {error}"))?;
+            if decoder.has_animation() {
+                return Err(
+                    "Animated WebP textures are unsupported; GLB model textures must be static"
+                        .into(),
+                );
             }
+            let (width, height) = decoder.dimensions();
+            let pixels = u64::from(width).saturating_mul(u64::from(height));
+            total_image_pixels = total_image_pixels.saturating_add(pixels);
+            if width == 0
+                || height == 0
+                || pixels > crate::image_planes::MAX_IMAGE_PIXELS
+                || total_image_pixels > crate::image_planes::MAX_CATALOG_PIXELS
+            {
+                return Err("GLB embedded images exceed the decoded image pixel limit".into());
+            }
+            let rgba = image::DynamicImage::from_decoder(decoder)
+                .map_err(|error| format!("Cannot decode embedded GLB WebP pixels: {error}"))?
+                .to_rgba8();
+            decoded_images.push(Some(crate::image_planes::ImageAsset {
+                pixels: rgba.into_raw(),
+                size: [width, height],
+            }));
             continue;
         }
         let format = match mime_type {
@@ -110,7 +121,9 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
             || pixels > crate::image_planes::MAX_IMAGE_PIXELS
             || total_image_pixels > crate::image_planes::MAX_CATALOG_PIXELS
         {
-            return Err("GLB embedded images exceed the 24 megapixel decoded limit".into());
+            return Err(
+                "GLB embedded images exceed 12 megapixels per image or 24 megapixels total".into(),
+            );
         }
         let rgba = image::load_from_memory_with_format(image_data, format)
             .map_err(|error| format!("Cannot decode embedded GLB image: {error}"))?
@@ -257,15 +270,6 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
             },
             alpha_cutoff,
         });
-        if pbr.base_color_texture().is_some() {
-            if pbr.base_color_texture().is_some_and(|info| {
-                decoded_images
-                    .get(info.texture().source().index())
-                    .is_none_or(Option::is_none)
-            }) {
-                warnings.push("WebP base-color textures are preserved in whole-scene GLB export. The viewport decodes them through Windows Imaging Component when a WebP codec is installed; otherwise it uses the material factor.".into());
-            }
-        }
         if metallic > 0.0 || roughness < 1.0 {
             warnings.push("GLB metallic and roughness factors render with a direct-light approximation and are preserved in whole-scene GLB export; environment reflections are not simulated. Emissive factors render in the viewport and are preserved on export.".into());
         }
