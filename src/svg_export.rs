@@ -43,7 +43,7 @@ impl Bounds {
 /// Projection is orthogonal to the plane; it does not depend on camera zoom.
 pub fn build(document: &Document, plane: DrawingPlane) -> Result<String, String> {
     let frame = Frame::new(plane);
-    let visible_layers: Vec<_> = document.layers.iter().filter(|layer| layer.visible).collect();
+    let visible_layers: Vec<_> = document.layers.iter().filter(|layer| layer.visible && document.layer_folder_visible(layer.id)).collect();
     if visible_layers.is_empty() { return Err("The drawing has no visible layers to export.".into()); }
     let mut bounds = Bounds { min: Vec2::splat(f32::INFINITY), max: Vec2::splat(f32::NEG_INFINITY) };
     let mut point_count = 0usize;

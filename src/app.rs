@@ -9626,6 +9626,7 @@ mod native_merge_apply_tests {
                     blend_mode: crate::document::LayerBlendMode::Normal,
                     clip_to_below: false,
                 }],
+                folders: Vec::new(),
                 image_planes: Vec::new(),
                 guides: Vec::new(),
                 model_references: Vec::new(),

@@ -235,6 +235,8 @@ impl SketchApp {
             .iter()
             .find(|layer| layer.id == self.doc.active_layer)
             .is_none_or(|layer| !layer.visible || layer.locked)
+            || !self.doc.layer_folder_visible(self.doc.active_layer)
+            || self.doc.layer_folder_locked(self.doc.active_layer)
         {
             return Err("Unlock and show the active layer before baking line art".into());
         }
@@ -283,6 +285,8 @@ impl SketchApp {
             .iter()
             .find(|layer| layer.id == self.doc.active_layer)
             .is_none_or(|layer| !layer.visible || layer.locked)
+            || !self.doc.layer_folder_visible(self.doc.active_layer)
+            || self.doc.layer_folder_locked(self.doc.active_layer)
         {
             return Err("Unlock and show the active layer before baking line art".into());
         }
@@ -756,7 +760,9 @@ impl SketchApp {
                 .doc
                 .layers
                 .iter()
-                .any(|layer| layer.id == self.doc.active_layer && layer.visible && !layer.locked);
+                .any(|layer| layer.id == self.doc.active_layer && layer.visible && !layer.locked)
+                && self.doc.layer_folder_visible(self.doc.active_layer)
+                && !self.doc.layer_folder_locked(self.doc.active_layer);
             let active_model_reference = self.doc.active_model_reference;
             for index in 0..self.doc.model_references.len() {
                 let original = self.doc.model_references[index].clone();

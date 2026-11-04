@@ -189,8 +189,52 @@ impl SketchApp {
                 });
                 ui.separator();
 
+                ui.horizontal(|ui| {
+                    if ui.button("New folder for active layer").clicked() {
+                        action = Some(LayerAction::CreateFolder(self.layer_name.trim().to_owned()));
+                        self.layer_name.clear();
+                    }
+                    ui.add(egui::TextEdit::singleline(&mut self.layer_name).hint_text("Folder name").desired_width(110.0).char_limit(64));
+                });
+                for folder in &self.doc.layer_folders {
+                    let folder_id = folder.id;
+                    let folder_name = folder.name.clone();
+                    let folder_rename_id = egui::Id::new(("folder-rename", folder_id));
+                    let editing_name = ui.memory(|memory| memory.data.get_temp::<bool>(folder_rename_id)).unwrap_or(false);
+                    ui.horizontal(|ui| {
+                        let mut collapsed = folder.collapsed;
+                        if ui.button(if collapsed { "▶" } else { "▼" }).clicked() {
+                            action = Some(LayerAction::FolderCollapsed(folder_id, !collapsed));
+                        }
+                        if editing_name {
+                            let mut name = ui.memory(|memory| memory.data.get_temp::<String>(folder_rename_id)).unwrap_or_else(|| folder_name.clone());
+                            let response = ui.add(egui::TextEdit::singleline(&mut name).desired_width(120.0).char_limit(64));
+                            ui.memory_mut(|memory| memory.data.insert_temp(folder_rename_id, name.clone()));
+                            if response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter)) {
+                                action = Some(LayerAction::RenameFolder(folder_id, name));
+                                ui.memory_mut(|memory| memory.data.remove::<bool>(folder_rename_id));
+                                ui.memory_mut(|memory| memory.data.remove::<String>(folder_rename_id));
+                            }
+                        } else {
+                            let response = ui.strong(format!("{} ({})", folder_name, folder.layer_ids.len())).on_hover_text("Double-click to rename. Folder visibility and lock apply to every member. Reordering moves member layers together in the render stack; layer IDs and animation tracks remain attached. Clip-to-below masks continue to use the immediately preceding render layer, so moving a folder can change a mask source.");
+                            if response.double_clicked() {
+                                ui.memory_mut(|memory| memory.data.insert_temp(folder_rename_id, folder_name.clone()));
+                                ui.memory_mut(|memory| memory.data.insert_temp(folder_rename_id, true));
+                            }
+                        }
+                        if ui.button("↑").on_hover_text("Move folder up").clicked() { action = Some(LayerAction::MoveFolder(folder_id, -1)); }
+                        if ui.button("↓").on_hover_text("Move folder down").clicked() { action = Some(LayerAction::MoveFolder(folder_id, 1)); }
+                        let mut visible = folder.visible;
+                        if ui.checkbox(&mut visible, "Visible").changed() { action = Some(LayerAction::FolderVisible(folder_id, visible)); }
+                        let mut locked = folder.locked;
+                        if ui.checkbox(&mut locked, "Locked").changed() { action = Some(LayerAction::FolderLock(folder_id, locked)); }
+                    });
+                }
+
                 for layer in &self.doc.layers {
                     let layer_id = layer.id;
+                    let folder = self.doc.layer_folders.iter().find(|folder| folder.layer_ids.contains(&layer_id));
+                    if folder.is_some_and(|folder| folder.collapsed) { continue; }
                     let active = self.doc.active_layer == layer_id;
                     let selected_artwork = self
                         .selected
@@ -205,6 +249,10 @@ impl SketchApp {
                             .inner_margin(egui::Margin::symmetric(6, 4))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
+                                    if let Some(folder) = folder {
+                                        ui.add_space(12.0);
+                                        ui.small(format!("{} /", folder.name));
+                                    }
                                     if is_renaming {
                                         let edit = ui.add(
                                             egui::TextEdit::singleline(&mut self.layer_name)
@@ -272,7 +320,7 @@ impl SketchApp {
                                     }
 
                                     let mut visible = layer.visible;
-                                    let visibility_label = if visible { "Hide" } else { "Show" };
+                                    let visibility_label = if visible && self.doc.layer_folder_visible(layer_id) { "Hide" } else { "Show" };
                                     if ui
                                         .button(visibility_label)
                                         .on_hover_text(format!("{visibility_label} layer {layer_name}"))
@@ -283,7 +331,7 @@ impl SketchApp {
                                     }
 
                                     let mut locked = layer.locked;
-                                    let lock_label = if locked { "Unlock" } else { "Lock" };
+                                    let lock_label = if locked || self.doc.layer_folder_locked(layer_id) { "Unlock" } else { "Lock" };
                                     if ui
                                         .button(lock_label)
                                         .on_hover_text(format!("{lock_label} layer {layer_name}"))
@@ -296,6 +344,15 @@ impl SketchApp {
 
                                 ui.horizontal(|ui| {
                                     ui.add_space(6.0);
+                                    let folder_id = self.doc.layer_folders.iter().find(|folder| folder.layer_ids.contains(&layer_id)).map(|folder| folder.id);
+                                    let folder_name = folder_id.and_then(|id| self.doc.layer_folders.iter().find(|folder| folder.id == id)).map_or("No folder", |folder| folder.name.as_str());
+                                    let mut selected_folder = folder_id;
+                                    egui::ComboBox::from_id_salt(("layer-folder", layer_id)).selected_text(folder_name).show_ui(ui, |ui| {
+                                        if ui.selectable_value(&mut selected_folder, None, "No folder").clicked() { action = Some(LayerAction::MoveLayerToFolder(layer_id, None)); }
+                                        for folder in &self.doc.layer_folders {
+                                            if ui.selectable_value(&mut selected_folder, Some(folder.id), &folder.name).clicked() { action = Some(LayerAction::MoveLayerToFolder(layer_id, Some(folder.id))); }
+                                        }
+                                    });
                                     if selected_artwork {
                                         ui.small("Contains selected artwork");
                                     } else if active {
