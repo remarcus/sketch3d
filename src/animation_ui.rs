@@ -130,17 +130,30 @@ impl SketchApp {
     }
 
     fn set_artwork_keyframe(&mut self) {
+        if !self.doc.active_editable() {
+            self.status = "Choose a visible, unlocked layer before keying its artwork.".into();
+            return;
+        }
         if !self.doc.linked_stroke_groups.definitions.is_empty()
             || !self.doc.linked_stroke_groups.instances.is_empty()
         {
             self.status = "Make linked instances unique before keyframing artwork. Linked groups are kept static.".into();
             return;
         }
-        let next = match self
+        let layer_id = self.doc.active_layer;
+        let layer_strokes = self
             .doc
-            .animation
-            .set_keyframe(self.doc.animation.current_frame, &self.doc.strokes)
-        {
+            .strokes
+            .iter()
+            .filter(|stroke| stroke.layer_id == layer_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let next = match self.doc.animation.set_layer_keyframe(
+            self.doc.animation.current_frame,
+            layer_id,
+            &layer_strokes,
+            &self.doc.strokes,
+        ) {
             Ok(animation) => animation,
             Err(error) => {
                 self.status = error;
@@ -150,7 +163,7 @@ impl SketchApp {
         match self.commit_animation_state(
             next,
             self.doc.strokes.clone(),
-            "Artwork keyframe saved as one undoable edit.",
+            "Active layer keyframe saved as one undoable edit.",
         ) {
             Ok(()) => {}
             Err(error) => self.status = error,
@@ -164,13 +177,30 @@ impl SketchApp {
             self.status = "Make linked instances unique before keyframing artwork.".into();
             return;
         }
-        let source_frame = self.doc.animation.current_frame;
-        let target_frame = source_frame.saturating_add(1);
-        let next = match self
+        let source_frame = self
             .doc
             .animation
-            .duplicate_keyframe(source_frame, target_frame)
-        {
+            .layer_tracks
+            .iter()
+            .find(|track| track.layer_id == self.doc.active_layer)
+            .and_then(|track| {
+                track
+                    .keyframes
+                    .iter()
+                    .rev()
+                    .find(|key| {
+                        key.frame <= self.doc.animation.current_frame
+                            && self.doc.animation.current_frame - key.frame < key.exposure
+                    })
+                    .map(|key| key.frame)
+            })
+            .unwrap_or(self.doc.animation.current_frame);
+        let target_frame = self.doc.animation.current_frame.saturating_add(1);
+        let next = match self.doc.animation.duplicate_layer_keyframe(
+            self.doc.active_layer,
+            source_frame,
+            target_frame,
+        ) {
             Ok(animation) => animation,
             Err(error) => {
                 self.status = error;
@@ -181,7 +211,7 @@ impl SketchApp {
         if let Err(error) = self.commit_animation_state(
             next,
             strokes,
-            "Duplicated the current artwork keyframe to the next frame.",
+            "Duplicated the active layer exposure to the next frame.",
         ) {
             self.status = error;
         }
@@ -189,7 +219,11 @@ impl SketchApp {
 
     fn delete_artwork_keyframe(&mut self) {
         let frame = self.doc.animation.current_frame;
-        let mut next = match self.doc.animation.delete_keyframe(frame) {
+        let mut next = match self
+            .doc
+            .animation
+            .delete_layer_keyframe(self.doc.active_layer, frame)
+        {
             Ok(animation) => animation,
             Err(error) => {
                 self.status = error;
@@ -203,7 +237,7 @@ impl SketchApp {
         if let Err(error) = self.commit_animation_state(
             next,
             strokes,
-            "Deleted the current artwork keyframe as one undoable edit.",
+            "Deleted the active layer keyframe as one undoable edit.",
         ) {
             self.status = error;
         }
@@ -235,6 +269,8 @@ impl SketchApp {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    let active_layer_name = self.doc.layers.iter().find(|layer|layer.id==self.doc.active_layer).map(|layer|layer.name.as_str()).unwrap_or("Layer");
+                    ui.label(format!("Layer: {active_layer_name}"));
                     let play_label = if self.animation_ui.playing { "Pause" } else { "Play" };
                     if ui
                         .add_enabled(!self.doc.animation.is_empty(), egui::Button::new(play_label))
@@ -243,21 +279,18 @@ impl SketchApp {
                         self.toggle_artwork_playback(ctx);
                     }
                     if ui
-                        .add_enabled(!self.animation_ui.playing, egui::Button::new("Set keyframe"))
+                        .add_enabled(!self.animation_ui.playing, egui::Button::new("Key active layer"))
                         .clicked()
                     {
                         self.set_artwork_keyframe();
                     }
-                    let has_current = self
-                        .doc
-                        .animation
-                        .keyframes
-                        .iter()
-                        .any(|key| key.frame == self.doc.animation.current_frame);
+                    let active_track = self.doc.animation.layer_tracks.iter().find(|track| track.layer_id == self.doc.active_layer);
+                    let held_key = active_track.and_then(|track|track.keyframes.iter().rev().find(|key|key.frame<=self.doc.animation.current_frame && self.doc.animation.current_frame-key.frame<key.exposure).map(|key|key.frame));
+                    let has_current = active_track.is_some_and(|track| track.keyframes.iter().any(|key|key.frame==self.doc.animation.current_frame));
                     if ui
                         .add_enabled(
-                            has_current && !self.animation_ui.playing,
-                            egui::Button::new("Duplicate → next"),
+                            held_key.is_some() && !self.animation_ui.playing,
+                            egui::Button::new("Duplicate exposure → next"),
                         )
                         .clicked()
                     {
@@ -266,15 +299,15 @@ impl SketchApp {
                     if ui
                         .add_enabled(
                             has_current && !self.animation_ui.playing,
-                            egui::Button::new("Delete keyframe"),
+                            egui::Button::new("Delete layer key"),
                         )
                         .clicked()
                     {
                         self.delete_artwork_keyframe();
                     }
                     ui.label(format!(
-                        "{} keyframe(s)",
-                        self.doc.animation.keyframes.len()
+                        "{} layer key(s)",
+                        self.doc.animation.layer_tracks.iter().map(|track|track.keyframes.len()).sum::<usize>()
                     ));
                 });
                 ui.horizontal(|ui| {
@@ -302,9 +335,8 @@ impl SketchApp {
                     if ui.small_button("Start +").clicked() {
                         self.update_animation_settings(|animation| {
                             let latest_start = animation
-                                .keyframes
-                                .first()
-                                .map(|keyframe| keyframe.frame)
+                                .keyframes.first().map(|keyframe|keyframe.frame)
+                                .or_else(|| animation.layer_tracks.iter().flat_map(|track|track.keyframes.first()).map(|keyframe|keyframe.frame).min())
                                 .unwrap_or(animation.range_end);
                             animation.range_start = animation
                                 .range_start
@@ -315,9 +347,8 @@ impl SketchApp {
                     if ui.small_button("End −").clicked() {
                         self.update_animation_settings(|animation| {
                             let earliest_end = animation
-                                .keyframes
-                                .last()
-                                .map(|keyframe| keyframe.frame)
+                                .keyframes.last().map(|keyframe|keyframe.frame)
+                                .or_else(|| animation.layer_tracks.iter().flat_map(|track|track.keyframes.iter().map(|keyframe|keyframe.frame.saturating_add(keyframe.exposure).saturating_sub(1))).max())
                                 .unwrap_or(animation.range_start);
                             animation.range_end = animation
                                 .range_end
@@ -346,7 +377,7 @@ impl SketchApp {
                         });
                     }
                     let mut interpolate = self.doc.animation.interpolate;
-                    if ui.checkbox(&mut interpolate, "Interpolate compatible strokes").changed() {
+                    if ui.add_enabled(self.doc.animation.layer_tracks.is_empty(), egui::Checkbox::new(&mut interpolate, "Interpolate compatible strokes")).changed() {
                         self.update_animation_settings(|animation| animation.interpolate = interpolate);
                     }
                     let mut onion = self.doc.animation.onion_skins;
@@ -354,7 +385,20 @@ impl SketchApp {
                         self.update_animation_settings(|animation| animation.onion_skins = onion);
                     }
                 });
-                ui.small("Edits belong to the displayed frame. Save edits with Set keyframe before seeking; frame seeks reset frame-local undo. Layer/resource structure stays static. Linked-group documents must be made unique before keyframing. Onion skins are display-only.");
+                if let Some((key_frame, key_exposure)) = self.doc.animation.layer_tracks.iter().find(|track|track.layer_id==self.doc.active_layer).and_then(|track|track.keyframes.iter().rev().find(|key|key.frame<=self.doc.animation.current_frame && self.doc.animation.current_frame-key.frame<key.exposure).map(|key|(key.frame,key.exposure))) {
+                    ui.horizontal(|ui| {
+                        ui.label("Active layer exposure");
+                        let mut exposure=key_exposure;
+                        let max=self.doc.animation.range_end.saturating_sub(key_frame).saturating_add(1);
+                        if ui.add(egui::DragValue::new(&mut exposure).range(1..=max).suffix(" frames")).changed() {
+                            match self.doc.animation.set_layer_exposure(self.doc.active_layer,key_frame,exposure) {
+                                Ok(next)=>{let strokes=next.resolve(next.current_frame).unwrap_or_else(||self.doc.strokes.clone());if let Err(error)=self.commit_animation_state(next,strokes,"Layer exposure changed."){self.status=error;}},
+                                Err(error)=>self.status=error,
+                            }
+                        }
+                    });
+                }
+                ui.small("Edits belong to the displayed frame. Key the active layer before seeking; frame seeks reset frame-local undo. Exposures hold a layer snapshot for a chosen number of frames. Layer/resource structure stays static; layer moves are disabled while independent tracks exist. Linked-group documents must be made unique before keyframing. Onion skins are display-only.");
             });
     }
 

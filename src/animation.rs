@@ -9,7 +9,7 @@ use crate::document::Stroke;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-pub const CURRENT_VERSION: u16 = 1;
+pub const CURRENT_VERSION: u16 = 2;
 pub const MAX_KEYFRAMES: usize = 120;
 pub const MAX_FRAME: u32 = 100_000;
 pub const MAX_TOTAL_POINTS: usize = 2_000_000;
@@ -22,6 +22,26 @@ pub const MAX_TRACK_BYTES: usize = 64 * 1024 * 1024;
 pub struct ArtworkKeyframe {
     pub frame: u32,
     pub strokes: Vec<Stroke>,
+}
+
+/// One layer's held artwork snapshot. Exposure is measured in frames starting
+/// at `frame`; an expired exposure leaves the layer empty until its next key.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerArtworkKeyframe {
+    pub frame: u32,
+    #[serde(default = "default_exposure")]
+    pub exposure: u32,
+    pub strokes: Vec<Stroke>,
+}
+
+fn default_exposure() -> u32 {
+    1
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerAnimationTrack {
+    pub layer_id: u64,
+    pub keyframes: Vec<LayerArtworkKeyframe>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -42,6 +62,11 @@ pub struct ArtworkAnimation {
     pub onion_skins: bool,
     #[serde(default)]
     pub keyframes: Vec<ArtworkKeyframe>,
+    /// Static pose used as the base for independently animated layers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_strokes: Option<Vec<Stroke>>,
+    #[serde(default)]
+    pub layer_tracks: Vec<LayerAnimationTrack>,
 }
 
 fn version_default() -> u16 {
@@ -67,13 +92,15 @@ impl Default for ArtworkAnimation {
             interpolate: false,
             onion_skins: false,
             keyframes: Vec::new(),
+            base_strokes: None,
+            layer_tracks: Vec::new(),
         }
     }
 }
 
 impl ArtworkAnimation {
     pub fn is_empty(&self) -> bool {
-        self.keyframes.is_empty()
+        self.keyframes.is_empty() && self.layer_tracks.is_empty()
     }
 
     pub fn frame_count(&self) -> usize {
@@ -98,6 +125,7 @@ impl ArtworkAnimation {
             || self.current_frame < self.range_start
             || self.current_frame > self.range_end
             || self.keyframes.len() > MAX_KEYFRAMES
+            || self.layer_tracks.len() > 128
         {
             return Err("Animation settings or keyframe count are outside supported limits".into());
         }
@@ -153,6 +181,47 @@ impl ArtworkAnimation {
                 }
             }
         }
+        if let Some(base) = &self.base_strokes {
+            validate_snapshot(base, None, layer_ids, tip_asset_ids, &mut total_points)?;
+        }
+        let mut tracked_layers = HashSet::new();
+        for track in &self.layer_tracks {
+            if !layer_ids.contains(&track.layer_id)
+                || !tracked_layers.insert(track.layer_id)
+                || track.keyframes.len() > MAX_KEYFRAMES
+                || track.keyframes.is_empty()
+            {
+                return Err("Animation layer tracks must be unique, valid, and bounded".into());
+            }
+            let mut previous = None;
+            for keyframe in &track.keyframes {
+                if keyframe.frame < self.range_start
+                    || keyframe.frame > self.range_end
+                    || previous.is_some_and(|frame| frame >= keyframe.frame)
+                    || keyframe.exposure == 0
+                    || keyframe.exposure > self.range_end.saturating_sub(keyframe.frame) + 1
+                {
+                    return Err("Layer keyframes must be ordered and have a valid exposure".into());
+                }
+                previous = Some(keyframe.frame);
+                validate_snapshot(
+                    &keyframe.strokes,
+                    Some(track.layer_id),
+                    layer_ids,
+                    tip_asset_ids,
+                    &mut total_points,
+                )?;
+            }
+        }
+        if !self.layer_tracks.is_empty() && self.base_strokes.is_none() {
+            return Err("Layer animation is missing its static base pose".into());
+        }
+        if !self.layer_tracks.is_empty() && (!self.keyframes.is_empty() || self.interpolate) {
+            return Err(
+                "Layer animation cannot be combined with whole-drawing keys or interpolation"
+                    .into(),
+            );
+        }
         // A conservative count bound is checked before JSON sizing, keeping
         // malformed imported animation from requesting unbounded allocation.
         let encoded = serde_json::to_vec(self).map_err(|error| error.to_string())?;
@@ -164,10 +233,27 @@ impl ArtworkAnimation {
 
     /// Resolve a frame without mutating the stored keyframes.
     pub fn resolve(&self, frame: u32) -> Option<Vec<Stroke>> {
-        if self.keyframes.is_empty() {
+        if self.keyframes.is_empty() && self.layer_tracks.is_empty() {
             return None;
         }
         let frame = frame.clamp(self.range_start, self.range_end);
+        if !self.layer_tracks.is_empty() {
+            let mut strokes = self.base_strokes.clone().unwrap_or_default();
+            for track in &self.layer_tracks {
+                strokes.retain(|stroke| stroke.layer_id != track.layer_id);
+                let index = track.keyframes.partition_point(|key| key.frame <= frame);
+                let key = index
+                    .checked_sub(1)
+                    .map(|i| &track.keyframes[i])
+                    .unwrap_or(&track.keyframes[0]);
+                let frame_is_exposed =
+                    frame < key.frame || frame.saturating_sub(key.frame) < key.exposure;
+                if frame_is_exposed {
+                    strokes.extend(key.strokes.iter().cloned());
+                }
+            }
+            return Some(strokes);
+        }
         let upper = self.keyframes.partition_point(|key| key.frame <= frame);
         let before = upper.checked_sub(1).map(|index| &self.keyframes[index]);
         let after = self.keyframes.get(upper);
@@ -193,6 +279,9 @@ impl ArtworkAnimation {
     }
 
     pub fn set_keyframe(&self, frame: u32, strokes: &[Stroke]) -> Result<Self, String> {
+        if !self.layer_tracks.is_empty() {
+            return Err("Use layer keyframes while independent layer tracks are active".into());
+        }
         let mut next = self.clone();
         next.current_frame = frame;
         if frame < next.range_start || frame > next.range_end {
@@ -217,6 +306,9 @@ impl ArtworkAnimation {
     }
 
     pub fn duplicate_keyframe(&self, source_frame: u32, target_frame: u32) -> Result<Self, String> {
+        if !self.layer_tracks.is_empty() {
+            return Err("Use layer exposures while independent layer tracks are active".into());
+        }
         if target_frame < self.range_start || target_frame > self.range_end {
             return Err("Duplicate frame must be inside the animation range".into());
         }
@@ -247,6 +339,9 @@ impl ArtworkAnimation {
     }
 
     pub fn delete_keyframe(&self, frame: u32) -> Result<Self, String> {
+        if !self.layer_tracks.is_empty() {
+            return Err("Delete a keyframe from the active layer track".into());
+        }
         let mut next = self.clone();
         let Some(index) = next.keyframes.iter().position(|key| key.frame == frame) else {
             return Err("There is no keyframe at the current frame".into());
@@ -254,6 +349,285 @@ impl ArtworkAnimation {
         next.keyframes.remove(index);
         Ok(next)
     }
+
+    pub fn set_layer_keyframe(
+        &self,
+        frame: u32,
+        layer_id: u64,
+        layer_strokes: &[Stroke],
+        base: &[Stroke],
+    ) -> Result<Self, String> {
+        if frame < self.range_start || frame > self.range_end {
+            return Err("Keyframe must be inside the animation range".into());
+        }
+        if layer_id == 0
+            || layer_id == u64::MAX
+            || layer_strokes
+                .iter()
+                .any(|stroke| stroke.layer_id != layer_id)
+        {
+            return Err("Layer keyframe must contain artwork from one valid layer".into());
+        }
+        let mut next = self.clone();
+        if next.layer_tracks.is_empty() {
+            next.base_strokes = Some(base.to_vec());
+            if !next.keyframes.is_empty() {
+                if next.interpolate {
+                    return Err("Turn off whole-drawing interpolation before creating independent layer tracks".into());
+                }
+                let mut layers = base
+                    .iter()
+                    .map(|stroke| stroke.layer_id)
+                    .chain(
+                        next.keyframes
+                            .iter()
+                            .flat_map(|key| key.strokes.iter().map(|stroke| stroke.layer_id)),
+                    )
+                    .collect::<Vec<_>>();
+                layers.sort_unstable();
+                layers.dedup();
+                let old_keys = std::mem::take(&mut next.keyframes);
+                for id in layers {
+                    let keyframes = old_keys
+                        .iter()
+                        .enumerate()
+                        .map(|(index, key)| LayerArtworkKeyframe {
+                            frame: key.frame,
+                            exposure: old_keys
+                                .get(index + 1)
+                                .map(|next| next.frame.saturating_sub(key.frame))
+                                .unwrap_or_else(|| {
+                                    next.range_end
+                                        .saturating_sub(key.frame)
+                                        .saturating_add(1)
+                                        .max(1)
+                                }),
+                            strokes: key
+                                .strokes
+                                .iter()
+                                .filter(|stroke| stroke.layer_id == id)
+                                .cloned()
+                                .collect(),
+                        })
+                        .collect::<Vec<_>>();
+                    if !keyframes.is_empty() {
+                        next.layer_tracks.push(LayerAnimationTrack {
+                            layer_id: id,
+                            keyframes,
+                        });
+                    }
+                }
+            } else {
+                next.interpolate = false;
+            }
+        }
+        let track_index = match next
+            .layer_tracks
+            .iter()
+            .position(|track| track.layer_id == layer_id)
+        {
+            Some(index) => index,
+            None => {
+                if next.layer_tracks.len() >= 128 {
+                    return Err("Animation already contains 128 layer tracks".into());
+                }
+                next.layer_tracks.push(LayerAnimationTrack {
+                    layer_id,
+                    keyframes: Vec::new(),
+                });
+                next.layer_tracks.len() - 1
+            }
+        };
+        let range_end = next.range_end;
+        let track = &mut next.layer_tracks[track_index];
+        if let Some(key) = track.keyframes.iter_mut().find(|key| key.frame == frame) {
+            key.strokes = layer_strokes.to_vec();
+        } else {
+            if track.keyframes.len() >= MAX_KEYFRAMES {
+                return Err("Layer track already contains 120 keyframes".into());
+            }
+            let exposure = track
+                .keyframes
+                .iter()
+                .find(|key| key.frame > frame)
+                .map(|key| key.frame - frame)
+                .unwrap_or_else(|| range_end.saturating_sub(frame).saturating_add(1));
+            let index = track.keyframes.partition_point(|key| key.frame < frame);
+            track.keyframes.insert(
+                index,
+                LayerArtworkKeyframe {
+                    frame,
+                    exposure: exposure.max(1),
+                    strokes: layer_strokes.to_vec(),
+                },
+            );
+        }
+        next.current_frame = frame;
+        Ok(next)
+    }
+
+    pub fn set_layer_exposure(
+        &self,
+        layer_id: u64,
+        frame: u32,
+        exposure: u32,
+    ) -> Result<Self, String> {
+        let mut next = self.clone();
+        let range_end = next.range_end;
+        let key = next
+            .layer_tracks
+            .iter_mut()
+            .find(|track| track.layer_id == layer_id)
+            .and_then(|track| track.keyframes.iter_mut().find(|key| key.frame == frame))
+            .ok_or("There is no keyframe for this layer at the current frame")?;
+        let max = range_end.saturating_sub(frame).saturating_add(1);
+        if exposure == 0 || exposure > max {
+            return Err("Exposure must fit inside the animation range".into());
+        }
+        key.exposure = exposure;
+        Ok(next)
+    }
+
+    pub fn duplicate_layer_keyframe(
+        &self,
+        layer_id: u64,
+        source_frame: u32,
+        target_frame: u32,
+    ) -> Result<Self, String> {
+        if target_frame < self.range_start || target_frame > self.range_end {
+            return Err("Duplicate frame must be inside the animation range".into());
+        }
+        let mut next = self.clone();
+        let range_end = next.range_end;
+        let track = next
+            .layer_tracks
+            .iter_mut()
+            .find(|track| track.layer_id == layer_id)
+            .ok_or("The active layer has no animation track")?;
+        if track.keyframes.iter().any(|key| key.frame == target_frame) {
+            return Err("A layer keyframe already exists at the destination frame".into());
+        }
+        if track.keyframes.len() >= MAX_KEYFRAMES {
+            return Err("Layer track already contains 120 keyframes".into());
+        }
+        let source = track
+            .keyframes
+            .iter()
+            .find(|key| key.frame == source_frame)
+            .cloned()
+            .ok_or("Choose an existing layer keyframe to duplicate")?;
+        let exposure = track
+            .keyframes
+            .iter()
+            .find(|key| key.frame > target_frame)
+            .map(|key| key.frame - target_frame)
+            .unwrap_or_else(|| range_end.saturating_sub(target_frame).saturating_add(1));
+        if let Some(previous) = track.keyframes.iter_mut().find(|key| {
+            key.frame < target_frame && target_frame < key.frame.saturating_add(key.exposure)
+        }) {
+            previous.exposure = target_frame - previous.frame;
+        }
+        let index = track
+            .keyframes
+            .partition_point(|key| key.frame < target_frame);
+        track.keyframes.insert(
+            index,
+            LayerArtworkKeyframe {
+                frame: target_frame,
+                exposure: exposure.max(1),
+                strokes: source.strokes,
+            },
+        );
+        next.current_frame = target_frame;
+        Ok(next)
+    }
+
+    pub fn delete_layer_keyframe(&self, layer_id: u64, frame: u32) -> Result<Self, String> {
+        let mut next = self.clone();
+        let range_end = next.range_end;
+        let track = next
+            .layer_tracks
+            .iter_mut()
+            .find(|track| track.layer_id == layer_id)
+            .ok_or("The active layer has no animation track")?;
+        let index = track
+            .keyframes
+            .iter()
+            .position(|key| key.frame == frame)
+            .ok_or("There is no layer keyframe at the current frame")?;
+        track.keyframes.remove(index);
+        if index > 0 {
+            let next_frame = track.keyframes.get(index).map(|key| key.frame);
+            let previous = &mut track.keyframes[index - 1];
+            if let Some(next_frame) = next_frame {
+                previous.exposure = next_frame.saturating_sub(previous.frame).max(1);
+            } else {
+                previous.exposure = range_end
+                    .saturating_sub(previous.frame)
+                    .saturating_add(1)
+                    .max(1);
+            }
+        }
+        if track.keyframes.is_empty() {
+            next.layer_tracks.retain(|track| track.layer_id != layer_id);
+        }
+        if next.layer_tracks.is_empty() {
+            next.base_strokes = None;
+        }
+        Ok(next)
+    }
+}
+
+fn validate_snapshot(
+    strokes: &[Stroke],
+    expected_layer: Option<u64>,
+    layer_ids: &HashSet<u64>,
+    tip_asset_ids: &HashSet<u64>,
+    total_points: &mut usize,
+) -> Result<(), String> {
+    if strokes.len() > MAX_STROKES_PER_FRAME {
+        return Err("Animation snapshot exceeds the 100,000 stroke limit".into());
+    }
+    let mut ids = HashSet::with_capacity(strokes.len());
+    for stroke in strokes {
+        if stroke.id == 0
+            || stroke.id == u64::MAX
+            || !ids.insert(stroke.id)
+            || !layer_ids.contains(&stroke.layer_id)
+            || expected_layer.is_some_and(|id| stroke.layer_id != id)
+            || !stroke.radius.is_finite()
+            || !(0.001..=1.0).contains(&stroke.radius)
+            || stroke
+                .color
+                .iter()
+                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+            || stroke.gradient.is_some_and(|gradient| !gradient.is_valid())
+            || !stroke.brush.is_valid()
+            || (stroke.brush.tip_asset_id != 0
+                && !tip_asset_ids.contains(&stroke.brush.tip_asset_id))
+            || stroke
+                .brush
+                .explicit_tip_variants()
+                .any(|variant| !tip_asset_ids.contains(&variant.asset_id))
+            || stroke.points.iter().any(|point| !point.is_valid())
+            || !stroke.point_thickness_is_valid()
+            || stroke.modifiers.as_ref().is_some_and(|stack| {
+                !stack.is_valid(stroke.points.len()) || !stack.is_compatible(stroke)
+            })
+            || stroke.curve.as_ref().is_some_and(|curve| !curve.is_valid())
+            || stroke
+                .fill
+                .as_ref()
+                .is_some_and(|fill| !fill.offset.is_finite() || fill.offset.abs() > 10_000.0)
+        {
+            return Err("Animation contains an invalid or duplicate stroke record".into());
+        }
+        *total_points = total_points.saturating_add(stroke.points.len());
+        if *total_points > MAX_TOTAL_POINTS {
+            return Err("Animation snapshots exceed the 2 million point budget".into());
+        }
+    }
+    Ok(())
 }
 
 /// Insert/update snapshots in the same vector order as the source. If any

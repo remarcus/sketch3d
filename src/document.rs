@@ -1485,6 +1485,11 @@ impl Document {
             }
         }
         let mut doc: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        if doc.animation.version == 1 {
+            // Version 2 adds independent layer tracks and exposure lengths;
+            // both fields default empty so existing whole-drawing tracks stay intact.
+            doc.animation.version = crate::animation::CURRENT_VERSION;
+        }
         if version == Some(16) {
             for stroke in &mut doc.strokes {
                 if stroke.brush.tip_asset_id != 0 {

@@ -1374,6 +1374,9 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
             after.active_layer = id;
         }
         LayerAction::MoveSelection(ids, target) => {
+            if !doc.animation.layer_tracks.is_empty() {
+                return Err("Finish or remove independent layer animation before moving strokes between layers".into());
+            }
             let layer = after
                 .layers
                 .iter()
@@ -1447,6 +1450,22 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 return Err(
                     "Move or delete this layer's animated strokes before deleting the layer".into(),
                 );
+            }
+            if doc
+                .animation
+                .layer_tracks
+                .iter()
+                .any(|track| track.layer_id == id && !track.keyframes.is_empty())
+            {
+                return Err("Delete this layer's animation track before deleting the layer".into());
+            }
+            if doc
+                .animation
+                .base_strokes
+                .as_ref()
+                .is_some_and(|strokes| strokes.iter().any(|stroke| stroke.layer_id == id))
+            {
+                return Err("Move or delete this layer's static animation artwork before deleting the layer".into());
             }
             after.layers.retain(|l| l.id != id);
             if after.active_layer == id {

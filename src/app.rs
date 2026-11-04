@@ -3993,21 +3993,29 @@ impl SketchApp {
                     match result {
                         Ok((doc, assets, models)) => {
                             self.reset_recovery_document();
-                            self.next_id =
-                                doc.strokes
-                                    .iter()
-                                    .map(|s| s.id)
-                                    .chain(
-                                        doc.animation.keyframes.iter().flat_map(|keyframe| {
-                                            keyframe.strokes.iter().map(|s| s.id)
-                                        }),
-                                    )
-                                    .chain(doc.image_planes.iter().map(|plane| plane.id))
-                                    .chain(doc.guide_resources.iter().map(|guide| guide.id))
-                                    .chain(doc.model_references.iter().map(|model| model.id))
-                                    .max()
-                                    .unwrap_or(0)
-                                    .saturating_add(1);
+                            self.next_id = doc
+                                .strokes
+                                .iter()
+                                .map(|s| s.id)
+                                .chain(
+                                    doc.animation
+                                        .keyframes
+                                        .iter()
+                                        .flat_map(|keyframe| keyframe.strokes.iter().map(|s| s.id)),
+                                )
+                                .chain(doc.animation.base_strokes.iter().flatten().map(|s| s.id))
+                                .chain(doc.animation.layer_tracks.iter().flat_map(|track| {
+                                    track
+                                        .keyframes
+                                        .iter()
+                                        .flat_map(|keyframe| keyframe.strokes.iter().map(|s| s.id))
+                                }))
+                                .chain(doc.image_planes.iter().map(|plane| plane.id))
+                                .chain(doc.guide_resources.iter().map(|guide| guide.id))
+                                .chain(doc.model_references.iter().map(|model| model.id))
+                                .max()
+                                .unwrap_or(0)
+                                .saturating_add(1);
                             self.doc = doc;
                             self.loft_preview = None;
                             self.image_plane_assets = assets;
