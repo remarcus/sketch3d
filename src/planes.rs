@@ -150,37 +150,64 @@ impl SketchApp {
         }
     }
     pub(super) fn plane_overlay(&self, ui: &egui::Ui, rect: Rect) {
-        if self.placement.active
-            || self.use_revolved
-            || self.use_cylinder
-            || !self.guide_visible
-            || self.guide.preset().is_some()
-        {
-            return;
-        }
-        let origin = self.guide.origin();
-        let normal = self.guide.basis().2;
-        let Some((start, _)) = gizmo::project(&self.camera, rect, origin) else {
-            return;
-        };
-        let length = 60.0 * self.camera.world_per_pixel(origin, rect.height());
-        let Some((end, _)) = gizmo::project(&self.camera, rect, origin + normal * length) else {
-            return;
-        };
         let painter = ui.painter().with_clip_rect(rect);
-        let color = ui_style::canvas_overlay_accent(
+        let active_color = ui_style::canvas_overlay_accent(
             self.presentation.preferences.background,
             self.presentation.preferences.background_image.is_some(),
         );
-        painter.circle_stroke(start, 5.0, egui::Stroke::new(1.5_f32, color));
-        if start.distance(end) > 10.0 {
-            painter.arrow(start, end - start, egui::Stroke::new(1.5_f32, color));
-            painter.text(
-                end + egui::vec2(6.0, -10.0),
-                egui::Align2::LEFT_CENTER,
-                "N",
-                egui::FontId::proportional(12.0),
-                color,
+        let inactive_base = ui_style::canvas_selection_accent(
+            self.presentation.preferences.background,
+            self.presentation.preferences.background_image.is_some(),
+        );
+        let inactive_color = Color32::from_rgba_unmultiplied(
+            inactive_base.r(),
+            inactive_base.g(),
+            inactive_base.b(),
+            95,
+        );
+
+        // Saved planes are independent guide resources, so display every
+        // visible planar one at once. Curved guides keep their existing
+        // dedicated interaction and rendering paths.
+        for guide in self.doc.guide_resources.iter().filter(|guide| guide.visible) {
+            let crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } =
+                &guide.geometry
+            else {
+                continue;
+            };
+            let active = self.doc.active_guide == Some(guide.id);
+            draw_plane_grid(
+                &painter,
+                &self.camera,
+                rect,
+                *origin,
+                *rotation * Vec3::X,
+                *rotation * Vec3::Y,
+                if active { active_color } else { inactive_color },
+                active,
+                &guide.name,
+            );
+        }
+
+        // The unsaved work plane is also visible when no saved guide is
+        // active. This includes Front/Side/Ground presets, which were
+        // previously hidden by the normal-axis-only overlay.
+        if self.doc.active_guide.is_none()
+            && self.guide_visible
+            && !self.use_revolved
+            && !self.use_cylinder
+        {
+            let (u, v, _) = self.guide.basis();
+            draw_plane_grid(
+                &painter,
+                &self.camera,
+                rect,
+                self.guide.origin(),
+                u,
+                v,
+                active_color,
+                true,
+                self.guide.label(),
             );
         }
     }
@@ -263,5 +290,82 @@ impl SketchApp {
         self.stabilization = strength;
         assert!(self.save(false));
         self.status="Custom planes: rotated drawing, vertical alignment, plane switching, and persistence checks passed.".into();
+    }
+}
+
+fn draw_plane_grid(
+    painter: &egui::Painter,
+    camera: &Camera,
+    rect: Rect,
+    origin: Vec3,
+    u: Vec3,
+    v: Vec3,
+    color: Color32,
+    active: bool,
+    label: &str,
+) {
+    if !origin.is_finite() || !u.is_finite() || !v.is_finite() {
+        return;
+    }
+    let world_per_pixel = camera.world_per_pixel(origin, rect.height());
+    if !world_per_pixel.is_finite() || world_per_pixel <= 0.0 {
+        return;
+    }
+    // Keep the guide footprint legible across zoom levels while bounding the
+    // world-space coordinates sent through projection.
+    let extent = (world_per_pixel * 55.0).clamp(0.25, 500.0);
+    let corners = [
+        origin - u * extent - v * extent,
+        origin + u * extent - v * extent,
+        origin + u * extent + v * extent,
+        origin - u * extent + v * extent,
+    ];
+    let Some(projected) = corners
+        .into_iter()
+        .map(|point| gizmo::project(camera, rect, point).map(|(screen, _)| screen))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return;
+    };
+
+    let edge_width = if active { 1.8 } else { 1.0 };
+    let edge = egui::Stroke::new(edge_width, color);
+    for index in 0..4 {
+        painter.line_segment([projected[index], projected[(index + 1) % 4]], edge);
+    }
+
+    // Three interior divisions in each direction make plane orientation
+    // visible without flooding the viewport with a dense infinite grid.
+    let grid_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), if active { 90 } else { 44 });
+    let grid = egui::Stroke::new(0.8, grid_color);
+    for step in 1..4 {
+        let offset = -extent + extent * 0.5 * step as f32;
+        let u_start = origin - u * extent + v * offset;
+        let u_end = origin + u * extent + v * offset;
+        let v_start = origin + u * offset - v * extent;
+        let v_end = origin + u * offset + v * extent;
+        if let (Some((a, _)), Some((b, _))) = (
+            gizmo::project(camera, rect, u_start),
+            gizmo::project(camera, rect, u_end),
+        ) {
+            painter.line_segment([a, b], grid);
+        }
+        if let (Some((a, _)), Some((b, _))) = (
+            gizmo::project(camera, rect, v_start),
+            gizmo::project(camera, rect, v_end),
+        ) {
+            painter.line_segment([a, b], grid);
+        }
+    }
+
+    if let Some((screen, _)) = gizmo::project(camera, rect, origin) {
+        painter.circle_filled(screen, if active { 4.0 } else { 2.5 }, color);
+        painter.text(
+            screen + egui::vec2(7.0, -8.0),
+            egui::Align2::LEFT_BOTTOM,
+            label,
+            egui::FontId::proportional(if active { 12.0 } else { 10.0 }),
+            color,
+        );
     }
 }
