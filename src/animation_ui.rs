@@ -1,10 +1,34 @@
 use super::*;
+use std::collections::BTreeSet;
 
-#[derive(Default)]
 pub(super) struct AnimationUi {
     playing: bool,
     playback_origin_seconds: f64,
     playback_origin_frame: u32,
+    selected_key_frames: BTreeSet<u32>,
+    multi_key_translation: [f32; 3],
+    multi_key_point_scale: f32,
+    multi_key_radius_scale: f32,
+    multi_key_tint: [f32; 3],
+    preview_animation: Option<crate::animation::ArtworkAnimation>,
+    preview_source: Option<(crate::animation::ArtworkAnimation, Vec<Stroke>)>,
+}
+
+impl Default for AnimationUi {
+    fn default() -> Self {
+        Self {
+            playing: false,
+            playback_origin_seconds: 0.0,
+            playback_origin_frame: 0,
+            selected_key_frames: BTreeSet::new(),
+            multi_key_translation: [0.0; 3],
+            multi_key_point_scale: 1.0,
+            multi_key_radius_scale: 1.0,
+            multi_key_tint: [1.0; 3],
+            preview_animation: None,
+            preview_source: None,
+        }
+    }
 }
 
 impl SketchApp {
@@ -264,6 +288,79 @@ impl SketchApp {
         }
     }
 
+    fn build_animation_keys_edit(&mut self) -> Option<crate::animation::ArtworkAnimation> {
+        if self.animation_ui.playing {
+            self.status = "Pause playback before editing multiple keys.".into();
+            return None;
+        }
+        if !self.doc.active_editable() {
+            self.status = "Choose a visible, unlocked layer before editing animation keys.".into();
+            return None;
+        }
+        if !self.doc.linked_stroke_groups.definitions.is_empty()
+            || !self.doc.linked_stroke_groups.instances.is_empty()
+        {
+            self.status = "Make linked instances unique before editing animation keys.".into();
+            return None;
+        }
+        let frames = self
+            .animation_ui
+            .selected_key_frames
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let translation = glam::Vec3::from_array(self.animation_ui.multi_key_translation);
+        let next = match self.doc.animation.edit_layer_keys(
+            self.doc.active_layer,
+            &frames,
+            translation,
+            self.animation_ui.multi_key_point_scale,
+            self.animation_ui.multi_key_radius_scale,
+            self.animation_ui.multi_key_tint,
+        ) {
+            Ok(animation) => animation,
+            Err(error) => {
+                self.status = error;
+                return None;
+            }
+        };
+        Some(next)
+    }
+
+    fn preview_animation_keys_edit(&mut self) {
+        self.animation_ui.preview_animation = self.build_animation_keys_edit();
+        if self.animation_ui.preview_animation.is_some() {
+            self.animation_ui.preview_source =
+                Some((self.doc.animation.clone(), self.doc.strokes.clone()));
+            self.status = "Previewing the selected key edit. Inspect each selected key, then Apply or Cancel.".into();
+        }
+    }
+
+    fn apply_animation_keys_edit(&mut self) {
+        let Some(animation) = self.animation_ui.preview_animation.take() else {
+            self.status = "Preview the multi-key edit before applying it.".into();
+            return;
+        };
+        let Some((source_animation, source_strokes)) = self.animation_ui.preview_source.take() else {
+            self.status = "The multi-key edit preview expired. Preview it again before applying.".into();
+            return;
+        };
+        if self.doc.animation != source_animation || self.doc.strokes != source_strokes {
+            self.status = "The drawing changed after the preview. Preview the multi-key edit again.".into();
+            return;
+        }
+        let strokes = animation
+            .resolve(animation.current_frame)
+            .unwrap_or_else(|| self.doc.strokes.clone());
+        if let Err(error) = self.commit_animation_state(
+            animation,
+            strokes,
+            "Applied one point and appearance edit across the selected animation keys.",
+        ) {
+            self.status = error;
+        }
+    }
+
     pub(super) fn artwork_animation_timeline(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("artwork-animation-timeline")
             .resizable(false)
@@ -398,49 +495,143 @@ impl SketchApp {
                         }
                     });
                 }
+                let key_rows = self
+                    .doc
+                    .animation
+                    .layer_tracks
+                    .iter()
+                    .find(|track| track.layer_id == self.doc.active_layer)
+                    .map(|track| {
+                        track
+                            .keyframes
+                            .iter()
+                            .map(|key| (key.frame, key.exposure, key.strokes.len()))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if key_rows.len() > 1 {
+                    ui.collapsing("Edit strokes across selected keys", |ui| {
+                        ui.small("Keys match strokes by stable ID. Only keys containing the same stroke IDs are edited; held exposures follow their source key. Protected layers and linked artwork are excluded.");
+                        ui.horizontal_wrapped(|ui| {
+                            for (frame, exposure, count) in &key_rows {
+                                let mut selected = self.animation_ui.selected_key_frames.contains(frame);
+                                if ui.checkbox(&mut selected, format!("{frame} ({exposure}f, {count})")).changed() {
+                                    self.animation_ui.preview_animation = None;
+                                    if selected {
+                                        self.animation_ui.selected_key_frames.insert(*frame);
+                                    } else {
+                                        self.animation_ui.selected_key_frames.remove(frame);
+                                    }
+                                }
+                            }
+                            if ui.small_button("Select all").clicked() {
+                                self.animation_ui.selected_key_frames = key_rows.iter().map(|row| row.0).collect();
+                            }
+                            if ui.small_button("Clear").clicked() {
+                                self.animation_ui.selected_key_frames.clear();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Move XYZ");
+                            for component in &mut self.animation_ui.multi_key_translation {
+                                if ui.add(egui::DragValue::new(component).speed(0.01).range(-10_000.0..=10_000.0)).changed() { self.animation_ui.preview_animation = None; }
+                            }
+                            ui.label("Point scale");
+                            if ui.add(egui::DragValue::new(&mut self.animation_ui.multi_key_point_scale).speed(0.01).range(0.01..=100.0)).changed() { self.animation_ui.preview_animation = None; }
+                            ui.label("Brush size");
+                            if ui.add(egui::DragValue::new(&mut self.animation_ui.multi_key_radius_scale).speed(0.01).range(0.01..=10.0)).changed() { self.animation_ui.preview_animation = None; }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("RGB tint");
+                            for component in &mut self.animation_ui.multi_key_tint {
+                                if ui.add(egui::DragValue::new(component).speed(0.01).range(0.0..=2.0)).changed() { self.animation_ui.preview_animation = None; }
+                            }
+                            let count = self.animation_ui.selected_key_frames.len();
+                            if ui.add_enabled(count >= 2 && count <= 16 && !self.animation_ui.playing, egui::Button::new("Preview edit")).clicked() {
+                                self.preview_animation_keys_edit();
+                            }
+                            if ui.add_enabled(self.animation_ui.preview_animation.is_some() && !self.animation_ui.playing, egui::Button::new("Apply to selected keys")).clicked() {
+                                self.apply_animation_keys_edit();
+                            }
+                            if self.animation_ui.preview_animation.is_some() && ui.small_button("Cancel preview").clicked() {
+                                self.animation_ui.preview_animation = None;
+                                self.animation_ui.preview_source = None;
+                                self.status = "Multi-key edit preview canceled.".into();
+                            }
+                        });
+                    });
+                }
                 ui.small("Edits belong to the displayed frame. Key the active layer before seeking; frame seeks reset frame-local undo. Exposures hold a layer snapshot for a chosen number of frames. Layer/resource structure stays static; layer moves are disabled while independent tracks exist. Linked-group documents must be made unique before keyframing. Onion skins are display-only.");
             });
     }
 
     pub(super) fn paint_animation_onion_skins(&self, painter: &egui::Painter, rect: Rect) {
         let animation = &self.doc.animation;
-        if !animation.onion_skins || animation.is_empty() {
+        if self.animation_ui.preview_animation.is_none() && (!animation.onion_skins || animation.is_empty()) {
             return;
         }
-        for (frame, color) in [
-            (
-                animation.current_frame.saturating_sub(1),
-                Color32::from_rgba_unmultiplied(80, 180, 255, 105),
-            ),
-            (
-                animation
-                    .current_frame
-                    .saturating_add(1)
-                    .min(animation.range_end),
-                Color32::from_rgba_unmultiplied(255, 140, 80, 105),
-            ),
-        ] {
-            if frame == animation.current_frame {
-                continue;
-            }
-            let Some(strokes) = animation.resolve(frame) else {
-                continue;
-            };
-            for stroke in strokes.iter().filter(|stroke| self.doc.visible(stroke)) {
-                let positions: Vec<_> = stroke
-                    .points
-                    .iter()
-                    .filter_map(|point| {
-                        crate::gizmo::project(&self.camera, rect, point.position)
-                            .map(|(position, _)| position)
-                    })
-                    .collect();
-                if positions.len() == 1 {
-                    painter.circle_filled(positions[0], 2.0, color);
+        if animation.onion_skins {
+            for (frame, color) in [
+                (
+                    animation.current_frame.saturating_sub(1),
+                    Color32::from_rgba_unmultiplied(80, 180, 255, 105),
+                ),
+                (
+                    animation
+                        .current_frame
+                        .saturating_add(1)
+                        .min(animation.range_end),
+                    Color32::from_rgba_unmultiplied(255, 140, 80, 105),
+                ),
+            ] {
+                if frame == animation.current_frame {
+                    continue;
                 }
-                for segment in positions.windows(2) {
-                    painter
-                        .line_segment([segment[0], segment[1]], egui::Stroke::new(1.5_f32, color));
+                let Some(strokes) = animation.resolve(frame) else {
+                    continue;
+                };
+                for stroke in strokes.iter().filter(|stroke| self.doc.visible(stroke)) {
+                    let positions: Vec<_> = stroke
+                        .points
+                        .iter()
+                        .filter_map(|point| {
+                            crate::gizmo::project(&self.camera, rect, point.position)
+                                .map(|(position, _)| position)
+                        })
+                        .collect();
+                    if positions.len() == 1 {
+                        painter.circle_filled(positions[0], 2.0, color);
+                    }
+                    for segment in positions.windows(2) {
+                        painter.line_segment([segment[0], segment[1]], egui::Stroke::new(1.5_f32, color));
+                    }
+                }
+            }
+        }
+        if let Some(preview) = &self.animation_ui.preview_animation {
+            let frame = animation.current_frame;
+            if self.animation_ui.selected_key_frames.contains(&frame) {
+                if let Some(strokes) = preview.resolve(frame) {
+                    let color = Color32::from_rgba_unmultiplied(255, 210, 70, 225);
+                    for stroke in strokes
+                        .iter()
+                        .filter(|stroke| stroke.layer_id == self.doc.active_layer && self.doc.visible(stroke))
+                    {
+                        let positions: Vec<_> = stroke
+                            .points
+                            .iter()
+                            .filter_map(|point| {
+                                crate::gizmo::project(&self.camera, rect, point.position)
+                                    .map(|(position, _)| position)
+                            })
+                            .collect();
+                        if positions.len() == 1 {
+                            painter.circle_filled(positions[0], 3.0, color);
+                        }
+                        for segment in positions.windows(2) {
+                            painter.line_segment([segment[0], segment[1]], egui::Stroke::new(2.5_f32, color));
+                        }
+                    }
                 }
             }
         }

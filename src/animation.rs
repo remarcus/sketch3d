@@ -488,6 +488,117 @@ impl ArtworkAnimation {
         Ok(next)
     }
 
+    /// Apply the same point and appearance edit to the strokes whose stable
+    /// IDs occur in every selected key of one layer. Held exposures are driven
+    /// by these source keys, so they update automatically without creating
+    /// synthetic keys at intermediate frames.
+    pub fn edit_layer_keys(
+        &self,
+        layer_id: u64,
+        frames: &[u32],
+        translation: glam::Vec3,
+        point_scale: f32,
+        radius_scale: f32,
+        tint: [f32; 3],
+    ) -> Result<Self, String> {
+        if frames.len() < 2 || frames.len() > 16 {
+            return Err("Select between 2 and 16 keys on the active layer".into());
+        }
+        if !translation.is_finite()
+            || translation.abs().max_element() > 10_000.0
+            || !point_scale.is_finite()
+            || !(0.01..=100.0).contains(&point_scale)
+            || !radius_scale.is_finite()
+            || !(0.01..=10.0).contains(&radius_scale)
+            || tint.iter().any(|value| !value.is_finite() || !(0.0..=2.0).contains(value))
+        {
+            return Err("Multi-key edit values are outside supported limits".into());
+        }
+        let mut unique_frames = frames.to_vec();
+        unique_frames.sort_unstable();
+        unique_frames.dedup();
+        if unique_frames.len() != frames.len() {
+            return Err("Selected animation keys must be unique".into());
+        }
+        let track = self
+            .layer_tracks
+            .iter()
+            .find(|track| track.layer_id == layer_id)
+            .ok_or("The active layer has no independent animation track")?;
+        let keys = unique_frames
+            .iter()
+            .map(|frame| {
+                track
+                    .keyframes
+                    .iter()
+                    .find(|key| key.frame == *frame)
+                    .ok_or("Selected frames must be actual keys, not held exposures")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut shared_ids: HashSet<u64> = keys[0].strokes.iter().map(|stroke| stroke.id).collect();
+        for key in &keys[1..] {
+            let ids: HashSet<u64> = key.strokes.iter().map(|stroke| stroke.id).collect();
+            shared_ids.retain(|id| ids.contains(id));
+        }
+        if shared_ids.is_empty() {
+            return Err("Selected keys have no strokes with matching IDs".into());
+        }
+        let point_count = keys
+            .iter()
+            .flat_map(|key| key.strokes.iter())
+            .filter(|stroke| shared_ids.contains(&stroke.id))
+            .map(|stroke| stroke.points.len())
+            .sum::<usize>();
+        if point_count > 262_144 {
+            return Err("Selected keys exceed the 262,144 point edit limit".into());
+        }
+
+        let mut next = self.clone();
+        let next_track = next
+            .layer_tracks
+            .iter_mut()
+            .find(|track| track.layer_id == layer_id)
+            .expect("track was found above");
+        for key in next_track
+            .keyframes
+            .iter_mut()
+            .filter(|key| unique_frames.binary_search(&key.frame).is_ok())
+        {
+            for stroke in key
+                .strokes
+                .iter_mut()
+                .filter(|stroke| shared_ids.contains(&stroke.id))
+            {
+                let center = stroke
+                    .points
+                    .iter()
+                    .fold(glam::Vec3::ZERO, |sum, point| sum + point.position)
+                    / stroke.points.len().max(1) as f32;
+                for point in &mut stroke.points {
+                    point.position = center + (point.position - center) * point_scale + translation;
+                }
+                stroke.radius = (stroke.radius * radius_scale).clamp(0.001, 1.0);
+                for channel in 0..3 {
+                    stroke.color[channel] = (stroke.color[channel] * tint[channel]).clamp(0.0, 1.0);
+                }
+                if let Some(gradient) = &mut stroke.gradient {
+                    for channel in 0..3 {
+                        gradient.start[channel] = (gradient.start[channel] * tint[channel]).clamp(0.0, 1.0);
+                        gradient.end[channel] = (gradient.end[channel] * tint[channel]).clamp(0.0, 1.0);
+                    }
+                }
+                if let Some(colors) = &mut stroke.point_colors {
+                    for color in colors.iter_mut().flatten() {
+                        for channel in 0..3 {
+                            color[channel] = (color[channel] * tint[channel]).clamp(0.0, 1.0);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(next)
+    }
+
     pub fn duplicate_layer_keyframe(
         &self,
         layer_id: u64,
