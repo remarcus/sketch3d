@@ -76,13 +76,27 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
                 Vec::new()
             },
         });
+        if mime_type == "image/webp" {
+            match crate::wic_webp::decode(image_data) {
+                Ok(image) => {
+                    let pixels = u64::from(image.size[0]).saturating_mul(u64::from(image.size[1]));
+                    total_image_pixels = total_image_pixels.saturating_add(pixels);
+                    if pixels > crate::image_planes::MAX_IMAGE_PIXELS
+                        || total_image_pixels > crate::image_planes::MAX_CATALOG_PIXELS
+                    {
+                        return Err(
+                            "GLB embedded images exceed the decoded image pixel limit".into()
+                        );
+                    }
+                    decoded_images.push(Some(image));
+                }
+                Err(_) => decoded_images.push(None),
+            }
+            continue;
+        }
         let format = match mime_type {
             "image/png" => image::ImageFormat::Png,
             "image/jpeg" => image::ImageFormat::Jpeg,
-            "image/webp" => {
-                decoded_images.push(None);
-                continue;
-            }
             _ => unreachable!(),
         };
         let (width, height) =
@@ -249,7 +263,7 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
                     .get(info.texture().source().index())
                     .is_none_or(Option::is_none)
             }) {
-                warnings.push("WebP base-color textures are preserved in whole-scene GLB export; viewport shading uses the material factor because WebP decoding is unavailable.".into());
+                warnings.push("WebP base-color textures are preserved in whole-scene GLB export. The viewport decodes them through Windows Imaging Component when a WebP codec is installed; otherwise it uses the material factor.".into());
             }
         }
         if metallic > 0.0 || roughness < 1.0 {

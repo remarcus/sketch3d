@@ -65,6 +65,7 @@ mod surface;
 mod texture;
 mod texture_check;
 mod tutorial;
+mod wic_webp;
 
 fn main() -> eframe::Result {
     let args: Vec<_> = std::env::args().collect();
