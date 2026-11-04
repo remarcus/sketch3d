@@ -11,7 +11,7 @@ use std::io::Read;
 impl SketchApp {
     pub(super) fn texture_controls(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Surface texture")
-            .default_open(true)
+            .default_open(false)
             .show(ui, |ui| {
                 let mut anchor_mode = self.brush.texture.anchor_mode;
                 egui::ComboBox::from_label("Texture anchor")

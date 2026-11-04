@@ -4238,7 +4238,23 @@ impl SketchApp {
             } else {
                 self.tutorial_hint(ui, "Brush");
                 if !self.fills.enabled {
-                    self.brush_controls(ui);
+                    let brush_summary = if self.brush.tip_asset_id != 0 {
+                        "Image tip"
+                    } else if self.brush.flow.enabled {
+                        "Airbrush"
+                    } else if self.brush.strands.enabled {
+                        "Bristle / rake"
+                    } else {
+                        match self.brush.kind {
+                            BrushKind::Round => "Round",
+                            BrushKind::Ribbon => "Ribbon",
+                            BrushKind::Chisel => "Flat / chisel",
+                        }
+                    };
+                    egui::CollapsingHeader::new(format!("Brush details · {brush_summary}"))
+                        .id_salt("properties-brush-details")
+                        .default_open(false)
+                        .show(ui, |ui| self.brush_controls(ui));
                 }
                 ui.add(
                     egui::Slider::new(&mut self.radius, 0.001..=1.0)
@@ -4252,32 +4268,27 @@ impl SketchApp {
                 ui.add(egui::Slider::new(&mut self.stabilization, 0.0..=1.0).text("Stabilize").custom_formatter(|v, _| format!("{:.0}%", v*100.0))).on_hover_text("0% gives raw input. Higher values reduce jitter and let the line trail the pen. It catches up on release; pressure is preserved.");
             }
         }
-        ui.add_space(12.0);
-        ui.separator();
-        ui.label(
-            RichText::new("DRAWING GUIDE")
-                .small()
-                .color(ui_style::colors(ui.ctx()).muted_text),
-        );
-        self.tutorial_hint(ui, "Drawing guide");
-        self.plane_controls(ui);
-        if ui.button("Reset camera").clicked() {
-            self.finish();
-            self.camera = Camera::default();
-        }
-        ui.add_space(12.0);
-        ui.separator();
-        ui.label(
-            RichText::new("NAVIGATION")
-                .small()
-                .color(ui_style::colors(ui.ctx()).muted_text),
-        );
-        ui.label("Space + drag    Orbit\nSpace + Shift    Pan\nSpace + Alt       Zoom\nRight drag        Orbit\nMiddle drag      Pan\nScroll                Zoom");
-        self.tutorial_hint(ui, "Navigation");
-        if ui.button("All shortcuts / help").clicked() {
-            self.finish();
-            self.show_help = true;
-        }
+        ui.add_space(8.0);
+        egui::CollapsingHeader::new(format!("Drawing guide · {}", self.active_guide_label()))
+            .id_salt("properties-drawing-guide")
+            .default_open(true)
+            .show(ui, |ui| {
+                self.tutorial_hint(ui, "Drawing guide");
+                self.plane_controls(ui);
+                if ui.button("Reset camera").clicked() {
+                    self.finish();
+                    self.camera = Camera::default();
+                }
+            });
+        ui.add_space(8.0);
+        ui.collapsing("Navigation and help", |ui| {
+            ui.label("Space + drag    Orbit\nSpace + Shift    Pan\nSpace + Alt       Zoom\nRight drag        Orbit\nMiddle drag      Pan\nScroll                Zoom");
+            self.tutorial_hint(ui, "Navigation");
+            if ui.button("All shortcuts / help").clicked() {
+                self.finish();
+                self.show_help = true;
+            }
+        });
     }
     fn diagnostics(&mut self, ui: &mut egui::Ui) {
         self.tutorial_hint(ui, "Input lab");
