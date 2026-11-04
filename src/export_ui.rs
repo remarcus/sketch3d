@@ -121,6 +121,49 @@ pub(super) fn build_export_document_snapshot(
 }
 
 impl SketchApp {
+    pub(super) fn grease_pencil_handoff_dialog(&mut self) {
+        if !self.can_export(false)
+            || self.point_draft.is_some()
+            || self.point_multi_draft.is_some()
+            || self.selection_cleanup_draft.is_some()
+        {
+            self.status = "Finish the current edit before exporting Grease Pencil strokes.".into();
+            return;
+        }
+        let name = self
+            .file
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("Sketch3D drawing");
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Blender Python handoff", &["py"])
+            .set_file_name(format!("{name}-grease-pencil.py"))
+            .save_file()
+        else {
+            return;
+        };
+        if !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("py"))
+        {
+            self.status = "Choose an export filename ending in .py.".into();
+            return;
+        }
+        let (script, unsupported) =
+            match crate::grease_pencil_handoff::build_script(&self.doc, name) {
+                Ok(result) => result,
+                Err(error) => {
+                    self.status = format!("Grease Pencil export failed: {error}");
+                    return;
+                }
+            };
+        match std::fs::write(&path, script) {
+            Ok(()) => self.status = format!("Grease Pencil handoff saved ({} source semantics reported as unsupported). Run the .py in Blender 4.3+.", unsupported.len()),
+            Err(error) => self.status = format!("Could not write Grease Pencil handoff: {error}"),
+        }
+    }
+
     pub(super) fn can_export(&self, selected: bool) -> bool {
         self.can_export_scope(selected, false)
     }

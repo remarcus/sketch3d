@@ -21,6 +21,7 @@ mod export_check;
 mod geometry;
 mod gizmo;
 mod gltf_reference;
+mod grease_pencil_handoff;
 mod image_plane_storage;
 mod image_planes;
 mod input;

@@ -5464,6 +5464,10 @@ impl SketchApp {
                 self.save(true);
             }
             ui.menu_button("Export", |ui| {
+                if ui.button("Editable Grease Pencil strokes (.py)…").clicked() {
+                    ui.close_menu();
+                    self.grease_pencil_handoff_dialog();
+                }
                 if let Some(action) = export_ui::glb_export_scope_items(
                     ui,
                     self.can_export(false),
