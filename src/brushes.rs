@@ -75,7 +75,7 @@ impl SketchApp {
             && !strand_mode
             && !self.brush.dabs.enabled
         {
-            ui_style::field_row(ui, "Tube profile", |ui| {
+            ui_style::field_row(ui, "Cross-section", |ui| {
                 ui.horizontal_wrapped(|ui| {
                     for profile in [
                         crate::document::TubeProfile::Round,
@@ -110,7 +110,7 @@ impl SketchApp {
                 )
                 .on_hover_text("Thickness as a percentage of brush width.");
             }
-            ui.small("Orientation starts from the guide, then follows the stroke. Orbit to view it from either side.");
+            ui.small("Changes the stroke's 3D cross-section. Orbit to inspect its shape; orientation follows the guide and stroke.");
         }
         if !image_tip {
             self.texture_controls(ui);
