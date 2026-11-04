@@ -93,7 +93,18 @@ fn composite_preview(pixels: &[u8], background: [f32; 3]) -> Vec<u8> {
 }
 
 pub fn run(output: &Path) -> Result<(), String> {
-    let config = egui_wgpu::WgpuConfiguration::default();
+    let mut config = egui_wgpu::WgpuConfiguration::default();
+    if let egui_wgpu::WgpuSetup::CreateNew(mut setup) = config.wgpu_setup {
+        let default_device_descriptor = std::sync::Arc::clone(&setup.device_descriptor);
+        setup.device_descriptor = std::sync::Arc::new(move |adapter| {
+            let mut descriptor = default_device_descriptor(adapter);
+            if adapter.limits().max_bind_groups >= 5 {
+                descriptor.required_limits.max_bind_groups = 5;
+            }
+            descriptor
+        });
+        config.wgpu_setup = setup.into();
+    }
     let instance = block_on(config.wgpu_setup.new_instance());
     let state = block_on(egui_wgpu::RenderState::create(
         &config, &instance, None, None, 1, false,

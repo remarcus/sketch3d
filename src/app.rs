@@ -8777,7 +8777,10 @@ impl SketchApp {
                 assert!(self.doc.strokes.is_empty());
                 self.redo();
                 assert_eq!(self.doc.strokes.len(), 1);
-                self.erase(rect.center() - egui::vec2(120.0, 0.0), rect);
+                // Hit the middle sample of the synthetic stroke instead of
+                // depending on endpoint rasterization or picking.
+                let erase_point = rect.center() + egui::vec2(0.0, (50.0_f32 * 0.08).sin() * 65.0);
+                self.erase(erase_point, rect);
                 assert!(self.doc.strokes.is_empty(), "Whole-stroke eraser");
                 self.undo();
                 assert_eq!(self.doc.strokes.len(), 1);
