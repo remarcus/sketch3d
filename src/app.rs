@@ -450,6 +450,29 @@ fn canvas_pointer_allowed(ctx: &egui::Context, canvas: Rect, position: Pos2) -> 
 }
 
 #[derive(Clone, Copy)]
+enum QuickPaletteCommand {
+    Tool(&'static str),
+    Undo,
+    Redo,
+    Shape(shape_tool::ShapeMode),
+    Transform(Mode),
+    Deselect,
+}
+
+struct QuickPaletteItem {
+    group: &'static str,
+    label: &'static str,
+    shortcut: &'static str,
+    command: QuickPaletteCommand,
+    enabled: bool,
+}
+
+struct QuickPaletteState {
+    position: Pos2,
+    selected: usize,
+}
+
+#[derive(Clone, Copy)]
 enum Pending {
     FilledStudy,
     TutorialStart,
@@ -591,6 +614,8 @@ pub struct SketchApp {
     local_color_brush: local_color_ui::LocalColorUi,
     select_mode: bool,
     selected: HashSet<u64>,
+    quick_palette: Option<QuickPaletteState>,
+    suppress_canvas_input_once: bool,
     transform_mode: Mode,
     transform_values: [f32; 3],
     scale_values: [f32; 3],
@@ -2147,6 +2172,8 @@ impl SketchApp {
             local_color_brush: Default::default(),
             select_mode: false,
             selected: HashSet::new(),
+            quick_palette: None,
+            suppress_canvas_input_once: false,
             transform_mode: Mode::Move,
             transform_values: [0.0; 3],
             scale_values: [1.0; 3],
@@ -4132,6 +4159,318 @@ impl SketchApp {
         }
     }
 
+    fn quick_palette_items(&self) -> Vec<QuickPaletteItem> {
+        let unsupported_surface = self.resource_target_active();
+        let tools = [
+            ("Brush", "B", QuickPaletteCommand::Tool("Brush")),
+            ("Line", "L", QuickPaletteCommand::Tool("Line")),
+            ("Curve", "C", QuickPaletteCommand::Tool("Curve")),
+            ("Shape", "", QuickPaletteCommand::Tool("Circle")),
+            ("Fill", "P", QuickPaletteCommand::Tool("Fill")),
+            ("Erase", "E", QuickPaletteCommand::Tool("Erase")),
+            ("Tint", "T", QuickPaletteCommand::Tool("Paint")),
+            ("Select", "V", QuickPaletteCommand::Tool("Select")),
+        ];
+        let mut items: Vec<_> = tools
+            .into_iter()
+            .map(|(label, shortcut, command)| {
+                let enabled =
+                    !(unsupported_surface && matches!(label, "Line" | "Curve" | "Shape" | "Fill"));
+                QuickPaletteItem {
+                    group: "Tools",
+                    label,
+                    shortcut,
+                    command,
+                    enabled,
+                }
+            })
+            .collect();
+        items.extend([
+            QuickPaletteItem {
+                group: "History",
+                label: "Undo",
+                shortcut: "Ctrl/Cmd+Z",
+                command: QuickPaletteCommand::Undo,
+                enabled: !self.undo.is_empty(),
+            },
+            QuickPaletteItem {
+                group: "History",
+                label: "Redo",
+                shortcut: "Ctrl/Cmd+Shift+Z",
+                command: QuickPaletteCommand::Redo,
+                enabled: !self.redo.is_empty(),
+            },
+        ]);
+        if self.shape_tool.mode.is_some() {
+            items.extend(
+                [
+                    (shape_tool::ShapeMode::Circle, "Circle"),
+                    (shape_tool::ShapeMode::Ellipse, "Ellipse"),
+                    (shape_tool::ShapeMode::Rectangle, "Rectangle"),
+                    (shape_tool::ShapeMode::RoundedRectangle, "Rounded rectangle"),
+                ]
+                .into_iter()
+                .map(|(mode, label)| QuickPaletteItem {
+                    group: "Shape options",
+                    label,
+                    shortcut: "",
+                    command: QuickPaletteCommand::Shape(mode),
+                    enabled: !unsupported_surface,
+                }),
+            );
+        }
+        if self.select_mode {
+            items.extend(
+                [
+                    (Mode::Move, "Move"),
+                    (Mode::Rotate, "Rotate"),
+                    (Mode::Scale, "Scale"),
+                ]
+                .into_iter()
+                .map(|(mode, label)| QuickPaletteItem {
+                    group: "Selection options",
+                    label,
+                    shortcut: "",
+                    command: QuickPaletteCommand::Transform(mode),
+                    enabled: true,
+                }),
+            );
+        }
+        if !self.selected.is_empty() {
+            items.push(QuickPaletteItem {
+                group: "Selection",
+                label: "Deselect all",
+                shortcut: "",
+                command: QuickPaletteCommand::Deselect,
+                enabled: true,
+            });
+        }
+        items
+    }
+
+    fn quick_palette_active_tool(&self) -> &'static str {
+        if self.select_mode {
+            "Select"
+        } else if self.local_color_brush.enabled {
+            "Tint"
+        } else if self.eraser {
+            "Erase"
+        } else if self.fills.enabled {
+            "Fill"
+        } else if self.line.enabled {
+            "Line"
+        } else if self.curve_tool.enabled {
+            "Curve"
+        } else if self.shape_tool.mode.is_some() {
+            "Shape"
+        } else {
+            "Brush"
+        }
+    }
+
+    fn can_open_quick_palette(&self, ctx: &egui::Context) -> bool {
+        !self.confirm
+            && !self.show_help
+            && !self.recovery_prompt
+            && !self.tutorial.offer
+            && !self.close_after_recovery
+            && !self.presentation.artwork
+            && !self.placement.active
+            && self.active.is_none()
+            && self.drag.is_none()
+            && self.line.draft.is_none()
+            && !self.curve_draft_active()
+            && !self.shape_draft_active()
+            && self.fills.draft.is_none()
+            && !self.liquify_active()
+            && !self.partial_erase_active()
+            && !self.local_color_active()
+            && self.point_draft.is_none()
+            && self.point_multi_draft.is_none()
+            && self.reprojection_draft.is_none()
+            && !self.mixed_resource_preview_active()
+            && self.camera_playback.is_none()
+            && self.repeat.is_none()
+            && !self.palette_ui.sampling
+            && !self.palette_ui.color_editor_active()
+            && !self.preset_ui.browser_is_open()
+            && !ctx.wants_keyboard_input()
+            && !ctx.input(|input| input.pointer.any_down())
+    }
+
+    fn quick_palette_shortcuts(&mut self, ctx: &egui::Context) {
+        let (escape, q, up, down, enter, modifiers, pointer, focused) = ctx.input(|input| {
+            (
+                input.key_pressed(Key::Escape),
+                input.key_pressed(Key::Q),
+                input.key_pressed(Key::ArrowUp),
+                input.key_pressed(Key::ArrowDown),
+                input.key_pressed(Key::Enter),
+                input.modifiers,
+                input.pointer.hover_pos(),
+                input.focused,
+            )
+        });
+        if self.quick_palette.is_some() {
+            if !focused || escape || (q && !modifiers.any()) {
+                self.quick_palette = None;
+                self.suppress_canvas_input_once = true;
+                return;
+            }
+            let items = self.quick_palette_items();
+            if items.is_empty() {
+                self.quick_palette = None;
+                self.suppress_canvas_input_once = true;
+                return;
+            }
+            if let Some(state) = self.quick_palette.as_mut() {
+                let direction = if up {
+                    -1
+                } else if down {
+                    1
+                } else {
+                    0
+                };
+                if direction != 0 {
+                    for offset in 1..=items.len() {
+                        let index = (state.selected as isize + direction * offset as isize)
+                            .rem_euclid(items.len() as isize)
+                            as usize;
+                        if items[index].enabled {
+                            state.selected = index;
+                            break;
+                        }
+                    }
+                }
+            }
+            if enter {
+                let selected = self
+                    .quick_palette
+                    .as_ref()
+                    .and_then(|state| items.get(state.selected))
+                    .filter(|item| item.enabled)
+                    .map(|item| item.command);
+                self.quick_palette = None;
+                self.suppress_canvas_input_once = true;
+                if let Some(command) = selected {
+                    self.run_quick_palette_command(command);
+                }
+            }
+        } else if q && !modifiers.any() && self.can_open_quick_palette(ctx) {
+            let screen = ctx.screen_rect();
+            let position = pointer.unwrap_or_else(|| screen.center());
+            let menu_size = egui::vec2(238.0, 370.0);
+            let position = egui::pos2(
+                position.x.clamp(
+                    screen.left() + 8.0,
+                    (screen.right() - menu_size.x - 8.0).max(screen.left() + 8.0),
+                ),
+                position.y.clamp(
+                    screen.top() + 8.0,
+                    (screen.bottom() - menu_size.y - 8.0).max(screen.top() + 8.0),
+                ),
+            );
+            let items = self.quick_palette_items();
+            let active_tool = self.quick_palette_active_tool();
+            let selected = items
+                .iter()
+                .position(|item| item.group == "Tools" && item.label == active_tool)
+                .unwrap_or(0);
+            self.quick_palette = Some(QuickPaletteState { position, selected });
+        }
+    }
+
+    fn run_quick_palette_command(&mut self, command: QuickPaletteCommand) {
+        match command {
+            QuickPaletteCommand::Tool(tool) => self.choose_tool(tool),
+            QuickPaletteCommand::Undo => self.undo(),
+            QuickPaletteCommand::Redo => self.redo(),
+            QuickPaletteCommand::Shape(mode) => {
+                self.cancel_curve_tool();
+                self.start_shape_tool(mode);
+            }
+            QuickPaletteCommand::Transform(mode) => {
+                self.finish();
+                self.transform_mode = mode;
+            }
+            QuickPaletteCommand::Deselect => {
+                self.selected.clear();
+                self.sync_selection();
+            }
+        }
+    }
+
+    fn quick_palette_ui(&mut self, ctx: &egui::Context) {
+        let Some(state) = self.quick_palette.as_ref() else {
+            return;
+        };
+        let position = state.position;
+        let selected = state.selected;
+        let items = self.quick_palette_items();
+        let mut chosen = None;
+        let area = egui::Area::new(egui::Id::new("quick-tool-palette"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(position)
+            .constrain(true)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(220.0);
+                    ui.label(RichText::new("Quick palette").strong());
+                    ui.small("↑/↓ move   Enter choose   Esc close");
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .max_height((ui.ctx().screen_rect().height() - 140.0).max(140.0))
+                        .show(ui, |ui| {
+                            let mut group = "";
+                            for (index, item) in items.iter().enumerate() {
+                                if item.group != group {
+                                    ui.add_space(3.0);
+                                    ui.label(
+                                        RichText::new(item.group.to_uppercase())
+                                            .small()
+                                            .color(ui_style::colors(ui.ctx()).muted_text),
+                                    );
+                                    group = item.group;
+                                }
+                                let text = if item.shortcut.is_empty() {
+                                    item.label.to_owned()
+                                } else {
+                                    format!("{}    {}", item.label, item.shortcut)
+                                };
+                                let response = ui
+                                    .add_enabled(
+                                        item.enabled,
+                                        egui::Button::new(text).selected(index == selected),
+                                    )
+                                    .on_hover_text(item.label);
+                                if index == selected {
+                                    ui.memory_mut(|memory| memory.request_focus(response.id));
+                                    ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
+                                }
+                                if response.clicked() {
+                                    chosen = Some(item.command);
+                                }
+                            }
+                        });
+                });
+            });
+        let pointer = ctx.input(|input| {
+            input
+                .pointer
+                .button_pressed(PointerButton::Primary)
+                .then(|| input.pointer.interact_pos())
+                .flatten()
+        });
+        let clicked_outside =
+            pointer.is_some_and(|position| !area.response.rect.contains(position));
+        if chosen.is_some() || clicked_outside {
+            self.quick_palette = None;
+        }
+        if let Some(command) = chosen {
+            self.run_quick_palette_command(command);
+        }
+    }
+
     fn tool_rail(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
             .id_salt("tool-rail-scroll")
@@ -5761,7 +6100,10 @@ impl SketchApp {
     }
     fn canvas_input(&mut self, ctx: &egui::Context, rect: Rect, mut pen: Vec<PenSample>) {
         self.sync_canvas_point_edit();
-        if self.video_export.is_running() {
+        if self.video_export.is_running()
+            || self.quick_palette.is_some()
+            || std::mem::take(&mut self.suppress_canvas_input_once)
+        {
             return;
         }
         let (space, shift, alt, events, pointer, scroll) = ctx.input(|i| {
@@ -6330,6 +6672,7 @@ impl eframe::App for SketchApp {
         self.partial_eraser_shortcuts(ctx);
         self.local_color_shortcuts(ctx);
         self.shape_shortcuts(ctx);
+        self.quick_palette_shortcuts(ctx);
         self.tick_camera_sequence(ctx);
         if self.liquify_active() && ctx.input(|input| input.key_pressed(Key::Escape)) {
             self.finish_liquify(false);
@@ -6379,6 +6722,7 @@ impl eframe::App for SketchApp {
         }
         let was_artwork = self.presentation.artwork;
         if !self.confirm
+            && self.quick_palette.is_none()
             && !self.show_help
             && !self.recovery_prompt
             && !self.tutorial.offer
@@ -6400,6 +6744,7 @@ impl eframe::App for SketchApp {
         }
         let was_placing = self.placement.active;
         if !self.confirm
+            && self.quick_palette.is_none()
             && !self.show_help
             && !self.recovery_prompt
             && !self.tutorial.offer
@@ -6421,6 +6766,7 @@ impl eframe::App for SketchApp {
             self.placement_shortcuts(ctx);
         }
         if !self.confirm
+            && self.quick_palette.is_none()
             && !self.placement.active
             && !was_placing
             && !self.presentation.artwork
@@ -7385,10 +7731,11 @@ impl eframe::App for SketchApp {
         self.show_insert_preview(ctx);
         self.show_tutorial(ctx);
         if self.show_help {
-            egui::Window::new("Drawing with a tablet").default_width(540.0).max_height((ctx.screen_rect().height()-80.0).max(200.0)).vscroll(true).show(ctx,|ui|{self.tutorial_help(ui);ui.separator();if ui.button("Close help").clicked(){self.show_help=false;}ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-mark eraser   P: planar fill   I: sample artwork color (Escape cancels)\nK: pick plane   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
+            egui::Window::new("Drawing with a tablet").default_width(540.0).max_height((ctx.screen_rect().height()-80.0).max(200.0)).vscroll(true).show(ctx,|ui|{self.tutorial_help(ui);ui.separator();if ui.button("Close help").clicked(){self.show_help=false;}ui.label("V: select   Shift-click: toggle stroke selection\nG: move   R: rotate   S: uniform scale (in Select tool)\nDrag the visible handles; Escape cancels a transform.\nCtrl/Cmd+A: select all   Ctrl/Cmd+D: duplicate\nDelete / Backspace: delete selection\n\nB: brush   E: whole-mark eraser   P: planar fill   I: sample artwork color (Escape cancels)\nQ: quick palette for tools, Undo/Redo and contextual commands (Escape closes)\nK: pick plane   F: align view to guide   Shift+F: plane from view\nCtrl/Cmd+Z: undo   Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y: redo\nCtrl/Cmd+S: save   Ctrl/Cmd+Shift+S: save as\nCtrl/Cmd+O: open   Ctrl/Cmd+N: new\n\nSpace + pen drag: orbit\nSpace + Shift + pen drag: pan\nSpace + Alt + pen drag: zoom\nPen barrel + drag: orbit (when reported by Windows Ink)\nRight mouse drag: orbit   Middle drag: pan   Wheel: zoom\n\nUse Front / Side / Ground or rotate and position a custom plane.\nShift+F creates a plane through the camera focus; F looks straight at it.\nExisting strokes stay in world space when you switch planes.\nEnable Windows Ink in your Wacom / Huion driver for pressure.\nA mouse works too, with fixed pressure.\n\nExport menu: whole drawing or selected strokes as GLB.\nPrototype limits: no Wintab, additional curved guides. Recovery saves completed edits automatically; Save keeps your native drawing.\nSave your work using the Save button.");});
         }
         self.show_recovery(ctx);
         self.show_color_editor(ctx);
+        self.quick_palette_ui(ctx);
         self.tick_recovery(ctx);
         self.construction_history.record_camera(&self.camera);
         self.construction_history
