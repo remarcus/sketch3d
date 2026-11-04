@@ -1365,12 +1365,14 @@ impl Document {
         (self.layers[index].clip_to_below && index > 0).then(|| self.layers[index - 1].id)
     }
     pub fn editable(&self, stroke: &Stroke) -> bool {
-        self.layers
+        !self.animation.two_bone_rig.as_ref().is_some_and(|rig| rig.layer_id == stroke.layer_id)
+            && self.layers
             .iter()
             .any(|l| l.id == stroke.layer_id && l.visible && !l.locked)
     }
     pub fn active_editable(&self) -> bool {
-        self.layers
+        !self.animation.two_bone_rig.as_ref().is_some_and(|rig| rig.layer_id == self.active_layer)
+            && self.layers
             .iter()
             .any(|l| l.id == self.active_layer && l.visible && !l.locked)
     }

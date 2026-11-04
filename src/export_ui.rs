@@ -197,7 +197,14 @@ impl SketchApp {
                 }
             };
         match std::fs::write(&path, script) {
-            Ok(()) => self.status = format!("Grease Pencil handoff saved ({} source semantics reported as unsupported). Run the .py in Blender 4.3+.", unsupported.len()),
+            Ok(()) => {
+                let rig_note = if self.doc.animation.two_bone_rig.is_some() {
+                    " The two-bone armature and pose keys are included."
+                } else {
+                    ""
+                };
+                self.status = format!("Grease Pencil handoff saved ({} source semantics reported as unsupported). Run the .py in Blender 4.3+.{}", unsupported.len(), rig_note);
+            }
             Err(error) => self.status = format!("Could not write Grease Pencil handoff: {error}"),
         }
     }

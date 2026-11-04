@@ -12,6 +12,9 @@ pub(super) struct AnimationUi {
     multi_key_tint: [f32; 3],
     preview_animation: Option<crate::animation::ArtworkAnimation>,
     preview_source: Option<(crate::animation::ArtworkAnimation, Vec<Stroke>)>,
+    rig_pose_frame: Option<u32>,
+    rig_root_degrees: f32,
+    rig_child_degrees: f32,
 }
 
 impl Default for AnimationUi {
@@ -27,6 +30,9 @@ impl Default for AnimationUi {
             multi_key_tint: [1.0; 3],
             preview_animation: None,
             preview_source: None,
+            rig_pose_frame: None,
+            rig_root_degrees: 0.0,
+            rig_child_degrees: 0.0,
         }
     }
 }
@@ -267,6 +273,64 @@ impl SketchApp {
         }
     }
 
+    fn create_two_bone_prototype(&mut self) {
+        if self.animation_ui.playing || !self.doc.active_editable() {
+            self.status = "Pause playback and choose a visible, unlocked layer before creating the prototype.".into();
+            return;
+        }
+        let layer_strokes = self.doc.strokes.iter()
+            .filter(|stroke| stroke.layer_id == self.doc.active_layer)
+            .cloned()
+            .collect::<Vec<_>>();
+        let next = match self.doc.animation.create_two_bone_rig(
+            self.doc.animation.current_frame,
+            self.doc.active_layer,
+            &layer_strokes,
+            &self.doc.strokes,
+        ) {
+            Ok(animation) => animation,
+            Err(error) => { self.status = error; return; }
+        };
+        let strokes = next.resolve(next.current_frame).unwrap_or_else(|| self.doc.strokes.clone());
+        if let Err(error) = self.commit_animation_state(next, strokes, "Created a two-bone cutout prototype for the active layer.") {
+            self.status = error;
+        } else {
+            self.animation_ui.rig_pose_frame = None;
+        }
+    }
+
+    fn key_two_bone_pose(&mut self) {
+        if self.animation_ui.playing {
+            self.status = "Pause playback before keying a rig pose.".into();
+            return;
+        }
+        let frame = self.doc.animation.current_frame;
+        let next = match self.doc.animation.set_two_bone_pose(
+            frame,
+            self.animation_ui.rig_root_degrees.to_radians(),
+            self.animation_ui.rig_child_degrees.to_radians(),
+        ) {
+            Ok(animation) => animation,
+            Err(error) => { self.status = error; return; }
+        };
+        let strokes = next.resolve(frame).unwrap_or_else(|| self.doc.strokes.clone());
+        if let Err(error) = self.commit_animation_state(next, strokes, "Keyed the two-bone pose as one undoable animation edit.") {
+            self.status = error;
+        }
+    }
+
+    fn remove_two_bone_prototype(&mut self) {
+        let next = match self.doc.animation.remove_two_bone_rig() {
+            Ok(animation) => animation,
+            Err(error) => { self.status = error; return; }
+        };
+        let strokes = next.resolve(next.current_frame).unwrap_or_else(|| self.doc.strokes.clone());
+        if let Err(error) = self.commit_animation_state(next, strokes, "Removed the two-bone prototype and restored its source strokes.") {
+            self.status = error;
+        }
+        self.animation_ui.rig_pose_frame = None;
+    }
+
     fn update_animation_settings(
         &mut self,
         mutate: impl FnOnce(&mut crate::animation::ArtworkAnimation),
@@ -494,6 +558,35 @@ impl SketchApp {
                             }
                         }
                     });
+                }
+                let rig_pose = self.doc.animation.two_bone_rig.as_ref()
+                    .filter(|rig| rig.layer_id == self.doc.active_layer)
+                    .map(|rig| rig.pose_at(self.doc.animation.current_frame));
+                if let Some(pose) = rig_pose {
+                    if self.animation_ui.rig_pose_frame != Some(self.doc.animation.current_frame) {
+                        self.animation_ui.rig_pose_frame = Some(self.doc.animation.current_frame);
+                        self.animation_ui.rig_root_degrees = pose.root_angle.to_degrees();
+                        self.animation_ui.rig_child_degrees = pose.child_angle.to_degrees();
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Two-bone pose");
+                        ui.label("Root °");
+                        ui.add(egui::DragValue::new(&mut self.animation_ui.rig_root_degrees).speed(0.5).range(-3600.0..=3600.0));
+                        ui.label("Child °");
+                        ui.add(egui::DragValue::new(&mut self.animation_ui.rig_child_degrees).speed(0.5).range(-3600.0..=3600.0));
+                        if ui.add_enabled(!self.animation_ui.playing, egui::Button::new("Key pose")).clicked() {
+                            self.key_two_bone_pose();
+                        }
+                        if ui.add_enabled(!self.animation_ui.playing, egui::Button::new("Remove prototype")).clicked() {
+                            self.remove_two_bone_prototype();
+                        }
+                    });
+                    ui.small("Root rotates the active layer; Child bends the distal 58% of each bound stroke with a smooth per-point weight. Pose keys interpolate between frames. The rigged layer is protected from direct edits; remove the prototype to restore its source strokes. Blender handoff includes editable centerlines, weights and armature pose keys.");
+                } else if self.doc.animation.two_bone_rig.is_none() {
+                    let has_strokes = self.doc.strokes.iter().any(|stroke| stroke.layer_id == self.doc.active_layer);
+                    if ui.add_enabled(has_strokes && !self.animation_ui.playing, egui::Button::new("Create two-bone cutout prototype")).clicked() {
+                        self.create_two_bone_prototype();
+                    }
                 }
                 let key_rows = self
                     .doc

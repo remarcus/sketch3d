@@ -7,7 +7,7 @@
 
 use crate::document::Stroke;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub const CURRENT_VERSION: u16 = 2;
 pub const MAX_KEYFRAMES: usize = 120;
@@ -44,6 +44,184 @@ pub struct LayerAnimationTrack {
     pub keyframes: Vec<LayerArtworkKeyframe>,
 }
 
+/// Small cutout-rig prototype for one layer. Each source stroke has one
+/// normalized child-bone weight per sampled point; the first bone moves the
+/// full layer and the second bone bends the weighted distal portions.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TwoBoneRig {
+    pub layer_id: u64,
+    pub root: glam::Vec3,
+    pub joint: glam::Vec3,
+    pub point_weights: Vec<StrokeBoneWeights>,
+    pub poses: Vec<TwoBonePoseKeyframe>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StrokeBoneWeights {
+    pub stroke_id: u64,
+    pub child_weights: Vec<f32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TwoBonePoseKeyframe {
+    pub frame: u32,
+    pub root_angle: f32,
+    pub child_angle: f32,
+}
+
+impl TwoBoneRig {
+    pub fn from_layer(layer_id: u64, frame: u32, strokes: &[Stroke]) -> Result<Self, String> {
+        let layer_strokes = strokes.iter().filter(|stroke| stroke.layer_id == layer_id).collect::<Vec<_>>();
+        let total_points = layer_strokes.iter().map(|stroke| stroke.points.len()).sum::<usize>();
+        if layer_strokes.is_empty() || total_points == 0 || total_points > 262_144 {
+            return Err("The active layer needs between 1 and 262,144 sampled points for the rig prototype".into());
+        }
+        let mut min = glam::Vec3::splat(f32::INFINITY);
+        let mut max = glam::Vec3::splat(f32::NEG_INFINITY);
+        for point in layer_strokes.iter().flat_map(|stroke| &stroke.points) {
+            min = min.min(point.position);
+            max = max.max(point.position);
+        }
+        let root = glam::Vec3::new((min.x + max.x) * 0.5, min.y, (min.z + max.z) * 0.5);
+        let joint = glam::Vec3::new(root.x, min.y + (max.y - min.y) * 0.55, root.z);
+        if !root.is_finite() || !joint.is_finite() || root.distance(joint) < 1.0e-4 {
+            return Err("The active layer needs a non-zero vertical span for the two-bone sample".into());
+        }
+        let point_weights = layer_strokes
+            .iter()
+            .map(|stroke| {
+                let lengths = crate::dynamics::arc_lengths(&stroke.points);
+                let total = lengths.last().copied().unwrap_or(0.0);
+                let child_weights = lengths
+                    .iter()
+                    .map(|distance| {
+                        if total <= 1.0e-6 {
+                            0.0
+                        } else {
+                            let t = distance / total;
+                            let x = ((t - 0.42) / 0.16).clamp(0.0, 1.0);
+                            x * x * (3.0 - 2.0 * x)
+                        }
+                    })
+                    .collect();
+                StrokeBoneWeights { stroke_id: stroke.id, child_weights }
+            })
+            .collect();
+        Ok(Self {
+            layer_id,
+            root,
+            joint,
+            point_weights,
+            poses: vec![TwoBonePoseKeyframe { frame, root_angle: 0.0, child_angle: 0.0 }],
+        })
+    }
+
+    pub fn validate(&self, layer_ids: &HashSet<u64>, range_start: u32, range_end: u32) -> Result<(), String> {
+        if !layer_ids.contains(&self.layer_id)
+            || !self.root.is_finite()
+            || !self.joint.is_finite()
+            || self.root.abs().max_element() > 10_000.0
+            || self.joint.abs().max_element() > 10_000.0
+            || self.root.distance(self.joint) < 1.0e-4
+            || self.point_weights.is_empty()
+            || self.point_weights.len() > MAX_STROKES_PER_FRAME
+            || self.poses.is_empty()
+            || self.poses.len() > MAX_KEYFRAMES
+        {
+            return Err("Two-bone rig data is outside supported limits".into());
+        }
+        let mut ids = HashSet::new();
+        let mut total = 0usize;
+        for binding in &self.point_weights {
+            if binding.stroke_id == 0
+                || binding.stroke_id == u64::MAX
+                || !ids.insert(binding.stroke_id)
+                || binding.child_weights.is_empty()
+                || binding.child_weights.len() > 65_536
+                || binding.child_weights.iter().any(|weight| !weight.is_finite() || !(0.0..=1.0).contains(weight))
+            {
+                return Err("Two-bone stroke weights must be finite, unique and bounded".into());
+            }
+            total = total.saturating_add(binding.child_weights.len());
+            if total > 262_144 {
+                return Err("Two-bone rig exceeds the 262,144 point-weight limit".into());
+            }
+        }
+        let mut previous = None;
+        for pose in &self.poses {
+            if pose.frame < range_start
+                || pose.frame > range_end
+                || previous.is_some_and(|frame| frame >= pose.frame)
+                || !pose.root_angle.is_finite()
+                || !pose.child_angle.is_finite()
+                || pose.root_angle.abs() > std::f32::consts::TAU * 10.0
+                || pose.child_angle.abs() > std::f32::consts::TAU * 10.0
+            {
+                return Err("Two-bone pose keys must be ordered and inside the animation range".into());
+            }
+            previous = Some(pose.frame);
+        }
+        Ok(())
+    }
+
+    pub fn pose_at(&self, frame: u32) -> TwoBonePoseKeyframe {
+        let upper = self.poses.partition_point(|pose| pose.frame <= frame);
+        let before = upper.checked_sub(1).map(|index| self.poses[index]);
+        let after = self.poses.get(upper).copied();
+        match (before, after) {
+            (None, Some(next)) => next,
+            (Some(previous), None) => previous,
+            (Some(previous), Some(next)) => {
+                let t = (frame - previous.frame) as f32 / (next.frame - previous.frame) as f32;
+                TwoBonePoseKeyframe {
+                    frame,
+                    root_angle: previous.root_angle + (next.root_angle - previous.root_angle) * t,
+                    child_angle: previous.child_angle + (next.child_angle - previous.child_angle) * t,
+                }
+            }
+            (None, None) => TwoBonePoseKeyframe { frame, root_angle: 0.0, child_angle: 0.0 },
+        }
+    }
+
+    pub fn set_pose(&self, frame: u32, root_angle: f32, child_angle: f32) -> Result<Self, String> {
+        if !root_angle.is_finite() || !child_angle.is_finite()
+            || root_angle.abs() > std::f32::consts::TAU * 10.0
+            || child_angle.abs() > std::f32::consts::TAU * 10.0
+        {
+            return Err("Rig angles must be finite and within ten turns".into());
+        }
+        let mut next = self.clone();
+        let key = TwoBonePoseKeyframe { frame, root_angle, child_angle };
+        if let Some(existing) = next.poses.iter_mut().find(|pose| pose.frame == frame) {
+            *existing = key;
+        } else {
+            if next.poses.len() >= MAX_KEYFRAMES {
+                return Err("Two-bone rig already contains 120 pose keys".into());
+            }
+            let index = next.poses.partition_point(|pose| pose.frame < frame);
+            next.poses.insert(index, key);
+        }
+        Ok(next)
+    }
+
+    pub fn deform(&self, frame: u32, strokes: &mut [Stroke]) {
+        let pose = self.pose_at(frame);
+        let upper_rotation = glam::Quat::from_rotation_z(pose.root_angle);
+        let lower_rotation = glam::Quat::from_rotation_z(pose.child_angle);
+        let transformed_joint = self.root + upper_rotation * (self.joint - self.root);
+        let weights: HashMap<_, _> = self.point_weights.iter().map(|binding| (binding.stroke_id, binding)).collect();
+        for stroke in strokes.iter_mut().filter(|stroke| stroke.layer_id == self.layer_id) {
+            let Some(binding) = weights.get(&stroke.id) else { continue };
+            if binding.child_weights.len() != stroke.points.len() { continue; }
+            for (point, child_weight) in stroke.points.iter_mut().zip(&binding.child_weights) {
+                let upper = self.root + upper_rotation * (point.position - self.root);
+                let lower = transformed_joint + lower_rotation * (upper - transformed_joint);
+                point.position = upper.lerp(lower, *child_weight);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ArtworkAnimation {
     #[serde(default = "version_default")]
@@ -67,6 +245,8 @@ pub struct ArtworkAnimation {
     pub base_strokes: Option<Vec<Stroke>>,
     #[serde(default)]
     pub layer_tracks: Vec<LayerAnimationTrack>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub two_bone_rig: Option<TwoBoneRig>,
 }
 
 fn version_default() -> u16 {
@@ -94,6 +274,7 @@ impl Default for ArtworkAnimation {
             keyframes: Vec::new(),
             base_strokes: None,
             layer_tracks: Vec::new(),
+            two_bone_rig: None,
         }
     }
 }
@@ -222,6 +403,18 @@ impl ArtworkAnimation {
                     .into(),
             );
         }
+        if let Some(rig) = &self.two_bone_rig {
+            rig.validate(layer_ids, self.range_start, self.range_end)?;
+            let track = self.layer_tracks.iter().find(|track| track.layer_id == rig.layer_id)
+                .ok_or("Two-bone prototype requires an independent animation track for its layer")?;
+            for binding in &rig.point_weights {
+                if !track.keyframes.iter().any(|key| key.strokes.iter().any(|stroke| {
+                    stroke.id == binding.stroke_id && stroke.points.len() == binding.child_weights.len()
+                })) {
+                    return Err("Two-bone weight data must match a stroke topology in the active layer".into());
+                }
+            }
+        }
         // A conservative count bound is checked before JSON sizing, keeping
         // malformed imported animation from requesting unbounded allocation.
         let encoded = serde_json::to_vec(self).map_err(|error| error.to_string())?;
@@ -237,7 +430,7 @@ impl ArtworkAnimation {
             return None;
         }
         let frame = frame.clamp(self.range_start, self.range_end);
-        if !self.layer_tracks.is_empty() {
+        let mut strokes = if !self.layer_tracks.is_empty() {
             let mut strokes = self.base_strokes.clone().unwrap_or_default();
             for track in &self.layer_tracks {
                 strokes.retain(|stroke| stroke.layer_id != track.layer_id);
@@ -252,12 +445,12 @@ impl ArtworkAnimation {
                     strokes.extend(key.strokes.iter().cloned());
                 }
             }
-            return Some(strokes);
-        }
-        let upper = self.keyframes.partition_point(|key| key.frame <= frame);
-        let before = upper.checked_sub(1).map(|index| &self.keyframes[index]);
-        let after = self.keyframes.get(upper);
-        match (before, after) {
+            Some(strokes)
+        } else {
+            let upper = self.keyframes.partition_point(|key| key.frame <= frame);
+            let before = upper.checked_sub(1).map(|index| &self.keyframes[index]);
+            let after = self.keyframes.get(upper);
+            match (before, after) {
             (None, Some(next)) => Some(next.strokes.clone()),
             (Some(previous), None) => Some(previous.strokes.clone()),
             (Some(previous), Some(_next)) if previous.frame == frame => {
@@ -270,7 +463,12 @@ impl ArtworkAnimation {
             }
             (Some(previous), Some(_)) => Some(previous.strokes.clone()),
             (None, None) => None,
+            }
+        }?;
+        if let Some(rig) = &self.two_bone_rig {
+            rig.deform(frame, &mut strokes);
         }
+        Some(strokes)
     }
 
     pub fn current_pose_matches(&self, strokes: &[Stroke]) -> bool {
@@ -485,6 +683,65 @@ impl ArtworkAnimation {
             return Err("Exposure must fit inside the animation range".into());
         }
         key.exposure = exposure;
+        Ok(next)
+    }
+
+    pub fn create_two_bone_rig(
+        &self,
+        frame: u32,
+        layer_id: u64,
+        layer_strokes: &[Stroke],
+        base_strokes: &[Stroke],
+    ) -> Result<Self, String> {
+        if self.two_bone_rig.is_some() {
+            return Err("Remove the existing two-bone prototype before creating another".into());
+        }
+        if self.layer_tracks.iter().any(|track| track.layer_id == layer_id) {
+            // A key already exists. Bind against its source snapshot so the
+            // displayed rig pose is never baked into its own input geometry.
+            let key = self.layer_tracks.iter().find(|track| track.layer_id == layer_id)
+                .and_then(|track| track.keyframes.iter().find(|key| key.frame == frame))
+                .ok_or("Key the active layer before creating its two-bone rig")?;
+            let rig = TwoBoneRig::from_layer(layer_id, frame, &key.strokes)?;
+            let mut next = self.clone();
+            next.two_bone_rig = Some(rig);
+            next.current_frame = frame;
+            return Ok(next);
+        }
+        let mut next = self.set_layer_keyframe(frame, layer_id, layer_strokes, base_strokes)?;
+        let rig = TwoBoneRig::from_layer(layer_id, frame, layer_strokes)?;
+        next.two_bone_rig = Some(rig);
+        Ok(next)
+    }
+
+    pub fn set_two_bone_pose(
+        &self,
+        frame: u32,
+        root_angle: f32,
+        child_angle: f32,
+    ) -> Result<Self, String> {
+        if frame < self.range_start || frame > self.range_end {
+            return Err("Rig pose key must be inside the animation range".into());
+        }
+        let mut next = self.clone();
+        let rig = next.two_bone_rig.as_ref().ok_or("Create a two-bone prototype first")?;
+        let updated = rig.set_pose(frame, root_angle, child_angle)?;
+        updated.validate(
+            &HashSet::from([updated.layer_id]),
+            self.range_start,
+            self.range_end,
+        )?;
+        next.two_bone_rig = Some(updated);
+        next.current_frame = frame;
+        Ok(next)
+    }
+
+    pub fn remove_two_bone_rig(&self) -> Result<Self, String> {
+        if self.two_bone_rig.is_none() {
+            return Err("There is no two-bone prototype to remove".into());
+        }
+        let mut next = self.clone();
+        next.two_bone_rig = None;
         Ok(next)
     }
 
