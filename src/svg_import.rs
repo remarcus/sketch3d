@@ -35,6 +35,29 @@ struct Affine {
     f: f32,
 }
 
+#[derive(Clone, Debug)]
+struct SvgStyle {
+    fill: String,
+    stroke: String,
+    opacity: f32,
+    fill_opacity: f32,
+    stroke_opacity: f32,
+    stroke_width: f32,
+}
+
+impl Default for SvgStyle {
+    fn default() -> Self {
+        Self {
+            fill: "black".into(),
+            stroke: "none".into(),
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            stroke_opacity: 1.0,
+            stroke_width: 1.0,
+        }
+    }
+}
+
 impl Affine {
     const IDENTITY: Self = Self {
         a: 1.0,
@@ -73,10 +96,13 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
     let mut paths = Vec::new();
     let mut skipped = 0;
     let mut elements = 0;
+    let mut transforms = vec![Affine::IDENTITY];
+    let mut styles = vec![SvgStyle::default()];
     loop {
         let event = reader
             .read_event()
             .map_err(|e| format!("Invalid SVG XML: {e}"))?;
+        let is_empty = matches!(&event, Event::Empty(_));
         match event {
             Event::Start(ref e) | Event::Empty(ref e) => {
                 elements += 1;
@@ -94,17 +120,46 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
                         .into_owned();
                     attrs.insert(key, value);
                 }
+                if let Some(inline) = attrs.remove("style") {
+                    for declaration in inline.split(';') {
+                        if let Some((key, value)) = declaration.split_once(':') {
+                            attrs.insert(key.trim().to_ascii_lowercase(), value.trim().into());
+                        }
+                    }
+                }
+                let parent_transform = *transforms.last().unwrap_or(&Affine::IDENTITY);
+                let parent_style = styles.last().cloned().unwrap_or_default();
                 if name == "svg" {
                     view_box = attrs
                         .get("viewbox")
                         .and_then(|v| numbers(v))
                         .filter(|n| n.len() == 4 && n[2] > 0.0 && n[3] > 0.0)
                         .map(|n| [n[0], n[1], n[2], n[3]]);
+                    if !is_empty {
+                        let own = attrs
+                            .get("transform")
+                            .map(|v| parse_transform(v))
+                            .unwrap_or(Some(Affine::IDENTITY))
+                            .ok_or("Unsupported SVG root transform")?;
+                        transforms.push(own.then(parent_transform));
+                        styles.push(derive_style(&parent_style, &attrs));
+                    }
+                } else if name == "g" {
+                    if !is_empty {
+                        let own = attrs
+                            .get("transform")
+                            .map(|v| parse_transform(v))
+                            .unwrap_or(Some(Affine::IDENTITY))
+                            .ok_or("Unsupported SVG group transform")?;
+                        transforms.push(own.then(parent_transform));
+                        styles.push(derive_style(&parent_style, &attrs));
+                    }
                 } else if name == "path" || name == "polygon" || name == "polyline" {
-                    let transform = attrs
+                    let own = attrs
                         .get("transform")
                         .map(|v| parse_transform(v))
                         .unwrap_or(Some(Affine::IDENTITY));
+                    let transform = own.map(|local| local.then(parent_transform));
                     let geometry = if let Some(transform) = transform {
                         if name == "path" {
                             attrs.get("d").and_then(|d| parse_path(d).ok())
@@ -133,22 +188,20 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
                     if let Some((segments, closed)) =
                         geometry.filter(|(s, _)| !s.is_empty() && s.len() <= MAX_SVG_SEGMENTS)
                     {
-                        let fill =
-                            parse_color(attrs.get("fill").map(String::as_str).unwrap_or("black"))
-                                .map(|color| (color, opacity(&attrs, "fill-opacity")));
-                        let stroke =
-                            parse_color(attrs.get("stroke").map(String::as_str).unwrap_or("none"))
-                                .map(|color| {
-                                    (
-                                        color,
-                                        opacity(&attrs, "stroke-opacity"),
-                                        attrs
-                                            .get("stroke-width")
-                                            .and_then(|x| x.parse().ok())
-                                            .filter(|x: f32| x.is_finite() && *x > 0.0)
-                                            .unwrap_or(1.0),
-                                    )
-                                });
+                        let transform_scale = transform
+                            .map(|matrix| (matrix.a * matrix.d - matrix.b * matrix.c).abs().sqrt())
+                            .unwrap_or(1.0);
+                        let style = derive_style(&parent_style, &attrs);
+                        let fill = parse_color(&style.fill).map(|color| {
+                            (color, (style.opacity * style.fill_opacity).clamp(0.0, 1.0))
+                        });
+                        let stroke = parse_color(&style.stroke).map(|color| {
+                            (
+                                color,
+                                (style.opacity * style.stroke_opacity).clamp(0.0, 1.0),
+                                style.stroke_width * transform_scale,
+                            )
+                        });
                         if fill.is_none() && stroke.is_none() {
                             skipped += 1;
                         } else {
@@ -164,6 +217,15 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
                     }
                 } else if !matches!(name.as_str(), "svg" | "g" | "title" | "desc" | "metadata") {
                     skipped += 1;
+                }
+            }
+            Event::End(ref e) => {
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_ascii_lowercase();
+                if name == "svg" || name == "g" {
+                    if transforms.len() > 1 {
+                        transforms.pop();
+                        styles.pop();
+                    }
                 }
             }
             Event::Eof => break,
@@ -205,13 +267,28 @@ pub fn parse(bytes: &[u8]) -> Result<SvgArtwork, String> {
     })
 }
 
-fn opacity(attrs: &std::collections::HashMap<String, String>, key: &str) -> f32 {
-    attrs
-        .get(key)
-        .and_then(|x| x.parse::<f32>().ok())
-        .filter(|v| v.is_finite())
-        .unwrap_or(1.0)
-        .clamp(0.0, 1.0)
+fn derive_style(parent: &SvgStyle, attrs: &std::collections::HashMap<String, String>) -> SvgStyle {
+    let number = |key: &str, fallback: f32| {
+        attrs
+            .get(key)
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite())
+            .unwrap_or(fallback)
+    };
+    SvgStyle {
+        fill: attrs
+            .get("fill")
+            .cloned()
+            .unwrap_or_else(|| parent.fill.clone()),
+        stroke: attrs
+            .get("stroke")
+            .cloned()
+            .unwrap_or_else(|| parent.stroke.clone()),
+        opacity: parent.opacity * number("opacity", 1.0).clamp(0.0, 1.0),
+        fill_opacity: parent.fill_opacity * number("fill-opacity", 1.0).clamp(0.0, 1.0),
+        stroke_opacity: parent.stroke_opacity * number("stroke-opacity", 1.0).clamp(0.0, 1.0),
+        stroke_width: number("stroke-width", parent.stroke_width).clamp(0.001, 10_000.0),
+    }
 }
 fn parse_color(value: &str) -> Option<[f32; 3]> {
     let v = value.trim().to_ascii_lowercase();
@@ -325,14 +402,14 @@ fn parse_transform(s: &str) -> Option<Affine> {
                 if ns.len() == 3 {
                     Affine::IDENTITY
                         .then(Affine {
-                            e: ns[1],
-                            f: ns[2],
+                            e: -ns[1],
+                            f: -ns[2],
                             ..Affine::IDENTITY
                         })
                         .then(rot)
                         .then(Affine {
-                            e: -ns[1],
-                            f: -ns[2],
+                            e: ns[1],
+                            f: ns[2],
                             ..Affine::IDENTITY
                         })
                 } else {
@@ -347,7 +424,7 @@ fn parse_transform(s: &str) -> Option<Affine> {
         {
             return None;
         }
-        result = result.then(t);
+        result = t.then(result);
         rest = rest[close + 1..].trim_start_matches(|c: char| c.is_whitespace() || c == ',');
     }
     Some(result)
