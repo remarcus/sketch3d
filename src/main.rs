@@ -68,9 +68,24 @@ mod svg_export;
 mod texture;
 mod texture_check;
 mod tutorial;
+mod verification_mcp;
 
 fn main() -> eframe::Result {
     let args: Vec<_> = std::env::args().collect();
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--mcp-verification-server")
+    {
+        let Some(root) = args.get(index + 1) else {
+            eprintln!("Usage: sketch3d --mcp-verification-server <verification-directory>");
+            std::process::exit(2);
+        };
+        if let Err(error) = verification_mcp::serve(std::path::Path::new(root)) {
+            eprintln!("Verification MCP server stopped: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if let Some(index) = args
         .iter()
         .position(|argument| argument == "--verify-artwork-animation")

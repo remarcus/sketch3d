@@ -31,3 +31,19 @@ Each invocation creates a unique run directory. `result.json` uses schema versio
 ```
 
 Outcomes are `passed`, `failed`, `unsupported`, or `timed_out`. Artifact paths are relative to the run directory. Original verifier reports and generated images are retained alongside captured stdout and stderr. Unsupported environments do not fail the suite; failures and timeouts return a nonzero process exit code.
+
+## Read results through local MCP
+
+Start the opt-in read-only server with the normalized output root:
+
+```powershell
+target/release/sketch3d --mcp-verification-server verification/normalized
+```
+
+Configure an MCP host to launch that command as a stdio server. It supports the standard initialize/tools lifecycle for MCP protocol versions `2025-11-25` and `2025-06-18`, and exposes:
+
+- `verification_list_checks`: lists the three supported check IDs and up to 100 completed run IDs.
+- `verification_read_result`: returns one version 1 `result.json`.
+- `verification_list_artifacts`: lists the artifact paths and sizes recorded for one check.
+
+The server canonicalizes the configured root and each run/artifact path, accepts only direct-child run IDs made of ASCII letters, digits, hyphens and underscores, and rejects artifacts outside their run directory. Requests are capped at 64 KiB, results at 512 KiB, artifact records at 256, scanned run entries at 1,000, and protocol responses at 2 MiB. It never returns artifact file contents. Protocol messages use stdout; startup and fatal errors use stderr.
