@@ -1,4 +1,4 @@
-//! Read-only MCP access to normalized verification reports.
+//! MCP access to normalized verification reports with explicit opt-in execution.
 //!
 //! Start explicitly with `--mcp-verification-server <verification-directory>`.
 //! The directory is canonicalized once, and every reported file is checked
@@ -32,6 +32,14 @@ const MAX_PNG_DIMENSION: u32 = 16_384;
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn serve(configured_root: &Path) -> Result<(), String> {
+    serve_reports(configured_root, false)
+}
+
+pub fn serve_with_execution(configured_root: &Path) -> Result<(), String> {
+    serve_reports(configured_root, true)
+}
+
+fn serve_reports(configured_root: &Path, execution_enabled: bool) -> Result<(), String> {
     let root = configured_root
         .canonicalize()
         .map_err(|error| format!("Cannot resolve verification directory: {error}"))?;
@@ -39,7 +47,10 @@ pub fn serve(configured_root: &Path) -> Result<(), String> {
         return Err("Configured verification path is not a directory".into());
     }
 
-    serve_config(ServerConfig::Reports(root))
+    serve_config(ServerConfig::Reports {
+        root,
+        execution_enabled,
+    })
 }
 
 pub fn serve_drawings(configured_input: &Path, configured_output: &Path) -> Result<(), String> {
@@ -56,7 +67,10 @@ pub fn serve_drawings(configured_input: &Path, configured_output: &Path) -> Resu
 }
 
 enum ServerConfig {
-    Reports(PathBuf),
+    Reports {
+        root: PathBuf,
+        execution_enabled: bool,
+    },
     Drawings { input: PathBuf, output: PathBuf },
 }
 
@@ -196,8 +210,12 @@ fn handle_message(config: &ServerConfig, message: Value) -> Option<Value> {
                 json!({
                     "protocolVersion": protocol_version,
                     "capabilities": {"tools": {"listChanged": false}},
-                    "serverInfo": {"name": if matches!(config, ServerConfig::Reports(_)) { "sketch3d-verification-reports" } else { "sketch3d-drawing-library" }, "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": if matches!(config, ServerConfig::Reports(_)) { "Read-only access to normalized verification results beneath the configured verification directory." } else { "Scoped inspection and bounded GLB export for native drawings, plus creation of new editable native copies beneath the configured output directory." }
+                    "serverInfo": {"name": if matches!(config, ServerConfig::Reports { .. }) { "sketch3d-verification-reports" } else { "sketch3d-drawing-library" }, "version": env!("CARGO_PKG_VERSION")},
+                    "instructions": match config {
+                        ServerConfig::Reports { execution_enabled: true, .. } => "Read-only access to normalized verification results and explicit access to allowlisted local verification execution beneath the configured verification directory.",
+                        ServerConfig::Reports { .. } => "Read-only access to normalized verification results beneath the configured verification directory. Verification process execution is disabled in this mode.",
+                        ServerConfig::Drawings { .. } => "Scoped inspection and bounded GLB export for native drawings, plus creation of new editable native copies beneath the configured output directory."
+                    }
                 }),
             ))
         }
@@ -292,19 +310,32 @@ fn tool_definitions(config: &ServerConfig) -> Value {
         }
     ]);
     match config {
-        ServerConfig::Reports(_) => reports,
+        ServerConfig::Reports { execution_enabled, .. } => {
+            if !execution_enabled {
+                if let Some(tools) = reports.as_array_mut() {
+                    tools.retain(|tool| tool.get("name").and_then(Value::as_str) != Some("verification_run_check"));
+                }
+            }
+            reports
+        }
         ServerConfig::Drawings { .. } => drawings,
     }
 }
 
 fn call_configured_tool(config: &ServerConfig, name: &str, arguments: &Value) -> Value {
     match config {
-        ServerConfig::Reports(root) => call_tool(root, name, arguments),
+        ServerConfig::Reports { root, execution_enabled } => call_tool(root, name, arguments, *execution_enabled),
         ServerConfig::Drawings { input, output } => call_drawing_tool(input, output, name, arguments),
     }
 }
 
-fn call_tool(root: &Path, name: &str, arguments: &Value) -> Value {
+fn call_tool(root: &Path, name: &str, arguments: &Value, execution_enabled: bool) -> Value {
+    if name == "verification_run_check" && !execution_enabled {
+        return json!({
+            "content": [{"type": "text", "text": "Verification execution is disabled. Launch --mcp-verification-execution-server to enable the allowlisted run-check tool."}],
+            "isError": true
+        });
+    }
     if name == "verification_read_artifact" {
         let result = required_string(arguments, "run_id").and_then(|run_id| {
             required_string(arguments, "check_id").and_then(|check_id| {

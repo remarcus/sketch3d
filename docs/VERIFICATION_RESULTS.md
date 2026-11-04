@@ -34,7 +34,7 @@ Outcomes are `passed`, `failed`, `unsupported`, or `timed_out`. Artifact paths a
 
 ## Read results through local MCP
 
-Start the opt-in read-only server with the normalized output root:
+Start the report-only server with the normalized output root:
 
 ```powershell
 target/release/sketch3d --mcp-verification-server verification/normalized
@@ -46,9 +46,16 @@ Configure an MCP host to launch that command as a stdio server. It supports the 
 - `verification_read_result`: returns one version 1 `result.json`.
 - `verification_list_artifacts`: lists the artifact paths and sizes recorded for one check.
 - `verification_read_artifact`: returns a recorded `.log` or `.txt` artifact as text, or a `.png` preview as an MCP image.
-- `verification_run_check`: runs one allowlisted check using the shared PowerShell runner and returns its normalized result and artifact paths. `timeout_seconds` is optional and bounded from 5 to 600 seconds.
 
-The server canonicalizes the configured root and each run/artifact path, accepts only direct-child run IDs made of ASCII letters, digits, hyphens and underscores, and rejects symlinked artifacts or paths outside their run directory. Artifact reads require a path recorded for the selected check. Text is limited to 256 KiB and must be UTF-8; PNG files are limited to 1,000,000 bytes and bounded image dimensions. Requests are capped at 64 KiB, results at 512 KiB, artifact records at 256, scanned run entries at 1,000, and protocol responses at 2 MiB. A run-check call is restricted to `startup`, `save-reopen`, and `export`, uses the runner's unique run directory, caps captured process output, and bounds check timeouts to 5–600 seconds. Protocol messages use stdout; startup and fatal errors use stderr.
+This mode exposes report-reading tools only. It cannot start verifier processes, including if a client calls `verification_run_check` by name.
+
+To explicitly enable the allowlisted execution tool, launch a separate MCP configuration with:
+
+```powershell
+target/release/sketch3d --mcp-verification-execution-server verification/normalized
+```
+
+Execution mode adds `verification_run_check`, which accepts only `startup`, `save-reopen`, and `export`, uses a unique run directory, caps captured process output, and bounds `timeout_seconds` from 5 to 600 seconds. Both modes canonicalize the configured root and run/artifact paths, accept only direct-child run IDs made of ASCII letters, digits, hyphens and underscores, and reject symlinked artifacts or paths outside their run directory. Artifact reads require a path recorded for the selected check. Text is limited to 256 KiB and must be UTF-8; PNG files are limited to 1,000,000 bytes and bounded image dimensions. Requests are capped at 64 KiB, results at 512 KiB, artifact records at 256, scanned run entries at 1,000, and protocol responses at 2 MiB. Protocol messages use stdout; startup and fatal errors use stderr.
 
 ## Inspect saved drawings through local MCP
 

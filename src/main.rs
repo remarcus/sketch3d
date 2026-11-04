@@ -88,6 +88,20 @@ fn main() -> eframe::Result {
     }
     if let Some(index) = args
         .iter()
+        .position(|argument| argument == "--mcp-verification-execution-server")
+    {
+        let Some(root) = args.get(index + 1) else {
+            eprintln!("Usage: sketch3d --mcp-verification-execution-server <verification-directory>");
+            std::process::exit(2);
+        };
+        if let Err(error) = verification_mcp::serve_with_execution(std::path::Path::new(root)) {
+            eprintln!("Verification MCP server stopped: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(index) = args
+        .iter()
         .position(|argument| argument == "--mcp-drawing-server")
     {
         let (Some(input), Some(output)) = (args.get(index + 1), args.get(index + 2)) else {
