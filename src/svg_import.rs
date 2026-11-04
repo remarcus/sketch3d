@@ -564,6 +564,24 @@ fn parse_path(s: &str) -> Result<(Vec<CubicBezier>, bool), String> {
                 });
                 cursor = p;
             }
+            'A' => {
+                let rx = read(&mut index)?.abs();
+                let ry = read(&mut index)?.abs();
+                let rotation_degrees = read(&mut index)?;
+                let large_arc = read_svg_flag(&mut tokens, &mut index)?;
+                let sweep = read_svg_flag(&mut tokens, &mut index)?;
+                let end = point(read(&mut index)?, read(&mut index)?, cursor, rel);
+                seg.extend(arc_segments(
+                    cursor,
+                    end,
+                    rx,
+                    ry,
+                    rotation_degrees,
+                    large_arc,
+                    sweep,
+                )?);
+                cursor = end;
+            }
             _ => return Err(format!("Unsupported SVG path command {cmd}")),
         }
         if seg.len() > MAX_SVG_SEGMENTS {
@@ -575,6 +593,21 @@ fn parse_path(s: &str) -> Result<(Vec<CubicBezier>, bool), String> {
     }
     Ok((seg, closed))
 }
+
+fn read_svg_flag(tokens: &mut [String], index: &mut usize) -> Result<bool, String> {
+    let token = tokens.get_mut(*index).ok_or("Incomplete SVG arc command")?;
+    let first = token.chars().next().ok_or("Incomplete SVG arc flag")?;
+    if first != '0' && first != '1' {
+        return Err("SVG arc flags must be either zero or one".into());
+    }
+    if token.len() == 1 {
+        *index += 1;
+    } else {
+        *token = token[1..].to_owned();
+    }
+    Ok(first == '1')
+}
+
 fn line(a: Vec2, b: Vec2) -> CubicBezier {
     CubicBezier {
         p0: a.extend(0.0),
@@ -582,6 +615,122 @@ fn line(a: Vec2, b: Vec2) -> CubicBezier {
         p2: a.lerp(b, 2.0 / 3.0).extend(0.0),
         p3: b.extend(0.0),
     }
+}
+
+fn arc_segments(
+    from: Vec2,
+    to: Vec2,
+    mut rx: f32,
+    mut ry: f32,
+    rotation_degrees: f32,
+    large_arc: bool,
+    sweep: bool,
+) -> Result<Vec<CubicBezier>, String> {
+    if !from.is_finite()
+        || !to.is_finite()
+        || !rx.is_finite()
+        || !ry.is_finite()
+        || !rotation_degrees.is_finite()
+        || rx > 1_000_000.0
+        || ry > 1_000_000.0
+    {
+        return Err("SVG arc parameters exceed the import limit".into());
+    }
+    if from.distance_squared(to) <= 1e-12 {
+        return Ok(Vec::new());
+    }
+    if rx <= 1e-6 || ry <= 1e-6 {
+        return Ok(vec![line(from, to)]);
+    }
+    rx = rx.max(1e-6);
+    ry = ry.max(1e-6);
+    let phi = rotation_degrees
+        .to_radians()
+        .rem_euclid(std::f32::consts::TAU);
+    let (sin_phi, cos_phi) = phi.sin_cos();
+    let midpoint = (from + to) * 0.5;
+    let half_delta = (from - to) * 0.5;
+    let x_prime = cos_phi * half_delta.x + sin_phi * half_delta.y;
+    let y_prime = -sin_phi * half_delta.x + cos_phi * half_delta.y;
+    let lambda = x_prime * x_prime / (rx * rx) + y_prime * y_prime / (ry * ry);
+    if lambda > 1.0 {
+        let correction = lambda.sqrt();
+        rx *= correction;
+        ry *= correction;
+    }
+    if !rx.is_finite() || !ry.is_finite() || rx > 1_000_000.0 || ry > 1_000_000.0 {
+        return Err("Corrected SVG arc radii exceed the import limit".into());
+    }
+    let numerator =
+        (rx * rx * ry * ry - rx * rx * y_prime * y_prime - ry * ry * x_prime * x_prime).max(0.0);
+    let denominator = rx * rx * y_prime * y_prime + ry * ry * x_prime * x_prime;
+    if denominator <= 1e-12 {
+        return Ok(vec![line(from, to)]);
+    }
+    let sign = if large_arc == sweep { -1.0 } else { 1.0 };
+    let coefficient = sign * (numerator / denominator).sqrt();
+    let center_prime = Vec2::new(
+        coefficient * rx * y_prime / ry,
+        coefficient * -ry * x_prime / rx,
+    );
+    let center = Vec2::new(
+        cos_phi * center_prime.x - sin_phi * center_prime.y + midpoint.x,
+        sin_phi * center_prime.x + cos_phi * center_prime.y + midpoint.y,
+    );
+    let unit_start = Vec2::new(
+        (x_prime - center_prime.x) / rx,
+        (y_prime - center_prime.y) / ry,
+    );
+    let unit_end = Vec2::new(
+        (-x_prime - center_prime.x) / rx,
+        (-y_prime - center_prime.y) / ry,
+    );
+    let theta = unit_start.y.atan2(unit_start.x);
+    let cross = unit_start.x * unit_end.y - unit_start.y * unit_end.x;
+    let mut delta = cross.atan2(unit_start.dot(unit_end));
+    if !sweep && delta > 0.0 {
+        delta -= std::f32::consts::TAU;
+    } else if sweep && delta < 0.0 {
+        delta += std::f32::consts::TAU;
+    }
+    let pieces = (delta.abs() / std::f32::consts::FRAC_PI_2)
+        .ceil()
+        .clamp(1.0, 4.0) as usize;
+    let step = delta / pieces as f32;
+    let ellipse_point = |angle: f32| {
+        let local = Vec2::new(rx * angle.cos(), ry * angle.sin());
+        center
+            + Vec2::new(
+                cos_phi * local.x - sin_phi * local.y,
+                sin_phi * local.x + cos_phi * local.y,
+            )
+    };
+    let ellipse_tangent = |angle: f32| {
+        let local = Vec2::new(-rx * angle.sin(), ry * angle.cos());
+        Vec2::new(
+            cos_phi * local.x - sin_phi * local.y,
+            sin_phi * local.x + cos_phi * local.y,
+        )
+    };
+    let mut result = Vec::with_capacity(pieces);
+    for piece in 0..pieces {
+        let a0 = theta + step * piece as f32;
+        let a1 = a0 + step;
+        let alpha = 4.0 / 3.0 * (step * 0.25).tan();
+        let p0 = if piece == 0 { from } else { ellipse_point(a0) };
+        let p3 = if piece + 1 == pieces {
+            to
+        } else {
+            ellipse_point(a1)
+        };
+        result.push(CubicBezier {
+            p0: p0.extend(0.0),
+            p1: (p0 + ellipse_tangent(a0) * alpha).extend(0.0),
+            p2: (p3 - ellipse_tangent(a1) * alpha).extend(0.0),
+            p3: p3.extend(0.0),
+        });
+    }
+    Ok(result)
 }
 
 fn parse_element_geometry(
