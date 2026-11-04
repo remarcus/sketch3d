@@ -4227,6 +4227,28 @@ impl SketchApp {
             self.mixed_resource_controls(ui);
             return;
         }
+        let common_brush_settings = !self.select_mode
+            && !self.fills.enabled
+            && self.shape_tool.mode.is_none()
+            && !self.curve_tool.enabled
+            && !self.local_color_brush.enabled
+            && !self.eraser;
+        if common_brush_settings {
+            self.palette_ui.controls(ui, &mut self.color);
+            self.tutorial_hint(ui, "Brush library");
+            self.preset_controls(ui);
+            ui.add(
+                egui::Slider::new(&mut self.radius, 0.001..=1.0)
+                    .text(if self.brush.kind == BrushKind::Round {
+                        "Radius"
+                    } else {
+                        "Half width"
+                    })
+                    .logarithmic(true),
+            );
+            ui.add(egui::Slider::new(&mut self.stabilization, 0.0..=1.0).text("Stabilize").custom_formatter(|v, _| format!("{:.0}%", v*100.0))).on_hover_text("0% gives raw input. Higher values reduce jitter and let the line trail the pen. It catches up on release; pressure is preserved.");
+            ui.add_space(8.0);
+        }
         self.snapping.controls(ui);
         self.line_controls(ui);
         self.curve_controls(ui);
@@ -4238,10 +4260,12 @@ impl SketchApp {
             self.group_controls(ui);
             self.mixed_resource_controls(ui);
         }
-        self.palette_ui.controls(ui, &mut self.color);
-        self.tutorial_hint(ui, "Brush library");
-        if !self.fills.enabled && self.shape_tool.mode.is_none() && !self.curve_tool.enabled {
-            self.preset_controls(ui);
+        if !common_brush_settings {
+            self.palette_ui.controls(ui, &mut self.color);
+            self.tutorial_hint(ui, "Brush library");
+            if !self.fills.enabled && self.shape_tool.mode.is_none() && !self.curve_tool.enabled {
+                self.preset_controls(ui);
+            }
         }
         if self.select_mode {
             self.tutorial_hint(ui, "Select");
@@ -4273,16 +4297,6 @@ impl SketchApp {
                         .default_open(false)
                         .show(ui, |ui| self.brush_controls(ui));
                 }
-                ui.add(
-                    egui::Slider::new(&mut self.radius, 0.001..=1.0)
-                        .text(if self.brush.kind == BrushKind::Round {
-                            "Radius"
-                        } else {
-                            "Half width"
-                        })
-                        .logarithmic(true),
-                );
-                ui.add(egui::Slider::new(&mut self.stabilization, 0.0..=1.0).text("Stabilize").custom_formatter(|v, _| format!("{:.0}%", v*100.0))).on_hover_text("0% gives raw input. Higher values reduce jitter and let the line trail the pen. It catches up on release; pressure is preserved.");
             }
         }
         ui.add_space(8.0);
