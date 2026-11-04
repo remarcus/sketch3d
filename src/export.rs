@@ -248,8 +248,12 @@ fn stroke_mesh_internal(
                 if stroke.gradient.is_some()
                     || stroke.has_local_colors()
                     || (stroke.brush.dabs.enabled && stroke.brush.dab_color_variation.is_enabled())
-                    || stroke.fill.and_then(|fill| fill.gradient).is_some()
-                    || stroke.fill.and_then(|fill| fill.texture).is_some()
+                    || stroke
+                        .fill
+                        .as_ref()
+                        .and_then(|fill| fill.gradient)
+                        .is_some()
+                    || stroke.fill.as_ref().and_then(|fill| fill.texture).is_some()
                 {
                     vertex.color[0]
                 } else {
@@ -258,8 +262,12 @@ fn stroke_mesh_internal(
                 if stroke.gradient.is_some()
                     || stroke.has_local_colors()
                     || (stroke.brush.dabs.enabled && stroke.brush.dab_color_variation.is_enabled())
-                    || stroke.fill.and_then(|fill| fill.gradient).is_some()
-                    || stroke.fill.and_then(|fill| fill.texture).is_some()
+                    || stroke
+                        .fill
+                        .as_ref()
+                        .and_then(|fill| fill.gradient)
+                        .is_some()
+                    || stroke.fill.as_ref().and_then(|fill| fill.texture).is_some()
                 {
                     vertex.color[1]
                 } else {
@@ -268,8 +276,12 @@ fn stroke_mesh_internal(
                 if stroke.gradient.is_some()
                     || stroke.has_local_colors()
                     || (stroke.brush.dabs.enabled && stroke.brush.dab_color_variation.is_enabled())
-                    || stroke.fill.and_then(|fill| fill.gradient).is_some()
-                    || stroke.fill.and_then(|fill| fill.texture).is_some()
+                    || stroke
+                        .fill
+                        .as_ref()
+                        .and_then(|fill| fill.gradient)
+                        .is_some()
+                    || stroke.fill.as_ref().and_then(|fill| fill.texture).is_some()
                 {
                     vertex.color[2]
                 } else {
@@ -1181,6 +1193,7 @@ pub fn encode_with_images(
         }
         let fill_texture_key = stroke
             .fill
+            .as_ref()
             .and_then(|fill| fill.texture)
             .map(|texture| (texture.asset_id, texture.repeat));
         if fill_texture_key.is_some_and(|(id, _)| !tip_assets.contains_key(&id)) {
@@ -1209,7 +1222,11 @@ pub fn encode_with_images(
             || settings.kind.uses_continuous_alpha()
             || (stroke.brush.dynamics.opacity.enabled
                 && stroke.brush.dynamics.opacity.minimum < 1.0);
-        let fill_gradient = stroke.fill.and_then(|fill| fill.gradient).is_some();
+        let fill_gradient = stroke
+            .fill
+            .as_ref()
+            .and_then(|fill| fill.gradient)
+            .is_some();
         let has_local_colors = stroke.has_local_colors();
         let has_gradient = stroke.gradient.is_some() || fill_gradient;
         let has_vertex_colors = has_gradient
@@ -1503,7 +1520,7 @@ pub fn encode_with_images(
                 "atlasSize": composite_image.as_ref().map(|image| image.size),
             });
         }
-        if let Some(fill) = stroke.fill {
+        if let Some(fill) = stroke.fill.as_ref() {
             node["extras"]["spatialSketchGeometry"] = json!("planar_fill");
             node["extras"]["spatialSketchFillOffset"] = json!(fill.offset);
             if let Some(gradient) = fill.gradient {

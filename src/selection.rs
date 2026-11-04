@@ -1141,7 +1141,7 @@ impl SketchApp {
                     .enumerate()
                 {
                     let source = &self.repeat.as_ref().unwrap().source[source_index].1;
-                    match (stroke.fill, source.fill) {
+                    match (stroke.fill.as_ref(), source.fill.as_ref()) {
                         (Some(actual), Some(expected)) => {
                             assert!((actual.offset - expected.offset).abs() < 1e-6);
                         }

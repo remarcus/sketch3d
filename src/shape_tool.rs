@@ -393,7 +393,8 @@ impl SketchApp {
                     preview.gradient = before.gradient;
                     preview.group_id = before.group_id;
                     preview.modifiers = before.modifiers.clone();
-                    if let (Some(after_fill), Some(before_fill)) = (&mut preview.fill, before.fill)
+                    if let (Some(after_fill), Some(before_fill)) =
+                        (&mut preview.fill, before.fill.as_ref())
                     {
                         after_fill.offset = before_fill.offset;
                         after_fill.gradient = before_fill.gradient;

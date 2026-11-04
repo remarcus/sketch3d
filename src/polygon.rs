@@ -1,7 +1,17 @@
 //! Bounded simple planar polygons: validation, ear clipping, and exact interior picking.
 use crate::document::Stroke;
 use glam::{DVec2, Vec3};
+use lyon_tessellation::{
+    geometry_builder::{simple_builder, VertexBuffers},
+    math::point,
+    path::Path,
+    FillOptions, FillRule, FillTessellator,
+};
 pub const MAX_CORNERS: usize = 256;
+pub const MAX_HOLES: usize = 64;
+pub const MAX_TOTAL_CONTOUR_POINTS: usize = 4096;
+const MAX_FILL_MESH_VERTICES: usize = 8192;
+const MAX_FILL_MESH_INDICES: usize = 24576;
 fn cross(a: DVec2, b: DVec2, c: DVec2) -> f64 {
     (b - a).perp_dot(c - a)
 }
@@ -50,6 +60,117 @@ fn normalized_uv(point: DVec2, min: DVec2, max: DVec2) -> glam::Vec2 {
     ((point - min) / size).as_vec2()
 }
 
+fn point_in_ring(point: DVec2, ring: &[DVec2]) -> bool {
+    let mut inside = false;
+    for i in 0..ring.len() {
+        let a = ring[i];
+        let b = ring[(i + 1) % ring.len()];
+        if (a.y > point.y) != (b.y > point.y)
+            && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x
+        {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+fn projected_holes(stroke: &Stroke) -> Vec<Vec<DVec2>> {
+    let origin = stroke.points[0].position;
+    let u = stroke.brush.tangent.as_dvec3();
+    let v = stroke.brush.normal.as_dvec3().cross(u);
+    stroke
+        .fill
+        .as_ref()
+        .map(|fill| {
+            fill.holes
+                .iter()
+                .map(|hole| {
+                    hole.iter()
+                        .map(|point| {
+                            let delta = (*point - origin).as_dvec3();
+                            DVec2::new(delta.dot(u), delta.dot(v))
+                        })
+                        .collect()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn validate_simple_ring(points: &[DVec2], eps: f64) -> Result<(), String> {
+    if !(3..=MAX_CORNERS).contains(&points.len()) {
+        return Err(format!("A contour needs 3–{MAX_CORNERS} corners"));
+    }
+    for i in 0..points.len() {
+        let next = (i + 1) % points.len();
+        if points[i].distance_squared(points[next]) <= eps {
+            return Err("Remove duplicate or extremely close contour corners".into());
+        }
+        for j in i + 1..points.len() {
+            let end = (j + 1) % points.len();
+            if next == j || end == i {
+                continue;
+            }
+            if intersects(points[i], points[next], points[j], points[end], eps) {
+                return Err("Contour intersects itself; move or remove corners".into());
+            }
+        }
+    }
+    let area: f64 = (0..points.len())
+        .map(|i| points[i].perp_dot(points[(i + 1) % points.len()]))
+        .sum();
+    if area.abs() <= eps {
+        return Err("Contour has no usable area".into());
+    }
+    Ok(())
+}
+
+fn lyon_mesh(contours: &[Vec<DVec2>]) -> Result<(Vec<DVec2>, Vec<[usize; 3]>), String> {
+    let mut builder = Path::builder();
+    for contour in contours {
+        let Some(first) = contour.first() else {
+            return Err("Fill contains an empty contour".into());
+        };
+        builder.begin(point(first.x as f32, first.y as f32));
+        for vertex in &contour[1..] {
+            builder.line_to(point(vertex.x as f32, vertex.y as f32));
+        }
+        builder.end(true);
+    }
+    let path = builder.build();
+    let mut buffers: VertexBuffers<lyon_tessellation::math::Point, u16> = VertexBuffers::new();
+    FillTessellator::new()
+        .tessellate_path(
+            &path,
+            &FillOptions::default().with_fill_rule(FillRule::EvenOdd),
+            &mut simple_builder(&mut buffers),
+        )
+        .map_err(|error| format!("Could not triangulate fill contours: {error:?}"))?;
+    if buffers.vertices.len() > MAX_FILL_MESH_VERTICES
+        || buffers.indices.len() > MAX_FILL_MESH_INDICES
+        || buffers.indices.len() % 3 != 0
+    {
+        return Err("Fill contour tessellation exceeds the mesh budget".into());
+    }
+    let vertices: Vec<_> = buffers
+        .vertices
+        .into_iter()
+        .map(|vertex| DVec2::new(vertex.x as f64, vertex.y as f64))
+        .collect();
+    let triangles = buffers
+        .indices
+        .chunks_exact(3)
+        .map(|triangle| {
+            [
+                triangle[0] as usize,
+                triangle[1] as usize,
+                triangle[2] as usize,
+            ]
+        })
+        .collect();
+    Ok((vertices, triangles))
+}
+
 fn gradient_world(stroke: &Stroke, uv: glam::Vec2) -> Vec3 {
     let points = projected(stroke);
     let (min, max) = bounds(&points);
@@ -58,11 +179,11 @@ fn gradient_world(stroke: &Stroke, uv: glam::Vec2) -> Vec3 {
     let tangent = stroke.brush.tangent;
     let bitangent = stroke.brush.normal.cross(tangent);
     origin + tangent * local.x as f32 + bitangent * local.y as f32
-        - stroke.brush.normal * stroke.fill.map_or(0.0, |fill| fill.offset)
+        - stroke.brush.normal * stroke.fill.as_ref().map_or(0.0, |fill| fill.offset)
 }
 
 pub fn gradient_handle_positions(stroke: &Stroke) -> Option<[Vec3; 2]> {
-    let gradient = stroke.fill?.gradient?;
+    let gradient = stroke.fill.as_ref()?.gradient?;
     Some([
         gradient_world(stroke, gradient.start),
         gradient_world(stroke, gradient.end),
@@ -97,13 +218,17 @@ pub fn mapped_fill_uv(stroke: &Stroke, world: Vec3) -> Option<glam::Vec2> {
     );
     Some(
         stroke
-            .fill?
+            .fill
+            .as_ref()?
             .texture
             .map_or(uv, |texture| texture.map_uv(uv)),
     )
 }
 pub fn triangulate(stroke: &Stroke) -> Result<Vec<[usize; 3]>, String> {
-    let fill = stroke.fill.ok_or("This mark is not a planar fill")?;
+    let fill = stroke
+        .fill
+        .as_ref()
+        .ok_or("This mark is not a planar fill")?;
     if !(3..=MAX_CORNERS).contains(&stroke.points.len()) {
         return Err(format!("A fill needs 3–{MAX_CORNERS} corners"));
     }
@@ -136,6 +261,12 @@ pub fn triangulate(stroke: &Stroke) -> Result<Vec<[usize; 3]>, String> {
             > tolerance
     }) {
         return Err("Fill corners must lie on one plane".into());
+    }
+    if fill.holes.len() > MAX_HOLES
+        || stroke.points.len() + fill.holes.iter().map(Vec::len).sum::<usize>()
+            > MAX_TOTAL_CONTOUR_POINTS
+    {
+        return Err("Fill contours exceed the 64-hole / 4,096-point limit".into());
     }
     let count = points.len();
     for i in 0..count {
@@ -210,10 +341,69 @@ pub fn triangulate(stroke: &Stroke) -> Result<Vec<[usize; 3]>, String> {
             triangle.swap(1, 2);
         }
     }
+    if !fill.holes.is_empty() {
+        let holes = projected_holes(stroke);
+        for (index, (world, hole)) in fill.holes.iter().zip(&holes).enumerate() {
+            if world.iter().any(|point| {
+                !point.is_finite()
+                    || (point - stroke.brush.normal * fill.offset)
+                        .abs()
+                        .max_element()
+                        > 10_000.0
+                    || ((*point - origin)
+                        .as_dvec3()
+                        .dot(stroke.brush.normal.as_dvec3()))
+                    .abs()
+                        > tolerance
+            }) {
+                return Err("Cutout corners must be finite and lie on the fill plane".into());
+            }
+            validate_simple_ring(hole, eps)?;
+            if !point_in_ring(hole[0], &points)
+                || (0..hole.len()).any(|i| {
+                    let j = (i + 1) % hole.len();
+                    (0..points.len()).any(|k| {
+                        intersects(
+                            hole[i],
+                            hole[j],
+                            points[k],
+                            points[(k + 1) % points.len()],
+                            eps,
+                        )
+                    })
+                })
+            {
+                return Err(format!(
+                    "Cutout {} must stay strictly inside the outer contour",
+                    index + 1
+                ));
+            }
+            for prior in 0..index {
+                if (0..hole.len()).any(|i| {
+                    let j = (i + 1) % hole.len();
+                    (0..holes[prior].len()).any(|k| {
+                        intersects(
+                            hole[i],
+                            hole[j],
+                            holes[prior][k],
+                            holes[prior][(k + 1) % holes[prior].len()],
+                            eps,
+                        )
+                    })
+                }) {
+                    return Err("Cutout contours may nest but must not cross".into());
+                }
+            }
+        }
+        let mut contours = Vec::with_capacity(holes.len() + 1);
+        contours.push(points.clone());
+        contours.extend(holes);
+        lyon_mesh(&contours)?;
+    }
     Ok(triangles)
 }
 pub fn ray_hit(stroke: &Stroke, origin: Vec3, direction: Vec3) -> Option<Vec3> {
-    let fill = stroke.fill?;
+    let fill = stroke.fill.as_ref()?;
     let first = stroke.points.first()?.position;
     let n = stroke.brush.normal;
     let dot = direction.dot(n);
@@ -241,16 +431,53 @@ pub fn ray_hit(stroke: &Stroke, origin: Vec3, direction: Vec3) -> Option<Vec3> {
             inside = !inside;
         }
     }
+    if !inside {
+        return None;
+    }
+    for hole in projected_holes(stroke) {
+        for i in 0..hole.len() {
+            if on_segment(p, hole[i], hole[(i + 1) % hole.len()], 1e-10) {
+                return None;
+            }
+        }
+        if point_in_ring(p, &hole) {
+            inside = !inside;
+        }
+    }
     inside.then_some(hit)
 }
 pub fn mesh(stroke: &Stroke) -> Vec<crate::geometry::Vertex> {
     let Ok(triangles) = triangulate(stroke) else {
         return Vec::new();
     };
-    let offset = stroke.brush.normal * stroke.fill.unwrap().offset;
-    let points = projected(stroke);
-    let (min, max) = bounds(&points);
-    let fill = stroke.fill.unwrap();
+    let Some(fill) = stroke.fill.as_ref() else {
+        return Vec::new();
+    };
+    let offset = stroke.brush.normal * fill.offset;
+    let outer = projected(stroke);
+    let (min, max) = bounds(&outer);
+    let (mesh_points, mesh_coordinates, triangles) = if fill.holes.is_empty() {
+        (
+            stroke.points.iter().map(|point| point.position).collect(),
+            outer,
+            triangles,
+        )
+    } else {
+        let mut contours = Vec::with_capacity(fill.holes.len() + 1);
+        contours.push(outer);
+        contours.extend(projected_holes(stroke));
+        let Ok((coordinates, triangles)) = lyon_mesh(&contours) else {
+            return Vec::new();
+        };
+        let origin = stroke.points[0].position;
+        let u = stroke.brush.tangent;
+        let v = stroke.brush.normal.cross(u);
+        let positions: Vec<Vec3> = coordinates
+            .iter()
+            .map(|point| origin + u * point.x as f32 + v * point.y as f32)
+            .collect();
+        (positions, coordinates, triangles)
+    };
     let gradient = fill.gradient;
     let texture = fill.texture;
     let make_vertex = |position: Vec3, uv: glam::Vec2, pressure: f32| {
@@ -286,9 +513,13 @@ pub fn mesh(stroke: &Stroke) -> Vec<crate::geometry::Vertex> {
             // Radial color fields are nonlinear; subdividing keeps their vertex-color
             // interpolation smooth in both the viewport and exported meshes.
             const DIVISIONS: usize = 8;
-            let [pa, pb, pc] = [a, b, c].map(|i| stroke.points[i].position);
-            let [ua, ub, uc] = [a, b, c].map(|i| normalized_uv(points[i], min, max));
-            let [qa, qb, qc] = [a, b, c].map(|i| stroke.points[i].pressure);
+            let [pa, pb, pc] = [a, b, c].map(|i| mesh_points[i]);
+            let [ua, ub, uc] = [a, b, c].map(|i| normalized_uv(mesh_coordinates[i], min, max));
+            let [qa, qb, qc] = if fill.holes.is_empty() {
+                [a, b, c].map(|i| stroke.points[i].pressure)
+            } else {
+                [1.0; 3]
+            };
             let sample = |i: usize, j: usize| {
                 let wb = i as f32 / DIVISIONS as f32;
                 let wc = j as f32 / DIVISIONS as f32;
@@ -318,9 +549,13 @@ pub fn mesh(stroke: &Stroke) -> Vec<crate::geometry::Vertex> {
         } else {
             for i in [a, b, c] {
                 output.push(make_vertex(
-                    stroke.points[i].position,
-                    normalized_uv(points[i], min, max),
-                    stroke.points[i].pressure,
+                    mesh_points[i],
+                    normalized_uv(mesh_coordinates[i], min, max),
+                    if fill.holes.is_empty() {
+                        stroke.points[i].pressure
+                    } else {
+                        1.0
+                    },
                 ));
             }
         }
@@ -352,6 +587,7 @@ pub fn study() -> crate::document::Document {
                 offset: 0.003,
                 gradient: None,
                 texture: None,
+                holes: Vec::new(),
             }),
             group_id: None,
             layer_id: 1,
@@ -479,6 +715,7 @@ mod tests {
                 offset: 0.003,
                 gradient: None,
                 texture: None,
+                holes: Vec::new(),
             }),
             group_id: None,
             layer_id: 1,

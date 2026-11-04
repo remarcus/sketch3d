@@ -280,6 +280,7 @@ mod tests {
             offset: 0.01,
             gradient: None,
             texture: None,
+            holes: Vec::new(),
         });
         assert!(edit(&document, &ids, settings()).is_err());
     }

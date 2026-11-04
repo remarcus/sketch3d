@@ -719,6 +719,7 @@ pub fn stroke_mesh(stroke: &Stroke) -> Vec<Vertex> {
         let texture_settings = evaluated_stroke.brush.texture;
         let has_fill_texture = evaluated_stroke
             .fill
+            .as_ref()
             .and_then(|fill| fill.texture)
             .is_some();
         if evaluated_stroke.brush.tip_asset_id == 0 && !has_fill_texture {

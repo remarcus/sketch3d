@@ -63,6 +63,7 @@ pub fn document_bounds(doc: &Document) -> Option<(Vec3, Vec3)> {
             let position = point.position
                 - stroke
                     .fill
+                    .as_ref()
                     .map_or(Vec3::ZERO, |fill| stroke.brush.normal * fill.offset);
             min = min.min(position - extent);
             max = max.max(position + extent);

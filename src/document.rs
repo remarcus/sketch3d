@@ -901,7 +901,7 @@ impl CurveData {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlanarFill {
     /// Physical separation behind the captured guide normal, in world units.
     pub offset: f32,
@@ -911,6 +911,20 @@ pub struct PlanarFill {
     /// Optional portable image and fill-local UV mapping.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture: Option<FillImageTexture>,
+    /// Nested subtractive loops in world space, captured on the fill plane.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holes: Vec<Vec<Vec3>>,
+}
+
+impl Default for PlanarFill {
+    fn default() -> Self {
+        Self {
+            offset: 0.003,
+            gradient: None,
+            texture: None,
+            holes: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -1564,7 +1578,7 @@ impl Document {
             }
             if stroke.fill.is_some() {
                 if stroke.gradient.is_some()
-                    || stroke.fill.is_some_and(|fill| {
+                    || stroke.fill.as_ref().is_some_and(|fill| {
                         fill.gradient.is_some_and(|gradient| !gradient.is_valid())
                             || fill.texture.is_some_and(|texture| {
                                 !texture.is_valid() || !tip_assets.contains_key(&texture.asset_id)

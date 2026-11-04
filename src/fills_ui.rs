@@ -6,12 +6,14 @@ pub(super) struct FillDraft {
     pub mark: Stroke,
     target: PlanarTarget,
     pub(super) original: Option<Stroke>,
+    selected_contour: usize,
     selected: usize,
     pub(super) drag: Option<FillPointDrag>,
     pub(super) gradient_drag: Option<(usize, Camera, Rect, Vec3)>,
     imported_texture_ids: Vec<u64>,
 }
 pub(super) struct FillPointDrag {
+    contour: usize,
     index: usize,
     origin: Vec3,
     start: Vec3,
@@ -85,6 +87,7 @@ impl SketchApp {
             mark: source.clone(),
             target,
             original: Some(source),
+            selected_contour: 0,
             selected: 0,
             drag: None,
             gradient_drag: None,
@@ -103,13 +106,37 @@ impl SketchApp {
             return;
         };
         ui.heading("Edit fill contour");
-        ui.small("Move vertices in the fill's captured plane. Insert adds a midpoint after the selected vertex; the contour must remain simple and nondegenerate.");
-        let count = draft.mark.points.len();
+        ui.small("Fill contours use the even-odd rule. Nested cutouts alternate between empty and filled regions.");
+        let hole_count = draft.mark.fill.as_ref().map_or(0, |fill| fill.holes.len());
+        let mut selected_contour = draft.selected_contour.min(hole_count);
+        egui::ComboBox::from_label("Contour")
+            .selected_text(if selected_contour == 0 {
+                "Outer boundary".to_owned()
+            } else {
+                format!("Cutout {}", selected_contour)
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut selected_contour, 0, "Outer boundary");
+                for index in 1..=hole_count {
+                    ui.selectable_value(&mut selected_contour, index, format!("Cutout {index}"));
+                }
+            });
+        draft.selected_contour = selected_contour;
+        let count = if selected_contour == 0 {
+            draft.mark.points.len()
+        } else {
+            draft.mark.fill.as_ref().unwrap().holes[selected_contour - 1].len()
+        };
         ui.horizontal(|ui| {
             ui.label("Vertex (0-based)");
             ui.add(egui::DragValue::new(&mut draft.selected).range(0..=count - 1));
         });
-        let mut coordinates = draft.mark.points[draft.selected].position.to_array();
+        draft.selected = draft.selected.min(count - 1);
+        let mut coordinates = if selected_contour == 0 {
+            draft.mark.points[draft.selected].position.to_array()
+        } else {
+            draft.mark.fill.as_ref().unwrap().holes[selected_contour - 1][draft.selected].to_array()
+        };
         let mut changed = false;
         for (axis, label) in ["X", "Y", "Z"].into_iter().enumerate() {
             changed |= super::ui_style::numeric_row(
@@ -129,11 +156,28 @@ impl SketchApp {
         let mut cancel = false;
         let mut insert = false;
         let mut remove = false;
+        let mut add_hole = false;
+        let mut remove_hole = false;
         let mut preview_texture_id = None;
         ui.horizontal(|ui| {
             insert = ui.button("Insert midpoint after vertex").clicked();
             remove = ui
                 .add_enabled(count > 3, egui::Button::new("Remove vertex"))
+                .clicked();
+        });
+        ui.horizontal(|ui| {
+            add_hole = ui
+                .add_enabled(
+                    draft.original.is_some() && hole_count < polygon::MAX_HOLES,
+                    egui::Button::new("Add cutout"),
+                )
+                .on_hover_text("Adds a small nested rectangular cutout to the fill")
+                .clicked();
+            remove_hole = ui
+                .add_enabled(
+                    draft.original.is_some() && selected_contour > 0,
+                    egui::Button::new("Remove cutout"),
+                )
                 .clicked();
         });
         ui.horizontal(|ui| {
@@ -313,13 +357,19 @@ impl SketchApp {
             self.import_fill_texture(ui.ctx());
         }
         if changed {
-            self.update_fill_vertex(selected, Vec3::from_array(coordinates));
+            self.update_fill_vertex(selected_contour, selected, Vec3::from_array(coordinates));
         }
         if insert {
-            self.insert_fill_vertex();
+            self.insert_fill_vertex(selected_contour, selected);
         }
         if remove {
-            self.remove_fill_vertex();
+            self.remove_fill_vertex(selected_contour, selected);
+        }
+        if add_hole {
+            self.add_fill_hole();
+        }
+        if remove_hole {
+            self.remove_fill_hole(selected_contour - 1);
         }
         if apply || cancel {
             self.finish_fill_contour_edit(apply);
@@ -445,55 +495,206 @@ impl SketchApp {
         self.status = "Fill texture imported into the detached preview. Apply commits it; Cancel removes newly added unused image data.".into();
     }
 
-    fn update_fill_vertex(&mut self, index: usize, position: Vec3) {
+    fn update_fill_vertex(&mut self, contour: usize, index: usize, position: Vec3) {
         let Some(draft) = self.fills.draft.as_mut() else {
             return;
         };
-        if draft.original.is_none() || index >= draft.mark.points.len() {
+        if draft.original.is_none() {
             return;
         }
-        let previous = draft.mark.points[index];
-        draft.mark.points[index].position = position;
+        let previous = if contour == 0 {
+            let Some(point) = draft.mark.points.get_mut(index) else {
+                return;
+            };
+            let previous = point.position;
+            point.position = position;
+            previous
+        } else {
+            let Some(point) = draft
+                .mark
+                .fill
+                .as_mut()
+                .and_then(|fill| fill.holes.get_mut(contour - 1))
+                .and_then(|hole| hole.get_mut(index))
+            else {
+                return;
+            };
+            let previous = *point;
+            *point = position;
+            previous
+        };
         if let Err(error) = polygon::triangulate(&draft.mark) {
-            draft.mark.points[index] = previous;
+            if contour == 0 {
+                draft.mark.points[index].position = previous;
+            } else {
+                draft.mark.fill.as_mut().unwrap().holes[contour - 1][index] = previous;
+            }
             self.status = error;
         }
     }
 
-    fn insert_fill_vertex(&mut self) {
+    fn insert_fill_vertex(&mut self, contour: usize, index: usize) {
         let Some(draft) = self.fills.draft.as_mut() else {
             return;
         };
-        if draft.original.is_none() || draft.mark.points.len() >= polygon::MAX_CORNERS {
+        if draft.original.is_none() {
             return;
         }
-        let index = draft.selected;
-        let next = (index + 1) % draft.mark.points.len();
-        let mut point = draft.mark.points[index];
-        point.position = (point.position + draft.mark.points[next].position) * 0.5;
-        point.time_ms = 0;
-        draft.mark.points.insert(index + 1, point);
+        if contour == 0 {
+            if draft.mark.points.len() >= polygon::MAX_CORNERS {
+                return;
+            }
+            let next = (index + 1) % draft.mark.points.len();
+            let mut point = draft.mark.points[index];
+            point.position = (point.position + draft.mark.points[next].position) * 0.5;
+            point.time_ms = 0;
+            draft.mark.points.insert(index + 1, point);
+        } else {
+            let Some(hole) = draft
+                .mark
+                .fill
+                .as_mut()
+                .and_then(|fill| fill.holes.get_mut(contour - 1))
+            else {
+                return;
+            };
+            if hole.len() >= polygon::MAX_CORNERS {
+                return;
+            }
+            let next = (index + 1) % hole.len();
+            hole.insert(index + 1, (hole[index] + hole[next]) * 0.5);
+        }
         if let Err(error) = polygon::triangulate(&draft.mark) {
-            draft.mark.points.remove(index + 1);
+            if contour == 0 {
+                draft.mark.points.remove(index + 1);
+            } else {
+                draft.mark.fill.as_mut().unwrap().holes[contour - 1].remove(index + 1);
+            }
             self.status = error;
         } else {
             draft.selected = index + 1;
         }
     }
 
-    fn remove_fill_vertex(&mut self) {
+    fn remove_fill_vertex(&mut self, contour: usize, index: usize) {
         let Some(draft) = self.fills.draft.as_mut() else {
             return;
         };
-        if draft.original.is_none() || draft.mark.points.len() <= 3 {
+        if draft.original.is_none() {
             return;
         }
-        let previous = draft.mark.points.remove(draft.selected);
+        let (previous_point, previous_hole) = if contour == 0 {
+            if draft.mark.points.len() <= 3 {
+                return;
+            }
+            (Some(draft.mark.points.remove(index)), None)
+        } else {
+            let hole = &mut draft.mark.fill.as_mut().unwrap().holes[contour - 1];
+            if hole.len() <= 3 {
+                return;
+            }
+            (None, Some(hole.remove(index)))
+        };
         if let Err(error) = polygon::triangulate(&draft.mark) {
-            draft.mark.points.insert(draft.selected, previous);
+            if contour == 0 {
+                draft.mark.points.insert(index, previous_point.unwrap());
+            } else {
+                draft.mark.fill.as_mut().unwrap().holes[contour - 1]
+                    .insert(index, previous_hole.unwrap());
+            }
             self.status = error;
         } else {
-            draft.selected = draft.selected.min(draft.mark.points.len() - 1);
+            let count = if contour == 0 {
+                draft.mark.points.len()
+            } else {
+                draft.mark.fill.as_ref().unwrap().holes[contour - 1].len()
+            };
+            draft.selected = draft.selected.min(count - 1);
+        }
+    }
+
+    fn add_fill_hole(&mut self) {
+        let Some(draft) = self
+            .fills
+            .draft
+            .as_mut()
+            .filter(|draft| draft.original.is_some())
+        else {
+            return;
+        };
+        let fill = draft.mark.fill.as_ref().unwrap();
+        if fill.holes.len() >= polygon::MAX_HOLES {
+            self.status = "This fill already has the maximum 64 cutouts.".into();
+            return;
+        }
+        let (u, v, normal) = draft.target.plane.basis();
+        let origin = draft.target.plane.origin();
+        let projected: Vec<_> = draft
+            .mark
+            .points
+            .iter()
+            .map(|point| {
+                let offset = point.position - origin;
+                glam::Vec2::new(offset.dot(u), offset.dot(v))
+            })
+            .collect();
+        let min = projected.iter().copied().reduce(glam::Vec2::min).unwrap();
+        let max = projected.iter().copied().reduce(glam::Vec2::max).unwrap();
+        let span = max - min;
+        let half = span.min_element() * (0.18 / (fill.holes.len() as f32 + 1.0));
+        if half < 0.002 {
+            self.status = "The fill is too small for another cutout.".into();
+            return;
+        }
+        let candidate = polygon::triangulate(&draft.mark)
+            .ok()
+            .into_iter()
+            .flatten()
+            .find_map(|triangle| {
+                let center = triangle
+                    .into_iter()
+                    .map(|index| draft.mark.points[index].position)
+                    .sum::<Vec3>()
+                    / 3.0;
+                polygon::ray_hit(&draft.mark, center + normal * 2.0, -normal).map(|_| center)
+            });
+        let Some(center) = candidate else {
+            self.status = "Could not find open fill area for a new cutout.".into();
+            return;
+        };
+        let hole = vec![
+            center - u * half - v * half,
+            center + u * half - v * half,
+            center + u * half + v * half,
+            center - u * half + v * half,
+        ];
+        draft.mark.fill.as_mut().unwrap().holes.push(hole);
+        match polygon::triangulate(&draft.mark) {
+            Ok(_) => {
+                draft.selected_contour = draft.mark.fill.as_ref().unwrap().holes.len();
+                draft.selected = 0;
+            }
+            Err(error) => {
+                draft.mark.fill.as_mut().unwrap().holes.pop();
+                self.status = error;
+            }
+        }
+    }
+
+    fn remove_fill_hole(&mut self, hole_index: usize) {
+        let Some(draft) = self
+            .fills
+            .draft
+            .as_mut()
+            .filter(|draft| draft.original.is_some())
+        else {
+            return;
+        };
+        let holes = &mut draft.mark.fill.as_mut().unwrap().holes;
+        if hole_index < holes.len() {
+            holes.remove(hole_index);
+            draft.selected_contour = 0;
+            draft.selected = 0;
         }
     }
 
@@ -579,11 +780,25 @@ impl SketchApp {
                     let d = screen.distance(pos);
                     if d < distance {
                         distance = d;
-                        nearest = Some((index, point.position));
+                        nearest = Some((0, index, point.position));
                     }
                 }
             }
-            let Some((index, origin)) = nearest else {
+            if let Some(fill) = draft.mark.fill.as_ref() {
+                for (hole_index, hole) in fill.holes.iter().enumerate() {
+                    for (index, point) in hole.iter().enumerate() {
+                        if let Some((screen, _)) = crate::gizmo::project(&self.camera, rect, *point)
+                        {
+                            let d = screen.distance(pos);
+                            if d < distance {
+                                distance = d;
+                                nearest = Some((hole_index + 1, index, *point));
+                            }
+                        }
+                    }
+                }
+            }
+            let Some((contour, index, origin)) = nearest else {
                 return;
             };
             let normal = draft.mark.brush.normal;
@@ -591,8 +806,10 @@ impl SketchApp {
             else {
                 return;
             };
+            draft.selected_contour = contour;
             draft.selected = index;
             draft.drag = Some(FillPointDrag {
+                contour,
                 index,
                 origin,
                 start,
@@ -605,8 +822,8 @@ impl SketchApp {
                 crate::gizmo::plane_hit(&camera, drag_rect, pos, origin, draft.mark.brush.normal)
             {
                 if let (Some(fill), Some(mut gradient)) = (
-                    draft.mark.fill,
-                    draft.mark.fill.and_then(|fill| fill.gradient),
+                    draft.mark.fill.as_ref(),
+                    draft.mark.fill.as_ref().and_then(|fill| fill.gradient),
                 ) {
                     if let Some(uv) = polygon::gradient_uv_from_world(&draft.mark, world) {
                         if index == 0 {
@@ -617,7 +834,7 @@ impl SketchApp {
                         if gradient.is_valid() {
                             draft.mark.fill = Some(crate::document::PlanarFill {
                                 gradient: Some(gradient),
-                                ..fill
+                                ..fill.clone()
                             });
                         }
                     }
@@ -625,10 +842,24 @@ impl SketchApp {
             }
         } else if let Some(drag) = &draft.drag {
             if let Some(position) = drag.position(pos) {
-                let previous = draft.mark.points[drag.index];
-                draft.mark.points[drag.index].position = position;
+                let previous = if drag.contour == 0 {
+                    draft.mark.points[drag.index].position
+                } else {
+                    draft.mark.fill.as_ref().unwrap().holes[drag.contour - 1][drag.index]
+                };
+                if drag.contour == 0 {
+                    draft.mark.points[drag.index].position = position;
+                } else {
+                    draft.mark.fill.as_mut().unwrap().holes[drag.contour - 1][drag.index] =
+                        position;
+                }
                 if let Err(error) = polygon::triangulate(&draft.mark) {
-                    draft.mark.points[drag.index] = previous;
+                    if drag.contour == 0 {
+                        draft.mark.points[drag.index].position = previous;
+                    } else {
+                        draft.mark.fill.as_mut().unwrap().holes[drag.contour - 1][drag.index] =
+                            previous;
+                    }
                     self.status = error;
                 }
             }
@@ -648,6 +879,7 @@ impl SketchApp {
                 stroke.brush.tip_asset_id == *id
                     || stroke
                         .fill
+                        .as_ref()
                         .and_then(|fill| fill.texture)
                         .is_some_and(|texture| texture.asset_id == *id)
             });
@@ -773,6 +1005,7 @@ impl SketchApp {
                             offset: self.fills.offset,
                             gradient: None,
                             texture: None,
+                            holes: Vec::new(),
                         }),
                         group_id: None,
                         layer_id: self.doc.active_layer,
@@ -803,6 +1036,7 @@ impl SketchApp {
                         mark,
                         target,
                         original: None,
+                        selected_contour: 0,
                         selected: 0,
                         drag: None,
                         gradient_drag: None,
@@ -850,6 +1084,7 @@ impl SketchApp {
         let draft = self.fills.draft.get_or_insert_with(|| FillDraft {
             target,
             original: None,
+            selected_contour: 0,
             selected: 0,
             drag: None,
             gradient_drag: None,
@@ -865,6 +1100,7 @@ impl SketchApp {
                     offset: self.fills.offset,
                     gradient: None,
                     texture: None,
+                    holes: Vec::new(),
                 }),
                 group_id: None,
                 layer_id: self.doc.active_layer,
@@ -920,6 +1156,7 @@ impl SketchApp {
             offset: self.fills.offset,
             gradient: None,
             texture: None,
+            holes: Vec::new(),
         });
         if let Err(error) = polygon::triangulate(&mark) {
             self.status = error;
@@ -1015,19 +1252,19 @@ impl SketchApp {
             .collect();
         if draft.mark.fill.is_some() {
             let vertices = polygon::mesh(&draft.mark);
-            let preview_texture =
-                draft
-                    .mark
-                    .fill
-                    .and_then(|fill| fill.texture)
-                    .and_then(|texture| {
-                        self.fills
-                            .texture_preview
-                            .as_ref()
-                            .filter(|(id, repeat, _)| {
-                                *id == texture.asset_id && *repeat == texture.repeat
-                            })
-                    });
+            let preview_texture = draft
+                .mark
+                .fill
+                .as_ref()
+                .and_then(|fill| fill.texture)
+                .and_then(|texture| {
+                    self.fills
+                        .texture_preview
+                        .as_ref()
+                        .filter(|(id, repeat, _)| {
+                            *id == texture.asset_id && *repeat == texture.repeat
+                        })
+                });
             let mut textured_mesh =
                 preview_texture.map(|(_, _, texture)| egui::Mesh::with_texture(texture.id()));
             for tri in vertices.as_chunks::<3>().0 {
@@ -1082,7 +1319,7 @@ impl SketchApp {
             if let Some(mesh) = textured_mesh {
                 painter.add(egui::Shape::mesh(mesh));
             }
-            if let Some(fill) = draft.mark.fill {
+            if let Some(fill) = draft.mark.fill.as_ref() {
                 if let Some(gradient) = fill.gradient {
                     if let Some([start, end]) = polygon::gradient_handle_positions(&draft.mark) {
                         if let (Some((a, _)), Some((b, _))) = (
@@ -1122,6 +1359,44 @@ impl SketchApp {
         for pair in projected.windows(2) {
             if let (Some((a, _)), Some((b, _))) = (pair[0], pair[1]) {
                 painter.line_segment([a, b], egui::Stroke::new(2.0_f32, color));
+            }
+        }
+        if let Some(fill) = draft.mark.fill.as_ref() {
+            for (hole_index, hole) in fill.holes.iter().enumerate() {
+                let hole_projected: Vec<_> = hole
+                    .iter()
+                    .map(|p| crate::gizmo::project(&self.camera, rect, *p))
+                    .collect();
+                if !hole_projected.is_empty() {
+                    for i in 0..hole_projected.len() {
+                        if let (Some((a, _)), Some((b, _))) = (
+                            hole_projected[i],
+                            hole_projected[(i + 1) % hole_projected.len()],
+                        ) {
+                            painter.line_segment([a, b], egui::Stroke::new(2.0_f32, color));
+                        }
+                    }
+                }
+                if draft.original.is_some() {
+                    for (index, point) in hole_projected.iter().enumerate() {
+                        if let Some((position, _)) = point {
+                            if rect.contains(*position) {
+                                let selected = draft.selected_contour == hole_index + 1
+                                    && draft.selected == index;
+                                painter.circle_filled(
+                                    *position,
+                                    if selected { 6.0 } else { 4.0 },
+                                    if selected { color } else { Color32::WHITE },
+                                );
+                                painter.circle_stroke(
+                                    *position,
+                                    6.0,
+                                    egui::Stroke::new(1.0_f32, color),
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
         for (i, p) in projected.iter().enumerate() {

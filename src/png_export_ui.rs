@@ -472,6 +472,7 @@ fn append_storefront_details(doc: &mut Document) {
                 offset: 0.004,
                 gradient: None,
                 texture: None,
+                holes: Vec::new(),
             }),
             group_id: None,
             layer_id: doc.active_layer,

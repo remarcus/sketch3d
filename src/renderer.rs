@@ -134,7 +134,7 @@ fn is_translucent(stroke: &Stroke, layer_opacity: f32, layer_blend_mode: LayerBl
         || layer_blend_mode != LayerBlendMode::Normal
         || stroke.brush.opacity < 0.999_999
         || stroke.brush.tip_asset_id != 0
-        || stroke.fill.and_then(|fill| fill.texture).is_some()
+        || stroke.fill.as_ref().and_then(|fill| fill.texture).is_some()
         || (stroke.brush.dynamics.opacity.enabled
             && stroke.brush.dynamics.opacity.minimum < 0.999_999)
         || (stroke.fill.is_none() && stroke.brush.softness > 0.0)
@@ -1204,13 +1204,13 @@ impl SceneRenderer {
             .strokes
             .iter()
             .filter(|stroke| doc.visible(stroke))
-            .filter_map(|stroke| stroke.fill.and_then(|fill| fill.texture))
+            .filter_map(|stroke| stroke.fill.as_ref().and_then(|fill| fill.texture))
             .map(|texture| (texture.asset_id, texture.repeat))
             .collect();
         fill_needed.extend(
             self.repeat_preview
                 .iter()
-                .filter_map(|(stroke, _)| stroke.fill.and_then(|fill| fill.texture))
+                .filter_map(|(stroke, _)| stroke.fill.as_ref().and_then(|fill| fill.texture))
                 .map(|texture| (texture.asset_id, texture.repeat)),
         );
         self.fill_textures
@@ -1238,6 +1238,7 @@ impl SceneRenderer {
         };
         stroke
             .fill
+            .as_ref()
             .and_then(|fill| fill.texture)
             .and_then(|texture| self.fill_textures.get(&(texture.asset_id, texture.repeat)))
             .or(tip_texture)

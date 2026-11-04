@@ -143,6 +143,7 @@ pub fn write_obj_bundle(
     if strokes.iter().any(|stroke| {
         stroke
             .fill
+            .as_ref()
             .and_then(|fill| fill.texture)
             .is_some_and(|texture| !tip_assets.contains_key(&texture.asset_id))
     }) {
@@ -211,10 +212,12 @@ pub fn write_obj_bundle(
                 .then(|| format!("tip-alpha-{:016x}.png", stroke.brush.tip_asset_id));
             let fill_texture_id = stroke
                 .fill
+                .as_ref()
                 .and_then(|fill| fill.texture)
                 .map(|t| t.asset_id);
             let fill_texture_repeat = stroke
                 .fill
+                .as_ref()
                 .and_then(|fill| fill.texture)
                 .is_some_and(|texture| texture.repeat);
             let fill_texture_alpha_file =
@@ -316,37 +319,47 @@ pub fn write_obj_bundle(
                 diffuse: if image_uses_source_color {
                     [1.0; 3]
                 } else {
-                    stroke.fill.and_then(|fill| fill.texture).map_or_else(
-                        || {
-                            if stroke.has_local_colors() {
-                                local_color_fallback(stroke)
-                            } else {
-                                stroke.gradient.map_or_else(
-                                    || {
-                                        stroke
-                                            .fill
-                                            .and_then(|fill| fill.gradient)
-                                            .map_or(stroke.color, |gradient| {
-                                                gradient.sample(glam::Vec2::splat(0.5))
-                                            })
-                                    },
-                                    |gradient| gradient.sample(0.5),
-                                )
-                            }
-                        },
-                        |texture| {
-                            let base = stroke
-                                .fill
-                                .and_then(|fill| fill.gradient)
-                                .map_or([1.0; 3], |gradient| {
-                                    gradient.sample(glam::Vec2::splat(0.5))
-                                });
-                            std::array::from_fn(|i| base[i] * texture.tint[i])
-                        },
-                    )
+                    stroke
+                        .fill
+                        .as_ref()
+                        .and_then(|fill| fill.texture)
+                        .map_or_else(
+                            || {
+                                if stroke.has_local_colors() {
+                                    local_color_fallback(stroke)
+                                } else {
+                                    stroke.gradient.map_or_else(
+                                        || {
+                                            stroke
+                                                .fill
+                                                .as_ref()
+                                                .and_then(|fill| fill.gradient)
+                                                .map_or(stroke.color, |gradient| {
+                                                    gradient.sample(glam::Vec2::splat(0.5))
+                                                })
+                                        },
+                                        |gradient| gradient.sample(0.5),
+                                    )
+                                }
+                            },
+                            |texture| {
+                                let base = stroke
+                                    .fill
+                                    .as_ref()
+                                    .and_then(|fill| fill.gradient)
+                                    .map_or([1.0; 3], |gradient| {
+                                        gradient.sample(glam::Vec2::splat(0.5))
+                                    });
+                                std::array::from_fn(|i| base[i] * texture.tint[i])
+                            },
+                        )
                 },
                 gradient_fallback: stroke.gradient.is_some()
-                    || stroke.fill.and_then(|fill| fill.gradient).is_some()
+                    || stroke
+                        .fill
+                        .as_ref()
+                        .and_then(|fill| fill.gradient)
+                        .is_some()
                     || stroke.has_local_colors()
                     || (stroke.brush.dabs.enabled && stroke.brush.dab_color_variation.is_enabled()),
                 opacity: if stroke.material == StrokeMaterial::Cutout {
@@ -356,6 +369,7 @@ pub fn write_obj_bundle(
                         * layer_opacity
                         * stroke
                             .fill
+                            .as_ref()
                             .and_then(|fill| fill.texture)
                             .map_or(1.0, |t| t.opacity)
                 },
@@ -406,7 +420,12 @@ pub fn write_obj_bundle(
         mtl.push_str("# Layer Multiply, Screen, and Add modes fall back to Normal in OBJ/MTL.\n");
     }
     if strokes.iter().any(|stroke| {
-        stroke.gradient.is_some() || stroke.fill.and_then(|fill| fill.gradient).is_some()
+        stroke.gradient.is_some()
+            || stroke
+                .fill
+                .as_ref()
+                .and_then(|fill| fill.gradient)
+                .is_some()
     }) {
         mtl.push_str(
             "# OBJ/MTL cannot store per-vertex color; stroke and fill gradients use their evaluated midpoint color.\n",
@@ -775,7 +794,7 @@ pub fn write_obj_bundle(
 
 fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
     let texture = texture::key(stroke.brush.texture);
-    let fill_texture = stroke.fill.and_then(|fill| fill.texture);
+    let fill_texture = stroke.fill.as_ref().and_then(|fill| fill.texture);
     let diffuse = fill_texture.map_or_else(
         || {
             if stroke.brush.dabs.enabled && stroke.brush.dab_color_variation.is_enabled() {
@@ -787,6 +806,7 @@ fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
                     || {
                         stroke
                             .fill
+                            .as_ref()
                             .and_then(|fill| fill.gradient)
                             .map_or(stroke.color, |gradient| {
                                 gradient.sample(glam::Vec2::splat(0.5))
@@ -799,6 +819,7 @@ fn material_key(stroke: &Stroke, layer_opacity: f32) -> MaterialKey {
         |texture| {
             let base = stroke
                 .fill
+                .as_ref()
                 .and_then(|fill| fill.gradient)
                 .map_or([1.0; 3], |gradient| gradient.sample(glam::Vec2::splat(0.5)));
             std::array::from_fn(|i| base[i] * texture.tint[i])

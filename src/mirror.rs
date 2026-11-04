@@ -128,6 +128,13 @@ pub fn mirror_stroke(
             return Err("Reflected stroke exceeds document point limits".into());
         }
     }
+    if let Some(fill) = &mut mirrored.fill {
+        for hole in &mut fill.holes {
+            for point in hole {
+                *point = plane.reflect_point(*point)?;
+            }
+        }
+    }
     if let Some(patch) = &mut mirrored.model_surface {
         for triangle in &mut patch.triangles {
             for position in &mut triangle.positions {
@@ -279,6 +286,13 @@ pub fn rotate_stroke(
         point.tilt = point.tilt.map(|tilt| rotation * tilt);
         if !point.is_valid() {
             return Err("Rotated stroke exceeds document point limits".into());
+        }
+    }
+    if let Some(fill) = &mut repeated.fill {
+        for hole in &mut fill.holes {
+            for point in hole {
+                *point = center + rotation * (*point - center);
+            }
         }
     }
     if let Some(patch) = &mut repeated.model_surface {

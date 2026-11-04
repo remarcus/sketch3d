@@ -219,6 +219,7 @@ mod tests {
                 offset: 0.0,
                 gradient: None,
                 texture: None,
+                holes: Vec::new(),
             }),
             group_id: None,
             layer_id: 1,

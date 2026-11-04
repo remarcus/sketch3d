@@ -7,7 +7,7 @@ description = "Sketch3D: an open-source, tablet-first 3D sketching app"
 keywords = ["3d", "sketching", "tablet", "feather-3d", "grease-pencil"]
 
 [dependencies]
-lyon_tessellation = { version = "=1.0.23", optional = true }
+lyon_tessellation = { version = "=1.0.23" }
 eframe = { version = "0.31.1", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland", "accesskit"] }
 glam = { version = "0.30", features = ["serde", "bytemuck"] }
 bytemuck = { version = "1", features = ["derive"] }
@@ -21,7 +21,7 @@ keyring = { version = "4.2.0", default-features = false, features = ["v1"] }
 ureq = { version = "3.5.1", features = ["json"] }
 
 [features]
-lyon-evaluation = ["dep:lyon_tessellation"]
+lyon-evaluation = []
 
 [[example]]
 name = "lyon_evaluation"

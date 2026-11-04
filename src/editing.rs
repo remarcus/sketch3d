@@ -470,6 +470,7 @@ pub fn bounds(doc: &Document, selected: &HashSet<u64>) -> Option<(Vec3, Vec3)> {
                 let position = point.position
                     - stroke
                         .fill
+                        .as_ref()
                         .map_or(Vec3::ZERO, |fill| stroke.brush.normal * fill.offset);
                 min = min.min(position - extent);
                 max = max.max(position + extent);
@@ -581,6 +582,11 @@ pub fn transformed_with_scale(
         };
         if let Some(fill) = &mut stroke.fill {
             fill.offset *= normal_factor.recip();
+            for hole in &mut fill.holes {
+                for point in hole {
+                    *point = pivot + linear * (*point - pivot) + translation;
+                }
+            }
         }
         stroke.radius *= width_scale;
         if stroke.brush.texture.scale_with_brush {
@@ -1014,6 +1020,7 @@ mod tests {
             offset: 0.2,
             gradient: None,
             texture: None,
+            holes: Vec::new(),
         });
         filled.points = vec![
             Point {
@@ -2218,6 +2225,7 @@ mod appearance_tests {
             offset: 0.03,
             gradient: None,
             texture: None,
+            holes: Vec::new(),
         });
         let filled_before = snapshot(&doc, &ids);
         assert!(appearance_edit(
@@ -2247,6 +2255,7 @@ mod appearance_tests {
                 offset: 0.03,
                 gradient: None,
                 texture: None,
+                holes: Vec::new(),
             })
         );
         recolor.apply(&mut doc, false);

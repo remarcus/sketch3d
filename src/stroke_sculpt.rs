@@ -485,6 +485,7 @@ mod tests {
             offset: 0.0,
             gradient: None,
             texture: None,
+            holes: Vec::new(),
         });
         assert!(edit(&fill, &HashSet::from([4]), settings(Operation::Smooth)).is_err());
         let mut curve = document;

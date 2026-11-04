@@ -942,6 +942,7 @@ mod tests {
             offset: 0.0,
             gradient: None,
             texture: None,
+            holes: Vec::new(),
         });
         assert!(!StrokeModifierStack::default().is_compatible(&fill));
     }

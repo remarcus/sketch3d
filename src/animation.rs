@@ -141,7 +141,7 @@ impl ArtworkAnimation {
                         !stack.is_valid(stroke.points.len()) || !stack.is_compatible(stroke)
                     })
                     || stroke.curve.as_ref().is_some_and(|curve| !curve.is_valid())
-                    || stroke.fill.is_some_and(|fill| {
+                    || stroke.fill.as_ref().is_some_and(|fill| {
                         !fill.offset.is_finite() || fill.offset.abs() > 10_000.0
                     })
                 {

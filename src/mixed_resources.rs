@@ -544,6 +544,7 @@ pub fn selection_bounds(
                 let position = point.position
                     - stroke
                         .fill
+                        .as_ref()
                         .map_or(Vec3::ZERO, |fill| stroke.brush.normal * fill.offset);
                 include_point(&mut bounds, position - extent);
                 include_point(&mut bounds, position + extent);
