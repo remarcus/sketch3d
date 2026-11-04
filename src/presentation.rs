@@ -92,6 +92,8 @@ impl Default for PostEffects {
 #[serde(deny_unknown_fields)]
 pub struct LayoutPreferences {
     pub inspector_open: bool,
+    #[serde(default)]
+    pub inspector_collapsed: bool,
     pub inspector_width: f32,
     #[serde(default)]
     pub inspector_tab: InspectorTab,
@@ -101,6 +103,7 @@ impl Default for LayoutPreferences {
     fn default() -> Self {
         Self {
             inspector_open: true,
+            inspector_collapsed: false,
             inspector_width: 320.0,
             inspector_tab: InspectorTab::Properties,
         }
@@ -274,6 +277,7 @@ mod tests {
         let prefs = Preferences {
             layout: LayoutPreferences {
                 inspector_open: false,
+                inspector_collapsed: true,
                 inspector_width: 410.0,
                 inspector_tab: InspectorTab::Layers,
             },

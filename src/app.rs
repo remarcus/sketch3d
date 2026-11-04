@@ -141,6 +141,17 @@ fn tool_icon_button(
     response
 }
 
+fn inspector_rail_button(
+    ui: &mut egui::Ui,
+    glyph: &str,
+    label: &str,
+    selected: bool,
+) -> egui::Response {
+    let response = ui.add_sized([44.0, 44.0], egui::Button::new(glyph).selected(selected));
+    let response = ui_style::accessible_button(response, label, Some(selected));
+    response.on_hover_text(label)
+}
+
 #[path = "animation_ui.rs"]
 mod animation_ui;
 #[path = "brush_dynamics.rs"]
@@ -5147,6 +5158,67 @@ impl SketchApp {
         if !self.presentation.preferences.layout.inspector_open || self.presentation.artwork {
             return;
         }
+        if self.presentation.preferences.layout.inspector_collapsed {
+            egui::SidePanel::right("inspector")
+                .exact_width(64.0)
+                .show(ctx, |ui| {
+                    ui.add_space(6.0);
+                    ui.vertical_centered(|ui| {
+                        for (tab, glyph, label) in [
+                            (
+                                crate::presentation::InspectorTab::Properties,
+                                "P",
+                                "Properties",
+                            ),
+                            (crate::presentation::InspectorTab::Layers, "L", "Layers"),
+                            (
+                                crate::presentation::InspectorTab::References,
+                                "R",
+                                "References",
+                            ),
+                            (
+                                crate::presentation::InspectorTab::ImagePlanes,
+                                "I",
+                                "Images",
+                            ),
+                        ] {
+                            let response = inspector_rail_button(
+                                ui,
+                                glyph,
+                                label,
+                                self.presentation.preferences.layout.inspector_tab == tab,
+                            );
+                            if response.clicked() {
+                                if self.presentation.preferences.layout.inspector_tab != tab {
+                                    self.presentation.preferences.layout.inspector_tab = tab;
+                                    self.presentation.schedule_layout_save();
+                                }
+                            }
+                        }
+                        ui.separator();
+                        if inspector_rail_button(ui, "»", "Expand inspector", false).clicked() {
+                            self.set_inspector_collapsed(false);
+                        }
+                        let can_hide = self.point_draft.is_none()
+                            && self.point_multi_draft.is_none()
+                            && self.reprojection_draft.is_none();
+                        let hide = ui.add_enabled(
+                            can_hide,
+                            egui::Button::new("×").min_size(Vec2::splat(44.0)),
+                        );
+                        let hide = ui_style::accessible_button(hide, "Hide inspector", Some(false))
+                            .on_hover_text(if can_hide {
+                                "Hide inspector"
+                            } else {
+                                "Finish the active edit before hiding"
+                            });
+                        if hide.clicked() {
+                            self.set_inspector_open(false);
+                        }
+                    });
+                });
+            return;
+        }
         let width = self.presentation.preferences.layout.inspector_width;
         let panel = egui::SidePanel::right("inspector")
             .resizable(true)
@@ -5191,6 +5263,18 @@ impl SketchApp {
                         || image_planes_changed
                     {
                         self.presentation.schedule_layout_save();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.point_draft.is_none()
+                                && self.point_multi_draft.is_none()
+                                && self.reprojection_draft.is_none(),
+                            egui::Button::new("Collapse"),
+                        )
+                        .on_hover_text("Collapse inspector to its tab rail")
+                        .clicked()
+                    {
+                        self.set_inspector_collapsed(true);
                     }
                     if ui
                         .add_enabled(
@@ -5280,6 +5364,11 @@ impl SketchApp {
             self.cancel_transform();
         }
         self.presentation.preferences.layout.inspector_open = open;
+        self.presentation.schedule_layout_save();
+    }
+
+    fn set_inspector_collapsed(&mut self, collapsed: bool) {
+        self.presentation.preferences.layout.inspector_collapsed = collapsed;
         self.presentation.schedule_layout_save();
     }
 
