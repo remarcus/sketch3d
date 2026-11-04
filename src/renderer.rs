@@ -1736,9 +1736,17 @@ impl SceneRenderer {
                     return Err("Transformed OBJ geometry exceeds document bounds".into());
                 }
                 target.push(Vertex {
-                    material: 0.0,
+                    material: if model.source_format == crate::obj_reference::ObjSourceFormat::Glb {
+                        material.map_or(1.0, |material| material.metallic) * 0.49
+                    } else {
+                        0.0
+                    },
                     emission: material.map_or([0.0; 3], |material| material.emissive_factor),
-                    grain_uv: [0.0; 2],
+                    grain_uv: if model.source_format == crate::obj_reference::ObjSourceFormat::Glb {
+                        [-1.0, material.map_or(1.0, |material| material.roughness)]
+                    } else {
+                        [0.0; 2]
+                    },
                     grain_dynamics: [alpha_cutoff, alpha_mode_marker],
                     gradient_t: 0.0,
                     position: position.to_array(),

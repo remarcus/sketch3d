@@ -240,7 +240,7 @@ pub fn parse(bytes: &[u8], source: &Path) -> Result<ObjModel, String> {
             }
         }
         if metallic > 0.0 || roughness < 1.0 {
-            warnings.push("GLB metallic and roughness factors are preserved in whole-scene GLB export; the viewport uses a diffuse lighting approximation. Emissive factors render in the viewport and are preserved on export.".into());
+            warnings.push("GLB metallic and roughness factors render with a direct-light approximation and are preserved in whole-scene GLB export; environment reflections are not simulated. Emissive factors render in the viewport and are preserved on export.".into());
         }
     }
     if materials.len() > crate::obj_reference::MAX_MATERIALS {

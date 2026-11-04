@@ -64,13 +64,32 @@ fn parent_clip_coverage(in: Output) -> f32 {
 }
 fn material_output(in: Output, alpha: f32, sampled_color: vec3<f32>) -> FragmentOutput {
     let material = in.material - floor(in.material / 4.0) * 4.0;
+    let pbr_reference = in.grain_uv.x < -0.5;
     var shade=1.0;
+    var specular=vec3<f32>(0.0);
     if material<0.5 && length(in.normal)>=0.1 {
         let normal=normalize(in.normal);
-        shade=scene.light.w+scene.settings.x*abs(dot(normal,scene.light.xyz))*visibility(in.world,normal);
+        let light_amount = abs(dot(normal,scene.light.xyz));
+        let visible_light = visibility(in.world,normal);
+        if pbr_reference {
+            let metallic = clamp(in.material / 0.49, 0.0, 1.0);
+            let roughness = clamp(in.grain_uv.y, 0.04, 1.0);
+            let base_color = in.color * sampled_color;
+            let view = normalize(scene.camera.xyz - in.world);
+            let halfway = normalize(scene.light.xyz + view);
+            let exponent = mix(128.0, 4.0, roughness * roughness);
+            let highlight = pow(max(dot(normal, halfway), 0.0), exponent)
+                * scene.settings.x * light_amount * visible_light;
+            let reflectance = mix(vec3<f32>(0.04), base_color, metallic);
+            specular = reflectance * highlight;
+            shade = scene.light.w * (1.0 - metallic)
+                + scene.settings.x * light_amount * visible_light * (1.0 - metallic);
+        } else {
+            shade=scene.light.w+scene.settings.x*light_amount*visible_light;
+        }
         if scene.shadow.w > 0.5 { shade=floor(shade*4.0+0.5)/4.0; }
     }
-    var color=in.color*sampled_color*shade;
+    var color=in.color*sampled_color*shade+specular;
     var emission=vec3<f32>(0.0);
     if material>1.5 && material<2.5 {
         emission=in.color*sampled_color*2.0;
