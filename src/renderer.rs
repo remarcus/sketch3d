@@ -129,6 +129,16 @@ struct ObjReferenceMeshes {
     translucent: Vec<ObjReferenceMaterialMesh>,
 }
 
+const STROKE_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 9] = {
+    let mut attributes = wgpu::vertex_attr_array![
+        0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x2,
+        4 => Float32, 5 => Float32, 6 => Float32x2, 7 => Float32x2, 8 => Float32x3
+    ];
+    // gradient_t is used on the CPU and sits between grain_dynamics and emission.
+    attributes[8].offset = std::mem::offset_of!(Vertex, emission) as u64;
+    attributes
+};
+
 fn canvas_sample_count(adapter: &wgpu::Adapter) -> u32 {
     let color = adapter
         .get_texture_format_features(wgpu::TextureFormat::Rgba8UnormSrgb)
@@ -636,16 +646,86 @@ impl SceneRenderer {
                 }
             };
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label:Some("3D strokes"),layout:Some(&pipeline_layout),
-            vertex:wgpu::VertexState {module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[wgpu::VertexBufferLayout {array_stride:std::mem::size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32,6=>Float32x2,7=>Float32x2,8=>Float32x3]}]},
-            fragment:Some(wgpu::FragmentState {module:&shader,entry_point:Some(entry_point),compilation_options:Default::default(),targets:&[
-                Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8UnormSrgb,blend:color_blend,write_mask:wgpu::ColorWrites::ALL}),
-                Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba8Unorm,blend:Some(wgpu::BlendState {color:wgpu::BlendComponent {src_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},dst_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},operation:wgpu::BlendOperation::Add},alpha:wgpu::BlendComponent {src_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},dst_factor:if cutout {wgpu::BlendFactor::Zero} else {wgpu::BlendFactor::One},operation:wgpu::BlendOperation::Add}}),write_mask:wgpu::ColorWrites::ALL})
-            ]}),
-            primitive:wgpu::PrimitiveState {topology,cull_mode:None,..Default::default()},
-            depth_stencil:Some(wgpu::DepthStencilState {format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:(!transparent || cutout) && topology != wgpu::PrimitiveTopology::LineList,depth_compare:wgpu::CompareFunction::LessEqual,stencil:Default::default(),bias:Default::default()}),
-            multisample:wgpu::MultisampleState {count:pipeline_samples,mask:!0,alpha_to_coverage_enabled:pipeline_samples > 1 && !transparent && !alpha_blend && !cutout},multiview:None,cache:None,
-        })
+                label: Some("3D strokes"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &STROKE_VERTEX_ATTRIBUTES,
+                    }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry_point),
+                    compilation_options: Default::default(),
+                    targets: &[
+                        Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                            blend: color_blend,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        }),
+                        Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: Some(wgpu::BlendState {
+                                color: wgpu::BlendComponent {
+                                    src_factor: if cutout {
+                                        wgpu::BlendFactor::Zero
+                                    } else {
+                                        wgpu::BlendFactor::One
+                                    },
+                                    dst_factor: if cutout {
+                                        wgpu::BlendFactor::Zero
+                                    } else {
+                                        wgpu::BlendFactor::One
+                                    },
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                                alpha: wgpu::BlendComponent {
+                                    src_factor: if cutout {
+                                        wgpu::BlendFactor::Zero
+                                    } else {
+                                        wgpu::BlendFactor::One
+                                    },
+                                    dst_factor: if cutout {
+                                        wgpu::BlendFactor::Zero
+                                    } else {
+                                        wgpu::BlendFactor::One
+                                    },
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                            }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        }),
+                    ],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: (!transparent || cutout)
+                        && topology != wgpu::PrimitiveTopology::LineList,
+                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: pipeline_samples,
+                    mask: !0,
+                    alpha_to_coverage_enabled: pipeline_samples > 1
+                        && !transparent
+                        && !alpha_blend
+                        && !cutout,
+                },
+                multiview: None,
+                cache: None,
+            })
         };
         let clip_mask_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Layer clip coverage mask"),
@@ -657,7 +737,7 @@ impl SceneRenderer {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32,6=>Float32x2,7=>Float32x2,8=>Float32x3],
+                    attributes: &STROKE_VERTEX_ATTRIBUTES,
                 }],
             },
             fragment: Some(wgpu::FragmentState {
@@ -680,39 +760,40 @@ impl SceneRenderer {
             multiview: None,
             cache: None,
         });
-        let clip_mask_cutout_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Layer clip cutout mask"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Float32,5=>Float32,6=>Float32x2,7=>Float32x2,8=>Float32x3],
-                }],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_clip_mask_cutout"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::R8Unorm,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::RED,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
+        let clip_mask_cutout_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Layer clip cutout mask"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &STROKE_VERTEX_ATTRIBUTES,
+                    }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_clip_mask_cutout"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::R8Unorm,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::RED,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            });
         let triangles = create(
             wgpu::PrimitiveTopology::TriangleList,
             false,

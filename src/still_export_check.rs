@@ -138,10 +138,12 @@ pub fn run(output: &Path) -> Result<(), String> {
     std::fs::create_dir_all(output).map_err(|error| error.to_string())?;
 
     let transparent = renderer.render_transparent_png_pixels(&document, &camera, SIZE, lighting)?;
+    save_rgba(&output.join("transparent-edge.png"), &transparent)?;
     let mut zero_alpha_pixels = 0;
     let mut edge_pixels = 0;
     let mut opaque_pixels = 0;
     let mut max_edge_channel_error = 0_u8;
+    let mut worst_edge = [0; 4];
     let expected_ink =
         INK.map(|channel| (crate::presentation::linear_to_srgb(channel) * 255.0).round() as u8);
     for pixel in transparent.as_chunks::<4>().0 {
@@ -155,8 +157,11 @@ pub fn run(output: &Path) -> Result<(), String> {
             1..=254 => {
                 edge_pixels += 1;
                 for channel in 0..3 {
-                    max_edge_channel_error =
-                        max_edge_channel_error.max(pixel[channel].abs_diff(expected_ink[channel]));
+                    let error = pixel[channel].abs_diff(expected_ink[channel]);
+                    if error > max_edge_channel_error {
+                        max_edge_channel_error = error;
+                        worst_edge = *pixel;
+                    }
                 }
             }
             _ => opaque_pixels += 1,
@@ -169,13 +174,12 @@ pub fn run(output: &Path) -> Result<(), String> {
     }
     if max_edge_channel_error > 8 {
         return Err(format!(
-            "Transparent edge color differs from straight-alpha ink by {max_edge_channel_error} levels"
+            "Transparent edge color differs from straight-alpha ink by {max_edge_channel_error} levels (RGBA {worst_edge:?}, expected RGB {expected_ink:?})"
         ));
     }
     if zero_alpha_pixels == 0 || opaque_pixels == 0 {
         return Err("Transparent export lacks clear or fully covered pixels".into());
     }
-    save_rgba(&output.join("transparent-edge.png"), &transparent)?;
     let edge_white = composite_preview(&transparent, [1.0; 3]);
     let edge_black = composite_preview(&transparent, [0.0; 3]);
     save_rgba(&output.join("transparent-edge-on-white.png"), &edge_white)?;
