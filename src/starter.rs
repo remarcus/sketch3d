@@ -69,6 +69,7 @@ impl SketchApp {
                 assert!(self.starter_scene.is_none());
                 assert_eq!(self.next_id, 1);
                 assert_eq!(self.brush, crate::presets::startup_pencil().brush);
+                self.verify_quick_palette();
                 self.verify_pen_barrel_erase(ctx, rect);
                 self.dirty = false;
                 self.request(Pending::House);
@@ -94,6 +95,42 @@ impl SketchApp {
             _ => {}
         }
         self.house_verification_frame = Some(frame + 1);
+    }
+
+    fn verify_quick_palette(&mut self) {
+        let context = egui::Context::default();
+        let mut shortcut = |key: Option<Key>, focused| {
+            let events = key.map_or_else(Vec::new, |key| {
+                [true, false]
+                    .map(|pressed| egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    })
+                    .to_vec()
+            });
+            let _ = context.run(
+                egui::RawInput {
+                    focused,
+                    events,
+                    ..Default::default()
+                },
+                |ctx| self.quick_palette_shortcuts(ctx),
+            );
+            self.quick_palette.is_some()
+        };
+        assert!(shortcut(Some(Key::Q), true));
+        assert!(shortcut(Some(Key::ArrowDown), true));
+        assert!(!shortcut(Some(Key::Enter), true));
+        assert!(shortcut(Some(Key::Q), true));
+        assert!(!shortcut(Some(Key::Escape), true));
+        assert!(shortcut(Some(Key::Q), true));
+        assert!(!shortcut(None, false));
+        assert_eq!(self.quick_palette_active_tool(), "Line");
+        self.choose_tool("Brush");
+        assert!(std::mem::take(&mut self.suppress_canvas_input_once));
     }
 
     fn verify_pen_barrel_erase(&mut self, ctx: &egui::Context, rect: Rect) {
