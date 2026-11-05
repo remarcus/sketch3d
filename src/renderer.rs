@@ -2122,18 +2122,9 @@ impl SceneRenderer {
         meshes: &HashMap<u64, &Mesh>,
     ) -> HashMap<u64, Rc<ClipMaskTexture>> {
         let mut masks = HashMap::new();
-        let needed: HashSet<_> = doc
-            .layers
-            .windows(2)
-            .filter(|layers| layers[1].clip_to_below)
-            .map(|layers| layers[0].id)
-            .collect();
-        let mask_count = doc
-            .layers
-            .windows(2)
-            .filter(|layers| layers[1].clip_to_below)
-            .count()
-            .max(1) as u64;
+        let order = crate::document::layer_mask_order(&doc.layers).unwrap_or_default();
+        let needed: HashSet<_> = order.iter().copied().collect();
+        let mask_count = order.len().max(1) as u64;
         let full_pixels = u64::from(size[0]) * u64::from(size[1]);
         let pixels_per_mask = (MAX_LAYER_CLIP_MASK_PIXELS / mask_count).max(1);
         let scale = (pixels_per_mask as f64 / full_pixels.max(1) as f64)
@@ -2145,14 +2136,12 @@ impl SceneRenderer {
         ];
         let mut cache = self.clip_mask_cache.borrow_mut();
         cache.retain(|id, mask| needed.contains(id) && mask.size == mask_size);
-        for (index, layer) in doc.layers.iter().enumerate() {
-            if !doc
+        for id in order {
+            let layer = doc
                 .layers
-                .get(index + 1)
-                .is_some_and(|above| above.clip_to_below)
-            {
-                continue;
-            }
+                .iter()
+                .find(|layer| layer.id == id)
+                .expect("validated mask source");
             if let std::collections::hash_map::Entry::Vacant(entry) = cache.entry(layer.id) {
                 let texture = self.state.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("Layer coverage mask"),
@@ -2195,15 +2184,7 @@ impl SceneRenderer {
                 }));
             }
             let mask = Rc::clone(&cache[&layer.id]);
-            let parent_mask = if layer.clip_to_below && index > 0 {
-                masks
-                    .get(&doc.layers[index - 1].id)
-                    .map_or(&self.clip_default_bind, |mask: &Rc<ClipMaskTexture>| {
-                        &mask.bind
-                    })
-            } else {
-                &self.clip_default_bind
-            };
+            let parent_mask = self.clip_binding(doc, layer.id, &masks);
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Layer coverage mask pass"),

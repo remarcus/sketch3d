@@ -841,6 +841,7 @@ mod layer_picking_tests {
             locked: false,
             opacity: 1.0,
             blend_mode: crate::document::LayerBlendMode::Normal,
+            mask_source: None,
             clip_to_below: false,
         });
         assert_eq!(pick(&doc, &camera, rect, rect.center()), Some(1));

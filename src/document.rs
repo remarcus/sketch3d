@@ -397,6 +397,51 @@ pub struct Layer {
     /// Restrict this layer's visible coverage to the immediately lower layer.
     #[serde(default)]
     pub clip_to_below: bool,
+    /// Explicit mask source. The stable ID survives changes to layer order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_source: Option<u64>,
+}
+
+pub(crate) fn layer_mask_order(layers: &[Layer]) -> Result<Vec<u64>, &'static str> {
+    use std::collections::{HashMap, HashSet};
+    let sources: HashMap<_, _> = layers
+        .iter()
+        .enumerate()
+        .map(|(index, layer)| {
+            (
+                layer.id,
+                layer
+                    .mask_source
+                    .or_else(|| (layer.clip_to_below && index > 0).then(|| layers[index - 1].id)),
+            )
+        })
+        .collect();
+    let needed: HashSet<_> = sources.values().flatten().copied().collect();
+    let mut done = HashSet::new();
+    let mut visiting = HashSet::new();
+    let mut path = Vec::new();
+    let mut order = Vec::new();
+    for layer in layers {
+        let mut current = Some(layer.id);
+        while let Some(id) = current {
+            if done.contains(&id) {
+                break;
+            }
+            if !visiting.insert(id) {
+                return Err("Layer masks cannot refer to themselves or form a cycle.");
+            }
+            path.push(id);
+            current = *sources.get(&id).ok_or("Layer mask source is missing.")?;
+        }
+        while let Some(id) = path.pop() {
+            visiting.remove(&id);
+            done.insert(id);
+            if needed.contains(&id) {
+                order.push(id);
+            }
+        }
+    }
+    Ok(order)
 }
 /// A UI grouping for layers. Folder membership never changes a layer's stable
 /// ID, animation track, or position in the flat compositing stack.
@@ -427,6 +472,7 @@ pub fn layers_default() -> Vec<Layer> {
         locked: false,
         opacity: 1.0,
         blend_mode: LayerBlendMode::Normal,
+        mask_source: None,
         clip_to_below: false,
     }]
 }
@@ -1571,7 +1617,10 @@ impl Document {
     }
     pub fn layer_clip_source(&self, layer_id: u64) -> Option<u64> {
         let index = self.layers.iter().position(|layer| layer.id == layer_id)?;
-        (self.layers[index].clip_to_below && index > 0).then(|| self.layers[index - 1].id)
+        let layer = &self.layers[index];
+        layer
+            .mask_source
+            .or_else(|| (layer.clip_to_below && index > 0).then(|| self.layers[index - 1].id))
     }
     pub fn editable(&self, stroke: &Stroke) -> bool {
         !self
@@ -1794,6 +1843,7 @@ impl Document {
                 }
             }
         }
+        layer_mask_order(&doc.layers)?;
         if !layer_ids.contains(&doc.active_layer) {
             return Err("Active layer does not exist".into());
         }
@@ -2496,6 +2546,7 @@ mod layer_tests {
             locked: true,
             opacity: 1.0,
             blend_mode: LayerBlendMode::Normal,
+            mask_source: None,
             clip_to_below: false,
         });
         doc.active_layer = 2;
@@ -2555,6 +2606,7 @@ mod layer_tests {
                     locked: false,
                     opacity: 1.0,
                     blend_mode: LayerBlendMode::Normal,
+                    mask_source: None,
                     clip_to_below: false,
                 }),
                 "blank_name" => doc.layers[0].name = " ".into(),
@@ -2938,6 +2990,7 @@ mod group_tests {
             locked: true,
             opacity: 1.0,
             blend_mode: LayerBlendMode::Normal,
+            mask_source: None,
             clip_to_below: false,
         });
         doc.active_layer = 2;
@@ -3006,6 +3059,7 @@ mod group_tests {
             locked: false,
             opacity: 1.0,
             blend_mode: LayerBlendMode::Normal,
+            mask_source: None,
             clip_to_below: false,
         });
         let mut second = mark(2);

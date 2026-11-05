@@ -1448,8 +1448,11 @@ pub fn encode_with_images(
             .iter()
             .find(|layer| layer.id == stroke.layer_id)
             .unwrap();
-        let clipped_to_below = doc.layer_clip_source(stroke.layer_id).is_some();
-        let mut node = json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":layer.name,"spatialSketchLayerOpacity":layer_opacity,"spatialSketchLayerBlendMode":layer.blend_mode.label(),"spatialSketchLayerBlendFallback":"normal","spatialSketchLayerClipToBelow":clipped_to_below,"spatialSketchLayerClipFallback":if clipped_to_below {"not_applied_by_mesh_export"} else {"none"}}});
+        let clip_source = doc.layer_clip_source(stroke.layer_id);
+        let mut node = json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":layer.name,"spatialSketchLayerOpacity":layer_opacity,"spatialSketchLayerBlendMode":layer.blend_mode.label(),"spatialSketchLayerBlendFallback":"normal","spatialSketchLayerClipToBelow":layer.clip_to_below && layer.mask_source.is_none() && clip_source.is_some(),"spatialSketchLayerClipFallback":if clip_source.is_some() {"not_applied_by_mesh_export"} else {"none"}}});
+        if let Some(source) = layer.mask_source {
+            node["extras"]["spatialSketchLayerMaskSourceId"] = json!(source.to_string());
+        }
         node["extras"]["spatialSketchMaterial"] = json!(match stroke.material {
             crate::document::StrokeMaterial::Shaded => "shaded",
             crate::document::StrokeMaterial::Unlit => "unlit",

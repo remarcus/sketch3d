@@ -591,6 +591,7 @@ mod tests {
                 locked: true,
                 opacity: 1.0,
                 blend_mode: crate::document::LayerBlendMode::Normal,
+                mask_source: None,
                 clip_to_below: false,
             },
             Layer {
@@ -600,6 +601,7 @@ mod tests {
                 locked: false,
                 opacity: 1.0,
                 blend_mode: crate::document::LayerBlendMode::Normal,
+                mask_source: None,
                 clip_to_below: false,
             },
         ]);

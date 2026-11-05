@@ -1354,6 +1354,7 @@ pub enum LayerAction {
     Opacity(u64, f32),
     BlendMode(u64, LayerBlendMode),
     ClipToBelow(u64, bool),
+    MaskSource(u64, Option<u64>),
     Visible(u64, bool),
     Lock(u64, bool),
     Activate(u64),
@@ -1391,6 +1392,7 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 locked: false,
                 opacity: 1.0,
                 blend_mode: crate::document::LayerBlendMode::Normal,
+                mask_source: None,
                 clip_to_below: false,
             });
             after.active_layer = id;
@@ -1432,6 +1434,20 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 return Err("The bottom layer has no layer below to clip to".into());
             }
             after.layers[index].clip_to_below = value;
+            if value {
+                after.layers[index].mask_source = None;
+            }
+        }
+        LayerAction::MaskSource(id, source) => {
+            let layer = after
+                .layers
+                .iter_mut()
+                .find(|layer| layer.id == id)
+                .ok_or("Layer not found")?;
+            layer.mask_source = source;
+            if source.is_some() {
+                layer.clip_to_below = false;
+            }
         }
         LayerAction::Visible(id, value) => {
             after
@@ -1554,6 +1570,11 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 return Err("Move or delete this layer's static animation artwork before deleting the layer".into());
             }
             after.layers.retain(|l| l.id != id);
+            for layer in &mut after.layers {
+                if layer.mask_source == Some(id) {
+                    layer.mask_source = None;
+                }
+            }
             for folder in &mut after.folders {
                 folder.layer_ids.retain(|layer_id| *layer_id != id);
             }
@@ -1738,6 +1759,7 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
             }
         }
     }
+    crate::document::layer_mask_order(&after.layers)?;
     Ok(Edit::Layers { before, after })
 }
 

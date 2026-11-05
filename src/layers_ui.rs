@@ -170,6 +170,7 @@ impl SketchApp {
         let mut opacity_responses = Vec::new();
         let mut blend_changes = Vec::new();
         let mut clip_changes = Vec::new();
+        let mut mask_changes = Vec::new();
         let mut property_buttons = Vec::new();
         let rename_id = egui::Id::new(RENAMING_LAYER_ID);
         let focus_rename_id = egui::Id::new(FOCUS_RENAME_LAYER_ID);
@@ -469,6 +470,23 @@ impl SketchApp {
                                 if response.changed() {
                                     clip_changes.push((layer_id, clip_to_below));
                                 }
+                                let mut source = layer.mask_source;
+                                let name = source.and_then(|id| self.doc.layers.iter().find(|candidate| candidate.id == id))
+                                    .map_or("None", |candidate| candidate.name.as_str());
+                                egui::ComboBox::from_id_salt(("layer-mask-source", layer_id))
+                                    .selected_text(name)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut source, None, "None");
+                                        for candidate in &self.doc.layers {
+                                            if candidate.id != layer_id {
+                                                ui.selectable_value(&mut source, Some(candidate.id), &candidate.name);
+                                            }
+                                        }
+                                    });
+                                ui.small("Named mask source. Hidden sources clip to nothing.");
+                                if source != layer.mask_source {
+                                    mask_changes.push((layer_id, source));
+                                }
                             });
                     });
 
@@ -591,6 +609,10 @@ impl SketchApp {
             for (layer_id, clip_to_below) in clip_changes {
                 self.begin_layer_properties_preview(layer_id);
                 self.preview_layer_action(LayerAction::ClipToBelow(layer_id, clip_to_below));
+            }
+            for (layer_id, source) in mask_changes {
+                self.begin_layer_properties_preview(layer_id);
+                self.preview_layer_action(LayerAction::MaskSource(layer_id, source));
             }
             for (layer_id, apply, cancel) in property_buttons {
                 if cancel
@@ -718,6 +740,7 @@ impl SketchApp {
                 locked: false,
                 opacity: 1.0,
                 blend_mode: LayerBlendMode::Normal,
+                mask_source: None,
                 clip_to_below: false,
             });
             let upper = doc.layers.iter_mut().find(|layer| layer.id == 2).unwrap();
@@ -897,6 +920,7 @@ impl SketchApp {
                 locked: false,
                 opacity: 1.0,
                 blend_mode: LayerBlendMode::Normal,
+                mask_source: None,
                 clip_to_below: false,
             });
             doc.layers
@@ -986,6 +1010,7 @@ impl SketchApp {
                     locked: false,
                     opacity: 0.6 + layer_id as f32 * 0.05,
                     blend_mode: modes[(layer_id as usize - 1) % modes.len()],
+                    mask_source: None,
                     clip_to_below: false,
                 });
             }

@@ -750,6 +750,7 @@ fn create_native_drawing(output: &Path, arguments: &Value) -> Result<Value, Stri
                     locked: false,
                     opacity: 1.0,
                     blend_mode: crate::document::LayerBlendMode::Normal,
+                    mask_source: None,
                     clip_to_below: false,
                 };
                 let validation_doc = crate::document::Document {

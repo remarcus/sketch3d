@@ -94,6 +94,7 @@ pub fn build_script(document: &Document, name: &str) -> Result<(String, Vec<Stri
         let layer = &document.layers[layer_index];
         if layer.opacity != 1.0
             || layer.clip_to_below
+            || layer.mask_source.is_some()
             || layer.blend_mode != crate::document::LayerBlendMode::Normal
         {
             unsupported.push(format!(

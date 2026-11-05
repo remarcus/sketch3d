@@ -459,6 +459,7 @@ pub fn layered_fixture() -> Document {
         locked: false,
         opacity: 1.0,
         blend_mode: crate::document::LayerBlendMode::Normal,
+        mask_source: None,
         clip_to_below: false,
     });
     doc.layers.push(crate::document::Layer {
@@ -468,6 +469,7 @@ pub fn layered_fixture() -> Document {
         locked: true,
         opacity: 1.0,
         blend_mode: crate::document::LayerBlendMode::Normal,
+        mask_source: None,
         clip_to_below: false,
     });
     doc.strokes[1].layer_id = 2;

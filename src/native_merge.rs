@@ -167,6 +167,15 @@ pub fn prepare_insert(
                 locked: layer.locked,
                 opacity: layer.opacity,
                 blend_mode: layer.blend_mode,
+                mask_source: layer
+                    .mask_source
+                    .map(|id| {
+                        layer_map
+                            .get(&id)
+                            .copied()
+                            .ok_or("Missing mask source in inserted drawing")
+                    })
+                    .transpose()?,
                 clip_to_below: index > 0 && layer.clip_to_below,
             })
         })
