@@ -726,7 +726,13 @@ impl ArtworkAnimation {
         Ok(next)
     }
 
-    pub fn retime_layer_key(&self, layer_id: u64, from: u32, to: u32) -> Result<Self, String> {
+    pub fn place_layer_key(
+        &self,
+        layer_id: u64,
+        from: u32,
+        to: u32,
+        duplicate: bool,
+    ) -> Result<Self, String> {
         let mut next = self.clone();
         let track = next
             .layer_tracks
@@ -738,10 +744,17 @@ impl ArtworkAnimation {
             .iter()
             .position(|key| key.frame == from)
             .ok_or("Layer key no longer exists")?;
-        if from == to {
+        if from == to && !duplicate {
             return Ok(next);
         }
-        let mut key = track.keyframes.remove(index);
+        let mut key = if duplicate {
+            if track.keyframes.len() >= MAX_KEYFRAMES {
+                return Err("Layer track already contains 120 keyframes".into());
+            }
+            track.keyframes[index].clone()
+        } else {
+            track.keyframes.remove(index)
+        };
         if to < self.range_start || to > self.range_end || key.exposure > self.range_end - to + 1 {
             return Err("The held exposure must fit inside the animation range".into());
         }
@@ -751,12 +764,12 @@ impl ArtworkAnimation {
             .iter()
             .any(|other| other.frame < end && to < other.frame + other.exposure)
         {
-            return Err("The moved key would overlap another exposure".into());
+            return Err("The destination would overlap an existing exposure".into());
         }
         key.frame = to;
         let index = track.keyframes.partition_point(|other| other.frame < to);
         track.keyframes.insert(index, key);
-        if next.current_frame == from {
+        if duplicate || next.current_frame == from {
             next.current_frame = to;
         }
         Ok(next)
@@ -1165,6 +1178,26 @@ mod tests {
     use super::*;
     use crate::document::{Brush, Document, Point};
     use glam::Vec3;
+
+    #[test]
+    fn duplicate_layer_key_preserves_the_source_hold_and_rejects_collisions() {
+        let strokes = vec![stroke(1, 0.0, 2)];
+        let animation = ArtworkAnimation::default()
+            .set_layer_keyframe(3, 1, &strokes, &strokes)
+            .unwrap()
+            .set_layer_exposure(1, 3, 4)
+            .unwrap();
+        assert!(animation.place_layer_key(1, 3, 5, true).is_err());
+        assert!(animation
+            .place_layer_key(1, 3, animation.range_end, true)
+            .is_err());
+        let copied = animation.place_layer_key(1, 3, 9, true).unwrap();
+        let keys = &copied.layer_tracks[0].keyframes;
+        assert_eq!(keys[0], animation.layer_tracks[0].keyframes[0]);
+        assert_eq!((keys[1].frame, keys[1].exposure), (9, 4));
+        assert_eq!(keys[1].strokes, strokes);
+        assert_eq!(copied.current_frame, 9);
+    }
 
     fn stroke(id: u64, x: f32, points: usize) -> Stroke {
         Stroke {

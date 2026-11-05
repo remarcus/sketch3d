@@ -845,7 +845,7 @@ impl SketchApp {
             egui::Stroke::new(1.0_f32, ui.visuals().text_color()),
         );
         if let Some((from, to)) = retime {
-            self.retime_active_layer_key(from, to);
+            self.place_active_layer_key(from, to, false);
         } else if let Some(frame) = seek {
             self.seek_artwork_animation(frame, false);
         }
@@ -860,7 +860,7 @@ impl SketchApp {
             .map_or(from, |(_, _, destination)| destination);
         let editable = !self.animation_ui.playing && self.doc.active_editable();
         ui.add_enabled_ui(editable, |ui| {
-            ui.label("Move key to frame");
+            ui.label("Destination frame");
             ui.add(
                 egui::DragValue::new(&mut to)
                     .range(self.doc.animation.range_start..=self.doc.animation.range_end),
@@ -870,27 +870,40 @@ impl SketchApp {
                 .add_enabled(to != from, egui::Button::new("Move key"))
                 .clicked()
             {
-                self.retime_active_layer_key(from, to);
+                self.place_active_layer_key(from, to, false);
+            }
+            if ui
+                .add_enabled(to != from, egui::Button::new("Duplicate key"))
+                .on_hover_text("Copy the drawing and its hold to the destination frame.")
+                .clicked()
+            {
+                self.place_active_layer_key(from, to, true);
             }
         });
     }
 
-    fn retime_active_layer_key(&mut self, from: u32, to: u32) {
+    fn place_active_layer_key(&mut self, from: u32, to: u32, duplicate: bool) {
         if self.animation_ui.playing || !self.doc.active_editable() {
             return;
         }
         let animation = &self.doc.animation;
         if !animation.current_pose_matches(&self.doc.strokes) {
-            self.status = "Set or update the current keyframe before retiming.".into();
+            self.status =
+                "Set or update the current keyframe before moving or duplicating it.".into();
             return;
         }
         let result = animation
-            .retime_layer_key(self.doc.active_layer, from, to)
+            .place_layer_key(self.doc.active_layer, from, to, duplicate)
             .and_then(|next| {
                 let strokes = next
                     .resolve(next.current_frame)
-                    .ok_or("Cannot resolve moved key")?;
-                self.commit_animation_state(next, strokes, "Layer key retimed.")
+                    .ok_or("Cannot resolve the destination drawing")?;
+                let status = if duplicate {
+                    "Layer key duplicated."
+                } else {
+                    "Layer key retimed."
+                };
+                self.commit_animation_state(next, strokes, status)
             });
         match result {
             Ok(()) => {
