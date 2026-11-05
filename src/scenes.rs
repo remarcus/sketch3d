@@ -122,6 +122,216 @@ pub fn house_camera() -> Camera {
         target: Vec3::new(0.0, 1.55, 0.6),
     }
 }
+
+pub fn pencil_house() -> Document {
+    use crate::document::guide_resources::{GuideGeometry, GuideResource};
+    use glam::Quat;
+
+    let mut a = Artist::new();
+    a.doc.layers[0].name = "Pastel color".into();
+    let mut linework = a.doc.layers[0].clone();
+    linework.id = 2;
+    linework.name = "Graphite linework".into();
+    a.doc.layers.push(linework);
+    a.doc.active_layer = 2;
+    let palette = crate::presets::Library::default();
+    let pastel = palette.get(4).expect("built-in Chalk").brush;
+    let graphite = crate::presets::startup_pencil();
+    let ink = graphite.color;
+    let wall = [0.85, 0.48, 0.29];
+    let roof = [0.29, 0.48, 0.61];
+    let glass = [0.50, 0.72, 0.73];
+    let roof_height = |z: f32| 4.65 - z.abs() * 0.6;
+
+    for i in 0..49 {
+        let y = 0.06 + i as f32 * 0.074;
+        let wobble = (i as f32 * 1.73).sin() * 0.11;
+        a.line(
+            Vec3::new(-2.2 + wobble, y, 1.57),
+            Vec3::new(2.18, y + wobble, 1.57),
+            wall,
+            0.063,
+        );
+        a.line(
+            Vec3::new(2.23, y, 1.52),
+            Vec3::new(2.23, y + wobble, -1.52),
+            [0.64, 0.31, 0.21],
+            0.064,
+        );
+    }
+    for i in 0..44 {
+        let z = -1.8 + i as f32 * 0.084;
+        let y = roof_height(z);
+        let offset = (i as f32 * 2.11).cos() * 0.14;
+        a.line(
+            Vec3::new(-2.47 + offset, y, z),
+            Vec3::new(2.49 + offset, y + 0.02, z),
+            roof,
+            0.071,
+        );
+    }
+    for floor in [0.78, 2.44] {
+        for x in [-1.35, 0.0, 1.35] {
+            for i in 0..10 {
+                let y = floor + i as f32 * 0.071;
+                a.line(
+                    Vec3::new(x - 0.37, y, 1.61),
+                    Vec3::new(x + 0.36, y + 0.04, 1.61),
+                    glass,
+                    0.052,
+                );
+            }
+        }
+    }
+    for (x, z, height) in [(-2.8, 1.2, 1.5), (2.8, -0.9, 1.8), (1.8, 2.1, 0.45)] {
+        for i in 0..17 {
+            let t = i as f32 / 16.0;
+            let spread = (t * PI).sin() * 0.66;
+            let center = Vec3::new(x, 0.12 + t * height, z + t * 0.13);
+            a.line(
+                center - Vec3::new(spread, 0.07, 0.0),
+                center + Vec3::new(spread, 0.05, 0.0),
+                [0.32, 0.53, 0.22],
+                0.075,
+            );
+        }
+    }
+    for stroke in &mut a.doc.strokes {
+        stroke.brush = pastel;
+    }
+    let first_ink = a.doc.strokes.len();
+    a.box_outline(
+        Vec3::new(-2.22, 0.0, -1.55),
+        Vec3::new(2.22, 3.72, 1.55),
+        ink,
+        0.033,
+    );
+    for x in [-2.48, 2.48] {
+        a.path(
+            vec![
+                Vec3::new(x, 3.56, -1.82),
+                Vec3::new(x, 4.65, 0.0),
+                Vec3::new(x, 3.56, 1.82),
+            ],
+            ink,
+            0.038,
+        );
+    }
+    for z in [-1.82, 0.0, 1.82] {
+        let y = roof_height(z);
+        a.line(Vec3::new(-2.48, y, z), Vec3::new(2.48, y, z), ink, 0.038);
+    }
+    for i in 0..21 {
+        let x = -2.44 + i as f32 * 0.244;
+        a.line(
+            Vec3::new(x, 4.67, 0.0),
+            Vec3::new(x + 0.07, 3.57, 1.8),
+            ink,
+            0.017,
+        );
+    }
+    for y in [1.89, 2.04, 3.68] {
+        a.path(
+            vec![
+                Vec3::new(-2.24, y, 1.60),
+                Vec3::new(2.26, y, 1.60),
+                Vec3::new(2.26, y, -1.57),
+            ],
+            ink,
+            0.026,
+        );
+    }
+    for floor in [0.76, 2.42] {
+        for x in [-1.35, 0.0, 1.35] {
+            let z = 1.65;
+            let lo = floor;
+            let hi = floor + 0.74;
+            a.path(
+                vec![
+                    Vec3::new(x - 0.4, lo, z),
+                    Vec3::new(x + 0.4, lo, z),
+                    Vec3::new(x + 0.39, hi, z),
+                    Vec3::new(x - 0.41, hi, z),
+                    Vec3::new(x - 0.4, lo, z),
+                ],
+                ink,
+                0.027,
+            );
+            a.line(Vec3::new(x, lo, z), Vec3::new(x, hi, z), ink, 0.019);
+            a.line(
+                Vec3::new(x - 0.42, lo + 0.35, z),
+                Vec3::new(x + 0.43, lo + 0.35, z),
+                ink,
+                0.018,
+            );
+        }
+    }
+    let chimney = Vec3::new(1.37, 4.59, -0.53);
+    for y in [4.38, 4.96, 5.03] {
+        a.loop_xz(chimney.with_y(y), 0.25, 0.25, ink, 0.029);
+    }
+    for i in 0..12 {
+        let angle = i as f32 * TAU / 12.0;
+        let offset = Vec3::new(angle.cos(), 0.0, angle.sin()) * 0.25;
+        a.line(
+            chimney.with_y(4.38) + offset,
+            chimney.with_y(5.03) + offset,
+            ink,
+            0.019,
+        );
+    }
+    for i in 0..23 {
+        let z = 1.49 - i as f32 * 0.135;
+        a.line(
+            Vec3::new(2.26, 0.06, z),
+            Vec3::new(2.26, 0.40 + (i as f32).sin() * 0.14, z - 0.18),
+            ink,
+            0.017,
+        );
+    }
+    for stroke in &mut a.doc.strokes[first_ink..] {
+        stroke.layer_id = 2;
+        stroke.brush = graphite.brush;
+    }
+    a.doc.guide_resources = [
+        (
+            "Front wall",
+            GuideGeometry::Plane {
+                origin: Vec3::new(0.0, 1.9, 1.67),
+                rotation: Quat::IDENTITY,
+            },
+        ),
+        (
+            "Front roof",
+            GuideGeometry::Plane {
+                origin: Vec3::new(0.0, 4.68, 0.0),
+                rotation: Quat::from_rotation_x(0.6_f32.atan()) * Quat::from_rotation_x(-PI * 0.5),
+            },
+        ),
+        (
+            "Round chimney",
+            GuideGeometry::Cylinder {
+                center: chimney,
+                rotation: Quat::IDENTITY,
+                radius: 0.27,
+                height: 0.88,
+            },
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (name, geometry))| GuideResource {
+        id: index as u64 + 1,
+        name: name.into(),
+        geometry,
+        visible: true,
+        locked: false,
+    })
+    .collect();
+    a.doc.active_guide = Some(1);
+    a.doc
+}
+
 pub fn japanese_house() -> Document {
     let mut a = Artist::new();
     // A soft brush-painted island under the house and garden.
@@ -596,6 +806,19 @@ pub fn write_capability_fixtures(directory: &Path) -> Result<Vec<PathBuf>, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pencil_house_round_trips_as_editable_artwork() {
+        let house = pencil_house();
+        let loaded = Document::from_json(&serde_json::to_string(&house).unwrap()).unwrap();
+        assert_eq!(loaded.strokes, house.strokes);
+        assert_eq!(loaded.guide_resources, house.guide_resources);
+        for layer in &house.layers {
+            assert!(loaded
+                .strokes
+                .iter()
+                .any(|stroke| stroke.layer_id == layer.id));
+        }
+    }
     #[test]
     fn house_is_a_valid_editable_document() {
         let house = japanese_house();
