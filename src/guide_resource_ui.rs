@@ -16,11 +16,59 @@ type GuideEditState = (
     Option<u64>,
 );
 
-fn planar_guide_frame(guides: &[GuideResource], id: u64) -> Option<(Vec3, glam::Quat)> {
+#[derive(Clone, Copy, PartialEq)]
+struct AttachmentFrame {
+    origin: Vec3,
+    rotation: glam::Quat,
+    cylinder: Option<(f32, f32)>,
+}
+
+fn attachment_frame(guides: &[GuideResource], id: u64) -> Option<AttachmentFrame> {
     let guide = guides.iter().find(|guide| guide.id == id)?;
     match guide.geometry {
-        GuideGeometry::Plane { origin, rotation } => Some((origin, rotation)),
+        GuideGeometry::Plane { origin, rotation } => Some(AttachmentFrame {
+            origin,
+            rotation,
+            cylinder: None,
+        }),
+        GuideGeometry::Cylinder {
+            center,
+            rotation,
+            radius,
+            height,
+        } => Some(AttachmentFrame {
+            origin: center,
+            rotation,
+            cylinder: Some((radius, height)),
+        }),
         _ => None,
+    }
+}
+
+impl AttachmentFrame {
+    fn cylinder_point(
+        self,
+        position: Vec3,
+        next: Self,
+        radius_change: f32,
+        next_height: f32,
+    ) -> Result<Vec3, &'static str> {
+        let local = self.rotation.inverse() * (position - self.origin);
+        if local.y.abs() > next_height * 0.5 + 1e-5 {
+            return Err("The cylinder would be too short for its attached ink. Move or detach that ink first.");
+        }
+        let radial = Vec3::new(local.x, 0.0, local.z);
+        let distance = radial.length();
+        let next_distance = distance + radius_change;
+        if distance <= 1e-6 || next_distance <= 1e-6 {
+            return Err(
+                "Attached ink cannot cross the cylinder axis. Move or detach that ink first.",
+            );
+        }
+        // Radial vectors preserve angle continuously across the angular seam.
+        // Keep axial position and the signed offset from the cylinder surface.
+        let next_local = radial * (next_distance / distance) + Vec3::Y * local.y;
+        Ok(next.origin + next.rotation * next_local)
     }
 }
 
@@ -373,8 +421,8 @@ impl SketchApp {
                 let Some(id) = stroke.guide_attachment else {
                     continue;
                 };
-                let old = planar_guide_frame(&before.0, id);
-                let new = planar_guide_frame(&after.0, id);
+                let old = attachment_frame(&before.0, id);
+                let new = attachment_frame(&after.0, id);
                 if old == new {
                     continue;
                 }
@@ -382,15 +430,43 @@ impl SketchApp {
                     return Err("Unlock and show the attached ink before changing its guide.");
                 }
                 let mut changed = stroke.clone();
-                if let (Some((origin, rotation)), Some((next_origin, next_rotation))) = (old, new) {
+                if let Some((old, new)) = old
+                    .zip(new)
+                    .filter(|(old, new)| old.cylinder.is_some() == new.cylinder.is_some())
+                {
+                    let rotation = if old.rotation == new.rotation {
+                        glam::Quat::IDENTITY
+                    } else {
+                        new.rotation * old.rotation.inverse()
+                    };
                     let mut transformed = crate::editing::transformed(
                         &vec![(index, changed)],
-                        origin,
-                        next_origin - origin,
-                        next_rotation * rotation.inverse(),
+                        old.origin,
+                        new.origin - old.origin,
+                        rotation,
                         1.0,
                     )?;
                     changed = transformed.pop().expect("one transformed stroke").1;
+                    if let (Some((radius, _)), Some((next_radius, next_height))) =
+                        (old.cylinder, new.cylinder)
+                    {
+                        for (point, source) in changed.points.iter_mut().zip(&stroke.points) {
+                            let position = old.cylinder_point(
+                                source.position,
+                                new,
+                                next_radius - radius,
+                                next_height,
+                            )?;
+                            if next_radius != radius {
+                                point.position = position;
+                            }
+                            if !point.is_valid() {
+                                return Err(
+                                    "Cylinder edit moves attached ink outside the drawing bounds.",
+                                );
+                            }
+                        }
+                    }
                 } else {
                     changed.guide_attachment = None;
                 }
@@ -552,11 +628,11 @@ impl SketchApp {
         ui.collapsing("Saved guides", |ui| {
             if !self.selected.is_empty() {
                 ui.horizontal(|ui| {
-                    if ui.button("Attach selection to active plane").clicked() {
-                        self.set_planar_attachment(true);
+                    if ui.button("Attach selection to active guide").clicked() {
+                        self.set_guide_attachment(true);
                     }
                     if ui.button("Detach selection").clicked() {
-                        self.set_planar_attachment(false);
+                        self.set_guide_attachment(false);
                     }
                 });
             }
@@ -722,18 +798,18 @@ impl SketchApp {
         self.obj_reference_controls(ui);
     }
 
-    fn set_planar_attachment(&mut self, attach: bool) {
+    fn set_guide_attachment(&mut self, attach: bool) {
         self.finish();
         let guide = if attach {
             let Some(id) = self.doc.active_guide.filter(|&id| {
-                planar_guide_frame(&self.doc.guide_resources, id).is_some()
+                attachment_frame(&self.doc.guide_resources, id).is_some()
                     && self
                         .doc
                         .guide_resources
                         .iter()
                         .any(|guide| guide.id == id && guide.visible && !guide.locked)
             }) else {
-                self.status = "Activate a visible, unlocked saved plane first.".into();
+                self.status = "Activate a visible, unlocked saved plane or cylinder first.".into();
                 return;
             };
             if !self.doc.animation.is_empty() || self.doc.animation.two_bone_rig.is_some() {
@@ -771,6 +847,19 @@ impl SketchApp {
             return;
         }
         let mut after = before.clone();
+        let cylinder = guide
+            .and_then(|id| attachment_frame(&self.doc.guide_resources, id))
+            .and_then(|frame| frame.cylinder.map(|(_, height)| (frame, height)));
+        if let Some((frame, height)) = cylinder {
+            for (_, stroke) in &after {
+                for point in &stroke.points {
+                    if let Err(error) = frame.cylinder_point(point.position, frame, 0.0, height) {
+                        self.status = error.into();
+                        return;
+                    }
+                }
+            }
+        }
         for (_, stroke) in &mut after {
             stroke.guide_attachment = guide;
         }
@@ -785,7 +874,7 @@ impl SketchApp {
         self.record_recovery_edit();
         self.renderer.invalidate();
         self.status = if attach {
-            "Selection attached to the saved plane."
+            "Selection attached to the saved guide."
         } else {
             "Selection detached in place."
         }

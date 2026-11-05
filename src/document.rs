@@ -432,7 +432,7 @@ pub fn layers_default() -> Vec<Layer> {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stroke {
-    /// Saved planar guide that carries this stroke when its frame changes.
+    /// Saved plane or cylinder that carries this stroke when its geometry changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guide_attachment: Option<u64>,
     /// Bounded world-space triangle patch captured for image-tip and scattered
@@ -1836,9 +1836,13 @@ impl Document {
             if let Some(id) = stroke.guide_attachment {
                 if !doc.guide_resources.iter().any(|guide| {
                     guide.id == id
-                        && matches!(guide.geometry, guide_resources::GuideGeometry::Plane { .. })
+                        && matches!(
+                            guide.geometry,
+                            guide_resources::GuideGeometry::Plane { .. }
+                                | guide_resources::GuideGeometry::Cylinder { .. }
+                        )
                 }) {
-                    return Err("Stroke attachment references a missing planar guide".into());
+                    return Err("Stroke attachment references a missing plane or cylinder".into());
                 }
             }
         }
