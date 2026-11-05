@@ -676,6 +676,7 @@ pub struct SketchApp {
     last_pen: Option<PenSample>,
     last_pen_at: Option<Instant>,
     pen_previous: Option<Pos2>,
+    pen_barrel_contact: Option<bool>,
     samples: u64,
     last_batch: usize,
     pressure_history: std::collections::VecDeque<f32>,
@@ -2247,6 +2248,7 @@ impl SketchApp {
             last_pen: None,
             last_pen_at: None,
             pen_previous: None,
+            pen_barrel_contact: None,
             samples: 0,
             last_batch: 0,
             pressure_history: Default::default(),
@@ -3094,6 +3096,7 @@ impl SketchApp {
         }
     }
     fn cancel(&mut self) {
+        self.pen_barrel_contact = None;
         self.placement.stamp = None;
         self.plane_picker.active = false;
         self.plane_picker.hovered_guide = None;
@@ -5657,6 +5660,13 @@ impl SketchApp {
         });
 
         ui.menu_button("Edit", |ui| {
+            if ui.checkbox(&mut self.presentation.preferences.pen_barrel_erases, "Hold pen button to erase")
+                .on_hover_text("Hold the barrel button before touching the canvas to erase part of a stroke. When off, the button orbits.")
+                .changed()
+            {
+                self.cancel();
+                self.presentation.schedule_workspace_save();
+            }
             if ui
                 .add_enabled(
                     !self.undo.is_empty() || self.active.is_some() || self.drag.is_some(),
@@ -5910,7 +5920,7 @@ impl SketchApp {
                                 && self.presentation.preferences.layout.inspector_tab != tab
                             {
                                 self.presentation.preferences.layout.inspector_tab = tab;
-                                self.presentation.schedule_layout_save();
+                                self.presentation.schedule_workspace_save();
                             }
                         }
                         ui.separator();
@@ -5987,7 +5997,7 @@ impl SketchApp {
                         || references_changed
                         || image_planes_changed
                     {
-                        self.presentation.schedule_layout_save();
+                        self.presentation.schedule_workspace_save();
                     }
                     let can_change_visibility = self.point_draft.is_none()
                         && self.point_multi_draft.is_none()
@@ -6082,7 +6092,7 @@ impl SketchApp {
         let new_width = panel.response.rect.width().clamp(260.0, 650.0);
         if (new_width - width).abs() > 0.5 {
             self.presentation.preferences.layout.inspector_width = new_width;
-            self.presentation.schedule_layout_save();
+            self.presentation.schedule_workspace_save();
         }
     }
 
@@ -6094,12 +6104,12 @@ impl SketchApp {
             self.cancel_transform();
         }
         self.presentation.preferences.layout.inspector_open = open;
-        self.presentation.schedule_layout_save();
+        self.presentation.schedule_workspace_save();
     }
 
     fn set_inspector_collapsed(&mut self, collapsed: bool) {
         self.presentation.preferences.layout.inspector_collapsed = collapsed;
-        self.presentation.schedule_layout_save();
+        self.presentation.schedule_workspace_save();
     }
 
     fn show_diagnostics_window(&mut self, ctx: &egui::Context) {
@@ -6308,6 +6318,8 @@ impl SketchApp {
             || self.quick_palette.is_some()
             || std::mem::take(&mut self.suppress_canvas_input_once)
         {
+            self.pen_barrel_contact = None;
+            self.cancel_partial_erase();
             return;
         }
         let (space, shift, alt, events, pointer, scroll) = ctx.input(|i| {
@@ -6353,6 +6365,7 @@ impl SketchApp {
             && self.mirror_verification_frame.is_none()
             && self.capability_replay.is_none()
             && self.point_verification_frame.is_none()
+            && self.house_verification_frame.is_none()
         {
             self.cancel();
             return;
@@ -6416,6 +6429,7 @@ impl SketchApp {
                 self.update_plane_picker_hover(inside.then_some(sample.position), rect);
             }
             if blocked {
+                self.pen_barrel_contact = None;
                 self.cancel_brush_selection();
                 self.cancel_partial_erase();
                 self.cancel_local_color();
@@ -6425,6 +6439,52 @@ impl SketchApp {
                 self.pen_previous = None;
                 self.cancel_transform();
                 continue;
+            }
+            let barrel_erases = self.presentation.preferences.pen_barrel_erases;
+            if barrel_erases {
+                if sample.phase == Phase::Down {
+                    self.pen_barrel_contact = Some(sample.barrel);
+                } else if sample.phase == Phase::Move
+                    && sample.contact
+                    && self.pen_barrel_contact != Some(sample.barrel)
+                {
+                    if self.pen_barrel_contact.is_some() {
+                        self.cancel();
+                    }
+                    continue;
+                }
+                let contact = if sample.phase == Phase::Up {
+                    self.pen_barrel_contact.take()
+                } else {
+                    self.pen_barrel_contact
+                };
+                if contact == Some(true) {
+                    if sample.phase == Phase::Up {
+                        if inside {
+                            self.partial_erase_input(sample.position, rect, false);
+                        }
+                        self.finish_partial_erase(true);
+                    } else if space
+                        || self.presentation.artwork
+                        || self.plane_picker.active
+                        || self.placement.active
+                        || self.placement.stamp.is_some()
+                        || self.liquify_active()
+                        || self.point_draft.is_some()
+                    {
+                        self.cancel_partial_erase();
+                    } else if inside && sample.contact {
+                        self.partial_erase_input(
+                            sample.position,
+                            rect,
+                            sample.phase == Phase::Down,
+                        );
+                    }
+                    continue;
+                }
+                if sample.phase == Phase::Up && contact.is_none() {
+                    continue;
+                }
             }
             if self.liquify_brush_active() {
                 if sample.phase == Phase::Cancel || sample.eraser {
@@ -6532,7 +6592,7 @@ impl SketchApp {
                 self.finish();
                 continue;
             }
-            if space || sample.barrel {
+            if space || (sample.barrel && !barrel_erases) {
                 if sample.contact {
                     if self
                         .doc
@@ -7539,7 +7599,7 @@ impl eframe::App for SketchApp {
                 self.verify_dynamics(ctx, rect);
                 self.verify_brushes(ctx, rect);
                 self.verify_cylinder(ctx, rect);
-                self.verify_house(ctx);
+                self.verify_house(ctx, rect);
                 self.verify_canvas(ctx, rect);
                 let start_mirror_ellipse = self
                     .capability_replay
@@ -9064,7 +9124,7 @@ impl SketchApp {
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","seam-crossing cylinder curves preview across camera orbit and cancel cleanly","committed cylinder curves remain on their captured surface after native reload","cylinder curve edit remains on the captured surface and applies as one undo/redo step","cylinder ellipse preview, cancel, commit, semantic reopen, and undo/redo","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["editable pencil and pastel house","duplicate and undo","New clears starter and retains graphite","both house examples remain available","unsaved-change guard","sample save/reload","GPU screenshot"],"strokes":self.doc.strokes.len(),"points":self.doc.strokes.iter().map(|s|s.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["editable pencil and pastel house","duplicate and undo","New clears starter and retains graphite","both house examples remain available","synthetic pen barrel erases on lift, cancels on button change, and restores drawing on next contact","unsaved-change guard","sample save/reload","GPU screenshot"],"strokes":self.doc.strokes.len(),"points":self.doc.strokes.iter().map(|s|s.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else {
                 report
             };

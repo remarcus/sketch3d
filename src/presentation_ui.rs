@@ -107,7 +107,7 @@ impl PresentationUi {
             },
         );
     }
-    pub fn schedule_layout_save(&mut self) {
+    pub fn schedule_workspace_save(&mut self) {
         self.layout_save_due = Some(Instant::now() + Duration::from_millis(350));
     }
     pub fn poll_layout_save(&mut self) {
@@ -126,15 +126,15 @@ impl PresentationUi {
                     .map_err(Clone::clone)
                     .and_then(|path| persisted.save(path))
                 {
-                    Ok(()) => "Workspace layout saved.".into(),
-                    Err(error) => format!("Cannot save workspace layout: {error}"),
+                    Ok(()) => "Workspace preferences saved.".into(),
+                    Err(error) => format!("Cannot save workspace preferences: {error}"),
                 },
             );
         }
     }
     pub fn reset_layout(&mut self) {
         self.preferences.layout = crate::presentation::LayoutPreferences::default();
-        self.schedule_layout_save();
+        self.schedule_workspace_save();
     }
     pub fn controls(
         &mut self,

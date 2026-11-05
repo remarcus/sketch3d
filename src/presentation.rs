@@ -133,6 +133,8 @@ pub struct Preferences {
     pub background_image: Option<BackgroundImageSettings>,
     #[serde(default)]
     pub layout: LayoutPreferences,
+    #[serde(default)]
+    pub pen_barrel_erases: bool,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -145,6 +147,7 @@ impl Default for Preferences {
             post_effects: PostEffects::default(),
             background_image: None,
             layout: LayoutPreferences::default(),
+            pen_barrel_erases: false,
         }
     }
 }

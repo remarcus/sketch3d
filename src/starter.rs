@@ -40,7 +40,7 @@ impl SketchApp {
             "{title} / editable strokes. Space + drag to orbit; V to select; New for a blank drawing."
         );
     }
-    pub(super) fn verify_house(&mut self, ctx: &egui::Context) {
+    pub(super) fn verify_house(&mut self, ctx: &egui::Context, rect: Rect) {
         let Some(frame) = self.house_verification_frame else {
             return;
         };
@@ -67,6 +67,8 @@ impl SketchApp {
                 assert!(self.starter_scene.is_none());
                 assert_eq!(self.next_id, 1);
                 assert_eq!(self.brush, crate::presets::startup_pencil().brush);
+                self.verify_pen_barrel_erase(ctx, rect);
+                self.dirty = false;
                 self.request(Pending::House);
                 assert_eq!(self.doc.strokes, scenes::japanese_house().strokes);
                 assert_eq!(self.starter_scene, Some("Japanese garden house"));
@@ -90,5 +92,51 @@ impl SketchApp {
             _ => {}
         }
         self.house_verification_frame = Some(frame + 1);
+    }
+
+    fn verify_pen_barrel_erase(&mut self, ctx: &egui::Context, rect: Rect) {
+        let center = rect.center();
+        let scale = ctx.pixels_per_point();
+        let sample = |position: Pos2, phase, barrel| PenSample {
+            position: Pos2::new(position.x * scale, position.y * scale),
+            pressure: None,
+            tilt: [None; 2],
+            contact: phase != Phase::Up && phase != Phase::Cancel,
+            phase,
+            barrel,
+            eraser: false,
+        };
+        let brush = self.brush;
+        self.brush = Brush::default();
+        self.presentation.preferences.pen_barrel_erases = true;
+        let draw = [
+            sample(center - Vec2::new(120.0, 0.0), Phase::Down, false),
+            sample(center + Vec2::new(120.0, 0.0), Phase::Move, false),
+            sample(center + Vec2::new(120.0, 0.0), Phase::Up, false),
+        ];
+        self.canvas_input(ctx, rect, draw.to_vec());
+        assert_eq!(self.doc.strokes.len(), 1);
+        let original = self.doc.strokes.clone();
+        let down = sample(center, Phase::Down, true);
+        let up = sample(center, Phase::Up, true);
+        self.canvas_input(ctx, rect, vec![down]);
+        assert!(self.partial_erase_active());
+        self.canvas_input(ctx, rect, vec![sample(center, Phase::Cancel, false)]);
+        assert_eq!(self.doc.strokes, original);
+        self.canvas_input(
+            ctx,
+            rect,
+            vec![down, sample(center, Phase::Move, false), up],
+        );
+        assert_eq!(self.doc.strokes, original);
+        assert!(!self.partial_erase_active());
+        self.canvas_input(ctx, rect, vec![down, up]);
+        assert_ne!(self.doc.strokes, original);
+        self.undo();
+        assert_eq!(self.doc.strokes, original);
+        self.canvas_input(ctx, rect, draw.to_vec());
+        assert_eq!(self.doc.strokes.len(), 2);
+        self.presentation.preferences.pen_barrel_erases = false;
+        self.brush = brush;
     }
 }
