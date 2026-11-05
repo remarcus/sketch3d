@@ -3,7 +3,7 @@
 param(
     [string]$Executable,
     [string]$OutputDirectory = "verification/normalized",
-    [ValidateSet('startup', 'save-reopen', 'export', 'glb-texture-roundtrip')]
+    [ValidateSet('startup', 'save-reopen', 'export', 'glb-texture-roundtrip', 'ui-workflow')]
     [string[]]$Check = @('startup', 'save-reopen', 'export'),
     [ValidateRange(5, 3600)]
     [int]$TimeoutSeconds = 180
@@ -91,6 +91,10 @@ function Get-FixtureIdentity([string]$Id) {
             $fixtureId = 'textured-glb-managed-native-roundtrip-v1'
             $sourceRelativePath = 'src/glb_texture_roundtrip_check.rs'
         }
+        'ui-workflow' {
+            $fixtureId = 'inspector-collapse-restore-ui-v1'
+            $sourceRelativePath = 'scripts/verify_inspector_workflow.ps1'
+        }
     }
     $fingerprint = $null
     $fingerprintStatus = 'not_applicable'
@@ -115,6 +119,18 @@ function Get-FixtureIdentity([string]$Id) {
 function Get-RenderingMetadata([string]$Id, [string[]]$Reports) {
     if ($Id -eq 'glb-texture-roundtrip') {
         return [ordered]@{ status = 'not_run'; reason = 'Interactive viewport rendering is tracked separately from this structural check.' }
+    }
+    if ($Id -eq 'ui-workflow') {
+        $reportPath = $Reports | Where-Object { $_.EndsWith('ui-workflow-report.json', [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+        if (-not $reportPath -or -not (Test-Path -LiteralPath $reportPath -PathType Leaf)) { return [ordered]@{ status = 'unavailable' } }
+        try {
+            $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json -ErrorAction Stop
+            $size = @($report.screenshot_size_pixels)
+            if ($report.outcome -eq 'passed' -and $size.Count -eq 2 -and [int]$size[0] -gt 0 -and [int]$size[1] -gt 0) {
+                return [ordered]@{ status = 'available'; resolution_px = @([int]$size[0], [int]$size[1]) }
+            }
+            return [ordered]@{ status = 'unavailable' }
+        } catch { return [ordered]@{ status = 'unavailable' } }
     }
     if ($Id -ne 'export') { return $null }
     $reportPath = $Reports | Where-Object { $_.EndsWith('still-export-report.json', [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
@@ -143,6 +159,11 @@ function Invoke-VerificationCheck([string]$Id, [string[]]$Arguments, [string[]]$
     try {
         $command = $Executable
         $commandArguments = $Arguments
+        if ($Id -eq 'ui-workflow') {
+            $command = if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' }
+            $uiScript = Join-Path $PSScriptRoot 'verify_inspector_workflow.ps1'
+            $commandArguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $uiScript, '-Executable', $Executable, '-OutputDirectory', (Join-Path $runDirectory 'ui-workflow-original'), '-TimeoutSeconds', $TimeoutSeconds.ToString())
+        }
         if ($Id -eq 'startup' -and $IsLinux) {
             $xvfb = Get-Command 'xvfb-run' -ErrorAction SilentlyContinue
             if ($xvfb) {
@@ -209,6 +230,21 @@ function Invoke-VerificationCheck([string]$Id, [string[]]$Arguments, [string[]]$
         $outcome = 'failed'
         $failureReason = 'Verifier exited successfully but did not produce its original report.'
     }
+    if ($Id -eq 'ui-workflow' -and (Test-Path -LiteralPath $Reports[0] -PathType Leaf)) {
+        try {
+            $uiReport = Get-Content -LiteralPath $Reports[0] -Raw | ConvertFrom-Json -ErrorAction Stop
+            if ($uiReport.outcome -in @('passed', 'unsupported', 'failed')) {
+                $outcome = [string]$uiReport.outcome
+                $failureReason = if ([string]::IsNullOrWhiteSpace([string]$uiReport.failure_reason)) { $null } else { [string]$uiReport.failure_reason }
+            } else {
+                $outcome = 'failed'
+                $failureReason = 'UI workflow report omitted a valid outcome.'
+            }
+        } catch {
+            $outcome = 'failed'
+            $failureReason = "UI workflow report could not be read: $($_.Exception.Message)"
+        }
+    }
     $artifacts = [Collections.Generic.List[string]]::new()
     foreach ($path in @($stdoutPath, $stderrPath) + $Reports) {
         if (Test-Path -LiteralPath $path -PathType Leaf) { $artifacts.Add((Get-RelativeArtifact $path)) }
@@ -242,6 +278,10 @@ foreach ($checkId in $Check) {
         'glb-texture-roundtrip' {
             $report = Join-Path $reportDirectory 'glb-texture-roundtrip-report.json'
             $results.Add((Invoke-VerificationCheck 'glb-texture-roundtrip' @('--verify-glb-texture-roundtrip', $reportDirectory) @($report, (Join-Path $reportDirectory 'texture-preview.png'), (Join-Path $reportDirectory 'roundtrip.sketch.json'), (Join-Path $reportDirectory 'whole-scene.glb'))))
+        }
+        'ui-workflow' {
+            $report = Join-Path $reportDirectory 'ui-workflow-report.json'
+            $results.Add((Invoke-VerificationCheck 'ui-workflow' @() @($report, (Join-Path $reportDirectory 'ui-workflow.png'))))
         }
     }
 }

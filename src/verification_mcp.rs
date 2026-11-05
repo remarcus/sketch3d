@@ -306,25 +306,25 @@ fn tool_definitions(config: &ServerConfig) -> Value {
         {
             "name": "verification_list_artifacts",
             "description": "List the bounded artifact paths and sizes recorded for one check in a completed run.",
-            "inputSchema": {"type": "object", "properties": {"run_id": {"type": "string", "maxLength": 64}, "check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip"]}}, "required": ["run_id", "check_id"], "additionalProperties": false},
+            "inputSchema": {"type": "object", "properties": {"run_id": {"type": "string", "maxLength": 64}, "check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip", "ui-workflow"]}}, "required": ["run_id", "check_id"], "additionalProperties": false},
             "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
         },
         {
             "name": "verification_read_artifact",
             "description": "Read one bounded text log or PNG preview recorded in a completed verification result.",
-            "inputSchema": {"type": "object", "properties": {"run_id": {"type": "string", "maxLength": 64}, "check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip"]}, "path": {"type": "string", "maxLength": 512}}, "required": ["run_id", "check_id", "path"], "additionalProperties": false},
+            "inputSchema": {"type": "object", "properties": {"run_id": {"type": "string", "maxLength": 64}, "check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip", "ui-workflow"]}, "path": {"type": "string", "maxLength": 512}}, "required": ["run_id", "check_id", "path"], "additionalProperties": false},
             "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
         },
         {
             "name": "verification_compare_runs",
             "description": "Compare one check across two completed runs. Reports outcome and bounded structured metric changes, plus a bounded PNG diff only when fixture and rendering metadata match.",
-            "inputSchema": {"type": "object", "properties": {"baseline_run_id": {"type": "string", "maxLength": 64}, "current_run_id": {"type": "string", "maxLength": 64}, "check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip"]}}, "required": ["baseline_run_id", "current_run_id", "check_id"], "additionalProperties": false},
+            "inputSchema": {"type": "object", "properties": {"baseline_run_id": {"type": "string", "maxLength": 64}, "current_run_id": {"type": "string", "maxLength": 64}, "check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip", "ui-workflow"]}}, "required": ["baseline_run_id", "current_run_id", "check_id"], "additionalProperties": false},
             "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
         },
         {
             "name": "verification_run_check",
             "description": "Run one allowlisted local verifier in a unique output run directory and return its normalized result. This starts the configured Sketch3D executable and is bounded by timeout_seconds.",
-            "inputSchema": {"type": "object", "properties": {"check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip"]}, "timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 600, "default": 180}}, "required": ["check_id"], "additionalProperties": false},
+            "inputSchema": {"type": "object", "properties": {"check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip", "ui-workflow"]}, "timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 600, "default": 180}}, "required": ["check_id"], "additionalProperties": false},
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
         }
     ]);
@@ -1048,7 +1048,8 @@ fn list_checks(root: &Path) -> Result<Value, String> {
             {"check_id":"startup", "description":"Application startup smoke check"},
             {"check_id":"save-reopen", "description":"Animation native save/reopen check"},
             {"check_id":"export", "description":"Still image export check"},
-            {"check_id":"glb-texture-roundtrip", "description":"Textured GLB import, native save/reopen, and whole-scene export check"}
+            {"check_id":"glb-texture-roundtrip", "description":"Textured GLB import, native save/reopen, and whole-scene export check"},
+            {"check_id":"ui-workflow", "description":"Interactive inspector collapse, keyboard expansion, hide and restore workflow"}
         ],
         "completed_runs": completed,
         "run_limit": MAX_RUNS,
@@ -1105,7 +1106,7 @@ fn run_directory(root: &Path, run_id: &str) -> Result<PathBuf, String> {
 fn list_artifacts(root: &Path, run_id: &str, check_id: &str) -> Result<Value, String> {
     if !matches!(
         check_id,
-        "startup" | "save-reopen" | "export" | "glb-texture-roundtrip"
+        "startup" | "save-reopen" | "export" | "glb-texture-roundtrip" | "ui-workflow"
     ) {
         return Err("Unsupported check ID".into());
     }
@@ -1176,7 +1177,7 @@ fn compare_runs(
 ) -> Result<RunComparison, String> {
     if !matches!(
         check_id,
-        "startup" | "save-reopen" | "export" | "glb-texture-roundtrip"
+        "startup" | "save-reopen" | "export" | "glb-texture-roundtrip" | "ui-workflow"
     ) {
         return Err("Unsupported check ID".into());
     }
@@ -1602,7 +1603,7 @@ fn read_artifact(
 ) -> Result<ReadArtifact, String> {
     if !matches!(
         check_id,
-        "startup" | "save-reopen" | "export" | "glb-texture-roundtrip"
+        "startup" | "save-reopen" | "export" | "glb-texture-roundtrip" | "ui-workflow"
     ) {
         return Err("Unsupported check ID".into());
     }
@@ -1849,7 +1850,7 @@ fn verification_support_root(executable: &Path) -> PathBuf {
 fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, String> {
     if !matches!(
         check_id,
-        "startup" | "save-reopen" | "export" | "glb-texture-roundtrip"
+        "startup" | "save-reopen" | "export" | "glb-texture-roundtrip" | "ui-workflow"
     ) {
         return Err("Unsupported check ID".into());
     }
