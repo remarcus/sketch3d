@@ -48,6 +48,7 @@ Configure an MCP host to launch that command as a stdio server. It supports the 
 - `verification_read_result`: returns one version 1 `result.json`.
 - `verification_list_artifacts`: lists the artifact paths and sizes recorded for one check.
 - `verification_read_artifact`: returns a recorded `.log` or `.txt` artifact as text, or a `.png` preview as an MCP image.
+- `verification_compare_runs`: compares one check across two completed runs, reporting outcome and bounded structured metric changes. It returns a PNG diff only when fixture fingerprints and normalized rendering resolutions match.
 
 This mode exposes report-reading tools only. It cannot start verifier processes, including if a client calls `verification_run_check` by name.
 
@@ -60,6 +61,8 @@ target/release/sketch3d --mcp-verification-execution-server verification/normali
 Execution mode adds `verification_run_check`, which accepts the supported check IDs, uses a unique run directory, caps captured process output, and bounds `timeout_seconds` from 5 to 600 seconds. `glb-texture-roundtrip` runs natively through the same release executable hosting MCP; other checks use the shared PowerShell runner. Both modes canonicalize the configured root and run/artifact paths, accept only direct-child run IDs made of ASCII letters, digits, hyphens and underscores, and reject symlinked artifacts or paths outside their run directory. Artifact reads require a path recorded for the selected check. Text is limited to 256 KiB and must be UTF-8; PNG files are limited to 1,000,000 bytes and bounded image dimensions. Requests are capped at 64 KiB, results at 512 KiB, artifact records at 256, scanned run entries at 1,000, and protocol responses at 2 MiB. Protocol messages use stdout; startup and fatal errors use stderr.
 
 The execution server resolves verification support beside the running executable (including the macOS app's `Contents/Resources/verification-support`). Set `SKETCH3D_VERIFICATION_ROOT` to use an alternate support directory. Release packages include `scripts/run_verification.ps1` and the three fixture source files under `src/`. PowerShell 7 is required for these runner-based checks; if `pwsh` is unavailable, MCP records the check as `unsupported` with a prerequisite message. The GLB texture check is native and does not require PowerShell.
+
+Run comparisons with `verification_compare_runs` and pass `baseline_run_id`, `current_run_id`, and `check_id`. A regression is reported only when the same fixture passed in the baseline and fails in the current run; changed metrics alone are reported as differences. Visual comparison is marked `unsupported` when fixture fingerprints or rendering resolution metadata do not match. Compatible PNGs are bounded to 4,000,000 pixels and 1 MiB encoded diff size; the diff is returned as an MCP image with changed-pixel and maximum-channel-delta counts.
 
 Verifier execution is supervised as a process tree. Timeout and wait failures terminate the runner and its descendants (`taskkill /T` on Windows; a dedicated process group on Unix-like systems). If the MCP client closes stdin while a check is running, the server stops that process tree and exits without leaving an abandoned verifier. `scripts/pilot_mcp_disconnect.ps1` exercises this stdio disconnect path on Windows.
 

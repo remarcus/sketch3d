@@ -30,6 +30,9 @@ const MAX_PROCESS_LOG_BYTES: usize = 64 * 1024;
 const MAX_TEXT_ARTIFACT_BYTES: u64 = 256 * 1024;
 const MAX_PNG_ARTIFACT_BYTES: u64 = 1_000_000;
 const MAX_PNG_DIMENSION: u32 = 16_384;
+const MAX_DIFF_PIXELS: u64 = 4_000_000;
+const MAX_DIFF_PNG_BYTES: usize = 1_000_000;
+const MAX_STRUCTURED_METRICS: usize = 64;
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(0);
 static MCP_CLIENT_DISCONNECTED: AtomicBool = AtomicBool::new(false);
 
@@ -313,6 +316,12 @@ fn tool_definitions(config: &ServerConfig) -> Value {
             "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
         },
         {
+            "name": "verification_compare_runs",
+            "description": "Compare one check across two completed runs. Reports outcome and bounded structured metric changes, plus a bounded PNG diff only when fixture and rendering metadata match.",
+            "inputSchema": {"type": "object", "properties": {"baseline_run_id": {"type": "string", "maxLength": 64}, "current_run_id": {"type": "string", "maxLength": 64}, "check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip"]}}, "required": ["baseline_run_id", "current_run_id", "check_id"], "additionalProperties": false},
+            "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
+        },
+        {
             "name": "verification_run_check",
             "description": "Run one allowlisted local verifier in a unique output run directory and return its normalized result. This starts the configured Sketch3D executable and is bounded by timeout_seconds.",
             "inputSchema": {"type": "object", "properties": {"check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip"]}, "timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 600, "default": 180}}, "required": ["check_id"], "additionalProperties": false},
@@ -413,6 +422,27 @@ fn call_tool(root: &Path, name: &str, arguments: &Value, execution_enabled: bool
             }),
         };
     }
+    if name == "verification_compare_runs" {
+        let compared = required_string(arguments, "baseline_run_id").and_then(|baseline| {
+            required_string(arguments, "current_run_id").and_then(|current| {
+                required_string(arguments, "check_id")
+                    .and_then(|check_id| compare_runs(root, baseline, current, check_id))
+            })
+        });
+        return match compared {
+            Ok(comparison) => {
+                let mut content = vec![json!({
+                    "type": "text",
+                    "text": serde_json::to_string_pretty(&comparison.summary).unwrap_or_else(|_| "{}".into())
+                })];
+                if let Some(data) = comparison.diff_png {
+                    content.push(json!({"type":"image","data":data,"mimeType":"image/png"}));
+                }
+                json!({"content":content,"structuredContent":comparison.summary,"isError":false})
+            }
+            Err(error) => json!({"content":[{"type":"text","text":error}],"isError":true}),
+        };
+    }
     let result = match name {
         "verification_list_checks" => list_checks(root),
         "verification_read_result" => {
@@ -422,6 +452,7 @@ fn call_tool(root: &Path, name: &str, arguments: &Value, execution_enabled: bool
             required_string(arguments, "check_id")
                 .and_then(|check_id| list_artifacts(root, run_id, check_id))
         }),
+        "verification_compare_runs" => Err("Comparison dispatch failed".into()),
         "verification_run_check" => required_string(arguments, "check_id")
             .and_then(|check_id| run_check(root, check_id, arguments)),
         _ => Err("Unknown tool".into()),
@@ -1130,6 +1161,437 @@ enum ReadArtifact {
         data: String,
         size_bytes: u64,
     },
+}
+
+struct RunComparison {
+    summary: Value,
+    diff_png: Option<String>,
+}
+
+fn compare_runs(
+    root: &Path,
+    baseline_run_id: &str,
+    current_run_id: &str,
+    check_id: &str,
+) -> Result<RunComparison, String> {
+    if !matches!(
+        check_id,
+        "startup" | "save-reopen" | "export" | "glb-texture-roundtrip"
+    ) {
+        return Err("Unsupported check ID".into());
+    }
+    let baseline = read_result(root, baseline_run_id)?;
+    let current = read_result(root, current_run_id)?;
+    let baseline_check = result_check(&baseline, check_id)?;
+    let current_check = result_check(&current, check_id)?;
+    let baseline_outcome = baseline_check
+        .get("outcome")
+        .and_then(Value::as_str)
+        .ok_or("Baseline check has no outcome")?;
+    let current_outcome = current_check
+        .get("outcome")
+        .and_then(Value::as_str)
+        .ok_or("Current check has no outcome")?;
+    let same_fixture = fixtures_match(baseline_check, current_check);
+    let baseline_metrics = read_report_metrics(root, baseline_run_id, check_id, baseline_check)?;
+    let current_metrics = read_report_metrics(root, current_run_id, check_id, current_check)?;
+    let (metric_status, changed_metrics) = if !same_fixture {
+        ("unsupported", Vec::new())
+    } else {
+        match (baseline_metrics, current_metrics) {
+            (Some(baseline), Some(current)) => {
+                ("compared", compare_metric_maps(&baseline, &current))
+            }
+            _ => ("unsupported", Vec::new()),
+        }
+    };
+
+    let (visual, diff_png) = compare_visual_artifact(
+        root,
+        baseline_run_id,
+        current_run_id,
+        check_id,
+        baseline_check,
+        current_check,
+        same_fixture,
+    )?;
+    let regression = if !same_fixture || current_outcome == "unsupported" {
+        Value::Null
+    } else {
+        json!(baseline_outcome == "passed" && matches!(current_outcome, "failed" | "timed_out"))
+    };
+    let regression_status = if regression.is_null() {
+        "unsupported"
+    } else {
+        "compared"
+    };
+    let summary = json!({
+        "baseline_run_id": baseline_run_id,
+        "current_run_id": current_run_id,
+        "check_id": check_id,
+        "comparison_status": if same_fixture { "compared" } else { "unsupported" },
+        "fixture_matches": same_fixture,
+        "outcomes": {"baseline": baseline_outcome, "current": current_outcome, "changed": baseline_outcome != current_outcome},
+        "regression": regression,
+        "regression_status": regression_status,
+        "metrics": {"status": metric_status, "changed": changed_metrics},
+        "visual": visual
+    });
+    Ok(RunComparison { summary, diff_png })
+}
+
+fn result_check<'a>(result: &'a Value, check_id: &str) -> Result<&'a Value, String> {
+    result
+        .get("results")
+        .and_then(Value::as_array)
+        .and_then(|checks| {
+            checks
+                .iter()
+                .find(|item| item.get("check_id").and_then(Value::as_str) == Some(check_id))
+        })
+        .ok_or_else(|| format!("Check '{check_id}' is not present in the selected run"))
+}
+
+fn fixtures_match(baseline: &Value, current: &Value) -> bool {
+    let Some(baseline) = baseline.get("fixture") else {
+        return false;
+    };
+    let Some(current) = current.get("fixture") else {
+        return false;
+    };
+    let same_id = baseline
+        .get("id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| current.get("id").and_then(Value::as_str) == Some(id));
+    if !same_id {
+        return false;
+    }
+    match (
+        baseline.get("fingerprint_status").and_then(Value::as_str),
+        current.get("fingerprint_status").and_then(Value::as_str),
+    ) {
+        (Some("available"), Some("available")) => {
+            baseline.get("fingerprint") == current.get("fingerprint")
+                && baseline
+                    .get("fingerprint")
+                    .and_then(Value::as_str)
+                    .is_some()
+        }
+        (Some("not_applicable"), Some("not_applicable")) => true,
+        _ => false,
+    }
+}
+
+fn read_report_metrics(
+    root: &Path,
+    run_id: &str,
+    check_id: &str,
+    check: &Value,
+) -> Result<Option<std::collections::BTreeMap<String, Value>>, String> {
+    let Some(artifacts) = check.get("artifacts").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    if artifacts.len() > MAX_ARTIFACTS {
+        return Err("Artifact list exceeds the 256 item limit".into());
+    }
+    let Some(relative) = artifacts.iter().filter_map(Value::as_str).find(|path| {
+        Path::new(path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+    }) else {
+        return Ok(None);
+    };
+    let bytes = read_declared_artifact(root, run_id, check_id, relative, MAX_TEXT_ARTIFACT_BYTES)?;
+    let report: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Structured report '{relative}' is invalid JSON: {error}"))?;
+    let mut metrics = std::collections::BTreeMap::new();
+    collect_structured_metrics(&report, "", &mut metrics);
+    Ok(Some(metrics))
+}
+
+fn collect_structured_metrics(
+    value: &Value,
+    prefix: &str,
+    metrics: &mut std::collections::BTreeMap<String, Value>,
+) {
+    if metrics.len() >= MAX_STRUCTURED_METRICS {
+        return;
+    }
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object {
+                if metrics.len() >= MAX_STRUCTURED_METRICS {
+                    break;
+                }
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                if value.is_number() && is_structured_metric_key(key) {
+                    metrics.insert(path, value.clone());
+                } else if value.is_object() || value.is_array() {
+                    collect_structured_metrics(value, &path, metrics);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                if metrics.len() >= MAX_STRUCTURED_METRICS {
+                    break;
+                }
+                if value.is_object() || value.is_array() {
+                    collect_structured_metrics(value, &format!("{prefix}[{index}]"), metrics);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_structured_metric_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    [
+        "count",
+        "pixels",
+        "error",
+        "size",
+        "width",
+        "height",
+        "strokes",
+        "vertices",
+        "triangles",
+        "frames",
+        "keyframes",
+        "samples",
+        "vertices",
+        "faces",
+    ]
+    .iter()
+    .any(|term| key.contains(term))
+}
+
+fn compare_metric_maps(
+    baseline: &std::collections::BTreeMap<String, Value>,
+    current: &std::collections::BTreeMap<String, Value>,
+) -> Vec<Value> {
+    let keys = baseline
+        .keys()
+        .chain(current.keys())
+        .collect::<std::collections::BTreeSet<_>>();
+    keys.into_iter()
+        .filter_map(|key| {
+            let old = baseline.get(key);
+            let new = current.get(key);
+            (old != new).then(|| json!({"metric":key,"baseline":old,"current":new}))
+        })
+        .take(MAX_STRUCTURED_METRICS)
+        .collect()
+}
+
+fn compare_visual_artifact(
+    root: &Path,
+    baseline_run_id: &str,
+    current_run_id: &str,
+    check_id: &str,
+    baseline_check: &Value,
+    current_check: &Value,
+    same_fixture: bool,
+) -> Result<(Value, Option<String>), String> {
+    if !same_fixture {
+        return Ok((
+            json!({"status":"unsupported","reason":"Fixture identity or fingerprint does not match."}),
+            None,
+        ));
+    }
+    let baseline_rendering = baseline_check.get("rendering");
+    let current_rendering = current_check.get("rendering");
+    if baseline_rendering != current_rendering {
+        return Ok((
+            json!({"status":"unsupported","reason":"Rendering metadata does not match."}),
+            None,
+        ));
+    }
+    let (Some(baseline_resolution), Some(current_resolution)) = (
+        rendering_resolution(baseline_rendering),
+        rendering_resolution(current_rendering),
+    ) else {
+        return Ok((
+            json!({"status":"unsupported","reason":"Both runs need available rendering resolution metadata."}),
+            None,
+        ));
+    };
+    if baseline_resolution != current_resolution {
+        return Ok((
+            json!({"status":"unsupported","reason":"Rendering resolutions do not match."}),
+            None,
+        ));
+    }
+    let (Some(baseline_artifacts), Some(current_artifacts)) = (
+        baseline_check.get("artifacts").and_then(Value::as_array),
+        current_check.get("artifacts").and_then(Value::as_array),
+    ) else {
+        return Ok((
+            json!({"status":"unsupported","reason":"A check has no recorded artifacts."}),
+            None,
+        ));
+    };
+    let current_pngs = current_artifacts
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|path| path.to_ascii_lowercase().ends_with(".png"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let Some(png_path) = baseline_artifacts
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|path| path.to_ascii_lowercase().ends_with(".png") && current_pngs.contains(path))
+    else {
+        return Ok((
+            json!({"status":"unsupported","reason":"Runs have no PNG artifact with a matching recorded path."}),
+            None,
+        ));
+    };
+    let baseline_bytes = read_declared_artifact(
+        root,
+        baseline_run_id,
+        check_id,
+        png_path,
+        MAX_PNG_ARTIFACT_BYTES,
+    )?;
+    let current_bytes = read_declared_artifact(
+        root,
+        current_run_id,
+        check_id,
+        png_path,
+        MAX_PNG_ARTIFACT_BYTES,
+    )?;
+    validate_png(&baseline_bytes)?;
+    validate_png(&current_bytes)?;
+    let baseline_dimensions = png_dimensions(&baseline_bytes)?;
+    let current_dimensions = png_dimensions(&current_bytes)?;
+    if baseline_dimensions != current_dimensions
+        || baseline_resolution[0].as_u64() != Some(u64::from(baseline_dimensions.0))
+        || baseline_resolution[1].as_u64() != Some(u64::from(baseline_dimensions.1))
+    {
+        return Ok((
+            json!({"status":"unsupported","reason":"PNG dimensions do not match the recorded rendering metadata."}),
+            None,
+        ));
+    }
+    let pixel_count = u64::from(baseline_dimensions.0) * u64::from(baseline_dimensions.1);
+    if pixel_count > MAX_DIFF_PIXELS {
+        return Ok((
+            json!({"status":"unsupported","reason":"PNG dimensions exceed the 4,000,000 pixel comparison limit."}),
+            None,
+        ));
+    }
+    let baseline_image = image::load_from_memory(&baseline_bytes)
+        .map_err(|error| format!("Could not decode baseline PNG: {error}"))?
+        .to_rgba8();
+    let current_image = image::load_from_memory(&current_bytes)
+        .map_err(|error| format!("Could not decode current PNG: {error}"))?
+        .to_rgba8();
+    let mut diff = image::RgbaImage::new(baseline_image.width(), baseline_image.height());
+    let mut changed_pixels = 0u64;
+    let mut maximum_channel_delta = 0u8;
+    for (x, y, output) in diff.enumerate_pixels_mut() {
+        let old = baseline_image.get_pixel(x, y);
+        let new = current_image.get_pixel(x, y);
+        let delta = [
+            old[0].abs_diff(new[0]),
+            old[1].abs_diff(new[1]),
+            old[2].abs_diff(new[2]),
+            old[3].abs_diff(new[3]),
+        ];
+        if delta.iter().any(|channel| *channel != 0) {
+            changed_pixels += 1;
+        }
+        maximum_channel_delta = maximum_channel_delta.max(*delta.iter().max().unwrap_or(&0));
+        *output = image::Rgba([delta[0], delta[1], delta[2], 255]);
+    }
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(diff)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .map_err(|error| format!("Could not encode comparison PNG: {error}"))?;
+    let bytes = encoded.into_inner();
+    if bytes.len() > MAX_DIFF_PNG_BYTES {
+        return Ok((
+            json!({"status":"unsupported","reason":"Encoded diff exceeds the 1,000,000 byte limit."}),
+            None,
+        ));
+    }
+    Ok((
+        json!({
+            "status":"compared",
+            "artifact":png_path,
+            "resolution_px":baseline_resolution,
+            "changed_pixels":changed_pixels,
+            "maximum_channel_delta":maximum_channel_delta,
+            "diff_size_bytes":bytes.len()
+        }),
+        Some(encode_base64(&bytes)),
+    ))
+}
+
+fn read_declared_artifact(
+    root: &Path,
+    run_id: &str,
+    check_id: &str,
+    relative: &str,
+    limit: u64,
+) -> Result<Vec<u8>, String> {
+    let (_, run_directory, result_bytes) = result_file(root, run_id)?;
+    let result: Value = serde_json::from_slice(&result_bytes)
+        .map_err(|error| format!("Invalid result JSON: {error}"))?;
+    let check = result_check(&result, check_id)?;
+    let declared = check
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or("Completed check has no artifact list")?;
+    if declared.len() > MAX_ARTIFACTS {
+        return Err("Artifact list exceeds the 256 item limit".into());
+    }
+    if !declared.iter().any(|path| path.as_str() == Some(relative)) {
+        return Err("Artifact path is not recorded for this check".into());
+    }
+    let path = resolve_artifact_path(&run_directory, relative)?;
+    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+    if metadata.len() > limit {
+        return Err(format!(
+            "Artifact exceeds the {limit} byte comparison limit"
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    fs::File::open(path)
+        .map_err(|error| error.to_string())?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > limit {
+        return Err(format!(
+            "Artifact grew beyond the {limit} byte comparison limit"
+        ));
+    }
+    Ok(bytes)
+}
+
+fn rendering_resolution(rendering: Option<&Value>) -> Option<&Value> {
+    rendering
+        .filter(|value| value.get("status").and_then(Value::as_str) == Some("available"))
+        .and_then(|value| value.get("resolution_px"))
+}
+
+fn png_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
+    if bytes.len() < 24 || &bytes[12..16] != b"IHDR" {
+        return Err("PNG is missing its required IHDR chunk".into());
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap_or_default());
+    let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap_or_default());
+    if width == 0 || height == 0 || width > MAX_PNG_DIMENSION || height > MAX_PNG_DIMENSION {
+        return Err("PNG dimensions are outside the supported limit".into());
+    }
+    Ok((width, height))
 }
 
 fn read_artifact(
