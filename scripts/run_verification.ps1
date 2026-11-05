@@ -147,7 +147,7 @@ function Get-RenderingMetadata([string]$Id, [string[]]$Reports) {
     return [ordered]@{ status = 'unavailable' }
 }
 
-function Invoke-VerificationCheck([string]$Id, [string[]]$Arguments, [string[]]$Reports) {
+function Invoke-VerificationCheck([string]$Id, [string[]]$Arguments = @(), [string[]]$Reports = @()) {
     $stdoutPath = Join-Path $runDirectory "$Id.stdout.log"
     $stderrPath = Join-Path $runDirectory "$Id.stderr.log"
     $failureReason = $null
@@ -281,7 +281,7 @@ foreach ($checkId in $Check) {
         }
         'ui-workflow' {
             $report = Join-Path $reportDirectory 'ui-workflow-report.json'
-            $results.Add((Invoke-VerificationCheck 'ui-workflow' @() @($report, (Join-Path $reportDirectory 'ui-workflow.png'))))
+            $results.Add((Invoke-VerificationCheck -Id 'ui-workflow' -Arguments @() -Reports @($report, (Join-Path $reportDirectory 'ui-workflow.png'))))
         }
     }
 }

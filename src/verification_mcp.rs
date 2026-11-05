@@ -1913,24 +1913,27 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
     // the child process.
     let runner_argument = if cfg!(windows) {
         runner
+            .to_string_lossy()
             .strip_prefix(r"\\?\")
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|_| runner.clone())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| runner.clone())
     } else {
         runner.clone()
     };
     let output_argument = if cfg!(windows) {
-        root.strip_prefix(r"\\?\")
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|_| root.to_path_buf())
+        root.to_string_lossy()
+            .strip_prefix(r"\\?\")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.to_path_buf())
     } else {
         root.to_path_buf()
     };
     let executable_argument = if cfg!(windows) {
         executable
+            .to_string_lossy()
             .strip_prefix(r"\\?\")
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|_| executable.clone())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| executable.clone())
     } else {
         executable.clone()
     };
