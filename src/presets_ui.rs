@@ -1060,6 +1060,7 @@ pub fn preview_document(preset: &Preset) -> Document {
     Document {
         linked_stroke_groups: Default::default(),
         strokes: vec![Stroke {
+            guide_attachment: None,
             model_surface: None,
             curve: None,
             material: Default::default(),

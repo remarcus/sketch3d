@@ -139,6 +139,7 @@ impl SketchApp {
             _ => unreachable!(),
         };
         let example_stroke = Stroke {
+            guide_attachment: None,
             model_surface: None,
             point_thickness: None,
             point_colors: None,

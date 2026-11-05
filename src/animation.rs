@@ -1132,6 +1132,7 @@ mod tests {
 
     fn stroke(id: u64, x: f32, points: usize) -> Stroke {
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             fill: None,
             material: Default::default(),

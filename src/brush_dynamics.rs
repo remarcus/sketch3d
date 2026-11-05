@@ -11,6 +11,7 @@ fn airbrush_stroke(
     points: impl IntoIterator<Item = (u32, glam::Vec3, f32)>,
 ) -> Stroke {
     Stroke {
+        guide_attachment: None,
         model_surface: None,
         curve: None,
         material: Default::default(),
@@ -1007,6 +1008,7 @@ fn opacity_test_stroke(
         curve: 1.0,
     };
     Stroke {
+        guide_attachment: None,
         model_surface: None,
         curve: None,
         material: Default::default(),

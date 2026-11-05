@@ -1010,6 +1010,7 @@ mod tests {
 
     fn stroke(id: u64, layer_id: u64, points: impl IntoIterator<Item = Vec3>) -> Stroke {
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             point_thickness: None,
             point_colors: None,

@@ -1337,6 +1337,7 @@ pub fn to_strokes(
                 })
                 .collect::<Vec<_>>();
             let prototype = Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 fill: None,
                 material: crate::document::StrokeMaterial::Unlit,

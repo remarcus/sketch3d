@@ -140,6 +140,7 @@ impl SketchApp {
         let export = crate::export::encode(&self.doc, None).unwrap();
         let mut doc = Document::default();
         doc.strokes.push(Stroke {
+            guide_attachment: None,
             model_surface: None,
             curve: None,
             material: Default::default(),
@@ -282,6 +283,7 @@ impl SketchApp {
             ),
         ] {
             building.strokes.push(Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 curve: None,
                 material: Default::default(),

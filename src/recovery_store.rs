@@ -723,6 +723,7 @@ mod tests {
                 strokes: vec![Stroke {
                     model_surface: None,
                     gradient: None,
+                    guide_attachment: None,
                     point_thickness: None,
                     point_colors: None,
                     modifiers: None,
@@ -850,6 +851,7 @@ mod tests {
         let surface_stroke = crate::document::Stroke {
             model_surface: None,
             gradient: None,
+            guide_attachment: None,
             point_thickness: None,
             point_colors: None,
             modifiers: None,

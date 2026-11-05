@@ -274,6 +274,7 @@ pub fn planar_rectangle(
         return Err("Rectangle parameters exceed the supported drawing bounds".into());
     }
     let stroke = Stroke {
+        guide_attachment: None,
         model_surface: None,
         curve: Some(curve),
         material: Default::default(),
@@ -452,6 +453,7 @@ pub fn cylinder_ellipse(
         return Err("Cylinder shape controls exceed the captured surface bounds".into());
     }
     Ok(Stroke {
+        guide_attachment: None,
         model_surface: None,
         curve: Some(curve),
         material: Default::default(),
@@ -533,6 +535,7 @@ pub fn create_ellipse(
         return Err("Shape geometry exceeds the valid document bounds".into());
     }
     Ok(Stroke {
+        guide_attachment: None,
         model_surface: None,
         curve: None,
         material: Default::default(),

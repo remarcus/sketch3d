@@ -1594,6 +1594,7 @@ mod tests {
         let document = crate::document::Document {
             brush_tip_assets: vec![tip.clone()],
             strokes: vec![crate::document::Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 gradient: None,
                 curve: None,

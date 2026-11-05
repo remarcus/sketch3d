@@ -844,6 +844,7 @@ fn create_native_drawing(output: &Path, arguments: &Value) -> Result<Value, Stri
     for (index, (coordinates, color, radius)) in marks.into_iter().enumerate() {
         let stroke_id = index as u64 + 1;
         document.strokes.push(crate::document::Stroke {
+            guide_attachment: None,
             model_surface: None,
             curve: None,
             material: crate::document::StrokeMaterial::Unlit,

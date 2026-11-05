@@ -674,6 +674,7 @@ pub fn evaluated_strokes(source: &Stroke) -> Result<Vec<Cow<'_, Stroke>>, String
 pub fn benchmark(output: &Path) -> Result<(), String> {
     let point_count = 4096usize;
     let mut source = Stroke {
+        guide_attachment: None,
         model_surface: None,
         fill: None,
         material: Default::default(),
@@ -823,6 +824,7 @@ mod tests {
 
     fn stroke() -> Stroke {
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             fill: None,
             material: Default::default(),

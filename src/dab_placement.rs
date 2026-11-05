@@ -454,6 +454,7 @@ mod tests {
             ..Default::default()
         };
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             id: 17,
             curve: None,

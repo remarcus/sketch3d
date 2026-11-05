@@ -352,6 +352,7 @@ impl SketchApp {
             .iter()
             .enumerate()
             .map(|(index, line)| crate::document::Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 fill: None,
                 material: crate::document::StrokeMaterial::Unlit,

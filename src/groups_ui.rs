@@ -1103,6 +1103,7 @@ mod linked_group_tests {
 
     fn source_stroke(id: u64, group_id: u64, y: f32) -> Stroke {
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             curve: None,
             material: StrokeMaterial::Shaded,

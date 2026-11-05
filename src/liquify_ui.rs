@@ -533,6 +533,7 @@ impl SketchApp {
             Vec3::new(0.4, 0.0, 0.0),
         ];
         let fixture = Stroke {
+            guide_attachment: None,
             model_surface: None,
             point_thickness: None,
             point_colors: None,

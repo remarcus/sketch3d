@@ -8,6 +8,7 @@ use std::{collections::HashSet, path::Path};
 pub fn run(report_path: &Path) -> Result<(), String> {
     let mut document = Document::default();
     let stroke = |x: f32| Stroke {
+        guide_attachment: None,
         model_surface: None,
         id: 1,
         layer_id: document.active_layer,

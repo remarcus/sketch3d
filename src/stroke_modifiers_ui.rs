@@ -531,6 +531,7 @@ mod tests {
     fn document() -> Document {
         Document {
             strokes: vec![Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 fill: None,
                 material: Default::default(),

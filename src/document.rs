@@ -432,6 +432,9 @@ pub fn layers_default() -> Vec<Layer> {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stroke {
+    /// Saved planar guide that carries this stroke when its frame changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guide_attachment: Option<u64>,
     /// Bounded world-space triangle patch captured for image-tip and scattered
     /// dab placement on an imported model surface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1829,6 +1832,16 @@ impl Document {
             );
         }
         guide_resources::validate_catalog(&doc.guide_resources, doc.active_guide)?;
+        for stroke in &doc.strokes {
+            if let Some(id) = stroke.guide_attachment {
+                if !doc.guide_resources.iter().any(|guide| {
+                    guide.id == id
+                        && matches!(guide.geometry, guide_resources::GuideGeometry::Plane { .. })
+                }) {
+                    return Err("Stroke attachment references a missing planar guide".into());
+                }
+            }
+        }
         model_references::validate_catalog(&doc.model_references, doc.active_model_reference)?;
         let mut ids = std::collections::HashSet::new();
         let mut total = 0;
@@ -1982,6 +1995,7 @@ mod tests {
     use super::*;
     fn stroke() -> Stroke {
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             point_thickness: None,
@@ -2424,6 +2438,7 @@ mod layer_tests {
     #[test]
     fn version_four_migration_preserves_all_resolved_ink() {
         let mut stroke = Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             point_thickness: None,
@@ -2481,6 +2496,7 @@ mod layer_tests {
         });
         doc.active_layer = 2;
         let stroke = Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             point_thickness: None,
@@ -2540,6 +2556,7 @@ mod layer_tests {
                 "blank_name" => doc.layers[0].name = " ".into(),
                 "active_missing" => doc.active_layer = 2,
                 "orphan" => doc.strokes.push(Stroke {
+                    guide_attachment: None,
                     model_surface: None,
                     gradient: None,
                     point_thickness: None,
@@ -2584,6 +2601,7 @@ mod saved_guide_document_tests {
 
     fn sample_stroke() -> Stroke {
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             point_thickness: None,
@@ -2669,6 +2687,7 @@ mod saved_guide_document_tests {
             doc.active_model_reference,
         );
         let edit = crate::editing::Edit::Guides {
+            ink: None,
             before: before.clone(),
             after: after.clone(),
         };
@@ -2752,6 +2771,7 @@ mod saved_guide_document_tests {
             doc.active_model_reference,
         );
         let edit = crate::editing::Edit::Guides {
+            ink: None,
             before: before.clone(),
             after: after.clone(),
         };
@@ -2806,6 +2826,7 @@ mod saved_guide_document_tests {
             doc.active_model_reference,
         );
         let remove = crate::editing::Edit::Guides {
+            ink: None,
             before: after.clone(),
             after: removed.clone(),
         };
@@ -2851,6 +2872,7 @@ mod group_tests {
     use super::*;
     fn mark(id: u64) -> Stroke {
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             point_thickness: None,

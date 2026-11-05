@@ -385,6 +385,7 @@ mod tests {
             doc.active_model_reference,
         );
         let transform = crate::editing::Edit::Guides {
+            ink: None,
             before: before.clone(),
             after: after.clone(),
         };
@@ -420,6 +421,7 @@ mod tests {
             doc.active_model_reference,
         );
         let remove = crate::editing::Edit::Guides {
+            ink: None,
             before: after.clone(),
             after: deleted,
         };

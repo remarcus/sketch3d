@@ -995,6 +995,7 @@ impl SketchApp {
             ) {
                 Ok(points) => {
                     let mark = Stroke {
+                        guide_attachment: None,
                         model_surface: None,
                         curve: None,
                         material: Default::default(),
@@ -1090,6 +1091,7 @@ impl SketchApp {
             gradient_drag: None,
             imported_texture_ids: Vec::new(),
             mark: Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 curve: None,
                 material: Default::default(),

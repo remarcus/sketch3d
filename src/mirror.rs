@@ -418,6 +418,7 @@ mod tests {
             ..Brush::default()
         };
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             point_thickness: None,

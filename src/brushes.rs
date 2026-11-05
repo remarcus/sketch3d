@@ -496,6 +496,7 @@ impl SketchApp {
             let mut brush = preset.brush;
             brush.dab_seed = crate::dab_placement::seed_for_stroke(id);
             Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 curve: None,
                 material: Default::default(),
@@ -767,6 +768,7 @@ impl SketchApp {
                     .collect()
             };
             Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 curve: None,
                 material: Default::default(),
@@ -1225,6 +1227,7 @@ impl SketchApp {
         let bristle = preset("Bristle Fan");
         let dry = preset("Dry Brush");
         let make_stroke = |preset: &crate::presets::Preset, id: u64, y: f32| Stroke {
+            guide_attachment: None,
             model_surface: None,
             curve: None,
             material: Default::default(),
@@ -1484,6 +1487,7 @@ impl SketchApp {
             .iter()
             .enumerate()
             .map(|(index, preset)| Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 curve: None,
                 material: Default::default(),

@@ -46,6 +46,7 @@ fn block_on<F: Future>(future: F) -> F::Output {
 
 fn stroke() -> Stroke {
     Stroke {
+        guide_attachment: None,
         model_surface: None,
         curve: None,
         point_thickness: None,

@@ -2066,6 +2066,7 @@ mod tests {
     use crate::document::{Point, StrokeGradient, StrokeMaterial};
     fn stroke(id: u64, color: [f32; 3]) -> Stroke {
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             curve: None,
@@ -3129,6 +3130,7 @@ mod obj_reference_export_tests {
 
     fn sample_stroke() -> Stroke {
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             curve: None,

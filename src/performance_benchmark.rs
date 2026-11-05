@@ -99,6 +99,7 @@ fn make_stroke(id: u64, point_count: usize, x_offset: f32) -> Stroke {
         })
         .collect();
     Stroke {
+        guide_attachment: None,
         model_surface: None,
         curve: None,
         material: Default::default(),

@@ -409,7 +409,11 @@ impl SketchApp {
             image.drawable = false;
         }
         if before != after {
-            let edit = Edit::Guides { before, after };
+            let edit = Edit::Guides {
+                before,
+                after,
+                ink: None,
+            };
             edit.apply(&mut self.doc, true);
             self.undo.push(edit);
             self.redo.clear();

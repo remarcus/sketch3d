@@ -1376,6 +1376,7 @@ mod tests {
             assert!(preset.brush.dabs.spacing > 0.0);
 
             let make_stroke = |points| crate::document::Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 curve: None,
                 material: Default::default(),

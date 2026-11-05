@@ -48,6 +48,7 @@ fn block_on<F: Future>(future: F) -> F::Output {
 
 fn stroke(id: u64, material: StrokeMaterial, color: [f32; 3], points: Vec<Vec3>) -> Stroke {
     Stroke {
+        guide_attachment: None,
         model_surface: None,
         curve: None,
         point_thickness: None,

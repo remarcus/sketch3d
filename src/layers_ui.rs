@@ -22,6 +22,7 @@ fn layer_fixture_stroke(
         (Vec3::new(0.0, -1.2, z), Vec3::new(0.0, 1.2, z), Vec3::Y)
     };
     Stroke {
+        guide_attachment: None,
         model_surface: None,
         curve: None,
         material,

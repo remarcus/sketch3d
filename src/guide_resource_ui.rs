@@ -16,6 +16,14 @@ type GuideEditState = (
     Option<u64>,
 );
 
+fn planar_guide_frame(guides: &[GuideResource], id: u64) -> Option<(Vec3, glam::Quat)> {
+    let guide = guides.iter().find(|guide| guide.id == id)?;
+    match guide.geometry {
+        GuideGeometry::Plane { origin, rotation } => Some((origin, rotation)),
+        _ => None,
+    }
+}
+
 pub(super) struct GuideBendDraft {
     pub guide_id: u64,
     pub center: Vec3,
@@ -358,7 +366,53 @@ impl SketchApp {
             self.shape_tool.mode = None;
             self.cancel_fill_tool();
         }
-        self.undo.push(Edit::Guides { before, after });
+        let mut ink_before = Vec::new();
+        let mut ink_after = Vec::new();
+        let result = (|| {
+            for (index, stroke) in self.doc.strokes.iter().enumerate() {
+                let Some(id) = stroke.guide_attachment else {
+                    continue;
+                };
+                let old = planar_guide_frame(&before.0, id);
+                let new = planar_guide_frame(&after.0, id);
+                if old == new {
+                    continue;
+                }
+                if !self.doc.editable(stroke) {
+                    return Err("Unlock and show the attached ink before changing its guide.");
+                }
+                let mut changed = stroke.clone();
+                if let (Some((origin, rotation)), Some((next_origin, next_rotation))) = (old, new) {
+                    let mut transformed = crate::editing::transformed(
+                        &vec![(index, changed)],
+                        origin,
+                        next_origin - origin,
+                        next_rotation * rotation.inverse(),
+                        1.0,
+                    )?;
+                    changed = transformed.pop().expect("one transformed stroke").1;
+                } else {
+                    changed.guide_attachment = None;
+                }
+                ink_before.push((index, stroke.clone()));
+                ink_after.push((index, changed));
+            }
+            Ok(())
+        })();
+        let ink = (!ink_before.is_empty()).then(|| Box::new((ink_before, ink_after)));
+        if let Err(error) = result {
+            Edit::Guides {
+                before,
+                after,
+                ink: None,
+            }
+            .apply(&mut self.doc, false);
+            self.status = error.into();
+            return;
+        }
+        let edit = Edit::Guides { before, after, ink };
+        edit.apply(&mut self.doc, true);
+        self.undo.push(edit);
         self.redo.clear();
         self.dirty = true;
         self.record_recovery_edit();
@@ -496,6 +550,16 @@ impl SketchApp {
 
     pub(super) fn saved_guide_controls(&mut self, ui: &mut egui::Ui) {
         ui.collapsing("Saved guides", |ui| {
+            if !self.selected.is_empty() {
+                ui.horizontal(|ui| {
+                    if ui.button("Attach selection to active plane").clicked() {
+                        self.set_planar_attachment(true);
+                    }
+                    if ui.button("Detach selection").clicked() {
+                        self.set_planar_attachment(false);
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 ui.text_edit_singleline(&mut self.guide_name);
                 if ui.button("Save current").clicked() { self.save_current_guide(); }
@@ -656,6 +720,76 @@ impl SketchApp {
             ui.small("Saved guide transforms live in the drawing. Existing strokes never move.");
         });
         self.obj_reference_controls(ui);
+    }
+
+    fn set_planar_attachment(&mut self, attach: bool) {
+        self.finish();
+        let guide = if attach {
+            let Some(id) = self.doc.active_guide.filter(|&id| {
+                planar_guide_frame(&self.doc.guide_resources, id).is_some()
+                    && self
+                        .doc
+                        .guide_resources
+                        .iter()
+                        .any(|guide| guide.id == id && guide.visible && !guide.locked)
+            }) else {
+                self.status = "Activate a visible, unlocked saved plane first.".into();
+                return;
+            };
+            if !self.doc.animation.is_empty() || self.doc.animation.two_bone_rig.is_some() {
+                self.status = "Guide attachment requires static artwork.".into();
+                return;
+            }
+            Some(id)
+        } else {
+            None
+        };
+        let before = crate::editing::snapshot(&self.doc, &self.selected);
+        if before.is_empty()
+            || before.len() != self.selected.len()
+            || before.iter().any(|(_, stroke)| {
+                !self.doc.editable(stroke)
+                    || (attach
+                        && (stroke.fill.is_some()
+                            || stroke.curve.is_some()
+                            || stroke.model_surface.is_some()
+                            || stroke.brush.dabs.surface_target.is_some()
+                            || stroke.brush.texture.anchor_mode
+                                == crate::texture::TextureAnchorMode::CapturedPlanar
+                            || self.doc.linked_instance_for_stroke(stroke.id).is_some()
+                            || self
+                                .doc
+                                .linked_stroke_groups
+                                .definitions
+                                .iter()
+                                .any(|group| group.source_stroke_ids.contains(&stroke.id))))
+            })
+        {
+            self.status =
+                "Select editable, independent sampled strokes with stroke-following texture."
+                    .into();
+            return;
+        }
+        let mut after = before.clone();
+        for (_, stroke) in &mut after {
+            stroke.guide_attachment = guide;
+        }
+        if before == after {
+            return;
+        }
+        let edit = Edit::Change { before, after };
+        edit.apply(&mut self.doc, true);
+        self.undo.push(edit);
+        self.redo.clear();
+        self.dirty = true;
+        self.record_recovery_edit();
+        self.renderer.invalidate();
+        self.status = if attach {
+            "Selection attached to the saved plane."
+        } else {
+            "Selection detached in place."
+        }
+        .into();
     }
 
     fn save_current_guide(&mut self) {
@@ -1337,6 +1471,7 @@ fn edit_geometry(ui: &mut egui::Ui, geometry: &mut GuideGeometry) -> GeometryEdi
                     }
                 });
             }
+
             if let Some(index) = remove {
                 profile.remove(index);
                 changed = true;
@@ -1673,6 +1808,7 @@ mod guide_bend_tests {
         // Existing artwork remains world-space. A new stroke sampled on the
         // bent centerline is ordinary editable/exportable ink.
         let stroke = Stroke {
+            guide_attachment: None,
             model_surface: None,
             point_thickness: None,
             point_colors: None,
@@ -1774,6 +1910,7 @@ mod loft_ui_tests {
 
     fn line(id: u64, start: Vec3, end: Vec3) -> Stroke {
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             curve: None,
@@ -2182,6 +2319,7 @@ mod planar_target_tests {
             origin - u * 0.5 + v * 0.25,
         ];
         let fill = Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             curve: None,
@@ -2258,6 +2396,7 @@ mod planar_target_tests {
             .any(|point| !target.contains(point.position)));
 
         let prototype = Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             curve: None,

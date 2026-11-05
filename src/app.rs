@@ -3323,6 +3323,7 @@ impl SketchApp {
                 ..texture
             };
             self.doc.strokes.push(Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 curve: None,
                 material: Default::default(),
@@ -3557,6 +3558,7 @@ impl SketchApp {
             let view_right = self.camera.basis().0;
             let tangent = (view_right - normal * view_right.dot(normal)).normalize_or_zero();
             self.doc.strokes.push(Stroke {
+                guide_attachment: None,
                 model_surface: capture_model_surface
                     .then(crate::document::ModelSurfacePatch::default),
                 curve: None,
@@ -4121,6 +4123,7 @@ impl SketchApp {
                 });
             }
             self.doc.strokes.push(Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 curve: None,
                 material: Default::default(),
@@ -9501,6 +9504,7 @@ mod native_merge_apply_tests {
 
     fn stroke(id: u64, layer_id: u64, x: f32) -> Stroke {
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             curve: None,

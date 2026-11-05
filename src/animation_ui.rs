@@ -160,6 +160,15 @@ impl SketchApp {
     }
 
     fn set_artwork_keyframe(&mut self) {
+        if self
+            .doc
+            .strokes
+            .iter()
+            .any(|stroke| stroke.guide_attachment.is_some())
+        {
+            self.status = "Detach ink from saved guides before keyframing.".into();
+            return;
+        }
         if !self.doc.active_editable() {
             self.status = "Choose a visible, unlocked layer before keying its artwork.".into();
             return;

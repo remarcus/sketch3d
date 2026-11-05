@@ -471,6 +471,7 @@ mod tests {
 
     fn stroke(id: u64) -> Stroke {
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             curve: None,

@@ -343,6 +343,11 @@ pub fn prepare_insert(
         .iter()
         .map(|model| Ok((model.id, ids.take()?)))
         .collect::<Result<_, String>>()?;
+    for stroke in &mut source.strokes {
+        if let Some(id) = stroke.guide_attachment {
+            stroke.guide_attachment = Some(*guide_map.get(&id).ok_or("Missing attached guide")?);
+        }
+    }
     let model_copy_sources: Vec<(u64, ObjModel)> = source
         .model_references
         .iter()
@@ -617,6 +622,7 @@ mod tests {
             ..Brush::default()
         };
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             curve: None,
@@ -648,6 +654,7 @@ mod tests {
         fs::create_dir_all(&asset_root).unwrap();
         let mut source = Document::default();
         source.strokes.push(Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             curve: None,
@@ -1085,6 +1092,7 @@ mod tests {
             end: [0.6, 1.0, 0.0],
         };
         let source_stroke = Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: Some(gradient),
             curve: None,
@@ -1152,6 +1160,7 @@ mod tests {
         };
         let source = Document {
             strokes: vec![Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 fill: None,
                 material: Default::default(),

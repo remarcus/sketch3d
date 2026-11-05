@@ -369,6 +369,7 @@ impl SketchApp {
                     return;
                 };
                 let stroke = Stroke {
+                    guide_attachment: None,
                     model_surface: None,
                     curve: None,
                     material: Default::default(),

@@ -394,6 +394,15 @@ fn capture_state(
         state.obj_references.push(model.clone());
     }
     for id in &selection.guide_ids {
+        if document
+            .strokes
+            .iter()
+            .any(|stroke| stroke.guide_attachment == Some(*id))
+        {
+            return Err(MoveError::InvalidTransformDetail(
+                "Move guides with attached ink from Saved guides.".into(),
+            ));
+        }
         let guide = document
             .guide_resources
             .iter()
@@ -783,6 +792,7 @@ mod tests {
     fn fixture() -> Document {
         let mut document = Document::default();
         document.strokes.push(Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             curve: None,

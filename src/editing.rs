@@ -211,6 +211,7 @@ pub enum Edit {
     Guides {
         before: GuideState,
         after: GuideState,
+        ink: Option<Box<(Snapshot, Snapshot)>>,
     },
     ModelReferences {
         before: ModelReferenceState,
@@ -306,7 +307,7 @@ impl Edit {
                 doc.active_guide = *active_guide;
                 doc.active_model_reference = *active_model;
             }
-            Self::Guides { before, after } => {
+            Self::Guides { before, after, ink } => {
                 let (guides, active_guide, planes, active_image_plane, active_model) =
                     if forward { after } else { before };
                 doc.guide_resources = guides.clone();
@@ -314,6 +315,9 @@ impl Edit {
                 doc.image_planes = planes.clone();
                 doc.active_image_plane = *active_image_plane;
                 doc.active_model_reference = *active_model;
+                if let Some(ink) = ink {
+                    replace(doc, &ink.0, &ink.1, forward);
+                }
             }
             Self::ModelReferences { before, after } => {
                 let (models, active_model, planes, active_plane, guides, active_guide) =
@@ -810,6 +814,7 @@ mod tests {
     use crate::document::{Brush, BrushKind, Point};
     fn stroke(id: u64, x: f32) -> Stroke {
         Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             point_thickness: None,
@@ -1744,6 +1749,7 @@ mod layer_tests {
         Document {
             linked_stroke_groups: Default::default(),
             strokes: vec![Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 gradient: None,
                 point_thickness: None,
@@ -1999,6 +2005,12 @@ pub fn create_linked_group(
     if source.len() != selected.len() {
         return Err("All linked group source strokes must be editable".into());
     }
+    if source
+        .iter()
+        .any(|(_, stroke)| stroke.guide_attachment.is_some())
+    {
+        return Err("Detach ink from saved guides before creating a linked group".into());
+    }
     let group_id = source[0]
         .1
         .group_id
@@ -2217,6 +2229,7 @@ mod group_tests {
             linked_stroke_groups: Default::default(),
             strokes: (1..=3)
                 .map(|id| Stroke {
+                    guide_attachment: None,
                     model_surface: None,
                     gradient: None,
                     point_thickness: None,
@@ -2329,6 +2342,7 @@ mod large_group_tests {
             linked_stroke_groups: Default::default(),
             strokes: (1..=10000)
                 .map(|id| Stroke {
+                    guide_attachment: None,
                     model_surface: None,
                     gradient: None,
                     point_thickness: None,
@@ -2385,6 +2399,7 @@ mod appearance_tests {
 
     fn sample_document() -> Document {
         let first = Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
             point_thickness: None,

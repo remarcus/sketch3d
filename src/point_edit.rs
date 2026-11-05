@@ -1238,6 +1238,7 @@ mod tests {
     fn sample() -> Document {
         let mut doc = Document::default();
         doc.strokes.push(Stroke {
+            guide_attachment: None,
             model_surface: None,
             id: 1,
             layer_id: 1,

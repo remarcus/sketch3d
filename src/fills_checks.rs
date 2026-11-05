@@ -147,6 +147,7 @@ impl SketchApp {
             (3, [0.2, -0.4], [0.8, 0.4], 0.3, [0.1, 0.8, 0.2]),
         ] {
             doc.strokes.push(Stroke {
+                guide_attachment: None,
                 model_surface: None,
                 curve: None,
                 material: Default::default(),
@@ -183,6 +184,7 @@ impl SketchApp {
             });
         }
         doc.strokes.push(Stroke {
+            guide_attachment: None,
             model_surface: None,
             curve: None,
             material: Default::default(),
