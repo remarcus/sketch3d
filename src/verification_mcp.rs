@@ -270,19 +270,19 @@ fn tool_definitions(config: &ServerConfig) -> Value {
         {
             "name": "verification_list_artifacts",
             "description": "List the bounded artifact paths and sizes recorded for one check in a completed run.",
-            "inputSchema": {"type": "object", "properties": {"run_id": {"type": "string", "maxLength": 64}, "check_id": {"type": "string", "enum": ["startup", "save-reopen", "export"]}}, "required": ["run_id", "check_id"], "additionalProperties": false},
+            "inputSchema": {"type": "object", "properties": {"run_id": {"type": "string", "maxLength": 64}, "check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip"]}}, "required": ["run_id", "check_id"], "additionalProperties": false},
             "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
         },
         {
             "name": "verification_read_artifact",
             "description": "Read one bounded text log or PNG preview recorded in a completed verification result.",
-            "inputSchema": {"type": "object", "properties": {"run_id": {"type": "string", "maxLength": 64}, "check_id": {"type": "string", "enum": ["startup", "save-reopen", "export"]}, "path": {"type": "string", "maxLength": 512}}, "required": ["run_id", "check_id", "path"], "additionalProperties": false},
+            "inputSchema": {"type": "object", "properties": {"run_id": {"type": "string", "maxLength": 64}, "check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip"]}, "path": {"type": "string", "maxLength": 512}}, "required": ["run_id", "check_id", "path"], "additionalProperties": false},
             "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
         },
         {
             "name": "verification_run_check",
             "description": "Run one allowlisted local verifier in a unique output run directory and return its normalized result. This starts the configured Sketch3D executable and is bounded by timeout_seconds.",
-            "inputSchema": {"type": "object", "properties": {"check_id": {"type": "string", "enum": ["startup", "save-reopen", "export"]}, "timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 600, "default": 180}}, "required": ["check_id"], "additionalProperties": false},
+            "inputSchema": {"type": "object", "properties": {"check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip"]}, "timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 600, "default": 180}}, "required": ["check_id"], "additionalProperties": false},
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
         }
     ]);
@@ -983,7 +983,8 @@ fn list_checks(root: &Path) -> Result<Value, String> {
         "checks": [
             {"check_id":"startup", "description":"Application startup smoke check"},
             {"check_id":"save-reopen", "description":"Animation native save/reopen check"},
-            {"check_id":"export", "description":"Still image export check"}
+            {"check_id":"export", "description":"Still image export check"},
+            {"check_id":"glb-texture-roundtrip", "description":"Textured GLB import, native save/reopen, and whole-scene export check"}
         ],
         "completed_runs": completed,
         "run_limit": MAX_RUNS,
@@ -1038,7 +1039,10 @@ fn run_directory(root: &Path, run_id: &str) -> Result<PathBuf, String> {
 }
 
 fn list_artifacts(root: &Path, run_id: &str, check_id: &str) -> Result<Value, String> {
-    if !matches!(check_id, "startup" | "save-reopen" | "export") {
+    if !matches!(
+        check_id,
+        "startup" | "save-reopen" | "export" | "glb-texture-roundtrip"
+    ) {
         return Err("Unsupported check ID".into());
     }
     let (_, run_directory, bytes) = result_file(root, run_id)?;
@@ -1101,7 +1105,10 @@ fn read_artifact(
     check_id: &str,
     relative: &str,
 ) -> Result<ReadArtifact, String> {
-    if !matches!(check_id, "startup" | "save-reopen" | "export") {
+    if !matches!(
+        check_id,
+        "startup" | "save-reopen" | "export" | "glb-texture-roundtrip"
+    ) {
         return Err("Unsupported check ID".into());
     }
     let (_, run_directory, bytes) = result_file(root, run_id)?;
@@ -1323,7 +1330,10 @@ fn encode_base64(bytes: &[u8]) -> String {
 }
 
 fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, String> {
-    if !matches!(check_id, "startup" | "save-reopen" | "export") {
+    if !matches!(
+        check_id,
+        "startup" | "save-reopen" | "export" | "glb-texture-roundtrip"
+    ) {
         return Err("Unsupported check ID".into());
     }
     let timeout_seconds = arguments
@@ -1336,7 +1346,16 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
         ));
     }
 
-    let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // The texture verifier is a native command on the same release executable.
+    // Calling it directly also avoids coupling this self-contained check to a
+    // PowerShell install or its host-specific script policy.
+    if check_id == "glb-texture-roundtrip" {
+        return run_native_texture_check(root, timeout_seconds);
+    }
+
+    let project_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .canonicalize()
+        .map_err(|error| format!("Cannot resolve application source directory: {error}"))?;
     let runner = project_root.join("scripts/run_verification.ps1");
     if !runner.is_file() {
         return Err("Shared verification runner is unavailable in this installation".into());
@@ -1344,7 +1363,7 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
     let runner = runner
         .canonicalize()
         .map_err(|error| format!("Cannot resolve shared verification runner: {error}"))?;
-    if !runner.starts_with(project_root) {
+    if !runner.starts_with(&project_root) {
         return Err(
             "Shared verification runner is outside the application source directory".into(),
         );
@@ -1494,6 +1513,132 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
     }))
 }
 
+fn run_native_texture_check(root: &Path, timeout_seconds: u64) -> Result<Value, String> {
+    let run_id = unique_tool_run_id();
+    let run_directory = root.join(&run_id);
+    fs::create_dir(&run_directory).map_err(|error| error.to_string())?;
+    let check_directory = run_directory.join("glb-texture-roundtrip-original");
+    fs::create_dir(&check_directory).map_err(|error| error.to_string())?;
+    let stdout_path = run_directory.join("glb-texture-roundtrip.stdout.log");
+    let stderr_path = run_directory.join("glb-texture-roundtrip.stderr.log");
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let executable_hash = sha256_file(&executable);
+    let fixture_hash = sha256_file(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/glb_texture_roundtrip_check.rs"),
+    );
+    let mut child = Command::new(&executable)
+        .arg("--verify-glb-texture-roundtrip")
+        .arg(&check_directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not start native GLB verifier: {error}"))?;
+    let stdout_reader = child
+        .stdout
+        .take()
+        .map(|stream| thread::spawn(move || read_capped(stream, MAX_PROCESS_LOG_BYTES)));
+    let stderr_reader = child
+        .stderr
+        .take()
+        .map(|stream| thread::spawn(move || read_capped(stream, MAX_PROCESS_LOG_BYTES)));
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < Duration::from_secs(timeout_seconds) => {
+                thread::sleep(Duration::from_millis(25))
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Could not wait for native GLB verifier: {error}"));
+            }
+        }
+    };
+    let stdout = stdout_reader
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr_reader
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    fs::write(&stdout_path, &stdout).map_err(|error| error.to_string())?;
+    fs::write(&stderr_path, &stderr).map_err(|error| error.to_string())?;
+    let timed_out = status.is_none();
+    let exit_code = status.as_ref().and_then(|status| status.code());
+    let outcome = if timed_out {
+        "timed_out"
+    } else if exit_code == Some(0) {
+        "passed"
+    } else {
+        "failed"
+    };
+    let failure_reason = if outcome == "timed_out" {
+        Some(format!("Timed out after {timeout_seconds} seconds."))
+    } else if outcome == "failed" {
+        let detail = String::from_utf8_lossy(if stderr.is_empty() { &stdout } else { &stderr });
+        Some(
+            detail
+                .lines()
+                .last()
+                .unwrap_or("Native GLB verifier failed.")
+                .to_owned(),
+        )
+    } else {
+        None
+    };
+    let mut artifacts = vec![
+        "glb-texture-roundtrip.stdout.log".to_owned(),
+        "glb-texture-roundtrip.stderr.log".to_owned(),
+    ];
+    for path in [
+        "glb-texture-roundtrip-report.json",
+        "texture-preview.png",
+        "roundtrip.sketch.json",
+        "whole-scene.glb",
+    ] {
+        if check_directory.join(path).is_file() {
+            artifacts.push(format!("glb-texture-roundtrip-original/{path}"));
+        }
+    }
+    let result = json!({
+        "schema_version": 1,
+        "run_id": run_id,
+        "generated_utc": utc_timestamp(),
+        "build": {
+            "version": env!("CARGO_PKG_VERSION"), "version_status": "available",
+            "file_version": Value::Null, "product_version": env!("CARGO_PKG_VERSION"),
+            "fingerprint_algorithm": "sha256", "fingerprint": executable_hash, "fingerprint_status": if executable_hash.is_some() { "available" } else { "unavailable" }
+        },
+        "source_revision": {"value": Value::Null, "status": "unavailable"},
+        "results": [{
+            "check_id": "glb-texture-roundtrip", "outcome": outcome,
+            "failure_reason": failure_reason, "exit_code": exit_code,
+            "fixture": {"id": "textured-glb-managed-native-roundtrip-v1", "fingerprint_algorithm": "sha256", "fingerprint": fixture_hash, "fingerprint_status": if fixture_hash.is_some() { "available" } else { "unavailable" }},
+            "rendering": {"status":"not_run","reason":"Interactive viewport rendering is tracked separately from this structural check."}, "artifacts": artifacts
+        }]
+    });
+    let result_path = run_directory.join("result.json");
+    fs::write(
+        &result_path,
+        serde_json::to_vec_pretty(&result).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let check = &result["results"][0];
+    let artifact_rows: Vec<_> = artifacts.iter().map(|path| {
+        let size = fs::metadata(run_directory.join(path)).map(|metadata| metadata.len()).unwrap_or(0);
+        json!({"path":path,"size_bytes":size,"artifact_type":artifact_type(path).unwrap_or("unsupported")})
+    }).collect();
+    Ok(
+        json!({"run_id":run_id,"check":check,"artifacts":artifact_rows,"process_exit_code":exit_code,"result_schema_version":1}),
+    )
+}
+
 fn persist_tool_result(
     root: &Path,
     check_id: &str,
@@ -1611,6 +1756,33 @@ fn read_capped<R: Read>(mut reader: R, maximum: usize) -> Vec<u8> {
         }
     }
     output
+}
+
+fn sha256_file(path: &Path) -> Option<String> {
+    let argument = if cfg!(windows) {
+        path.strip_prefix(r"\\?\")
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    };
+    let output = if cfg!(windows) {
+        Command::new("certutil.exe")
+            .arg("-hashfile")
+            .arg(argument)
+            .arg("SHA256")
+            .output()
+    } else {
+        Command::new("sha256sum").arg(argument).output()
+    }
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .find(|word| word.len() == 64 && word.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(|hash| hash.to_ascii_lowercase())
 }
 
 fn valid_run_id(value: &str) -> bool {

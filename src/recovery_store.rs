@@ -348,6 +348,8 @@ fn validate_assets(document: &Document, assets: &[RecoveryAsset]) -> Result<(), 
         }
         let per_file_limit = if image_reference {
             crate::image_planes::MAX_IMAGE_BYTES as usize
+        } else if asset.asset_file.ends_with(".glb") {
+            crate::gltf_reference::MAX_GLB_BYTES as usize
         } else if asset.asset_file.ends_with(".obj") {
             crate::obj_reference_storage::MAX_MODEL_OBJ_BYTES as usize
         } else {
@@ -384,7 +386,7 @@ fn valid_model_asset_file(value: &str) -> bool {
     {
         return false;
     }
-    if parts[2] == "model.obj" {
+    if matches!(parts[2], "model.obj" | "model.glb") {
         return true;
     }
     let Some(number) = parts[2]
@@ -721,9 +723,9 @@ mod tests {
             Document {
                 linked_stroke_groups: Default::default(),
                 strokes: vec![Stroke {
+                    guide_attachment: None,
                     model_surface: None,
                     gradient: None,
-                    guide_attachment: None,
                     point_thickness: None,
                     point_colors: None,
                     modifiers: None,
@@ -849,9 +851,9 @@ mod tests {
             },
         ];
         let surface_stroke = crate::document::Stroke {
+            guide_attachment: None,
             model_surface: None,
             gradient: None,
-            guide_attachment: None,
             point_thickness: None,
             point_colors: None,
             modifiers: None,
@@ -964,6 +966,76 @@ mod tests {
             [Vec3::ZERO, Vec3::new(1.0, 1.0, 0.0)]
         );
     }
+
+    #[test]
+    fn glb_model_bundle_survives_recovery_snapshot_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let resource = crate::document::model_references::ObjReferenceResource {
+            id: 42,
+            name: "Recovery GLB".into(),
+            visible: true,
+            locked: false,
+            center: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: 1.0,
+            live_line_art: None,
+            asset: crate::obj_reference_storage::ObjReferenceAsset {
+                id: 42,
+                bundle_dir: "models/42".into(),
+            },
+        };
+        let bytes = crate::glb_texture_roundtrip_check::fixture_glb()
+            .expect("GLB fixture should encode")
+            .0;
+        let snapshot = RecoverySnapshot::new_with_assets(
+            "glb-model-session".into(),
+            None,
+            Document {
+                model_references: vec![resource],
+                active_model_reference: Some(42),
+                ..Document::default()
+            },
+            vec![RecoveryAsset {
+                asset_file: "models/42/model.glb".into(),
+                bytes: bytes.clone(),
+            }],
+        );
+
+        write(dir.path(), &snapshot).expect("GLB recovery asset should validate and save");
+        let scan = scan(dir.path(), "another-glb-session").unwrap();
+        assert_eq!(scan.candidates.len(), 1);
+        let recovered = &scan.candidates[0].snapshot;
+        assert_eq!(recovered.document.model_references.len(), 1);
+        assert_eq!(recovered.assets.len(), 1);
+        assert_eq!(recovered.assets[0].asset_file, "models/42/model.glb");
+        assert_eq!(recovered.assets[0].bytes, bytes);
+
+        let restored_root = dir.path().join("recovered-glb.assets");
+        restore_assets(&recovered.document, &restored_root, &recovered.assets).unwrap();
+        assert_eq!(
+            fs::read(restored_root.join("models/42/model.glb")).unwrap(),
+            bytes
+        );
+        let restored_model = crate::obj_reference_storage::load_bundle(
+            &restored_root,
+            &crate::obj_reference_storage::ObjReferenceAsset {
+                id: 42,
+                bundle_dir: "models/42".into(),
+            },
+        )
+        .expect("recovered GLB asset should reopen");
+        assert_eq!(restored_model.triangles.len(), 1);
+        assert_eq!(
+            restored_model
+                .materials
+                .iter()
+                .find_map(|material| material.base_color_texture.as_ref())
+                .unwrap()
+                .size,
+            [2, 2]
+        );
+    }
+
     #[test]
     fn failed_replacement_retains_complete_previous_snapshot() {
         let dir = tempfile::tempdir().unwrap();

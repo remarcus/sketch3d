@@ -3,7 +3,7 @@
 param(
     [string]$Executable,
     [string]$OutputDirectory = "verification/normalized",
-    [ValidateSet('startup', 'save-reopen', 'export')]
+    [ValidateSet('startup', 'save-reopen', 'export', 'glb-texture-roundtrip')]
     [string[]]$Check = @('startup', 'save-reopen', 'export'),
     [ValidateRange(5, 3600)]
     [int]$TimeoutSeconds = 180
@@ -87,6 +87,10 @@ function Get-FixtureIdentity([string]$Id) {
             $fixtureId = 'still-export-visual-v1'
             $sourceRelativePath = 'src/still_export_check.rs'
         }
+        'glb-texture-roundtrip' {
+            $fixtureId = 'textured-glb-managed-native-roundtrip-v1'
+            $sourceRelativePath = 'src/glb_texture_roundtrip_check.rs'
+        }
     }
     $fingerprint = $null
     $fingerprintStatus = 'not_applicable'
@@ -109,6 +113,9 @@ function Get-FixtureIdentity([string]$Id) {
 }
 
 function Get-RenderingMetadata([string]$Id, [string[]]$Reports) {
+    if ($Id -eq 'glb-texture-roundtrip') {
+        return [ordered]@{ status = 'not_run'; reason = 'Interactive viewport rendering is tracked separately from this structural check.' }
+    }
     if ($Id -ne 'export') { return $null }
     $reportPath = $Reports | Where-Object { $_.EndsWith('still-export-report.json', [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
     if (-not $reportPath -or -not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
@@ -231,6 +238,10 @@ foreach ($checkId in $Check) {
         }
         'export' {
             $results.Add((Invoke-VerificationCheck 'export' @('--verify-still-export', $reportDirectory) @((Join-Path $reportDirectory 'still-export-report.json'), (Join-Path $reportDirectory 'transparent-edge.png'), (Join-Path $reportDirectory 'jpeg-canvas.jpg'))))
+        }
+        'glb-texture-roundtrip' {
+            $report = Join-Path $reportDirectory 'glb-texture-roundtrip-report.json'
+            $results.Add((Invoke-VerificationCheck 'glb-texture-roundtrip' @('--verify-glb-texture-roundtrip', $reportDirectory) @($report, (Join-Path $reportDirectory 'texture-preview.png'), (Join-Path $reportDirectory 'roundtrip.sketch.json'), (Join-Path $reportDirectory 'whole-scene.glb'))))
         }
     }
 }

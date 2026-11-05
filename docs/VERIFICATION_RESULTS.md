@@ -9,7 +9,7 @@ cargo build --locked --release
 pwsh -File scripts/run_verification.ps1
 ```
 
-Use `-Check startup`, `-Check save-reopen`, or `-Check export` to select checks. Supply `-Executable` when the release executable is elsewhere, `-OutputDirectory` to change the output root, or `-TimeoutSeconds` to change the per-check time limit. GitHub Actions calls this same script after its release build and uploads the result directory.
+Use `-Check startup`, `-Check save-reopen`, `-Check export`, or `-Check glb-texture-roundtrip` to select checks. Supply `-Executable` when the release executable is elsewhere, `-OutputDirectory` to change the output root, or `-TimeoutSeconds` to change the per-check time limit. GitHub Actions calls this same script after its release build and uploads the result directory.
 
 Each invocation creates a unique run directory. `result.json` uses schema version 1 and contains one record per check:
 
@@ -44,7 +44,7 @@ target/release/sketch3d --mcp-verification-server verification/normalized
 
 Configure an MCP host to launch that command as a stdio server. It supports the standard initialize/tools lifecycle for MCP protocol versions `2025-11-25` and `2025-06-18`, and exposes:
 
-- `verification_list_checks`: lists the three supported check IDs and up to 100 completed run IDs.
+- `verification_list_checks`: lists the four supported check IDs and up to 100 completed run IDs.
 - `verification_read_result`: returns one version 1 `result.json`.
 - `verification_list_artifacts`: lists the artifact paths and sizes recorded for one check.
 - `verification_read_artifact`: returns a recorded `.log` or `.txt` artifact as text, or a `.png` preview as an MCP image.
@@ -57,7 +57,11 @@ To explicitly enable the allowlisted execution tool, launch a separate MCP confi
 target/release/sketch3d --mcp-verification-execution-server verification/normalized
 ```
 
-Execution mode adds `verification_run_check`, which accepts only `startup`, `save-reopen`, and `export`, uses a unique run directory, caps captured process output, and bounds `timeout_seconds` from 5 to 600 seconds. Both modes canonicalize the configured root and run/artifact paths, accept only direct-child run IDs made of ASCII letters, digits, hyphens and underscores, and reject symlinked artifacts or paths outside their run directory. Artifact reads require a path recorded for the selected check. Text is limited to 256 KiB and must be UTF-8; PNG files are limited to 1,000,000 bytes and bounded image dimensions. Requests are capped at 64 KiB, results at 512 KiB, artifact records at 256, scanned run entries at 1,000, and protocol responses at 2 MiB. Protocol messages use stdout; startup and fatal errors use stderr.
+Execution mode adds `verification_run_check`, which accepts the supported check IDs, uses a unique run directory, caps captured process output, and bounds `timeout_seconds` from 5 to 600 seconds. `glb-texture-roundtrip` runs natively through the same release executable hosting MCP; other checks use the shared PowerShell runner. Both modes canonicalize the configured root and run/artifact paths, accept only direct-child run IDs made of ASCII letters, digits, hyphens and underscores, and reject symlinked artifacts or paths outside their run directory. Artifact reads require a path recorded for the selected check. Text is limited to 256 KiB and must be UTF-8; PNG files are limited to 1,000,000 bytes and bounded image dimensions. Requests are capped at 64 KiB, results at 512 KiB, artifact records at 256, scanned run entries at 1,000, and protocol responses at 2 MiB. Protocol messages use stdout; startup and fatal errors use stderr.
+
+## GLB texture round-trip check
+
+Select `glb-texture-roundtrip` through the CLI runner or MCP execution tool. Its deterministic `textured-glb-managed-native-roundtrip-v1` fixture exercises textured GLB import, managed asset bundling, native JSON save/reopen, and whole-scene GLB export. The verifier checks texture metadata and requires exact exported PNG pixels. It writes `glb-texture-roundtrip-report.json`, `texture-preview.png`, the native drawing, and exported GLB into the original check artifact folder. This is structural texture evidence; it does not replace viewport visual review, recovery coverage, WebP extension fixtures, or platform testing.
 
 ## Inspect saved drawings through local MCP
 

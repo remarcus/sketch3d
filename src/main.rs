@@ -20,6 +20,7 @@ mod export;
 mod export_check;
 mod geometry;
 mod gizmo;
+mod glb_texture_roundtrip_check;
 mod gltf_reference;
 mod grease_pencil_handoff;
 mod image_plane_storage;
@@ -73,6 +74,20 @@ mod verification_mcp;
 
 fn main() -> eframe::Result {
     let args: Vec<_> = std::env::args().collect();
+    if let Some(index) = args
+        .iter()
+        .position(|argument| argument == "--verify-glb-texture-roundtrip")
+    {
+        let Some(directory) = args.get(index + 1) else {
+            eprintln!("Usage: sketch3d --verify-glb-texture-roundtrip <output-directory>");
+            std::process::exit(2);
+        };
+        if let Err(error) = glb_texture_roundtrip_check::run(std::path::Path::new(directory)) {
+            eprintln!("GLB texture round-trip verification failed: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if let Some(index) = args
         .iter()
         .position(|argument| argument == "--mcp-verification-server")
