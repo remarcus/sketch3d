@@ -8814,6 +8814,8 @@ impl SketchApp {
         match frame {
             1 => {
                 self.stabilization = 0.0;
+                // Keep this synthetic hit test independent of the startup brush's grain.
+                self.brush = Brush::default();
                 self.camera.align(Plane::Front);
                 let start = rect.center() - egui::vec2(120.0, 0.0);
                 let mut events = vec![egui::Event::PointerButton {
@@ -8847,7 +8849,14 @@ impl SketchApp {
                 assert_eq!(self.doc.strokes.len(), 1);
                 // Hit the middle sample of the synthetic stroke instead of
                 // depending on endpoint rasterization or picking.
-                let erase_point = rect.center() + egui::vec2(0.0, (50.0_f32 * 0.08).sin() * 65.0);
+                let stroke = &self.doc.strokes[0];
+                let erase_point = crate::gizmo::project(
+                    &self.camera,
+                    rect,
+                    stroke.points[stroke.points.len() / 2].position,
+                )
+                .expect("Smoke fixture midpoint should project onto the canvas")
+                .0;
                 self.erase(erase_point, rect);
                 assert!(self.doc.strokes.is_empty(), "Whole-stroke eraser");
                 self.undo();
