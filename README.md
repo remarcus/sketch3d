@@ -6,7 +6,7 @@ Sketch3D is independently developed and inspired by Feather 3D and Blender's Gre
 
 ![Sketch3D's dark workspace showing an editable Japanese garden house, drawing tools, and brush properties](docs/capability-demos/media/draw-orbit.png)
 
-*The editable garden-house starter scene, shown in an earlier-build demo capture.*
+*The Japanese garden house example, shown in an earlier demo capture.*
 
 ## Features
 
@@ -14,7 +14,9 @@ Sketch3D is independently developed and inspired by Feather 3D and Blender's Gre
 - Procedural graphite and charcoal brushes with pressure opacity, tilt broadening, and a manual fallback.
 - Stipple and spray brushes with reproducible spacing, bounded planar scatter, and pressure response.
 - Freely placed drawing planes and curved guides, including cylinders, revolved surfaces, and saved custom guides.
+- Canvas picking for saved guides and optional stroke attachment to planes and cylinders.
 - Selection, transforms, groups, layers, fills, shapes, curves, mirroring, and partial erasing.
+- Layer masks with named sources that survive reordering and an option to invert coverage.
 - Planar rectangle and rounded-rectangle tools with numeric sizing, square constraint, optional fills, and editable parameters.
 - Image planes and OBJ references for drawing over references or onto model surfaces.
 - Automatic recovery and a local drawing library for organizing native drawings.
@@ -30,7 +32,7 @@ Install stable Rust from [rustup.rs](https://rustup.rs). Windows builds also req
 cargo run --release
 ```
 
-The app opens with an editable pencil-and-pastel house. The Japanese garden house is available under **Examples**. Choose **New** for a blank drawing or run `cargo run --release -- --blank` to start blank. Run with `--demo` to open the original three-ring geometry example.
+The app opens with an editable pencil-and-pastel house and a fine Graphite brush. The Japanese garden house is available under **File → Examples**. Choose **New** for a blank drawing or run `cargo run --release -- --blank` to start blank. Run with `--demo` to open the original three-ring geometry example.
 
 On Debian/Ubuntu, install the development packages used by winit, Wayland/X11, and the file-dialog backend: `build-essential pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libvulkan-dev libdbus-1-dev`. On macOS, install Xcode Command Line Tools.
 
@@ -47,12 +49,15 @@ Map the tablet to the intended monitor and preserve the correct aspect ratio. Sk
 
 Draw in the central canvas. The Input lab reports pen samples, pressure, and tilt. If it shows **WAITING FOR PEN**, input is arriving as mouse input and pressure is unavailable. Unsupported tilt is shown as not reported. Mouse drawing uses constant pressure.
 
+The pen barrel button orbits by default. To use it for temporary partial erasing, enable **Edit → Hold pen button to erase**, hold the button before touching the canvas, and lift the pen to apply the erase.
+
 ## Essential controls
 
 | Action | Input |
 | --- | --- |
 | Brush / erase / select | B / E / V |
 | Move / rotate / scale selection | G / R / S |
+| Pick a saved drawing guide | Shift+K, then click a visible plane grid or curved guide |
 | Add or remove a stroke from selection | Shift-click |
 | Duplicate / delete | Ctrl/Cmd+D / Delete |
 | Orbit / pan / zoom | Space+drag / Space+Shift+drag / Space+Alt+drag; right / middle mouse drag and wheel also work |
@@ -73,6 +78,10 @@ Click a preview to open its captioned MP4. These deterministic current-build rep
 
 | Overview | Draw and orbit | Partial erase and undo |
 | --- | --- | --- |
+To make existing ink follow a guide, activate a saved plane or cylinder, select the sampled strokes, then choose **Attach selection to active guide** under **Saved guides**. Attached ink follows guide moves and rotations, including cylinder radius changes. **Detach selection** leaves the ink where it is.
+
+In layer properties, choose a **Named mask source** and click **Apply**. The source stays linked when layers are reordered. Use **Invert mask** to show paint outside the source's coverage. **Clip to layer below** follows the current layer order. Masks use screen-space coverage for artwork rendering and are omitted from OBJ and GLB geometry.
+
 | [![Sketch3D overview: draw, edit, orbit, and inspect export options](docs/capability-demos/media/overview.gif)](docs/capability-demos/media/overview.mp4) | [![Draw a cyan stroke in the garden-house scene, then orbit to inspect its depth](docs/capability-demos/media/draw-orbit.gif)](docs/capability-demos/media/draw-orbit.mp4) | [![Select and recolor a stroke, partially erase it, undo, then orbit](docs/capability-demos/media/edit-erase.gif)](docs/capability-demos/media/edit-erase.mp4) |
 | An 18-second overview with a production selection transform, undo/redo, and GLB export options. | Drawing through the canvas handler, followed by a camera orbit. | Live selection and appearance editing, partial erase, undo, and orbit. |
 
