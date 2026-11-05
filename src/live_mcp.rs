@@ -7,6 +7,7 @@ use image::ImageEncoder;
 use serde_json::{json, Value};
 use std::{
     io::{self, BufRead, Write},
+    sync::atomic::{AtomicU64, Ordering},
     sync::mpsc::{self, Receiver, Sender, SyncSender},
     time::Duration,
 };
@@ -17,10 +18,22 @@ const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PNG_BYTES: usize = 1_000_000;
 const MAX_PNG_DIMENSION: usize = 4096;
 const UI_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+static NEXT_PREVIEW_ID: AtomicU64 = AtomicU64::new(0);
 
 pub enum LiveUiCommand {
     Snapshot,
     CaptureViewport,
+    PreviewColor {
+        revision: String,
+        color: [f32; 3],
+    },
+    ApplyEdit {
+        preview_id: String,
+        revision: String,
+    },
+    CancelEdit {
+        preview_id: String,
+    },
 }
 
 pub struct LiveUiRequest {
@@ -165,7 +178,7 @@ fn handle_message(ui_requests: &Sender<LiveUiRequest>, message: Value) -> Option
                     "protocolVersion":version,
                     "capabilities":{"tools":{"listChanged":false}},
                     "serverInfo":{"name":"sketch3d-live-session","version":env!("CARGO_PKG_VERSION")},
-                    "instructions":"Read-only access to the active Sketch3D session. Local file paths are not returned. Unsaved state is identified explicitly. Viewport captures are bounded PNG images."
+                "instructions":"Access the active Sketch3D session. Snapshot and viewport tools are read-only; one selected-stroke solid color edit is available through explicit preview, apply, or cancel calls. Local file paths are not returned. Unsaved state is identified explicitly."
                 }),
             ))
         }
@@ -178,9 +191,64 @@ fn handle_message(ui_requests: &Sender<LiveUiRequest>, message: Value) -> Option
                 .pointer("/params/name")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            let arguments = message
+                .pointer("/params/arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             let command = match name {
                 "live_document_snapshot" => LiveUiCommand::Snapshot,
                 "live_viewport_capture" => LiveUiCommand::CaptureViewport,
+                "live_preview_selected_color" => {
+                    let revision = match arguments.get("revision").and_then(Value::as_str) {
+                        Some(value) if !value.is_empty() && value.len() <= 80 => value.to_owned(),
+                        _ => {
+                            return Some(rpc_result(id, tool_error("A valid revision is required")))
+                        }
+                    };
+                    let Some(values) = arguments.get("color").and_then(Value::as_array) else {
+                        return Some(rpc_result(
+                            id,
+                            tool_error("Color must contain three numeric components"),
+                        ));
+                    };
+                    let parsed: Option<Vec<f32>> = values
+                        .iter()
+                        .map(|value| {
+                            value.as_f64().and_then(|number| {
+                                (number.is_finite() && (0.0..=1.0).contains(&number))
+                                    .then_some(number as f32)
+                            })
+                        })
+                        .collect();
+                    let Some(values) = parsed.filter(|values| values.len() == 3) else {
+                        return Some(rpc_result(
+                            id,
+                            tool_error("Color must contain three values from 0 to 1"),
+                        ));
+                    };
+                    LiveUiCommand::PreviewColor {
+                        revision,
+                        color: [values[0], values[1], values[2]],
+                    }
+                }
+                "live_apply_selected_color" => {
+                    let Some(preview_id) = bounded_string(&arguments, "preview_id", 96) else {
+                        return Some(rpc_result(id, tool_error("A valid preview_id is required")));
+                    };
+                    let Some(revision) = bounded_string(&arguments, "revision", 80) else {
+                        return Some(rpc_result(id, tool_error("A valid revision is required")));
+                    };
+                    LiveUiCommand::ApplyEdit {
+                        preview_id,
+                        revision,
+                    }
+                }
+                "live_cancel_selected_color" => {
+                    let Some(preview_id) = bounded_string(&arguments, "preview_id", 96) else {
+                        return Some(rpc_result(id, tool_error("A valid preview_id is required")));
+                    };
+                    LiveUiCommand::CancelEdit { preview_id }
+                }
                 _ => return Some(rpc_result(id, tool_error("Unknown tool"))),
             };
             Some(rpc_result(id, call_ui(ui_requests, command)))
@@ -194,7 +262,7 @@ fn tools() -> Value {
     json!([
         {
             "name":"live_document_snapshot",
-            "description":"Read the active document identity and bounded counts, selected stroke IDs, and unsaved state from the live UI session. No drawing content or local file path is returned.",
+            "description":"Read the active document identity, change revision, bounded counts, selected stroke IDs, and unsaved state from the live UI session. No drawing content or local file path is returned.",
             "inputSchema":{"type":"object","properties":{},"additionalProperties":false},
             "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}
         },
@@ -203,8 +271,42 @@ fn tools() -> Value {
             "description":"Capture the current application viewport as a bounded PNG image.",
             "inputSchema":{"type":"object","properties":{},"additionalProperties":false},
             "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}
+        },
+        {
+            "name":"live_preview_selected_color",
+            "description":"Preview a solid color edit on the current selected strokes, bound to the revision returned by live_document_snapshot.",
+            "inputSchema":{"type":"object","properties":{"revision":{"type":"string","maxLength":80},"color":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":3,"maxItems":3}},"required":["revision","color"],"additionalProperties":false},
+            "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}
+        },
+        {
+            "name":"live_apply_selected_color",
+            "description":"Apply the active selected-stroke color preview as one undoable edit if the revision is still current.",
+            "inputSchema":{"type":"object","properties":{"preview_id":{"type":"string","maxLength":96},"revision":{"type":"string","maxLength":80}},"required":["preview_id","revision"],"additionalProperties":false},
+            "annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}
+        },
+        {
+            "name":"live_cancel_selected_color",
+            "description":"Cancel the selected-stroke color preview and restore its exact source values.",
+            "inputSchema":{"type":"object","properties":{"preview_id":{"type":"string","maxLength":96}},"required":["preview_id"],"additionalProperties":false},
+            "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}
         }
     ])
+}
+
+fn bounded_string(arguments: &Value, field: &str, maximum: usize) -> Option<String> {
+    arguments
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= maximum)
+        .map(str::to_owned)
+}
+
+pub fn preview_id() -> String {
+    format!(
+        "live-{}-{}",
+        std::process::id(),
+        NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 fn call_ui(ui_requests: &Sender<LiveUiRequest>, command: LiveUiCommand) -> Value {

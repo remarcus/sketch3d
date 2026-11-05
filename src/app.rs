@@ -674,6 +674,7 @@ pub struct SketchApp {
     dirty: bool,
     live_mcp_requests: Option<std::sync::mpsc::Receiver<crate::live_mcp::LiveUiRequest>>,
     live_mcp_capture_reply: Option<std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>>,
+    live_mcp_preview: Option<LiveMcpPreview>,
     status: String,
     last_pen: Option<PenSample>,
     last_pen_at: Option<Instant>,
@@ -711,6 +712,14 @@ pub struct SketchApp {
     obj_export: obj_export_ui::ObjExportUi,
     png_verification_frame: Option<u32>,
     capability_replay: Option<CapabilityReplay>,
+}
+
+struct LiveMcpPreview {
+    preview_id: String,
+    base_revision: String,
+    preview_revision: String,
+    selected_ids: HashSet<u64>,
+    edit: Edit,
 }
 
 const CAPABILITY_REPLAY_FPS: u32 = 10;
@@ -2248,6 +2257,7 @@ impl SketchApp {
             dirty: false,
             live_mcp_requests: None,
             live_mcp_capture_reply: None,
+            live_mcp_preview: None,
             status: "Ready. Draw on the highlighted plane.".into(),
             last_pen: None,
             last_pen_at: None,
@@ -6879,6 +6889,13 @@ impl SketchApp {
             };
             match request.command {
                 crate::live_mcp::LiveUiCommand::Snapshot => {
+                    let revision = match self.live_mcp_revision() {
+                        Ok(revision) => revision,
+                        Err(error) => {
+                            let _ = request.reply.send(Err(error));
+                            continue;
+                        }
+                    };
                     let mut selected: Vec<_> = self.selected.iter().copied().collect();
                     selected.sort_unstable();
                     let file_name =
@@ -6901,7 +6918,9 @@ impl SketchApp {
                             "guides": self.doc.guide_resources.len(),
                             "image_planes": self.doc.image_planes.len()
                         },
-                        "selection": {"stroke_ids": selected}
+                        "selection": {"stroke_ids": selected},
+                        "live_edit_preview": self.live_mcp_preview.is_some(),
+                        "revision": revision
                     });
                     let _ = request.reply.send(Ok(snapshot));
                 }
@@ -6918,9 +6937,236 @@ impl SketchApp {
                         ctx.request_repaint();
                     }
                 }
+                crate::live_mcp::LiveUiCommand::PreviewColor { revision, color } => {
+                    let result = self.preview_live_mcp_color(revision, color);
+                    let _ = request.reply.send(result);
+                }
+                crate::live_mcp::LiveUiCommand::ApplyEdit {
+                    preview_id,
+                    revision,
+                } => {
+                    let result = self.apply_live_mcp_edit(&preview_id, &revision);
+                    let _ = request.reply.send(result);
+                }
+                crate::live_mcp::LiveUiCommand::CancelEdit { preview_id } => {
+                    let result = self.cancel_live_mcp_edit(&preview_id);
+                    let _ = request.reply.send(result);
+                }
             }
         }
         self.live_mcp_requests = Some(requests);
+    }
+
+    fn live_mcp_revision(&self) -> Result<String, String> {
+        let bytes = serde_json::to_vec(&self.doc)
+            .map_err(|error| format!("Could not encode document revision: {error}"))?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err("Live document revision exceeds the 16 MiB bound".into());
+        }
+        let mut hash = 0xcbf29ce484222325_u64;
+        for byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        if let Some(file) = &self.file {
+            for byte in file.to_string_lossy().bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+        }
+        let mut selected: Vec<_> = self.selected.iter().copied().collect();
+        selected.sort_unstable();
+        for id in selected {
+            for byte in id.to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+        }
+        hash ^= u64::from(self.dirty);
+        hash = hash.wrapping_mul(0x100000001b3);
+        Ok(format!("fnv1a64:{hash:016x}"))
+    }
+
+    fn live_mcp_gesture_active(&self) -> bool {
+        self.active.is_some()
+            || self.mouse_down
+            || self.drag.is_some()
+            || self.brush_select_drag.is_some()
+            || self.region_select_drag.is_some()
+            || self.point_drag.is_some()
+            || self.point_multi_drag.is_some()
+            || self.partial_erase_active()
+            || self.appearance_draft.is_some()
+            || self.alignment_preview.is_some()
+            || self.point_draft.is_some()
+            || self.point_multi_draft.is_some()
+            || self.selection_cleanup_draft.is_some()
+            || self.reprojection_draft.is_some()
+            || self.fills.draft.is_some()
+            || self.curve_draft_active()
+            || self.shape_draft_active()
+            || self.line.draft.is_some()
+            || self.line_art_draft.is_some()
+            || self.line_art_command.is_some()
+            || self.guide_bend_draft.is_some()
+            || self.loft_preview.is_some()
+            || self.camera_playback.is_some()
+            || self.placement.active
+            || self.repeat.is_some()
+            || self.insert_preview.is_some()
+            || self.liquify_active()
+            || self.mixed_resource_preview_active()
+            || self.pending.is_some()
+            || self.confirm
+            || self.recovery_prompt
+            || self.quick_palette.is_some()
+            || self.show_help
+    }
+
+    fn preview_live_mcp_color(
+        &mut self,
+        revision: String,
+        color: [f32; 3],
+    ) -> Result<serde_json::Value, String> {
+        if self.live_mcp_preview.is_some() {
+            return Err("A live MCP edit preview is already active".into());
+        }
+        if self.live_mcp_gesture_active() {
+            return Err(
+                "Finish or cancel the active edit before requesting a live MCP preview".into(),
+            );
+        }
+        if self.live_mcp_revision()? != revision {
+            return Err(
+                "The document or selection changed; request a fresh live_document_snapshot".into(),
+            );
+        }
+        let edit = crate::editing::appearance_edit(
+            &self.doc,
+            &self.selected,
+            crate::editing::AppearancePatch {
+                color: Some(color),
+                ..Default::default()
+            },
+        )?;
+        if let Edit::Change { before, after } = &edit {
+            if before == after {
+                return Err("The selected strokes already have that color".into());
+            }
+        }
+        let selected_ids = self.selected.clone();
+        edit.apply(&mut self.doc, true);
+        self.renderer
+            .invalidate_ids(&self.doc.linked_affected_stroke_ids(&selected_ids));
+        let preview_revision = match self.live_mcp_revision() {
+            Ok(revision) => revision,
+            Err(error) => {
+                edit.apply(&mut self.doc, false);
+                self.renderer
+                    .invalidate_ids(&self.doc.linked_affected_stroke_ids(&selected_ids));
+                return Err(error);
+            }
+        };
+        let preview_id = crate::live_mcp::preview_id();
+        self.live_mcp_preview = Some(LiveMcpPreview {
+            preview_id: preview_id.clone(),
+            base_revision: revision.clone(),
+            preview_revision: preview_revision.clone(),
+            selected_ids: selected_ids.clone(),
+            edit,
+        });
+        self.status =
+            "MCP color preview active. Apply or cancel it from the MCP client or preview panel."
+                .into();
+        Ok(serde_json::json!({
+            "preview_id": preview_id,
+            "revision": revision,
+            "preview_revision": preview_revision,
+            "selected_count": selected_ids.len(),
+            "color": color,
+            "preview_active": true
+        }))
+    }
+
+    fn apply_live_mcp_edit(
+        &mut self,
+        preview_id: &str,
+        revision: &str,
+    ) -> Result<serde_json::Value, String> {
+        let preview = self
+            .live_mcp_preview
+            .as_ref()
+            .ok_or_else(|| "No live MCP edit preview is active".to_owned())?;
+        if preview.preview_id != preview_id || preview.base_revision != revision {
+            return Err("Preview ID or source revision does not match the active preview".into());
+        }
+        if self.live_mcp_revision()? != preview.preview_revision {
+            return Err("The document changed after preview; the edit was not applied".into());
+        }
+        let preview = self.live_mcp_preview.take().expect("preview checked above");
+        let count = preview.selected_ids.len();
+        self.undo.push(preview.edit);
+        self.redo.clear();
+        self.dirty = true;
+        self.record_recovery_edit();
+        self.renderer
+            .invalidate_ids(&self.doc.linked_affected_stroke_ids(&preview.selected_ids));
+        self.status = "MCP color edit applied as one undoable change.".into();
+        Ok(serde_json::json!({"applied":true,"selected_count":count,"undo_steps":1}))
+    }
+
+    fn cancel_live_mcp_edit(&mut self, preview_id: &str) -> Result<serde_json::Value, String> {
+        let preview = self
+            .live_mcp_preview
+            .as_ref()
+            .ok_or_else(|| "No live MCP edit preview is active".to_owned())?;
+        if preview.preview_id != preview_id {
+            return Err("Preview ID does not match the active preview".into());
+        }
+        if self.live_mcp_revision()? != preview.preview_revision {
+            return Err(
+                "The document changed after preview; cancel was refused to protect the newer edit"
+                    .into(),
+            );
+        }
+        let preview = self.live_mcp_preview.take().expect("preview checked above");
+        preview.edit.apply(&mut self.doc, false);
+        self.renderer
+            .invalidate_ids(&self.doc.linked_affected_stroke_ids(&preview.selected_ids));
+        self.status = "MCP color preview cancelled; source values restored.".into();
+        Ok(serde_json::json!({"cancelled":true,"document_unchanged":true}))
+    }
+
+    fn show_live_mcp_preview(&mut self, ctx: &egui::Context) {
+        let Some(preview) = self.live_mcp_preview.as_ref() else {
+            return;
+        };
+        let preview_id = preview.preview_id.clone();
+        let base_revision = preview.base_revision.clone();
+        let selected_count = preview.selected_ids.len();
+        let response = egui::Modal::new(egui::Id::new("live-mcp-edit-preview")).show(ctx, |ui| {
+            ui.heading("MCP edit preview");
+            ui.label(format!(
+                "Previewing a color change on {selected_count} selected strokes."
+            ));
+            ui.label(
+                "The drawing is temporarily locked until this preview is applied or cancelled.",
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let apply = ui.button("Apply").clicked();
+                let cancel = ui.button("Cancel").clicked();
+                (apply, cancel)
+            })
+            .inner
+        });
+        let (apply, cancel) = response.inner;
+        if apply {
+            let _ = self.apply_live_mcp_edit(&preview_id, &base_revision);
+        } else if cancel {
+            let _ = self.cancel_live_mcp_edit(&preview_id);
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
 
     fn finish_live_mcp_capture(&mut self, ctx: &egui::Context) {
@@ -6949,7 +7195,16 @@ impl eframe::App for SketchApp {
         let start = Instant::now();
         self.service_live_mcp(ctx);
         self.finish_live_mcp_capture(ctx);
-        self.canvas_point_shortcuts(ctx);
+        if let Some(preview) = self.live_mcp_preview.as_ref() {
+            if ctx.input(|input| input.viewport().close_requested()) {
+                let preview_id = preview.preview_id.clone();
+                let _ = self.cancel_live_mcp_edit(&preview_id);
+            }
+        }
+        let live_mcp_edit_locked = self.live_mcp_preview.is_some();
+        if !live_mcp_edit_locked {
+            self.canvas_point_shortcuts(ctx);
+        }
         if let Some(verification) = &self.appearance_layout_verification {
             ctx.set_zoom_factor(verification.zoom_factor);
         }
@@ -6973,7 +7228,9 @@ impl eframe::App for SketchApp {
             self.recovery_prompt = true;
         }
         self.ensure_workspace();
-        self.tick_artwork_animation(ctx);
+        if !live_mcp_edit_locked {
+            self.tick_artwork_animation(ctx);
+        }
         if let Some(report_path) = self.camera_bookmark_restart_report.take() {
             if let Err(error) = crate::camera_bookmark_restart_check::verify_loaded(
                 &self.camera_bookmarks,
@@ -7042,72 +7299,76 @@ impl eframe::App for SketchApp {
                 verification.screenshot_requested = true;
             }
         }
-        if ctx.input(|i| i.viewport().close_requested()) {
-            self.leave_artwork();
-        }
-        if self.palette_ui.sampling && ctx.input(|input| input.key_pressed(Key::Escape)) {
-            self.cancel_color_sampling();
-        }
-        self.plane_picker_shortcuts(ctx);
-        if self.loft_preview.is_some() && ctx.input(|input| input.key_pressed(Key::Escape)) {
-            self.loft_preview = None;
-            self.renderer.invalidate();
-            self.status = "Loft preview cancelled.".into();
-        }
-        self.partial_eraser_shortcuts(ctx);
-        self.stamp_shortcuts(ctx);
-        self.local_color_shortcuts(ctx);
-        self.shape_shortcuts(ctx);
-        self.quick_palette_shortcuts(ctx);
-        self.tick_camera_sequence(ctx);
-        if self.liquify_active() && ctx.input(|input| input.key_pressed(Key::Escape)) {
-            self.finish_liquify(false);
-        }
-        if self.mixed_resource_preview_active() && ctx.input(|input| input.key_pressed(Key::Escape))
-        {
-            self.finish_mixed_resource_move(false);
-        }
-        let keep_mixed_preview_for_appearance_capture = self
-            .appearance_layout_verification
-            .as_ref()
-            .is_some_and(|verification| verification.state == "scene-mixed-resource-disabled");
-        if self.mixed_resource_preview_active()
-            && !keep_mixed_preview_for_appearance_capture
-            && !ctx.input(|input| input.focused)
-        {
-            self.finish_mixed_resource_move(false);
-        }
-        if !self.liquify_active() && self.camera_playback.is_none() {
-            self.curve_shortcuts(ctx);
-        }
-        if ctx.input(|i| i.viewport().close_requested()) && self.capability_replay.is_some() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        }
-        if ctx.input(|i| i.viewport().close_requested())
-            && self.capability_replay.is_none()
-            && !self.allow_close
-            && (self.export_job.is_some()
-                || self.png_export.is_running()
-                || self.video_export.is_running()
-                || self.obj_export.is_running())
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.status = "An export is running. Finish or cancel it, then close again.".into();
-        } else if ctx.input(|i| i.viewport().close_requested())
-            && self.capability_replay.is_none()
-            && !self.allow_close
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            if self.close_cleanup_failed {
-                self.allow_close = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                return;
+        if !live_mcp_edit_locked {
+            if ctx.input(|i| i.viewport().close_requested()) {
+                self.leave_artwork();
             }
-            self.finish();
-            self.request(Pending::Close);
+            if self.palette_ui.sampling && ctx.input(|input| input.key_pressed(Key::Escape)) {
+                self.cancel_color_sampling();
+            }
+            self.plane_picker_shortcuts(ctx);
+            if self.loft_preview.is_some() && ctx.input(|input| input.key_pressed(Key::Escape)) {
+                self.loft_preview = None;
+                self.renderer.invalidate();
+                self.status = "Loft preview cancelled.".into();
+            }
+            self.partial_eraser_shortcuts(ctx);
+            self.stamp_shortcuts(ctx);
+            self.local_color_shortcuts(ctx);
+            self.shape_shortcuts(ctx);
+            self.quick_palette_shortcuts(ctx);
+            self.tick_camera_sequence(ctx);
+            if self.liquify_active() && ctx.input(|input| input.key_pressed(Key::Escape)) {
+                self.finish_liquify(false);
+            }
+            if self.mixed_resource_preview_active()
+                && ctx.input(|input| input.key_pressed(Key::Escape))
+            {
+                self.finish_mixed_resource_move(false);
+            }
+            let keep_mixed_preview_for_appearance_capture = self
+                .appearance_layout_verification
+                .as_ref()
+                .is_some_and(|verification| verification.state == "scene-mixed-resource-disabled");
+            if self.mixed_resource_preview_active()
+                && !keep_mixed_preview_for_appearance_capture
+                && !ctx.input(|input| input.focused)
+            {
+                self.finish_mixed_resource_move(false);
+            }
+            if !self.liquify_active() && self.camera_playback.is_none() {
+                self.curve_shortcuts(ctx);
+            }
+            if ctx.input(|i| i.viewport().close_requested()) && self.capability_replay.is_some() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
+            if ctx.input(|i| i.viewport().close_requested())
+                && self.capability_replay.is_none()
+                && !self.allow_close
+                && (self.export_job.is_some()
+                    || self.png_export.is_running()
+                    || self.video_export.is_running()
+                    || self.obj_export.is_running())
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.status = "An export is running. Finish or cancel it, then close again.".into();
+            } else if ctx.input(|i| i.viewport().close_requested())
+                && self.capability_replay.is_none()
+                && !self.allow_close
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                if self.close_cleanup_failed {
+                    self.allow_close = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+                self.finish();
+                self.request(Pending::Close);
+            }
         }
         let was_artwork = self.presentation.artwork;
         if !self.confirm
+            && !live_mcp_edit_locked
             && self.quick_palette.is_none()
             && !self.show_help
             && !self.recovery_prompt
@@ -7130,6 +7391,7 @@ impl eframe::App for SketchApp {
         }
         let was_placing = self.placement.active;
         if !self.confirm
+            && !live_mcp_edit_locked
             && self.quick_palette.is_none()
             && !self.show_help
             && !self.recovery_prompt
@@ -7152,6 +7414,7 @@ impl eframe::App for SketchApp {
             self.placement_shortcuts(ctx);
         }
         if !self.confirm
+            && !live_mcp_edit_locked
             && self.quick_palette.is_none()
             && !self.placement.active
             && !was_placing
@@ -7858,7 +8121,7 @@ impl eframe::App for SketchApp {
                 } else {
                     replay_pen
                 };
-                if !curved_drawing_frame {
+                if !curved_drawing_frame && !live_mcp_edit_locked {
                     self.canvas_input(ctx, rect, replay_pen.map_or(pen, |sample| vec![sample]));
                 }
                 self.process_line_art_command(rect, ctx);
@@ -8130,7 +8393,10 @@ impl eframe::App for SketchApp {
         self.show_color_editor(ctx);
         self.show_document_color_swatches(ctx);
         self.quick_palette_ui(ctx);
-        self.tick_recovery(ctx);
+        self.show_live_mcp_preview(ctx);
+        if !live_mcp_edit_locked {
+            self.tick_recovery(ctx);
+        }
         self.construction_history.record_camera(&self.camera);
         self.construction_history
             .record_tool_settings(&self.current_tool_settings());
