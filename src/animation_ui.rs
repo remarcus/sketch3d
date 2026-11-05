@@ -13,6 +13,7 @@ pub(super) struct AnimationUi {
     preview_animation: Option<crate::animation::ArtworkAnimation>,
     preview_source: Option<(crate::animation::ArtworkAnimation, Vec<Stroke>)>,
     retime_preview: Option<(u64, u32, u32)>,
+    retime_entry: Option<(u64, u32, u32)>,
     rig_pose_frame: Option<u32>,
     rig_root_degrees: f32,
     rig_child_degrees: f32,
@@ -32,6 +33,7 @@ impl Default for AnimationUi {
             preview_animation: None,
             preview_source: None,
             retime_preview: None,
+            retime_entry: None,
             rig_pose_frame: None,
             rig_root_degrees: 0.0,
             rig_child_degrees: 0.0,
@@ -605,7 +607,7 @@ impl SketchApp {
                         }
                     }
                 });
-                if let Some((key_frame, key_exposure)) = self.doc.animation.layer_tracks.iter().find(|track|track.layer_id==self.doc.active_layer).and_then(|track|track.keyframes.iter().rev().find(|key|key.frame<=self.doc.animation.current_frame && self.doc.animation.current_frame-key.frame<key.exposure).map(|key|(key.frame,key.exposure))) {
+                if let Some((key_frame, key_exposure)) = self.doc.animation.layer_tracks.iter().find(|track|track.layer_id==self.doc.active_layer).and_then(|track|track.keyframes.iter().rev().find(|key|key.frame<=self.doc.animation.current_frame).filter(|key|self.doc.animation.current_frame-key.frame<key.exposure).map(|key|(key.frame,key.exposure))) {
                     ui.horizontal(|ui| {
                         ui.label("Active layer exposure");
                         let mut exposure=key_exposure;
@@ -616,7 +618,10 @@ impl SketchApp {
                                 Err(error)=>self.status=error,
                             }
                         }
+                        self.layer_key_frame_entry(ui, key_frame);
                     });
+                } else {
+                    self.animation_ui.retime_entry = None;
                 }
                 let rig_pose = self.doc.animation.two_bone_rig.as_ref()
                     .filter(|rig| rig.layer_id == self.doc.active_layer)
@@ -727,6 +732,27 @@ impl SketchApp {
         else {
             return;
         };
+        let frame = animation.current_frame;
+        let previous = track.keyframes.iter().rev().find(|key| key.frame < frame);
+        let next = track.keyframes.iter().find(|key| key.frame > frame);
+        let mut jump = None;
+        ui.horizontal(|ui| {
+            for (label, key) in [("Previous layer key", previous), ("Next layer key", next)] {
+                if ui
+                    .add_enabled(
+                        key.is_some() && !self.animation_ui.playing,
+                        egui::Button::new(label),
+                    )
+                    .clicked()
+                {
+                    jump = key.map(|key| key.frame);
+                }
+            }
+        });
+        if let Some(frame) = jump {
+            self.seek_artwork_animation(frame, false);
+            return;
+        }
         let (rect, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
         let first = animation.range_start;
@@ -819,28 +845,61 @@ impl SketchApp {
             egui::Stroke::new(1.0_f32, ui.visuals().text_color()),
         );
         if let Some((from, to)) = retime {
-            if !animation.current_pose_matches(&self.doc.strokes) {
-                self.status = "Set or update the current keyframe before retiming.".into();
-                return;
-            }
-            let result = animation
-                .retime_layer_key(layer_id, from, to)
-                .and_then(|next| {
-                    let strokes = next
-                        .resolve(next.current_frame)
-                        .ok_or("Cannot resolve moved key")?;
-                    self.commit_animation_state(next, strokes, "Layer key retimed.")
-                });
-            match result {
-                Ok(()) => {
-                    self.animation_ui.preview_animation = None;
-                    self.animation_ui.preview_source = None;
-                    self.animation_ui.selected_key_frames.clear();
-                }
-                Err(error) => self.status = error,
-            }
+            self.retime_active_layer_key(from, to);
         } else if let Some(frame) = seek {
             self.seek_artwork_animation(frame, false);
+        }
+    }
+
+    fn layer_key_frame_entry(&mut self, ui: &mut egui::Ui, from: u32) {
+        let layer = self.doc.active_layer;
+        let mut to = self
+            .animation_ui
+            .retime_entry
+            .filter(|&(id, frame, _)| (id, frame) == (layer, from))
+            .map_or(from, |(_, _, destination)| destination);
+        let editable = !self.animation_ui.playing && self.doc.active_editable();
+        ui.add_enabled_ui(editable, |ui| {
+            ui.label("Move key to frame");
+            ui.add(
+                egui::DragValue::new(&mut to)
+                    .range(self.doc.animation.range_start..=self.doc.animation.range_end),
+            );
+            self.animation_ui.retime_entry = Some((layer, from, to));
+            if ui
+                .add_enabled(to != from, egui::Button::new("Move key"))
+                .clicked()
+            {
+                self.retime_active_layer_key(from, to);
+            }
+        });
+    }
+
+    fn retime_active_layer_key(&mut self, from: u32, to: u32) {
+        if self.animation_ui.playing || !self.doc.active_editable() {
+            return;
+        }
+        let animation = &self.doc.animation;
+        if !animation.current_pose_matches(&self.doc.strokes) {
+            self.status = "Set or update the current keyframe before retiming.".into();
+            return;
+        }
+        let result = animation
+            .retime_layer_key(self.doc.active_layer, from, to)
+            .and_then(|next| {
+                let strokes = next
+                    .resolve(next.current_frame)
+                    .ok_or("Cannot resolve moved key")?;
+                self.commit_animation_state(next, strokes, "Layer key retimed.")
+            });
+        match result {
+            Ok(()) => {
+                self.animation_ui.retime_entry = None;
+                self.animation_ui.preview_animation = None;
+                self.animation_ui.preview_source = None;
+                self.animation_ui.selected_key_frames.clear();
+            }
+            Err(error) => self.status = error,
         }
     }
 
