@@ -623,6 +623,7 @@ pub struct SketchApp {
     color: [f32; 3],
     radius: f32,
     brush: Brush,
+    attach_drawn_strokes: bool,
     stabilization: f32,
     stabilizer: SurfaceStabilizer,
     eraser: bool,
@@ -2204,6 +2205,7 @@ impl SketchApp {
             color: startup_pencil.color,
             radius: startup_pencil.radius,
             brush: startup_pencil.brush,
+            attach_drawn_strokes: false,
             stabilization: startup_pencil.stabilization,
             stabilizer: SurfaceStabilizer::default(),
             eraser: false,
@@ -3345,8 +3347,31 @@ impl SketchApp {
                 pressure_samples_available,
                 ..texture
             };
+            let attachable_brush = self.doc.active_image_plane.is_none()
+                && self.brush.dabs.surface_target.is_none()
+                && self.brush.texture.anchor_mode
+                    != crate::texture::TextureAnchorMode::CapturedPlanar;
+            let guide_attachment = self.attach_drawn_strokes
+                .then(|| {
+                    self.doc.active_guide.filter(|_| {
+                        saved_geometry.as_ref().is_some_and(|geometry| {
+                            matches!(
+                                geometry,
+                                crate::document::guide_resources::GuideGeometry::Plane { .. }
+                                    | crate::document::guide_resources::GuideGeometry::Cylinder { .. }
+                            )
+                        })
+                    })
+                })
+                .flatten()
+                .filter(|_| attachable_brush);
+            if self.attach_drawn_strokes && guide_attachment.is_none() {
+                self.status =
+                    "This active guide or brush cannot attach the new stroke. It was drawn freely."
+                        .into();
+            }
             self.doc.strokes.push(Stroke {
-                guide_attachment: None,
+                guide_attachment,
                 model_surface: None,
                 curve: None,
                 material: Default::default(),

@@ -4,6 +4,39 @@ use crate::{editing, export_check, geometry, gizmo};
 
 impl SketchApp {
     pub(super) fn brush_controls(&mut self, ui: &mut egui::Ui) {
+        let attachable_guide = self.doc.active_guide.is_some_and(|id| {
+            self.doc.guide_resources.iter().any(|guide| {
+                guide.id == id
+                    && guide.visible
+                    && !guide.locked
+                    && matches!(
+                        guide.geometry,
+                        crate::document::guide_resources::GuideGeometry::Plane { .. }
+                            | crate::document::guide_resources::GuideGeometry::Cylinder { .. }
+                    )
+            })
+        });
+        let attachable_brush = self.doc.active_image_plane.is_none()
+            && self.doc.active_model_reference.is_none()
+            && self.brush.dabs.surface_target.is_none()
+            && self.brush.texture.anchor_mode != crate::texture::TextureAnchorMode::CapturedPlanar;
+        let can_attach_drawn_strokes = attachable_guide && attachable_brush;
+        ui.add_enabled(
+            can_attach_drawn_strokes,
+            egui::Checkbox::new(
+                &mut self.attach_drawn_strokes,
+                "Attach new strokes to active saved guide",
+            ),
+        );
+        if !can_attach_drawn_strokes {
+            ui.small(if !attachable_guide {
+                "Attachment needs a visible, unlocked saved plane or cylinder."
+            } else {
+                "This brush uses a surface or captured-planar texture that cannot attach."
+            });
+        } else {
+            ui.small("New brush strokes follow this saved plane or cylinder when it changes.");
+        }
         let before = self.brush;
         let image_tip = self.brush.tip_asset_id != 0;
         let strand_mode = self.brush.strands.enabled;
