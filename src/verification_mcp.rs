@@ -459,7 +459,7 @@ fn call_tool(root: &Path, name: &str, arguments: &Value, execution_enabled: bool
             required_string(arguments, "source_revision").and_then(|revision| {
                 required_string(arguments, "fixture_id").and_then(|fixture| {
                     required_string(arguments, "check_id")
-                        .and_then(|check| ci_summary(root, &revision, &fixture, &check))
+                        .and_then(|check| ci_summary(root, revision, fixture, check))
                 })
             })
         }
@@ -1973,7 +1973,7 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
     }
 
     let executable = std::env::current_exe()
-        .and_then(|path| fs::canonicalize(path))
+        .and_then(fs::canonicalize)
         .map_err(|error| format!("Cannot resolve the installed Sketch3D executable: {error}"))?;
     let install_root = verification_support_root(&executable);
     let mut project_root = install_root.clone();
@@ -1982,18 +1982,16 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
     // source-tree fallback for local workflows. Release packages carry the
     // runner and fixtures alongside the executable, so installed execution
     // never depends on the machine that compiled the binary.
-    if !runner.is_file() {
-        if std::env::var_os("SKETCH3D_VERIFICATION_ROOT").is_none() {
-            let source_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let source_runner = source_root.join("scripts/run_verification.ps1");
-            if source_runner.is_file()
-                && source_root
-                    .canonicalize()
-                    .is_ok_and(|source_root| executable.starts_with(source_root))
-            {
-                project_root = source_root.to_path_buf();
-                runner = source_runner;
-            }
+    if !runner.is_file() && std::env::var_os("SKETCH3D_VERIFICATION_ROOT").is_none() {
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let source_runner = source_root.join("scripts/run_verification.ps1");
+        if source_runner.is_file()
+            && source_root
+                .canonicalize()
+                .is_ok_and(|source_root| executable.starts_with(source_root))
+        {
+            project_root = source_root.to_path_buf();
+            runner = source_runner;
         }
     }
     if !runner.is_file() {
