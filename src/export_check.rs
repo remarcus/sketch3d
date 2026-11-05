@@ -459,6 +459,7 @@ pub fn layered_fixture() -> Document {
         locked: false,
         opacity: 1.0,
         blend_mode: crate::document::LayerBlendMode::Normal,
+        mask_inverted: false,
         mask_source: None,
         clip_to_below: false,
     });
@@ -469,6 +470,7 @@ pub fn layered_fixture() -> Document {
         locked: true,
         opacity: 1.0,
         blend_mode: crate::document::LayerBlendMode::Normal,
+        mask_inverted: false,
         mask_source: None,
         clip_to_below: false,
     });

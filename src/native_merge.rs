@@ -167,6 +167,7 @@ pub fn prepare_insert(
                 locked: layer.locked,
                 opacity: layer.opacity,
                 blend_mode: layer.blend_mode,
+                mask_inverted: layer.mask_source.is_some() && layer.mask_inverted,
                 mask_source: layer
                     .mask_source
                     .map(|id| {

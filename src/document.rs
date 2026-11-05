@@ -400,6 +400,12 @@ pub struct Layer {
     /// Explicit mask source. The stable ID survives changes to layer order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask_source: Option<u64>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mask_inverted: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub(crate) fn layer_mask_order(layers: &[Layer]) -> Result<Vec<u64>, &'static str> {
@@ -472,6 +478,7 @@ pub fn layers_default() -> Vec<Layer> {
         locked: false,
         opacity: 1.0,
         blend_mode: LayerBlendMode::Normal,
+        mask_inverted: false,
         mask_source: None,
         clip_to_below: false,
     }]
@@ -1622,6 +1629,12 @@ impl Document {
             .mask_source
             .or_else(|| (layer.clip_to_below && index > 0).then(|| self.layers[index - 1].id))
     }
+
+    pub fn layer_mask_inverted(&self, layer_id: u64) -> bool {
+        self.layers
+            .iter()
+            .any(|layer| layer.id == layer_id && layer.mask_source.is_some() && layer.mask_inverted)
+    }
     pub fn editable(&self, stroke: &Stroke) -> bool {
         !self
             .animation
@@ -2546,6 +2559,7 @@ mod layer_tests {
             locked: true,
             opacity: 1.0,
             blend_mode: LayerBlendMode::Normal,
+            mask_inverted: false,
             mask_source: None,
             clip_to_below: false,
         });
@@ -2606,6 +2620,7 @@ mod layer_tests {
                     locked: false,
                     opacity: 1.0,
                     blend_mode: LayerBlendMode::Normal,
+                    mask_inverted: false,
                     mask_source: None,
                     clip_to_below: false,
                 }),
@@ -2990,6 +3005,7 @@ mod group_tests {
             locked: true,
             opacity: 1.0,
             blend_mode: LayerBlendMode::Normal,
+            mask_inverted: false,
             mask_source: None,
             clip_to_below: false,
         });
@@ -3059,6 +3075,7 @@ mod group_tests {
             locked: false,
             opacity: 1.0,
             blend_mode: LayerBlendMode::Normal,
+            mask_inverted: false,
             mask_source: None,
             clip_to_below: false,
         });

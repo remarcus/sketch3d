@@ -171,6 +171,7 @@ impl SketchApp {
         let mut blend_changes = Vec::new();
         let mut clip_changes = Vec::new();
         let mut mask_changes = Vec::new();
+        let mut mask_inversion_changes = Vec::new();
         let mut property_buttons = Vec::new();
         let rename_id = egui::Id::new(RENAMING_LAYER_ID);
         let focus_rename_id = egui::Id::new(FOCUS_RENAME_LAYER_ID);
@@ -487,6 +488,13 @@ impl SketchApp {
                                 if source != layer.mask_source {
                                     mask_changes.push((layer_id, source));
                                 }
+                                let mut inverted = layer.mask_inverted;
+                                if ui.add_enabled(source.is_some(), egui::Checkbox::new(&mut inverted, "Invert mask"))
+                                    .on_hover_text("Show the layer outside the named mask. A hidden source gives full coverage when inverted.")
+                                    .changed()
+                                {
+                                    mask_inversion_changes.push((layer_id, inverted));
+                                }
                             });
                     });
 
@@ -614,6 +622,10 @@ impl SketchApp {
                 self.begin_layer_properties_preview(layer_id);
                 self.preview_layer_action(LayerAction::MaskSource(layer_id, source));
             }
+            for (layer_id, inverted) in mask_inversion_changes {
+                self.begin_layer_properties_preview(layer_id);
+                self.preview_layer_action(LayerAction::InvertMask(layer_id, inverted));
+            }
             for (layer_id, apply, cancel) in property_buttons {
                 if cancel
                     && self
@@ -740,6 +752,7 @@ impl SketchApp {
                 locked: false,
                 opacity: 1.0,
                 blend_mode: LayerBlendMode::Normal,
+                mask_inverted: false,
                 mask_source: None,
                 clip_to_below: false,
             });
@@ -920,6 +933,7 @@ impl SketchApp {
                 locked: false,
                 opacity: 1.0,
                 blend_mode: LayerBlendMode::Normal,
+                mask_inverted: false,
                 mask_source: None,
                 clip_to_below: false,
             });
@@ -1010,6 +1024,7 @@ impl SketchApp {
                     locked: false,
                     opacity: 0.6 + layer_id as f32 * 0.05,
                     blend_mode: modes[(layer_id as usize - 1) % modes.len()],
+                    mask_inverted: false,
                     mask_source: None,
                     clip_to_below: false,
                 });

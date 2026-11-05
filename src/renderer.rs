@@ -108,8 +108,35 @@ struct ScreenBackgroundTexture {
 struct ClipMaskTexture {
     _texture: wgpu::Texture,
     view: wgpu::TextureView,
-    bind: wgpu::BindGroup,
+    bindings: [wgpu::BindGroup; 2],
     size: [u32; 2],
+}
+
+fn clip_mask_binding(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    inversion: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Layer coverage mask binding"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: inversion.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -332,6 +359,8 @@ pub struct SceneRenderer {
     clip_mask_cutout_pipeline: wgpu::RenderPipeline,
     _clip_default_texture: wgpu::Texture,
     clip_default_bind: wgpu::BindGroup,
+    clip_layout: wgpu::BindGroupLayout,
+    clip_inversion: [wgpu::Buffer; 2],
     clip_sampler: wgpu::Sampler,
     clip_mask_cache: RefCell<HashMap<u64, Rc<ClipMaskTexture>>>,
     lines: wgpu::RenderPipeline,
@@ -418,26 +447,51 @@ impl SceneRenderer {
                 resource: uniform.as_entire_binding(),
             }],
         });
+        let texture_entries = [
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ];
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Brush mask layout"),
+            entries: &texture_entries,
+        });
+        let clip_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Layer coverage mask layout"),
             entries: &[
+                texture_entries[0],
+                texture_entries[1],
                 wgpu::BindGroupLayoutEntry {
-                    binding: 0,
+                    binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(4),
                     },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
             ],
+        });
+        let clip_inversion = [0_u32, 1].map(|mode| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Layer mask inversion mode"),
+                contents: bytemuck::bytes_of(&mode),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
         });
         let clip_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Layer clip mask sampler"),
@@ -481,20 +535,13 @@ impl SceneRenderer {
             },
         );
         let clip_default_view = clip_default_texture.create_view(&Default::default());
-        let clip_default_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Unclipped layer mask binding"),
-            layout: &texture_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&clip_default_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&clip_sampler),
-                },
-            ],
-        });
+        let clip_default_bind = clip_mask_binding(
+            device,
+            &clip_layout,
+            &clip_default_view,
+            &clip_sampler,
+            &clip_inversion[0],
+        );
         let shadow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Shadow sampling"),
             entries: &[
@@ -576,7 +623,7 @@ impl SceneRenderer {
                 &texture_layout,
                 &shadow_layout,
                 &texture_layout,
-                &texture_layout,
+                &clip_layout,
             ],
             push_constant_ranges: &[],
         });
@@ -1154,6 +1201,8 @@ impl SceneRenderer {
             clip_mask_cutout_pipeline,
             _clip_default_texture: clip_default_texture,
             clip_default_bind,
+            clip_layout,
+            clip_inversion,
             clip_sampler,
             clip_mask_cache: RefCell::new(HashMap::new()),
             lines,
@@ -2159,27 +2208,19 @@ impl SceneRenderer {
                     view_formats: &[],
                 });
                 let view = texture.create_view(&Default::default());
-                let bind = self
-                    .state
-                    .device
-                    .create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("Layer coverage mask binding"),
-                        layout: &self.texture_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(&view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(&self.clip_sampler),
-                            },
-                        ],
-                    });
+                let bindings = self.clip_inversion.each_ref().map(|inversion| {
+                    clip_mask_binding(
+                        &self.state.device,
+                        &self.clip_layout,
+                        &view,
+                        &self.clip_sampler,
+                        inversion,
+                    )
+                });
                 entry.insert(Rc::new(ClipMaskTexture {
                     _texture: texture,
                     view,
-                    bind,
+                    bindings,
                     size: mask_size,
                 }));
             }
@@ -2238,7 +2279,9 @@ impl SceneRenderer {
     ) -> &'a wgpu::BindGroup {
         doc.layer_clip_source(layer_id)
             .and_then(|source| masks.get(&source))
-            .map_or(&self.clip_default_bind, |mask| &mask.bind)
+            .map_or(&self.clip_default_bind, |mask| {
+                &mask.bindings[usize::from(doc.layer_mask_inverted(layer_id))]
+            })
     }
 
     pub fn render(

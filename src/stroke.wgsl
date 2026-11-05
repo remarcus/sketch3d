@@ -11,6 +11,7 @@ struct Scene {
 @group(3) @binding(1) var grain_sampler: sampler;
 @group(4) @binding(0) var clip_mask: texture_2d<f32>;
 @group(4) @binding(1) var clip_sampler: sampler;
+@group(4) @binding(2) var<uniform> clip_inverted: u32;
 fn apply_grain(color: vec3<f32>, position: vec2<f32>) -> vec3<f32> {
     let amount = scene.camera.w;
     if amount <= 0.0 { return color; }
@@ -55,12 +56,16 @@ fn visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     return mix(1.0,sum/9.0,scene.settings.z);
 }
 struct FragmentOutput { @location(0) color: vec4<f32>, @location(1) emission: vec4<f32>, }
+fn sample_clip_mask(uv: vec2<f32>) -> f32 {
+    let alpha = textureSampleLevel(clip_mask, clip_sampler, uv, 0.0).r;
+    return select(alpha, 1.0 - alpha, clip_inverted != 0u);
+}
 fn clip_coverage(in: Output) -> f32 {
-    return textureSampleLevel(clip_mask, clip_sampler, in.position.xy / max(scene.resolution.xy, vec2<f32>(1.0)), 0.0).r;
+    return sample_clip_mask(in.position.xy / max(scene.resolution.xy, vec2<f32>(1.0)));
 }
 fn parent_clip_coverage(in: Output) -> f32 {
     let dimensions = vec2<f32>(textureDimensions(clip_mask));
-    return textureSampleLevel(clip_mask, clip_sampler, in.position.xy / dimensions, 0.0).r;
+    return sample_clip_mask(in.position.xy / dimensions);
 }
 fn material_output(in: Output, alpha: f32, sampled_color: vec3<f32>) -> FragmentOutput {
     let material = in.material - floor(in.material / 4.0) * 4.0;

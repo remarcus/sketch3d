@@ -1355,6 +1355,7 @@ pub enum LayerAction {
     BlendMode(u64, LayerBlendMode),
     ClipToBelow(u64, bool),
     MaskSource(u64, Option<u64>),
+    InvertMask(u64, bool),
     Visible(u64, bool),
     Lock(u64, bool),
     Activate(u64),
@@ -1392,6 +1393,7 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 locked: false,
                 opacity: 1.0,
                 blend_mode: crate::document::LayerBlendMode::Normal,
+                mask_inverted: false,
                 mask_source: None,
                 clip_to_below: false,
             });
@@ -1436,6 +1438,7 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
             after.layers[index].clip_to_below = value;
             if value {
                 after.layers[index].mask_source = None;
+                after.layers[index].mask_inverted = false;
             }
         }
         LayerAction::MaskSource(id, source) => {
@@ -1447,7 +1450,20 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
             layer.mask_source = source;
             if source.is_some() {
                 layer.clip_to_below = false;
+            } else {
+                layer.mask_inverted = false;
             }
+        }
+        LayerAction::InvertMask(id, value) => {
+            let layer = after
+                .layers
+                .iter_mut()
+                .find(|layer| layer.id == id)
+                .ok_or("Layer not found")?;
+            if layer.mask_source.is_none() {
+                return Err("Choose a named mask source before inverting it".into());
+            }
+            layer.mask_inverted = value;
         }
         LayerAction::Visible(id, value) => {
             after
@@ -1573,6 +1589,7 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
             for layer in &mut after.layers {
                 if layer.mask_source == Some(id) {
                     layer.mask_source = None;
+                    layer.mask_inverted = false;
                 }
             }
             for folder in &mut after.folders {

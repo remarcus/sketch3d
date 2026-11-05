@@ -1452,6 +1452,7 @@ pub fn encode_with_images(
         let mut node = json!({"name":name,"mesh":mesh_index,"extras":{"spatialSketchStrokeId":stroke.id.to_string(),"spatialSketchLayerId":stroke.layer_id.to_string(),"spatialSketchLayerName":layer.name,"spatialSketchLayerOpacity":layer_opacity,"spatialSketchLayerBlendMode":layer.blend_mode.label(),"spatialSketchLayerBlendFallback":"normal","spatialSketchLayerClipToBelow":layer.clip_to_below && layer.mask_source.is_none() && clip_source.is_some(),"spatialSketchLayerClipFallback":if clip_source.is_some() {"not_applied_by_mesh_export"} else {"none"}}});
         if let Some(source) = layer.mask_source {
             node["extras"]["spatialSketchLayerMaskSourceId"] = json!(source.to_string());
+            node["extras"]["spatialSketchLayerMaskInverted"] = json!(layer.mask_inverted);
         }
         node["extras"]["spatialSketchMaterial"] = json!(match stroke.material {
             crate::document::StrokeMaterial::Shaded => "shaded",
