@@ -7,6 +7,7 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
+    collections::BTreeMap,
     fs,
     io::{self, BufRead, Read, Write},
     path::{Component, Path, PathBuf},
@@ -304,6 +305,12 @@ fn tool_definitions(config: &ServerConfig) -> Value {
             "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
         },
         {
+            "name": "verification_ci_summary",
+            "description": "Summarize imported CI outcomes by platform for one exact source revision, fixture ID, and check ID.",
+            "inputSchema": {"type":"object","properties":{"source_revision":{"type":"string","minLength":40,"maxLength":64},"fixture_id":{"type":"string","minLength":1,"maxLength":128},"check_id":{"type":"string","enum":["startup","save-reopen","export","glb-texture-roundtrip","ui-workflow"]}},"required":["source_revision","fixture_id","check_id"],"additionalProperties":false},
+            "annotations": {"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
+        },
+        {
             "name": "verification_list_artifacts",
             "description": "List the bounded artifact paths and sizes recorded for one check in a completed run.",
             "inputSchema": {"type": "object", "properties": {"run_id": {"type": "string", "maxLength": 64}, "check_id": {"type": "string", "enum": ["startup", "save-reopen", "export", "glb-texture-roundtrip", "ui-workflow"]}}, "required": ["run_id", "check_id"], "additionalProperties": false},
@@ -447,6 +454,14 @@ fn call_tool(root: &Path, name: &str, arguments: &Value, execution_enabled: bool
         "verification_list_checks" => list_checks(root),
         "verification_read_result" => {
             required_string(arguments, "run_id").and_then(|run_id| read_result(root, run_id))
+        }
+        "verification_ci_summary" => {
+            required_string(arguments, "source_revision").and_then(|revision| {
+                required_string(arguments, "fixture_id").and_then(|fixture| {
+                    required_string(arguments, "check_id")
+                        .and_then(|check| ci_summary(root, &revision, &fixture, &check))
+                })
+            })
         }
         "verification_list_artifacts" => required_string(arguments, "run_id").and_then(|run_id| {
             required_string(arguments, "check_id")
@@ -1067,6 +1082,92 @@ fn read_result(root: &Path, run_id: &str) -> Result<Value, String> {
         return Err("Run result does not use schema version 1".into());
     }
     Ok(value)
+}
+
+fn ci_summary(
+    root: &Path,
+    source_revision: &str,
+    fixture_id: &str,
+    check_id: &str,
+) -> Result<Value, String> {
+    if !matches!(
+        check_id,
+        "startup" | "save-reopen" | "export" | "glb-texture-roundtrip" | "ui-workflow"
+    ) {
+        return Err("Unsupported check ID".into());
+    }
+    if !matches!(source_revision.len(), 40 | 64)
+        || !source_revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || fixture_id.is_empty()
+        || fixture_id.len() > 128
+        || !fixture_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err("Source revision or fixture ID is invalid".into());
+    }
+    let entries = fs::read_dir(root).map_err(|error| error.to_string())?;
+    let mut outcomes: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut matched = Vec::new();
+    for (index, entry) in entries.enumerate() {
+        if index >= MAX_SCANNED_ENTRIES {
+            break;
+        }
+        let entry = entry.map_err(|error| error.to_string())?;
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        let run_id = entry.file_name().to_string_lossy().into_owned();
+        if !file_type.is_dir() || file_type.is_symlink() || !valid_run_id(&run_id) {
+            continue;
+        }
+        let Ok(result) = read_result(root, &run_id) else {
+            continue;
+        };
+        let revision = result
+            .pointer("/source_revision/value")
+            .and_then(Value::as_str);
+        if revision != Some(source_revision) {
+            continue;
+        }
+        let Some(platform) = result
+            .pointer("/ci/platform")
+            .and_then(Value::as_str)
+            .filter(|platform| matches!(*platform, "windows" | "linux" | "macos"))
+        else {
+            continue;
+        };
+        let Some(checks) = result.get("results").and_then(Value::as_array) else {
+            continue;
+        };
+        let Some(check) = checks.iter().find(|check| {
+            check.get("check_id").and_then(Value::as_str) == Some(check_id)
+                && check.pointer("/fixture/id").and_then(Value::as_str) == Some(fixture_id)
+        }) else {
+            continue;
+        };
+        let Some(outcome) = check
+            .get("outcome")
+            .and_then(Value::as_str)
+            .filter(|outcome| {
+                matches!(*outcome, "passed" | "failed" | "unsupported" | "timed_out")
+            })
+        else {
+            continue;
+        };
+        *outcomes
+            .entry(platform.to_owned())
+            .or_default()
+            .entry(outcome.to_owned())
+            .or_default() += 1;
+        matched.push(json!({"run_id":run_id,"platform":platform,"outcome":outcome}));
+    }
+    Ok(json!({
+        "source_revision": source_revision,
+        "fixture_id": fixture_id,
+        "check_id": check_id,
+        "matching_runs": matched,
+        "platform_outcomes": outcomes,
+        "scan_limit": MAX_SCANNED_ENTRIES
+    }))
 }
 
 fn result_file(root: &Path, run_id: &str) -> Result<(PathBuf, PathBuf, Vec<u8>), String> {

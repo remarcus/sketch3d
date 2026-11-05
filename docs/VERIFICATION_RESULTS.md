@@ -44,11 +44,12 @@ target/release/sketch3d --mcp-verification-server verification/normalized
 
 Configure an MCP host to launch that command as a stdio server. It supports the standard initialize/tools lifecycle for MCP protocol versions `2025-11-25` and `2025-06-18`, and exposes:
 
-- `verification_list_checks`: lists the four supported check IDs and up to 100 completed run IDs.
+- `verification_list_checks`: lists the five supported check IDs and up to 100 completed run IDs.
 - `verification_read_result`: returns one version 1 `result.json`.
 - `verification_list_artifacts`: lists the artifact paths and sizes recorded for one check.
 - `verification_read_artifact`: returns a recorded `.log` or `.txt` artifact as text, or a `.png` preview as an MCP image.
 - `verification_compare_runs`: compares one check across two completed runs, reporting outcome and bounded structured metric changes. It returns a PNG diff only when fixture fingerprints and normalized rendering resolutions match.
+- `verification_ci_summary`: groups imported CI outcomes by platform for an exact source revision, fixture ID, and check ID.
 
 This mode exposes report-reading tools only. It cannot start verifier processes, including if a client calls `verification_run_check` by name.
 
@@ -67,6 +68,16 @@ The `ui-workflow` check requires an interactive Windows desktop and Windows UI A
 Run comparisons with `verification_compare_runs` and pass `baseline_run_id`, `current_run_id`, and `check_id`. A regression is reported only when the same fixture passed in the baseline and fails in the current run; changed metrics alone are reported as differences. Visual comparison is marked `unsupported` when fixture fingerprints or rendering resolution metadata do not match. Compatible PNGs are bounded to 4,000,000 pixels and 1 MiB encoded diff size; the diff is returned as an MCP image with changed-pixel and maximum-channel-delta counts.
 
 Verifier execution is supervised as a process tree. Timeout and wait failures terminate the runner and its descendants (`taskkill /T` on Windows; a dedicated process group on Unix-like systems). If the MCP client closes stdin while a check is running, the server stops that process tree and exits without leaving an abandoned verifier. `scripts/pilot_mcp_disconnect.ps1` exercises this stdio disconnect path on Windows.
+
+## Import CI result bundles
+
+Import one normalized artifact ZIP into the same directory used by the report-only MCP server:
+
+```powershell
+pwsh -File scripts/import_ci_verification.ps1 -ArchivePath artifacts.zip -OutputDirectory verification/normalized -Platform linux -CiRunId 123456789 -Attempt 1
+```
+
+The importer validates every ZIP entry before writing, rejects traversal, rooted paths, duplicate or case-colliding names, symbolic links, excessive entries, and oversized entries or archives. It requires one schema-version-1 `result.json` and every declared artifact, then writes a direct-child run directory with CI run, attempt, platform, and source labels in the `ci` metadata. Revision, fixture, and existing artifact records are preserved. `verification_ci_summary` groups a check by the exact source revision and fixture ID supplied by the client; use `verification_read_artifact` to retrieve the original log or PNG.
 
 ## GLB texture round-trip check
 
