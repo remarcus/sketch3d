@@ -11,7 +11,8 @@ use std::{
     io::{self, BufRead, Read, Write},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::mpsc,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -30,6 +31,7 @@ const MAX_TEXT_ARTIFACT_BYTES: u64 = 256 * 1024;
 const MAX_PNG_ARTIFACT_BYTES: u64 = 1_000_000;
 const MAX_PNG_DIMENSION: u32 = 16_384;
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(0);
+static MCP_CLIENT_DISCONNECTED: AtomicBool = AtomicBool::new(false);
 
 pub fn serve(configured_root: &Path) -> Result<(), String> {
     serve_reports(configured_root, false)
@@ -78,15 +80,39 @@ enum ServerConfig {
 }
 
 fn serve_config(config: ServerConfig) -> Result<(), String> {
-    let stdin = io::stdin();
     let stdout = io::stdout();
-    let mut input = stdin.lock();
     let mut output = stdout.lock();
+    MCP_CLIENT_DISCONNECTED.store(false, Ordering::Relaxed);
+    let (sender, receiver) = mpsc::sync_channel(16);
+    thread::spawn(move || {
+        let stdin = io::stdin();
+        let mut input = stdin.lock();
+        loop {
+            let mut line = Vec::new();
+            let item = match read_bounded_line(&mut input, &mut line) {
+                Ok(ReadLine::Line) => InputItem::Line(line),
+                Ok(ReadLine::Oversized) => InputItem::Oversized,
+                Ok(ReadLine::Eof) => {
+                    MCP_CLIENT_DISCONNECTED.store(true, Ordering::Relaxed);
+                    let _ = sender.send(InputItem::Eof);
+                    return;
+                }
+                Err(error) => {
+                    MCP_CLIENT_DISCONNECTED.store(true, Ordering::Relaxed);
+                    let _ = sender.send(InputItem::Failed(error.to_string()));
+                    return;
+                }
+            };
+            if sender.send(item).is_err() {
+                return;
+            }
+        }
+    });
     loop {
-        let mut line = Vec::new();
-        match read_bounded_line(&mut input, &mut line).map_err(|error| error.to_string())? {
-            ReadLine::Eof => return Ok(()),
-            ReadLine::Oversized => {
+        match receiver.recv().map_err(|error| error.to_string())? {
+            InputItem::Eof => return Ok(()),
+            InputItem::Failed(error) => return Err(error),
+            InputItem::Oversized => {
                 write_message(
                     &mut output,
                     &json!({
@@ -97,7 +123,7 @@ fn serve_config(config: ServerConfig) -> Result<(), String> {
                 )
                 .map_err(|error| error.to_string())?;
             }
-            ReadLine::Line => {
+            InputItem::Line(line) => {
                 let parsed = serde_json::from_slice::<Value>(&line);
                 let response = match parsed {
                     Ok(message) => handle_message(&config, message),
@@ -113,6 +139,13 @@ fn serve_config(config: ServerConfig) -> Result<(), String> {
             }
         }
     }
+}
+
+enum InputItem {
+    Line(Vec<u8>),
+    Oversized,
+    Eof,
+    Failed(String),
 }
 
 enum ReadLine {
@@ -1369,23 +1402,45 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
         );
     }
 
+    // PowerShell cannot bind `$PSScriptRoot` correctly when `-File` receives
+    // Windows' extended `\\?\` path returned by canonicalize(). Keep the
+    // canonical paths for containment checks, but pass ordinary DOS paths to
+    // the child process.
+    let runner_argument = if cfg!(windows) {
+        runner
+            .strip_prefix(r"\\?\")
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|_| runner.clone())
+    } else {
+        runner.clone()
+    };
+    let output_argument = if cfg!(windows) {
+        root.strip_prefix(r"\\?\")
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|_| root.to_path_buf())
+    } else {
+        root.to_path_buf()
+    };
     let mut command = Command::new(if cfg!(windows) { "pwsh.exe" } else { "pwsh" });
     command
         .arg("-NoLogo")
         .arg("-NoProfile")
         .arg("-NonInteractive")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
         .arg("-File")
-        .arg(&runner)
+        .arg(&runner_argument)
         .arg("-Check")
         .arg(check_id)
         .arg("-OutputDirectory")
-        .arg(root)
+        .arg(&output_argument)
         .arg("-TimeoutSeconds")
         .arg(timeout_seconds.to_string())
         .current_dir(project_root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    configure_process_group(&mut command);
 
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -1420,18 +1475,23 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
     let outer_timeout = Duration::from_secs(timeout_seconds + RUNNER_TIMEOUT_PADDING_SECONDS);
     let started = Instant::now();
     let status = loop {
+        if MCP_CLIENT_DISCONNECTED.load(Ordering::Relaxed) {
+            terminate_process_tree(&mut child);
+            let _ = child.wait();
+            return Err("MCP client disconnected; stopped the verifier process tree.".into());
+        }
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if started.elapsed() < outer_timeout => {
                 thread::sleep(Duration::from_millis(25));
             }
             Ok(None) => {
-                let _ = child.kill();
+                terminate_process_tree(&mut child);
                 let _ = child.wait();
                 break None;
             }
             Err(error) => {
-                let _ = child.kill();
+                terminate_process_tree(&mut child);
                 let _ = child.wait();
                 return Err(format!("Could not wait for the shared runner: {error}"));
             }
@@ -1526,12 +1586,15 @@ fn run_native_texture_check(root: &Path, timeout_seconds: u64) -> Result<Value, 
     let fixture_hash = sha256_file(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/glb_texture_roundtrip_check.rs"),
     );
-    let mut child = Command::new(&executable)
+    let mut command = Command::new(&executable);
+    command
         .arg("--verify-glb-texture-roundtrip")
         .arg(&check_directory)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_process_group(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start native GLB verifier: {error}"))?;
     let stdout_reader = child
@@ -1544,18 +1607,23 @@ fn run_native_texture_check(root: &Path, timeout_seconds: u64) -> Result<Value, 
         .map(|stream| thread::spawn(move || read_capped(stream, MAX_PROCESS_LOG_BYTES)));
     let started = Instant::now();
     let status = loop {
+        if MCP_CLIENT_DISCONNECTED.load(Ordering::Relaxed) {
+            terminate_process_tree(&mut child);
+            let _ = child.wait();
+            return Err("MCP client disconnected; stopped the verifier process tree.".into());
+        }
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if started.elapsed() < Duration::from_secs(timeout_seconds) => {
                 thread::sleep(Duration::from_millis(25))
             }
             Ok(None) => {
-                let _ = child.kill();
+                terminate_process_tree(&mut child);
                 let _ = child.wait();
                 break None;
             }
             Err(error) => {
-                let _ = child.kill();
+                terminate_process_tree(&mut child);
                 let _ = child.wait();
                 return Err(format!("Could not wait for native GLB verifier: {error}"));
             }
@@ -1637,6 +1705,53 @@ fn run_native_texture_check(root: &Path, timeout_seconds: u64) -> Result<Value, 
     Ok(
         json!({"run_id":run_id,"check":check,"artifacts":artifact_rows,"process_exit_code":exit_code,"result_schema_version":1}),
     )
+}
+
+#[cfg(unix)]
+fn configure_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_command: &mut Command) {}
+
+/// Stop the complete verifier process tree after timeout or a supervision
+/// error. A runner can start the actual app as a child, so killing only the
+/// shell would leave that app running without a client.
+fn terminate_process_tree(child: &mut std::process::Child) {
+    #[cfg(windows)]
+    {
+        let pid = child.id().to_string();
+        let killed = Command::new("taskkill.exe")
+            .args(["/PID", &pid, "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !killed {
+            let _ = child.kill();
+        }
+    }
+    #[cfg(unix)]
+    {
+        let process_group = format!("-{}", child.id());
+        let killed = Command::new("kill")
+            .args(["-KILL", "--", &process_group])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !killed {
+            let _ = child.kill();
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = child.kill();
+    }
 }
 
 fn persist_tool_result(
