@@ -6,6 +6,9 @@ pub(super) struct AnimationUi {
     playback_origin_seconds: f64,
     playback_origin_frame: u32,
     selected_key_frames: BTreeSet<u32>,
+    batch_key_offset: i32,
+    batch_key_preview: Option<crate::animation::ArtworkAnimation>,
+    batch_key_destinations: Vec<u32>,
     multi_key_translation: [f32; 3],
     multi_key_point_scale: f32,
     multi_key_radius_scale: f32,
@@ -26,6 +29,9 @@ impl Default for AnimationUi {
             playback_origin_seconds: 0.0,
             playback_origin_frame: 0,
             selected_key_frames: BTreeSet::new(),
+            batch_key_offset: 1,
+            batch_key_preview: None,
+            batch_key_destinations: Vec::new(),
             multi_key_translation: [0.0; 3],
             multi_key_point_scale: 1.0,
             multi_key_radius_scale: 1.0,
@@ -86,6 +92,8 @@ impl SketchApp {
         if frame == current.current_frame {
             return;
         }
+        self.animation_ui.batch_key_preview = None;
+        self.animation_ui.batch_key_destinations.clear();
         if !playback && !current.current_pose_matches(&self.doc.strokes) {
             self.status = "Set or update the current keyframe before changing frames.".into();
             return;
@@ -674,6 +682,8 @@ impl SketchApp {
                                 let mut selected = self.animation_ui.selected_key_frames.contains(frame);
                                 if ui.checkbox(&mut selected, format!("{frame} ({exposure}f, {count})")).changed() {
                                     self.animation_ui.preview_animation = None;
+                                    self.animation_ui.batch_key_preview = None;
+                                    self.animation_ui.batch_key_destinations.clear();
                                     if selected {
                                         self.animation_ui.selected_key_frames.insert(*frame);
                                     } else {
@@ -683,11 +693,51 @@ impl SketchApp {
                             }
                             if ui.small_button("Select all").clicked() {
                                 self.animation_ui.selected_key_frames = key_rows.iter().map(|row| row.0).collect();
+                                self.animation_ui.batch_key_preview = None;
+                                self.animation_ui.batch_key_destinations.clear();
                             }
                             if ui.small_button("Clear").clicked() {
                                 self.animation_ui.selected_key_frames.clear();
+                                self.animation_ui.batch_key_preview = None;
+                                self.animation_ui.batch_key_destinations.clear();
                             }
                         });
+                        let mut preview_move = false;
+                        let mut preview_copy = false;
+                        let mut apply_batch = false;
+                        let mut cancel_batch = false;
+                        ui.horizontal(|ui| {
+                            ui.label("Frame offset");
+                            if ui.add(egui::DragValue::new(&mut self.animation_ui.batch_key_offset).range(-100_000..=100_000)).changed() {
+                                self.animation_ui.batch_key_preview = None;
+                                self.animation_ui.batch_key_destinations.clear();
+                            }
+                            let count = self.animation_ui.selected_key_frames.len();
+                            ui.add_enabled_ui(count > 0 && !self.animation_ui.playing, |ui| {
+                                preview_move = ui.button("Preview move").clicked();
+                                preview_copy = ui.button("Preview copy").clicked();
+                            });
+                            if self.animation_ui.batch_key_preview.is_some() {
+                                apply_batch = ui.button("Apply batch").clicked();
+                                cancel_batch = ui.small_button("Cancel batch").clicked();
+                            }
+                        });
+                        if preview_move {
+                            self.preview_layer_key_batch(false);
+                        }
+                        if preview_copy {
+                            self.preview_layer_key_batch(true);
+                        }
+                        if apply_batch {
+                            self.apply_layer_key_batch();
+                        }
+                        if cancel_batch {
+                            self.animation_ui.batch_key_preview = None;
+                            self.animation_ui.batch_key_destinations.clear();
+                        }
+                        if !self.animation_ui.batch_key_destinations.is_empty() {
+                            ui.small(format!("Destination frames: {}", self.animation_ui.batch_key_destinations.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")));
+                        }
                         ui.horizontal(|ui| {
                             ui.label("Move XYZ");
                             for component in &mut self.animation_ui.multi_key_translation {
@@ -839,6 +889,36 @@ impl SketchApp {
                 ));
             }
         }
+        if let Some(preview) = &self.animation_ui.batch_key_preview {
+            if let Some(preview_track) = preview
+                .layer_tracks
+                .iter()
+                .find(|track| track.layer_id == layer_id)
+            {
+                for destination in &self.animation_ui.batch_key_destinations {
+                    if let Some(key) = preview_track
+                        .keyframes
+                        .iter()
+                        .find(|key| key.frame == *destination)
+                    {
+                        let left = x(key.frame);
+                        let right = x(key
+                            .frame
+                            .saturating_add(key.exposure)
+                            .min(animation.range_end + 1));
+                        painter.rect_stroke(
+                            Rect::from_min_max(
+                                egui::pos2(left, rect.top() + 5.0),
+                                egui::pos2(right, rect.bottom() - 2.0),
+                            ),
+                            2.0,
+                            egui::Stroke::new(2.0_f32, Color32::YELLOW),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                }
+            }
+        }
         painter.vline(
             x(animation.current_frame),
             rect.y_range(),
@@ -880,6 +960,72 @@ impl SketchApp {
                 self.place_active_layer_key(from, to, true);
             }
         });
+    }
+
+    fn preview_layer_key_batch(&mut self, duplicate: bool) {
+        if self.animation_ui.playing || !self.doc.active_editable() {
+            return;
+        }
+        if !self.doc.animation.current_pose_matches(&self.doc.strokes) {
+            self.status =
+                "Set or update the current keyframe before moving or copying selected keys.".into();
+            return;
+        }
+        if self.animation_ui.selected_key_frames.is_empty() {
+            return;
+        }
+        match self.doc.animation.place_layer_keys(
+            self.doc.active_layer,
+            &self
+                .animation_ui
+                .selected_key_frames
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            self.animation_ui.batch_key_offset,
+            duplicate,
+        ) {
+            Ok(animation) => {
+                self.animation_ui.batch_key_destinations = self
+                    .animation_ui
+                    .selected_key_frames
+                    .iter()
+                    .filter_map(|frame| {
+                        i64::from(*frame)
+                            .checked_add(i64::from(self.animation_ui.batch_key_offset))
+                            .and_then(|value| u32::try_from(value).ok())
+                    })
+                    .collect();
+                self.animation_ui.batch_key_preview = Some(animation);
+                self.status =
+                    "Batch destinations previewed. Apply to commit one undo step or cancel.".into();
+            }
+            Err(error) => {
+                self.animation_ui.batch_key_preview = None;
+                self.animation_ui.batch_key_destinations.clear();
+                self.status = error;
+            }
+        }
+    }
+
+    fn apply_layer_key_batch(&mut self) {
+        let Some(animation) = self.animation_ui.batch_key_preview.take() else {
+            return;
+        };
+        let strokes = animation
+            .resolve(animation.current_frame)
+            .unwrap_or_else(|| self.doc.strokes.clone());
+        match self.commit_animation_state(
+            animation,
+            strokes,
+            "Selected layer keys moved or copied in one edit.",
+        ) {
+            Ok(()) => {
+                self.animation_ui.batch_key_destinations.clear();
+                self.animation_ui.selected_key_frames.clear();
+            }
+            Err(error) => self.status = error,
+        }
     }
 
     fn place_active_layer_key(&mut self, from: u32, to: u32, duplicate: bool) {

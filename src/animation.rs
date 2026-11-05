@@ -775,6 +775,92 @@ impl ArtworkAnimation {
         Ok(next)
     }
 
+    /// Move or copy a selected set of layer keys by one signed frame offset.
+    /// Every destination is validated against the complete track before any
+    /// key is changed, so conflicts reject the whole batch.
+    pub fn place_layer_keys(
+        &self,
+        layer_id: u64,
+        source_frames: &[u32],
+        offset: i32,
+        duplicate: bool,
+    ) -> Result<Self, String> {
+        if source_frames.is_empty() || offset == 0 {
+            return Err("Select layer keys and choose a nonzero frame offset".into());
+        }
+        let source_set: HashSet<u32> = source_frames.iter().copied().collect();
+        if source_set.len() != source_frames.len() {
+            return Err("The selected layer keys contain duplicates".into());
+        }
+        let mut next = self.clone();
+        let track_index = next
+            .layer_tracks
+            .iter()
+            .position(|track| track.layer_id == layer_id)
+            .ok_or("The active layer has no animation track")?;
+        let track = &next.layer_tracks[track_index];
+        let mut selected = Vec::with_capacity(source_set.len());
+        for frame in &source_set {
+            selected.push(
+                track
+                    .keyframes
+                    .iter()
+                    .find(|key| key.frame == *frame)
+                    .cloned()
+                    .ok_or("A selected layer key no longer exists")?,
+            );
+        }
+        if duplicate && track.keyframes.len() + selected.len() > MAX_KEYFRAMES {
+            return Err("The selected keys would exceed the 120-key limit".into());
+        }
+        let mut destinations = Vec::with_capacity(selected.len());
+        for mut key in selected {
+            let destination = i64::from(key.frame) + i64::from(offset);
+            if destination < i64::from(self.range_start)
+                || destination > i64::from(self.range_end)
+                || destination + i64::from(key.exposure) - 1 > i64::from(self.range_end)
+            {
+                return Err(
+                    "Every destination and held exposure must fit inside the animation range"
+                        .into(),
+                );
+            }
+            key.frame = destination as u32;
+            destinations.push(key);
+        }
+        destinations.sort_by_key(|key| key.frame);
+        for pair in destinations.windows(2) {
+            if pair[0].frame.saturating_add(pair[0].exposure) > pair[1].frame {
+                return Err(
+                    "Selected destinations overlap each other; no keys were changed".into(),
+                );
+            }
+        }
+        let track = &mut next.layer_tracks[track_index];
+        let remaining: Vec<_> = track
+            .keyframes
+            .iter()
+            .filter(|key| duplicate || !source_set.contains(&key.frame))
+            .cloned()
+            .collect();
+        for destination in &destinations {
+            let destination_end = destination.frame.saturating_add(destination.exposure);
+            if remaining.iter().any(|other| {
+                let other_end = other.frame.saturating_add(other.exposure);
+                other.frame < destination_end && destination.frame < other_end
+            }) {
+                return Err(
+                    "A destination overlaps an existing exposure; no keys were changed".into(),
+                );
+            }
+        }
+        let mut keyframes = remaining;
+        keyframes.extend(destinations);
+        keyframes.sort_by_key(|key| key.frame);
+        track.keyframes = keyframes;
+        Ok(next)
+    }
+
     pub fn set_layer_exposure(
         &self,
         layer_id: u64,
