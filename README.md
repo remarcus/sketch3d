@@ -107,6 +107,10 @@ Recovery snapshots protect completed edits separately from deliberate drawing sa
 
 ## Releases
 
+Use the layer timeline to key the active layer, add a **Blank key**, or duplicate a held exposure. Drag a key to change its timing. Turn on **Onion skin** to see neighboring drawings, then use **Onion skin for active layer** to control which layers appear as overlays.
+
+Choose **File → Export → Editable Grease Pencil (.py)…** and run the exported script in Blender 4.3 or newer. The handoff preserves editable strokes, layer keys, held exposures, blank intervals, and frame rate. The export reports unsupported brush and compositing effects. Interpolation exports as held keys, and animated drawing export omits the prototype rig.
+
 After setting the version in `Cargo.toml`, push the matching tag (for example, `v0.1.0`) to build Windows, Linux, and macOS archives and publish them with generated release notes and SHA-256 checksums. The workflow marks tags containing a hyphen, such as `v0.2.0-rc.1`, as prereleases.
 
 ## Project information
