@@ -2010,12 +2010,14 @@ impl SketchApp {
         } else {
             crate::presets::path()
         };
-        let preset_ui = crate::presets_ui::PresetUi::new(
+        let startup_pencil = crate::presets::startup_pencil();
+        let mut preset_ui = crate::presets_ui::PresetUi::new(
             cc.wgpu_render_state
                 .clone()
                 .expect("wgpu renderer required"),
             library_path,
         );
+        preset_ui.choose(startup_pencil.id);
         let recovery_path = if std::env::args().any(|arg| arg.starts_with("--verify")) {
             let arguments = std::env::args().collect::<Vec<_>>();
             let relative = if arguments.iter().any(|arg| arg == "--verify-presentation") {
@@ -2186,10 +2188,10 @@ impl SketchApp {
             vase_verification_frame: None,
             guide_visible: true,
             resume_ink: false,
-            color: [0.17, 0.82, 0.74],
-            radius: 0.025,
-            brush: Brush::default(),
-            stabilization: 0.35,
+            color: startup_pencil.color,
+            radius: startup_pencil.radius,
+            brush: startup_pencil.brush,
+            stabilization: startup_pencil.stabilization,
             stabilizer: SurfaceStabilizer::default(),
             eraser: false,
             partial_eraser: Default::default(),

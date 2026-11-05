@@ -542,6 +542,16 @@ fn valid_name(name: &str) -> Result<String, String> {
     }
     Ok(trimmed.to_owned())
 }
+pub(crate) fn startup_pencil() -> Preset {
+    let mut pencil = defaults(&[])
+        .into_iter()
+        .find(|preset| preset.name == "Graphite")
+        .expect("Graphite is a built-in preset");
+    pencil.color = [crate::presentation::srgb_to_linear(53.0 / 255.0); 3];
+    pencil.radius = 0.018;
+    pencil
+}
+
 fn defaults(tip_assets: &[crate::brush_tip::BrushTipAsset]) -> Vec<Preset> {
     let mut presets: Vec<Preset> = [
         ("Round Ink", BrushKind::Round, TextureKind::Solid, 0.025),
