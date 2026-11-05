@@ -5553,7 +5553,7 @@ impl SketchApp {
                     ui.close_menu();
                     self.active_plane_svg_export_dialog();
                 }
-                if ui.button("Editable Grease Pencil strokes (.py)…").clicked() {
+                if ui.button("Editable Grease Pencil (.py)…").clicked() {
                     ui.close_menu();
                     self.grease_pencil_handoff_dialog();
                 }

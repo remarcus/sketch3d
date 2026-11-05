@@ -9,12 +9,28 @@ struct Payload {
     unsupported: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     two_bone_rig: Option<TwoBoneRigPayload>,
+    timing: Option<TimingPayload>,
 }
 
 #[derive(Serialize)]
 struct LayerPayload {
     name: String,
+    hidden: bool,
+    frames: Vec<DrawingPayload>,
+}
+
+#[derive(Serialize)]
+struct DrawingPayload {
+    frame: u32,
     strokes: Vec<StrokePayload>,
+}
+
+#[derive(Serialize)]
+struct TimingPayload {
+    fps: u32,
+    start: u32,
+    end: u32,
+    current: u32,
 }
 
 #[derive(Serialize)]
@@ -63,35 +79,29 @@ pub fn build_script(document: &Document, name: &str) -> Result<(String, Vec<Stri
     } else {
         document.strokes.clone()
     };
-    let mut layers: Vec<_> = document
-        .layers
-        .iter()
-        .map(|layer| LayerPayload {
-            name: layer.name.clone(),
-            strokes: Vec::new(),
-        })
-        .collect();
+    let animation = &document.animation;
+    let animated = !animation.is_empty();
+    if animated && !animation.current_pose_matches(&document.strokes) {
+        return Err("Set or update the current keyframe before exporting the animation.".into());
+    }
     let mut unsupported = Vec::new();
-    for stroke in &source_strokes {
-        let Some(layer_index) = document
-            .layers
-            .iter()
-            .position(|layer| layer.id == stroke.layer_id)
-        else {
-            unsupported.push(format!("Stroke {}: missing layer; skipped", stroke.id));
-            continue;
-        };
+    if animation.interpolate {
+        unsupported.push("Whole-drawing interpolation is exported as held keys.".into());
+    }
+    if animated && animation.two_bone_rig.is_some() {
+        unsupported.push("Animated drawing export omits the two-bone rig and its poses.".into());
+    }
+    let mut encode = |stroke: &Stroke, layer: &crate::document::Layer| {
         if stroke.points.is_empty() {
             unsupported.push(format!(
                 "Stroke {}: no centerline points; skipped",
                 stroke.id
             ));
-            continue;
+            return None;
         }
         if let Some(reason) = unsupported_semantics(stroke) {
             unsupported.push(format!("Stroke {}: {reason}", stroke.id));
         }
-        let layer = &document.layers[layer_index];
         if layer.opacity != 1.0
             || layer.clip_to_below
             || layer.mask_source.is_some()
@@ -153,15 +163,84 @@ pub fn build_script(document: &Document, name: &str) -> Result<(String, Vec<Stri
                 }
             })
             .collect();
-        layers[layer_index].strokes.push(StrokePayload {
+        Some(StrokePayload {
             id: stroke.id,
             points,
-        });
-    }
+        })
+    };
+    let layers = document
+        .layers
+        .iter()
+        .map(|layer| {
+            let mut drawing = |frame, strokes: &[Stroke]| DrawingPayload {
+                frame,
+                strokes: strokes
+                    .iter()
+                    .filter(|stroke| stroke.layer_id == layer.id)
+                    .filter_map(|stroke| encode(stroke, layer))
+                    .collect(),
+            };
+            let mut frames = Vec::new();
+            if let Some(track) = animation
+                .layer_tracks
+                .iter()
+                .find(|track| track.layer_id == layer.id)
+            {
+                for (index, key) in track.keyframes.iter().enumerate() {
+                    frames.push(drawing(key.frame + 1, &key.strokes));
+                    let end = key.frame + key.exposure;
+                    let next = track
+                        .keyframes
+                        .get(index + 1)
+                        .map_or(animation.range_end + 1, |key| key.frame);
+                    if end < next {
+                        frames.push(drawing(end + 1, &[]));
+                    }
+                }
+                if let Some(first) = track.keyframes.first() {
+                    if first.frame > animation.range_start {
+                        frames.insert(0, drawing(animation.range_start + 1, &first.strokes));
+                    }
+                }
+            } else if let Some(first) = animation.keyframes.first() {
+                if first.frame > animation.range_start {
+                    frames.push(drawing(animation.range_start + 1, &first.strokes));
+                }
+                frames.extend(
+                    animation
+                        .keyframes
+                        .iter()
+                        .map(|key| drawing(key.frame + 1, &key.strokes)),
+                );
+            } else {
+                let strokes = animation
+                    .base_strokes
+                    .as_deref()
+                    .filter(|_| animated)
+                    .unwrap_or(&source_strokes);
+                frames.push(drawing(
+                    if animated {
+                        animation.range_start + 1
+                    } else {
+                        1
+                    },
+                    strokes,
+                ));
+            }
+            LayerPayload {
+                name: layer.name.clone(),
+                hidden: !layer.visible || !document.layer_folder_visible(layer.id),
+                frames,
+            }
+        })
+        .collect();
+    unsupported.sort();
+    unsupported.dedup();
     let two_bone_rig = document
         .animation
         .two_bone_rig
         .as_ref()
+        .filter(|_| !animated)
         .map(|rig| TwoBoneRigPayload {
             layer_id: rig.layer_id,
             root: rig.root.to_array(),
@@ -189,6 +268,12 @@ pub fn build_script(document: &Document, name: &str) -> Result<(String, Vec<Stri
         layers,
         unsupported: unsupported.clone(),
         two_bone_rig,
+        timing: (animated || animation.two_bone_rig.is_some()).then_some(TimingPayload {
+            fps: animation.fps.into(),
+            start: animation.range_start + 1,
+            end: animation.range_end + 1,
+            current: animation.current_frame + 1,
+        }),
     };
     let payload_json = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
     // serde_json's quoted string is a valid Python string literal; json.loads
@@ -200,23 +285,25 @@ import json
 
 # Run with Blender 4.3 or newer (Grease Pencil 3).
 DATA = json.loads(__PAYLOAD__)
-gp = bpy.data.grease_pencils_v3.new(DATA["name"])
+grease_pencils = getattr(bpy.data, "grease_pencils_v3", None)
+if grease_pencils is None:
+    grease_pencils = bpy.data.grease_pencils
+gp = grease_pencils.new(DATA["name"])
 obj = bpy.data.objects.new(DATA["name"], gp)
 bpy.context.collection.objects.link(obj)
 
-for layer_data in DATA["layers"]:
-    layer = gp.layers.new(layer_data["name"], set_active=False)
-    frame = layer.frames.new(1)
-    strokes = layer_data["strokes"]
+materials = {}
+
+def write_drawing(frame, strokes):
     if not strokes:
-        continue
+        return
     drawing = frame.drawing
     drawing.add_strokes([len(stroke["points"]) for stroke in strokes])
     positions = drawing.attributes["position"].data
-    radii = drawing.attributes["radius"].data
-    opacities = drawing.attributes["opacity"].data
-    material_indices = drawing.attributes["material_index"].data
-    vertex_colors = drawing.attributes.new("vertex_color", "FLOAT_COLOR", "POINT")
+    radii = (drawing.attributes.get("radius") or drawing.attributes.new("radius", "FLOAT", "POINT")).data
+    opacities = (drawing.attributes.get("opacity") or drawing.attributes.new("opacity", "FLOAT", "POINT")).data
+    material_indices = (drawing.attributes.get("material_index") or drawing.attributes.new("material_index", "INT", "CURVE")).data
+    vertex_colors = drawing.attributes.get("vertex_color") or drawing.attributes.new("vertex_color", "FLOAT_COLOR", "POINT")
     point_index = 0
     for stroke_index, stroke in enumerate(strokes):
         for point in stroke["points"]:
@@ -224,16 +311,24 @@ for layer_data in DATA["layers"]:
             radii[point_index].value = point["radius"]
             opacities[point_index].value = point["opacity"]
             color = point["color"]
-            vertex_colors.data[point_index].color = (*color, point["opacity"])
+            vertex_colors.data[point_index].color = (*color, 1.0)
             point_index += 1
 
     for stroke_index, stroke in enumerate(strokes):
-        material = bpy.data.materials.new(f"{DATA['name']} · {layer_data['name']} · {stroke_index + 1}")
-        bpy.data.materials.create_gpencil_data(material)
-        base = stroke["points"][0]["color"] if stroke["points"] else [0.0, 0.0, 0.0]
-        material.grease_pencil.color = (*base, 1.0)
-        obj.data.materials.append(material)
-        material_indices[stroke_index].value = len(obj.data.materials) - 1
+        base = tuple(stroke["points"][0]["color"])
+        if base not in materials:
+            material = bpy.data.materials.new(f"{DATA['name']} · Ink {len(materials) + 1}")
+            bpy.data.materials.create_gpencil_data(material)
+            material.grease_pencil.color = (*base, 1.0)
+            obj.data.materials.append(material)
+            materials[base] = len(obj.data.materials) - 1
+        material_indices[stroke_index].value = materials[base]
+
+for layer_data in DATA["layers"]:
+    layer = gp.layers.new(layer_data["name"], set_active=False)
+    layer.hide = layer_data["hidden"]
+    for drawing_data in layer_data["frames"]:
+        write_drawing(layer.frames.new(drawing_data["frame"]), drawing_data["strokes"])
 
 if DATA.get("two_bone_rig"):
     rig = DATA["two_bone_rig"]
@@ -260,7 +355,7 @@ if DATA.get("two_bone_rig"):
     weights = {binding["stroke_id"]: binding["child_weights"] for binding in rig["bindings"]}
     global_point = 0
     for layer_data in DATA["layers"]:
-        for stroke in layer_data["strokes"]:
+        for stroke in layer_data["frames"][0]["strokes"]:
             stroke_weights = weights.get(stroke["id"])
             for point_index in range(len(stroke["points"])):
                 if stroke_weights is None or point_index >= len(stroke_weights):
@@ -289,6 +384,15 @@ if DATA.get("two_bone_rig"):
         root_pose.keyframe_insert(data_path="rotation_euler", index=2, frame=frame)
         child_pose.rotation_euler.z = pose["child_angle"]
         child_pose.keyframe_insert(data_path="rotation_euler", index=2, frame=frame)
+
+if DATA.get("timing"):
+    timing = DATA["timing"]
+    scene = bpy.context.scene
+    scene.render.fps = timing["fps"]
+    scene.render.fps_base = 1.0
+    scene.frame_start = timing["start"]
+    scene.frame_end = timing["end"]
+    scene.frame_set(timing["current"])
 
 print("Sketch3D Grease Pencil handoff created:", obj.name)
 if DATA["unsupported"]:
@@ -344,4 +448,54 @@ fn unsupported_semantics(stroke: &Stroke) -> Option<String> {
         unsupported.push("live stroke modifiers");
     }
     (!unsupported.is_empty()).then(|| unsupported.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_preserves_layer_keys_and_inserts_a_blank_for_an_exposure_gap() {
+        let mut document = crate::scenes::pencil_house();
+        let layer_id = document.active_layer;
+        let strokes: Vec<_> = document
+            .strokes
+            .iter()
+            .filter(|stroke| stroke.layer_id == layer_id)
+            .take(1)
+            .cloned()
+            .collect();
+        let animation = document
+            .animation
+            .set_layer_keyframe(2, layer_id, &strokes, &document.strokes)
+            .unwrap()
+            .set_layer_exposure(layer_id, 2, 2)
+            .unwrap()
+            .set_layer_keyframe(7, layer_id, &[], &document.strokes)
+            .unwrap();
+        document.strokes = animation.resolve(7).unwrap();
+        document.animation = animation;
+        let (script, _) = build_script(&document, "Animation fixture").unwrap();
+        let literal = script
+            .lines()
+            .find_map(|line| line.strip_prefix("DATA = json.loads("))
+            .unwrap();
+        let payload: String = serde_json::from_str(literal.strip_suffix(')').unwrap()).unwrap();
+        let data: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let track = &data["layers"][1]["frames"];
+        let frames: Vec<_> = track
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|frame| {
+                (
+                    frame["frame"].as_u64().unwrap(),
+                    frame["strokes"].as_array().unwrap().len(),
+                )
+            })
+            .collect();
+        assert_eq!(frames, vec![(1, 1), (3, 1), (5, 0), (8, 0)]);
+        assert_eq!(data["layers"][0]["frames"].as_array().unwrap().len(), 1);
+        assert_eq!(data["timing"]["current"], 8);
+    }
 }
