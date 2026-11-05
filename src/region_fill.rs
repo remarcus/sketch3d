@@ -63,13 +63,15 @@ fn project(stroke: &Stroke, plane: DrawingPlane) -> Option<Vec<DVec2>> {
 
 /// Finds the smallest bounded face containing `world`, with endpoints closer
 /// than `gap` joined. Hidden layers are ignored; visible locked layers remain
-/// useful as boundaries. The returned contour lies exactly on the target plane.
+/// useful as boundaries. When `active_layer` is set, only that layer contributes
+/// boundaries. The returned contour lies exactly on the target plane.
 pub fn find_region(
     doc: &Document,
     plane: DrawingPlane,
     world: Vec3,
     gap: f32,
     half_extent: Option<glam::Vec2>,
+    active_layer: Option<u64>,
 ) -> Result<Vec<Vec3>, String> {
     if !world.is_finite() || !gap.is_finite() || !(0.0..=0.05).contains(&gap) {
         return Err("Invalid region point or gap tolerance".into());
@@ -80,7 +82,7 @@ pub fn find_region(
     let click = DVec2::new(d.dot(u.as_dvec3()), d.dot(v.as_dvec3()));
     let mut segments = Vec::new();
     for stroke in &doc.strokes {
-        if !doc.visible(stroke) {
+        if !doc.visible(stroke) || active_layer.is_some_and(|layer| stroke.layer_id != layer) {
             continue;
         }
         let Some(points) = project(stroke, plane) else {

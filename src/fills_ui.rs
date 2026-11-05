@@ -32,6 +32,7 @@ pub(super) struct FillUi {
     pub offset: f32,
     pub region_mode: bool,
     pub gap_tolerance: f32,
+    pub active_layer_boundaries: bool,
     pub draft: Option<FillDraft>,
     pub verification_frame: Option<u32>,
     texture_preview: Option<(u64, bool, egui::TextureHandle)>,
@@ -43,6 +44,7 @@ impl Default for FillUi {
             offset: 0.003,
             region_mode: false,
             gap_tolerance: 0.0,
+            active_layer_boundaries: false,
             draft: None,
             verification_frame: None,
             texture_preview: None,
@@ -913,11 +915,27 @@ impl SketchApp {
         });
         if self.fills.region_mode {
             ui.label("Click inside a closed outline to preview its fill. Press Enter to commit or Escape to cancel.");
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut self.fills.active_layer_boundaries,
+                    false,
+                    "Visible layers",
+                );
+                ui.selectable_value(
+                    &mut self.fills.active_layer_boundaries,
+                    true,
+                    "Active layer",
+                );
+            });
             ui.add(
                 egui::Slider::new(&mut self.fills.gap_tolerance, 0.0..=0.05)
                     .text("Close outline gaps (wu)"),
             );
-            ui.small("Visible coplanar strokes define boundaries, including strokes on locked layers. Hidden and non-coplanar strokes are ignored. Crossing strokes split regions; nested outlines choose the smallest region. Holes are unsupported.");
+            ui.small(if self.fills.active_layer_boundaries {
+                "Only visible coplanar strokes on the active layer define boundaries. Hidden and non-coplanar strokes are ignored. Crossing strokes split regions; nested outlines choose the smallest region. Holes are unsupported."
+            } else {
+                "Visible coplanar strokes define boundaries, including strokes on locked layers. Hidden and non-coplanar strokes are ignored. Crossing strokes split regions; nested outlines choose the smallest region. Holes are unsupported."
+            });
         } else {
             ui.label("Click corners on a plane. Click the first corner or press Enter to close and fill. Backspace removes a corner; Escape cancels.");
         }
@@ -992,6 +1010,9 @@ impl SketchApp {
                 world,
                 self.fills.gap_tolerance,
                 target.half_extent(),
+                self.fills
+                    .active_layer_boundaries
+                    .then_some(self.doc.active_layer),
             ) {
                 Ok(points) => {
                     let mark = Stroke {
