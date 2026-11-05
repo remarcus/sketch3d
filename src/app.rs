@@ -5719,7 +5719,7 @@ impl SketchApp {
                 ui.close_menu();
                 self.begin_placement();
             }
-            if ui.button("Pick saved plane on canvas   Shift+K").clicked() {
+            if ui.button("Pick saved guide on canvas   Shift+K").clicked() {
                 ui.close_menu();
                 self.begin_plane_picker();
             }

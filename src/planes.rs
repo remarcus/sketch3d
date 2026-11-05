@@ -5,7 +5,7 @@ use crate::{editing, gizmo};
 #[derive(Default)]
 pub(super) struct PlanePickUi {
     pub active: bool,
-    pub hovered_guide: Option<u64>,
+    pub hovered_guide: Option<(u64, Pos2)>,
 }
 
 impl SketchApp {
@@ -19,21 +19,18 @@ impl SketchApp {
     }
     pub(super) fn plane_controls(&mut self, ui: &mut egui::Ui) {
         self.saved_guide_controls(ui);
-        let has_pickable_plane = self.doc.guide_resources.iter().any(|guide| {
-            guide.visible
-                && !guide.locked
-                && matches!(
-                    &guide.geometry,
-                    crate::document::guide_resources::GuideGeometry::Plane { .. }
-                )
-        });
+        let has_pickable_guide = self
+            .doc
+            .guide_resources
+            .iter()
+            .any(|guide| guide.visible && !guide.locked);
         if ui
             .add_enabled(
-                has_pickable_plane || self.plane_picker.active,
+                has_pickable_guide || self.plane_picker.active,
                 egui::Button::new(if self.plane_picker.active {
-                    "Picking plane… [Escape]"
+                    "Picking guide… [Escape]"
                 } else {
-                    "Pick plane on canvas [Shift+K]"
+                    "Pick guide on canvas [Shift+K]"
                 }),
             )
             .clicked()
@@ -212,8 +209,10 @@ impl SketchApp {
                 continue;
             };
             let active = self.doc.active_guide == Some(guide.id);
-            let hovered =
-                self.plane_picker.active && self.plane_picker.hovered_guide == Some(guide.id);
+            let hovered = self
+                .plane_picker
+                .hovered_guide
+                .is_some_and(|(id, _)| id == guide.id);
             let color = if hovered {
                 Color32::from_rgb(255, 210, 90)
             } else if active {
@@ -231,9 +230,22 @@ impl SketchApp {
                 PlaneGridStyle {
                     color,
                     active: active || hovered,
-                    label: if hovered { "Pick" } else { &guide.name },
+                    label: &guide.name,
                 },
             );
+        }
+        if let Some((id, position)) = self.plane_picker.hovered_guide {
+            if let Some(guide) = self.doc.guide_resources.iter().find(|guide| guide.id == id) {
+                let color = Color32::from_rgb(255, 210, 90);
+                painter.circle_stroke(position, 7.0, egui::Stroke::new(2.0_f32, color));
+                painter.text(
+                    position + egui::vec2(12.0, 12.0),
+                    egui::Align2::LEFT_TOP,
+                    &guide.name,
+                    egui::FontId::proportional(14.0),
+                    color,
+                );
+            }
         }
 
         // The unsaved work plane is also visible when no saved guide is
@@ -263,22 +275,20 @@ impl SketchApp {
 
     pub(super) fn begin_plane_picker(&mut self) {
         if self.presentation.artwork {
-            self.status = "Exit artwork-only view before picking a drawing plane.".into();
+            self.status = "Exit artwork-only view before picking a drawing guide.".into();
             return;
         }
         if self.placement.active || self.placement.stamp.is_some() {
             self.status = "Finish or cancel the current plane or stamp placement first.".into();
             return;
         }
-        if !self.doc.guide_resources.iter().any(|guide| {
-            guide.visible
-                && !guide.locked
-                && matches!(
-                    &guide.geometry,
-                    crate::document::guide_resources::GuideGeometry::Plane { .. }
-                )
-        }) {
-            self.status = "There are no visible, unlocked saved planes to pick.".into();
+        if !self
+            .doc
+            .guide_resources
+            .iter()
+            .any(|guide| guide.visible && !guide.locked)
+        {
+            self.status = "There are no visible, unlocked saved guides to pick.".into();
             return;
         }
         self.finish();
@@ -288,14 +298,14 @@ impl SketchApp {
         self.cancel_fill_tool();
         self.plane_picker.active = true;
         self.plane_picker.hovered_guide = None;
-        self.status = "Move over a visible saved plane and click to make it active. Shift+K starts picking; Escape cancels.".into();
+        self.status = "Move over a visible saved guide and click to make it active. Shift+K starts picking; Escape cancels.".into();
     }
 
     pub(super) fn cancel_plane_picker(&mut self) {
         if self.plane_picker.active {
             self.plane_picker.active = false;
             self.plane_picker.hovered_guide = None;
-            self.status = "Plane picking cancelled; the active drawing plane is unchanged.".into();
+            self.status = "Guide picking cancelled.".into();
         }
     }
 
@@ -324,55 +334,45 @@ impl SketchApp {
         }
         self.plane_picker.hovered_guide = cursor
             .filter(|position| rect.contains(*position))
-            .and_then(|position| self.pick_saved_plane(position, rect));
+            .and_then(|position| self.pick_saved_guide(position, rect));
     }
 
-    fn pick_saved_plane(&self, cursor: Pos2, rect: Rect) -> Option<u64> {
+    fn pick_saved_guide(&self, cursor: Pos2, rect: Rect) -> Option<(u64, Pos2)> {
         let (ray_origin, ray_direction) = gizmo::ray(&self.camera, rect, cursor);
-        let mut best: Option<(f32, u64)> = None;
+        let mut best: Option<(f32, u64, Pos2)> = None;
         for guide in self
             .doc
             .guide_resources
             .iter()
             .filter(|guide| guide.visible && !guide.locked)
         {
-            let crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } =
-                &guide.geometry
-            else {
+            let Some(hit) = guide.geometry.clone().hit(ray_origin, ray_direction) else {
                 continue;
             };
-            let plane = DrawingPlane {
-                anchor: *origin,
-                rotation_degrees: super::guide_resource_ui::rotation_degrees(*rotation),
-                depth: 0.0,
-            };
-            let Some(hit) = intersect_plane(ray_origin, ray_direction, plane) else {
+            let Some((position, _)) = gizmo::project(&self.camera, rect, hit) else {
                 continue;
             };
-            if gizmo::project(&self.camera, rect, hit).is_none() {
-                continue;
-            }
             let distance = hit.distance(ray_origin);
             if !distance.is_finite() {
                 continue;
             }
-            let Some((best_distance, best_id)) = best else {
-                best = Some((distance, guide.id));
+            let Some((best_distance, best_id, _)) = best else {
+                best = Some((distance, guide.id, position));
                 continue;
             };
             let tie_tolerance = 1.0e-5 * distance.max(best_distance).max(1.0);
             if distance < best_distance - tie_tolerance
                 || ((distance - best_distance).abs() <= tie_tolerance && guide.id < best_id)
             {
-                best = Some((distance, guide.id));
+                best = Some((distance, guide.id, position));
             }
         }
-        best.map(|(_, id)| id)
+        best.map(|(_, id, position)| (id, position))
     }
 
     pub(super) fn pick_saved_plane_at(&mut self, cursor: Pos2, rect: Rect) {
-        let Some(guide_id) = self.pick_saved_plane(cursor, rect) else {
-            self.status = "No visible saved plane intersects this canvas position.".into();
+        let Some((guide_id, _)) = self.pick_saved_guide(cursor, rect) else {
+            self.status = "No visible saved guide intersects this canvas position.".into();
             self.plane_picker.hovered_guide = None;
             return;
         };
@@ -412,12 +412,12 @@ impl SketchApp {
         self.plane_picker.active = false;
         self.plane_picker.hovered_guide = None;
         self.status = format!(
-            "{} is now the active drawing plane.",
+            "{} is now the active drawing guide.",
             self.doc
                 .guide_resources
                 .iter()
                 .find(|guide| guide.id == guide_id)
-                .map_or("Saved plane", |guide| guide.name.as_str())
+                .map_or("Saved guide", |guide| guide.name.as_str())
         );
     }
     pub(super) fn verify_planes(&mut self, rect: Rect) {
