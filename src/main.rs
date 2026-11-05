@@ -27,6 +27,7 @@ mod image_planes;
 mod input;
 mod lighting;
 mod liquify;
+mod live_mcp;
 mod local_color;
 mod material_render_check;
 mod mirror;
@@ -465,9 +466,32 @@ fn main() -> eframe::Result {
             .with_visible(!hidden_verification),
         ..Default::default()
     };
+    let live_requests = if args
+        .iter()
+        .any(|argument| argument == "--mcp-live-app-server")
+    {
+        let (server, requests) = live_mcp::channel();
+        std::thread::Builder::new()
+            .name("sketch3d-live-mcp".into())
+            .spawn(move || {
+                if let Err(error) = live_mcp::serve(server) {
+                    eprintln!("Live session MCP server stopped: {error}");
+                }
+            })
+            .expect("live session MCP thread must start");
+        Some(requests)
+    } else {
+        None
+    };
     eframe::run_native(
         "Sketch3D",
         options,
-        Box::new(|cc| Ok(Box::new(app::SketchApp::new(cc)))),
+        Box::new(move |cc| {
+            let app = match live_requests {
+                Some(requests) => app::SketchApp::new_with_live_mcp(cc, requests),
+                None => app::SketchApp::new(cc),
+            };
+            Ok(Box::new(app))
+        }),
     )
 }

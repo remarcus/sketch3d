@@ -672,6 +672,8 @@ pub struct SketchApp {
     redo: Vec<Edit>,
     file: Option<PathBuf>,
     dirty: bool,
+    live_mcp_requests: Option<std::sync::mpsc::Receiver<crate::live_mcp::LiveUiRequest>>,
+    live_mcp_capture_reply: Option<std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>>,
     status: String,
     last_pen: Option<PenSample>,
     last_pen_at: Option<Instant>,
@@ -2244,6 +2246,8 @@ impl SketchApp {
             redo: Vec::new(),
             file: None,
             dirty: false,
+            live_mcp_requests: None,
+            live_mcp_capture_reply: None,
             status: "Ready. Draw on the highlighted plane.".into(),
             last_pen: None,
             last_pen_at: None,
@@ -2811,6 +2815,15 @@ impl SketchApp {
         app.renderer.post_effects = app.presentation.preferences.post_effects;
         app.recovery.request_scan();
         app.sync_presentation_background();
+        app
+    }
+
+    pub fn new_with_live_mcp(
+        cc: &eframe::CreationContext<'_>,
+        requests: std::sync::mpsc::Receiver<crate::live_mcp::LiveUiRequest>,
+    ) -> Self {
+        let mut app = Self::new(cc);
+        app.live_mcp_requests = Some(requests);
         app
     }
 
@@ -6853,9 +6866,89 @@ fn profile_tube_vertex_budget_exceeded(stroke: &Stroke) -> bool {
             > crate::geometry::MAX_PROFILE_TUBE_VERTICES
 }
 
+impl SketchApp {
+    fn service_live_mcp(&mut self, ctx: &egui::Context) {
+        let Some(requests) = self.live_mcp_requests.take() else {
+            return;
+        };
+        for _ in 0..8 {
+            let request = match requests.try_recv() {
+                Ok(request) => request,
+                Err(std::sync::mpsc::TryRecvError::Empty)
+                | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            };
+            match request.command {
+                crate::live_mcp::LiveUiCommand::Snapshot => {
+                    let mut selected: Vec<_> = self.selected.iter().copied().collect();
+                    selected.sort_unstable();
+                    let file_name =
+                        self.file
+                            .as_ref()
+                            .and_then(|path| path.file_name())
+                            .map(|name| {
+                                name.to_string_lossy()
+                                    .chars()
+                                    .filter(|character| !character.is_control())
+                                    .collect::<String>()
+                            });
+                    let snapshot = serde_json::json!({
+                        "document": {
+                            "identity": file_name.unwrap_or_else(|| "untitled".into()),
+                            "saved": self.file.is_some(),
+                            "unsaved_changes": self.dirty,
+                            "strokes": self.doc.strokes.len(),
+                            "layers": self.doc.layers.len(),
+                            "guides": self.doc.guide_resources.len(),
+                            "image_planes": self.doc.image_planes.len()
+                        },
+                        "selection": {"stroke_ids": selected}
+                    });
+                    let _ = request.reply.send(Ok(snapshot));
+                }
+                crate::live_mcp::LiveUiCommand::CaptureViewport => {
+                    if self.live_mcp_capture_reply.is_some() {
+                        let _ = request
+                            .reply
+                            .send(Err("A viewport capture is already in progress".into()));
+                    } else {
+                        self.live_mcp_capture_reply = Some(request.reply);
+                        ctx.send_viewport_cmd(
+                            egui::ViewportCommand::Screenshot(Default::default()),
+                        );
+                        ctx.request_repaint();
+                    }
+                }
+            }
+        }
+        self.live_mcp_requests = Some(requests);
+    }
+
+    fn finish_live_mcp_capture(&mut self, ctx: &egui::Context) {
+        if self.live_mcp_capture_reply.is_none() {
+            return;
+        }
+        let screenshot = ctx.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        let Some(image) = screenshot else {
+            return;
+        };
+        let result = crate::live_mcp::encode_viewport_png(&image);
+        let Some(reply) = self.live_mcp_capture_reply.take() else {
+            return;
+        };
+        let _ = reply.send(result);
+    }
+}
+
 impl eframe::App for SketchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let start = Instant::now();
+        self.service_live_mcp(ctx);
+        self.finish_live_mcp_capture(ctx);
         self.canvas_point_shortcuts(ctx);
         if let Some(verification) = &self.appearance_layout_verification {
             ctx.set_zoom_factor(verification.zoom_factor);
