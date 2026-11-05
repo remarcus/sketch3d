@@ -12,6 +12,7 @@ pub(super) struct AnimationUi {
     multi_key_tint: [f32; 3],
     preview_animation: Option<crate::animation::ArtworkAnimation>,
     preview_source: Option<(crate::animation::ArtworkAnimation, Vec<Stroke>)>,
+    retime_preview: Option<(u64, u32, u32)>,
     rig_pose_frame: Option<u32>,
     rig_root_degrees: f32,
     rig_child_degrees: f32,
@@ -30,6 +31,7 @@ impl Default for AnimationUi {
             multi_key_tint: [1.0; 3],
             preview_animation: None,
             preview_source: None,
+            retime_preview: None,
             rig_pose_frame: None,
             rig_root_degrees: 0.0,
             rig_child_degrees: 0.0,
@@ -159,7 +161,7 @@ impl SketchApp {
         ctx.request_repaint();
     }
 
-    fn set_artwork_keyframe(&mut self) {
+    fn set_artwork_keyframe(&mut self, blank: bool) {
         if self
             .doc
             .strokes
@@ -184,7 +186,7 @@ impl SketchApp {
             .doc
             .strokes
             .iter()
-            .filter(|stroke| stroke.layer_id == layer_id)
+            .filter(|stroke| !blank && stroke.layer_id == layer_id)
             .cloned()
             .collect::<Vec<_>>();
         let next = match self.doc.animation.set_layer_keyframe(
@@ -199,9 +201,19 @@ impl SketchApp {
                 return;
             }
         };
+        let strokes = if blank {
+            self.doc
+                .strokes
+                .iter()
+                .filter(|stroke| stroke.layer_id != layer_id)
+                .cloned()
+                .collect()
+        } else {
+            self.doc.strokes.clone()
+        };
         match self.commit_animation_state(
             next,
-            self.doc.strokes.clone(),
+            strokes,
             "Active layer keyframe saved as one undoable edit.",
         ) {
             Ok(()) => {}
@@ -485,7 +497,10 @@ impl SketchApp {
                         .add_enabled(!self.animation_ui.playing, egui::Button::new("Key active layer"))
                         .clicked()
                     {
-                        self.set_artwork_keyframe();
+                        self.set_artwork_keyframe(false);
+                    }
+                    if ui.add_enabled(!self.animation_ui.playing && self.doc.active_editable(), egui::Button::new("Blank key")).clicked() {
+                        self.set_artwork_keyframe(true);
                     }
                     let active_track = self.doc.animation.layer_tracks.iter().find(|track| track.layer_id == self.doc.active_layer);
                     let held_key = active_track.and_then(|track|track.keyframes.iter().rev().find(|key|key.frame<=self.doc.animation.current_frame && self.doc.animation.current_frame-key.frame<key.exposure).map(|key|key.frame));
@@ -513,6 +528,7 @@ impl SketchApp {
                         self.doc.animation.layer_tracks.iter().map(|track|track.keyframes.len()).sum::<usize>()
                     ));
                 });
+                self.layer_key_strip(ui);
                 ui.horizontal(|ui| {
                     ui.label("Frame");
                     let mut frame = self.doc.animation.current_frame;
@@ -698,6 +714,126 @@ impl SketchApp {
                 }
                 ui.small("Edits belong to the displayed frame. Key the active layer before seeking; frame seeks reset frame-local undo. Exposures hold a layer snapshot for a chosen number of frames. Layer/resource structure stays static; layer moves are disabled while independent tracks exist. Linked-group documents must be made unique before keyframing. Onion skins are display-only.");
             });
+    }
+
+    fn layer_key_strip(&mut self, ui: &mut egui::Ui) {
+        let animation = &self.doc.animation;
+        let layer_id = self.doc.active_layer;
+        let Some(track) = animation
+            .layer_tracks
+            .iter()
+            .find(|track| track.layer_id == layer_id)
+        else {
+            return;
+        };
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
+        let first = animation.range_start;
+        let step = rect.width() / (animation.range_end - first + 1) as f32;
+        let x = |frame: u32| rect.left() + (frame - first) as f32 * step;
+        let editable = !self.animation_ui.playing && self.doc.active_editable();
+        let mut retime = None;
+        let mut seek = None;
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 3.0, ui.visuals().faint_bg_color);
+        for (index, key) in track.keyframes.iter().enumerate() {
+            let end = track
+                .keyframes
+                .get(index + 1)
+                .map_or(key.frame + key.exposure, |next| {
+                    next.frame.min(key.frame + key.exposure)
+                });
+            let left = x(key.frame);
+            let handle = Rect::from_min_max(
+                egui::pos2(left, rect.top()),
+                egui::pos2((left + 8.0).min(rect.right()), rect.bottom()),
+            );
+            let response = ui.interact(
+                handle,
+                ui.id().with(("retime", layer_id, key.frame)),
+                if editable {
+                    egui::Sense::click_and_drag()
+                } else {
+                    egui::Sense::hover()
+                },
+            );
+            let color = if key.strokes.is_empty() {
+                ui.visuals().weak_text_color()
+            } else {
+                ui.visuals().selection.bg_fill
+            };
+            painter.rect_filled(
+                Rect::from_min_max(
+                    egui::pos2(left, rect.top() + 8.0),
+                    egui::pos2(x(end), rect.bottom() - 4.0),
+                ),
+                1.0,
+                color,
+            );
+            painter.rect_filled(handle.shrink2(egui::vec2(1.0, 2.0)), 2.0, color);
+            if response.clicked() {
+                seek = Some(key.frame);
+            }
+            if response.dragged() && step > 0.0 {
+                let to = (i64::from(key.frame) + (response.drag_delta().x / step).round() as i64)
+                    .clamp(i64::from(first), i64::from(animation.range_end))
+                    as u32;
+                painter.vline(
+                    x(to),
+                    rect.y_range(),
+                    egui::Stroke::new(2.0_f32, Color32::YELLOW),
+                );
+                response
+                    .clone()
+                    .on_hover_text(format!("Move key to frame {to}"));
+                self.animation_ui.retime_preview = Some((layer_id, key.frame, to));
+            } else if response.drag_stopped() {
+                if let Some((_, _, to)) =
+                    self.animation_ui
+                        .retime_preview
+                        .take()
+                        .filter(|(layer, from, to)| {
+                            *layer == layer_id && *from == key.frame && *to != key.frame
+                        })
+                {
+                    retime = Some((key.frame, to));
+                }
+            } else {
+                response.on_hover_text(format!(
+                    "Frame {} · {} frame hold. Drag to retime.",
+                    key.frame, key.exposure
+                ));
+            }
+        }
+        painter.vline(
+            x(animation.current_frame),
+            rect.y_range(),
+            egui::Stroke::new(1.0_f32, ui.visuals().text_color()),
+        );
+        if let Some((from, to)) = retime {
+            if !animation.current_pose_matches(&self.doc.strokes) {
+                self.status = "Set or update the current keyframe before retiming.".into();
+                return;
+            }
+            let result = animation
+                .retime_layer_key(layer_id, from, to)
+                .and_then(|next| {
+                    let strokes = next
+                        .resolve(next.current_frame)
+                        .ok_or("Cannot resolve moved key")?;
+                    self.commit_animation_state(next, strokes, "Layer key retimed.")
+                });
+            match result {
+                Ok(()) => {
+                    self.animation_ui.preview_animation = None;
+                    self.animation_ui.preview_source = None;
+                    self.animation_ui.selected_key_frames.clear();
+                }
+                Err(error) => self.status = error,
+            }
+        } else if let Some(frame) = seek {
+            self.seek_artwork_animation(frame, false);
+        }
     }
 
     pub(super) fn paint_animation_onion_skins(&self, painter: &egui::Painter, rect: Rect) {

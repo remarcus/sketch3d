@@ -726,6 +726,42 @@ impl ArtworkAnimation {
         Ok(next)
     }
 
+    pub fn retime_layer_key(&self, layer_id: u64, from: u32, to: u32) -> Result<Self, String> {
+        let mut next = self.clone();
+        let track = next
+            .layer_tracks
+            .iter_mut()
+            .find(|track| track.layer_id == layer_id)
+            .ok_or("Layer has no animation track")?;
+        let index = track
+            .keyframes
+            .iter()
+            .position(|key| key.frame == from)
+            .ok_or("Layer key no longer exists")?;
+        if from == to {
+            return Ok(next);
+        }
+        let mut key = track.keyframes.remove(index);
+        if to < self.range_start || to > self.range_end || key.exposure > self.range_end - to + 1 {
+            return Err("The held exposure must fit inside the animation range".into());
+        }
+        let end = to + key.exposure;
+        if track
+            .keyframes
+            .iter()
+            .any(|other| other.frame < end && to < other.frame + other.exposure)
+        {
+            return Err("The moved key would overlap another exposure".into());
+        }
+        key.frame = to;
+        let index = track.keyframes.partition_point(|other| other.frame < to);
+        track.keyframes.insert(index, key);
+        if next.current_frame == from {
+            next.current_frame = to;
+        }
+        Ok(next)
+    }
+
     pub fn set_layer_exposure(
         &self,
         layer_id: u64,
