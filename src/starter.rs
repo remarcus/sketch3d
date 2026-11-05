@@ -48,6 +48,8 @@ impl SketchApp {
             1 => {
                 let original = self.doc.strokes.clone();
                 assert!(original.len() > 300);
+                self.verify_house_guides(ctx, rect);
+                assert_eq!(self.doc.strokes, original);
                 let id = original[60].id;
                 self.selected = HashSet::from([id]);
                 self.duplicate_selected();
@@ -138,5 +140,92 @@ impl SketchApp {
         assert_eq!(self.doc.strokes.len(), 2);
         self.presentation.preferences.pen_barrel_erases = false;
         self.brush = brush;
+    }
+
+    fn verify_house_guides(&mut self, ctx: &egui::Context, rect: Rect) {
+        let initial_camera = self.camera;
+        let initial_guide = self.doc.active_guide;
+        let initial_stroke_count = self.doc.strokes.len();
+        let initial_undo_count = self.undo.len();
+        let scale = ctx.pixels_per_point();
+        let sample = |position: Pos2, phase| PenSample {
+            position: Pos2::new(position.x * scale, position.y * scale),
+            pressure: None,
+            tilt: [None; 2],
+            contact: phase != Phase::Up,
+            phase,
+            barrel: false,
+            eraser: false,
+        };
+        for id in 1..=3 {
+            self.camera.yaw += 0.1;
+            self.begin_plane_picker();
+            assert!(self.plane_picker.active);
+            let mut positions = None;
+            'search: for y in (32..rect.height() as i32 - 32).step_by(8) {
+                for x in (32..rect.width() as i32 - 40).step_by(8) {
+                    let start = rect.min + Vec2::new(x as f32, y as f32);
+                    let end = start + Vec2::new(12.0, 0.0);
+                    self.update_plane_picker_hover(Some(start), rect);
+                    if self.plane_picker.hovered_guide.map(|(id, _)| id) != Some(id) {
+                        continue;
+                    }
+                    self.update_plane_picker_hover(Some(end), rect);
+                    if self.plane_picker.hovered_guide.map(|(id, _)| id) == Some(id) {
+                        positions = Some((start, end));
+                        break 'search;
+                    }
+                }
+            }
+            let (start, end) = positions.unwrap_or_else(|| panic!("Guide {id} is not pickable"));
+            let index = self
+                .doc
+                .guide_resources
+                .iter()
+                .position(|guide| guide.id == id)
+                .unwrap();
+            self.doc.guide_resources[index].locked = true;
+            self.update_plane_picker_hover(Some(start), rect);
+            assert_ne!(self.plane_picker.hovered_guide.map(|(id, _)| id), Some(id));
+            self.doc.guide_resources[index].locked = false;
+            self.doc.guide_resources[index].visible = false;
+            self.update_plane_picker_hover(Some(start), rect);
+            assert_ne!(self.plane_picker.hovered_guide.map(|(id, _)| id), Some(id));
+            self.doc.guide_resources[index].visible = true;
+            let previous = self.doc.active_guide;
+            self.cancel_plane_picker();
+            assert_eq!(self.doc.active_guide, previous);
+            self.begin_plane_picker();
+            self.canvas_input(
+                ctx,
+                rect,
+                vec![sample(start, Phase::Down), sample(start, Phase::Up)],
+            );
+            assert_eq!(self.doc.active_guide, Some(id));
+            assert!(!self.plane_picker.active);
+            self.canvas_input(
+                ctx,
+                rect,
+                vec![
+                    sample(start, Phase::Down),
+                    sample(end, Phase::Move),
+                    sample(end, Phase::Up),
+                ],
+            );
+            assert_eq!(self.doc.strokes.len(), initial_stroke_count + id as usize);
+            assert_eq!(
+                self.doc.strokes.last().unwrap().brush.texture.kind,
+                self.brush.texture.kind
+            );
+        }
+        let reopened = Document::from_json(&serde_json::to_string(&self.doc).unwrap()).unwrap();
+        assert_eq!(reopened.strokes, self.doc.strokes);
+        assert_eq!(self.undo.len(), initial_undo_count + 5);
+        while self.undo.len() > initial_undo_count {
+            self.undo();
+        }
+        assert_eq!(self.doc.active_guide, initial_guide);
+        assert_eq!(self.doc.strokes.len(), initial_stroke_count);
+        self.camera = initial_camera;
     }
 }

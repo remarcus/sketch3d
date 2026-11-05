@@ -298,7 +298,8 @@ impl SketchApp {
         self.cancel_fill_tool();
         self.plane_picker.active = true;
         self.plane_picker.hovered_guide = None;
-        self.status = "Move over a visible saved guide and click to make it active. Shift+K starts picking; Escape cancels.".into();
+        self.status =
+            "Click a saved plane grid or curved guide to make it active. Escape cancels.".into();
     }
 
     pub(super) fn cancel_plane_picker(&mut self) {
@@ -349,6 +350,17 @@ impl SketchApp {
             let Some(hit) = guide.geometry.clone().hit(ray_origin, ray_direction) else {
                 continue;
             };
+            if let crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } =
+                &guide.geometry
+            {
+                let Some(extent) = plane_grid_extent(&self.camera, rect, *origin) else {
+                    continue;
+                };
+                let local = rotation.inverse() * (hit - *origin);
+                if local.x.abs().max(local.y.abs()) > extent {
+                    continue;
+                }
+            }
             let Some((position, _)) = gizmo::project(&self.camera, rect, hit) else {
                 continue;
             };
@@ -508,6 +520,12 @@ struct PlaneGridStyle<'a> {
     label: &'a str,
 }
 
+fn plane_grid_extent(camera: &Camera, rect: Rect, origin: Vec3) -> Option<f32> {
+    let world_per_pixel = camera.world_per_pixel(origin, rect.height());
+    (world_per_pixel.is_finite() && world_per_pixel > 0.0)
+        .then(|| (world_per_pixel * 55.0).clamp(0.25, 500.0))
+}
+
 fn draw_plane_grid(
     painter: &egui::Painter,
     camera: &Camera,
@@ -520,13 +538,11 @@ fn draw_plane_grid(
     if !origin.is_finite() || !u.is_finite() || !v.is_finite() {
         return;
     }
-    let world_per_pixel = camera.world_per_pixel(origin, rect.height());
-    if !world_per_pixel.is_finite() || world_per_pixel <= 0.0 {
+    let Some(extent) = plane_grid_extent(camera, rect, origin) else {
         return;
-    }
+    };
     // Keep the guide footprint legible across zoom levels while bounding the
     // world-space coordinates sent through projection.
-    let extent = (world_per_pixel * 55.0).clamp(0.25, 500.0);
     let corners = [
         origin - u * extent - v * extent,
         origin + u * extent - v * extent,
