@@ -55,6 +55,9 @@ jobs:
           $stage = Join-Path $env:RUNNER_TEMP 'sketch3d-release'
           New-Item -ItemType Directory -Force -Path $stage, 'dist' | Out-Null
           Copy-Item 'target/release/sketch3d.exe', 'README.md', 'LICENSE' -Destination $stage
+          New-Item -ItemType Directory -Force -Path (Join-Path $stage 'scripts'), (Join-Path $stage 'src') | Out-Null
+          Copy-Item 'scripts/run_verification.ps1' -Destination (Join-Path $stage 'scripts')
+          Copy-Item 'src/animation_check.rs', 'src/still_export_check.rs', 'src/glb_texture_roundtrip_check.rs' -Destination (Join-Path $stage 'src')
           $archive = "Sketch3D-$($env:GITHUB_REF_NAME)-windows-$arch.zip"
           Compress-Archive -Path (Join-Path $stage '*') -DestinationPath (Join-Path 'dist' $archive)
 
@@ -69,11 +72,16 @@ jobs:
           esac
           mkdir -p dist/package
           cp "target/release/sketch3d" README.md LICENSE dist/package/
+          mkdir -p dist/package/scripts dist/package/src
+          cp scripts/run_verification.ps1 dist/package/scripts/
+          cp src/animation_check.rs src/still_export_check.rs src/glb_texture_roundtrip_check.rs dist/package/src/
           if [[ "$PLATFORM" == "macos" ]]; then
             app="dist/package/Sketch3D.app/Contents"
-            mkdir -p "$app/MacOS" "$app/Resources"
+            mkdir -p "$app/MacOS" "$app/Resources/verification-support/scripts" "$app/Resources/verification-support/src"
             cp target/release/sketch3d "$app/MacOS/sketch3d"
             cp assets/icons/sketch3d.icns "$app/Resources/sketch3d.icns"
+            cp scripts/run_verification.ps1 "$app/Resources/verification-support/scripts/"
+            cp src/animation_check.rs src/still_export_check.rs src/glb_texture_roundtrip_check.rs "$app/Resources/verification-support/src/"
             cat > "$app/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

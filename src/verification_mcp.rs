@@ -1362,6 +1362,28 @@ fn encode_base64(bytes: &[u8]) -> String {
     output
 }
 
+fn verification_support_root(executable: &Path) -> PathBuf {
+    if let Some(configured) = std::env::var_os("SKETCH3D_VERIFICATION_ROOT") {
+        return PathBuf::from(configured)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from("."));
+    }
+    let parent = executable.parent().unwrap_or_else(|| Path::new("."));
+    for candidate in parent.ancestors().take(4) {
+        if candidate.join("scripts/run_verification.ps1").is_file() {
+            return candidate.to_path_buf();
+        }
+        let macos_resources = candidate.join("Resources/verification-support");
+        if macos_resources
+            .join("scripts/run_verification.ps1")
+            .is_file()
+        {
+            return macos_resources;
+        }
+    }
+    parent.to_path_buf()
+}
+
 fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, String> {
     if !matches!(
         check_id,
@@ -1386,12 +1408,32 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
         return run_native_texture_check(root, timeout_seconds);
     }
 
-    let project_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .canonicalize()
-        .map_err(|error| format!("Cannot resolve application source directory: {error}"))?;
-    let runner = project_root.join("scripts/run_verification.ps1");
+    let executable = std::env::current_exe()
+        .and_then(|path| fs::canonicalize(path))
+        .map_err(|error| format!("Cannot resolve the installed Sketch3D executable: {error}"))?;
+    let install_root = verification_support_root(&executable);
+    let mut project_root = install_root.clone();
+    let mut runner = project_root.join("scripts/run_verification.ps1");
+    // Development builds run directly from target/{debug,release}; retain a
+    // source-tree fallback for local workflows. Release packages carry the
+    // runner and fixtures alongside the executable, so installed execution
+    // never depends on the machine that compiled the binary.
     if !runner.is_file() {
-        return Err("Shared verification runner is unavailable in this installation".into());
+        if std::env::var_os("SKETCH3D_VERIFICATION_ROOT").is_none() {
+            let source_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let source_runner = source_root.join("scripts/run_verification.ps1");
+            if source_runner.is_file()
+                && source_root
+                    .canonicalize()
+                    .is_ok_and(|source_root| executable.starts_with(source_root))
+            {
+                project_root = source_root.to_path_buf();
+                runner = source_runner;
+            }
+        }
+    }
+    if !runner.is_file() {
+        return Err("Shared verification runner is unavailable. Install the verification-support files beside Sketch3D or set SKETCH3D_VERIFICATION_ROOT.".into());
     }
     let runner = runner
         .canonicalize()
@@ -1421,6 +1463,14 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
     } else {
         root.to_path_buf()
     };
+    let executable_argument = if cfg!(windows) {
+        executable
+            .strip_prefix(r"\\?\")
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|_| executable.clone())
+    } else {
+        executable.clone()
+    };
     let mut command = Command::new(if cfg!(windows) { "pwsh.exe" } else { "pwsh" });
     command
         .arg("-NoLogo")
@@ -1430,6 +1480,8 @@ fn run_check(root: &Path, check_id: &str, arguments: &Value) -> Result<Value, St
         .arg("Bypass")
         .arg("-File")
         .arg(&runner_argument)
+        .arg("-Executable")
+        .arg(&executable_argument)
         .arg("-Check")
         .arg(check_id)
         .arg("-OutputDirectory")
@@ -1583,9 +1635,14 @@ fn run_native_texture_check(root: &Path, timeout_seconds: u64) -> Result<Value, 
     let stderr_path = run_directory.join("glb-texture-roundtrip.stderr.log");
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let executable_hash = sha256_file(&executable);
-    let fixture_hash = sha256_file(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/glb_texture_roundtrip_check.rs"),
-    );
+    let fixture_path = executable
+        .parent()
+        .map(|parent| parent.join("src/glb_texture_roundtrip_check.rs"))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/glb_texture_roundtrip_check.rs")
+        });
+    let fixture_hash = sha256_file(&fixture_path);
     let mut command = Command::new(&executable);
     command
         .arg("--verify-glb-texture-roundtrip")
