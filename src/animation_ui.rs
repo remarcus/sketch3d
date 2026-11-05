@@ -534,6 +534,7 @@ impl SketchApp {
                     ));
                 });
                 self.layer_key_strip(ui);
+                self.other_layer_timeline_rows(ui);
                 ui.horizontal(|ui| {
                     ui.label("Frame");
                     let mut frame = self.doc.animation.current_frame;
@@ -803,8 +804,22 @@ impl SketchApp {
             self.seek_artwork_animation(frame, false);
             return;
         }
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
+        let layer_name = self
+            .doc
+            .layers
+            .iter()
+            .find(|layer| layer.id == layer_id)
+            .map_or("Layer", |layer| layer.name.as_str())
+            .to_owned();
+        let (rect, _) = ui
+            .horizontal(|ui| {
+                ui.add_sized(
+                    egui::vec2(84.0, 24.0),
+                    egui::Label::new(layer_name).truncate(),
+                );
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover())
+            })
+            .inner;
         let first = animation.range_start;
         let step = rect.width() / (animation.range_end - first + 1) as f32;
         let x = |frame: u32| rect.left() + (frame - first) as f32 * step;
@@ -928,6 +943,88 @@ impl SketchApp {
             self.place_active_layer_key(from, to, false);
         } else if let Some(frame) = seek {
             self.seek_artwork_animation(frame, false);
+        }
+    }
+
+    fn other_layer_timeline_rows(&mut self, ui: &mut egui::Ui) {
+        let active_layer = self.doc.active_layer;
+        let (frame, range_start, range_end, rows) = {
+            let animation = &self.doc.animation;
+            let rows = animation
+                .layer_tracks
+                .iter()
+                .filter(|track| track.layer_id != active_layer)
+                .filter_map(|track| {
+                    let layer = self
+                        .doc
+                        .layers
+                        .iter()
+                        .find(|layer| layer.id == track.layer_id)?;
+                    Some((track.layer_id, layer.name.clone(), track.keyframes.clone()))
+                })
+                .collect::<Vec<_>>();
+            (
+                animation.current_frame,
+                animation.range_start,
+                animation.range_end,
+                rows,
+            )
+        };
+        if rows.is_empty() {
+            return;
+        }
+        for (layer_id, name, keys) in rows {
+            let (label, rect) = ui
+                .horizontal(|ui| {
+                    let label =
+                        ui.add_sized(egui::vec2(84.0, 22.0), egui::Button::new(name).truncate());
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 22.0),
+                        egui::Sense::hover(),
+                    );
+                    (label, rect)
+                })
+                .inner;
+            if label.clicked() {
+                self.apply_layer_action(crate::editing::LayerAction::Activate(layer_id));
+                continue;
+            }
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, 3.0, ui.visuals().faint_bg_color);
+            let step = rect.width() / (range_end - range_start + 1) as f32;
+            let x = |frame: u32| rect.left() + (frame - range_start) as f32 * step;
+            for (index, key) in keys.iter().enumerate() {
+                let end = keys
+                    .get(index + 1)
+                    .map_or(key.frame + key.exposure, |next| {
+                        next.frame.min(key.frame + key.exposure)
+                    });
+                let color = if key.strokes.is_empty() {
+                    ui.visuals().weak_text_color()
+                } else {
+                    ui.visuals().selection.bg_fill
+                };
+                let left = x(key.frame);
+                let right = x(end.min(range_end + 1));
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        egui::pos2(left, rect.top() + 7.0),
+                        egui::pos2(right, rect.bottom() - 3.0),
+                    ),
+                    1.0,
+                    color,
+                );
+                painter.vline(
+                    left,
+                    egui::Rangef::new(rect.top() + 3.0, rect.bottom() - 1.0),
+                    egui::Stroke::new(1.0_f32, ui.visuals().text_color()),
+                );
+            }
+            painter.vline(
+                x(frame),
+                rect.y_range(),
+                egui::Stroke::new(1.0_f32, ui.visuals().text_color()),
+            );
         }
     }
 
