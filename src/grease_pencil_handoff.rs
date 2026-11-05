@@ -37,6 +37,14 @@ struct TimingPayload {
 struct StrokePayload {
     id: u64,
     points: Vec<PointPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fill: Option<FillPayload>,
+}
+
+#[derive(Serialize)]
+struct FillPayload {
+    color: [f32; 3],
+    opacity: f32,
 }
 
 #[derive(Serialize)]
@@ -163,9 +171,21 @@ pub fn build_script(document: &Document, name: &str) -> Result<(String, Vec<Stri
                 }
             })
             .collect();
+        let fill = stroke.fill.as_ref().and_then(|fill| {
+            let supported = fill.holes.is_empty()
+                && fill.gradient.is_none()
+                && fill.texture.is_none()
+                && fill.cylinder.is_none()
+                && stroke.gradient.is_none();
+            supported.then_some(FillPayload {
+                color: stroke.color,
+                opacity: (stroke.brush.opacity * layer.opacity).clamp(0.0, 1.0),
+            })
+        });
         Some(StrokePayload {
             id: stroke.id,
             points,
+            fill,
         })
     };
     let layers = document
@@ -304,6 +324,10 @@ def write_drawing(frame, strokes):
     opacities = (drawing.attributes.get("opacity") or drawing.attributes.new("opacity", "FLOAT", "POINT")).data
     material_indices = (drawing.attributes.get("material_index") or drawing.attributes.new("material_index", "INT", "CURVE")).data
     vertex_colors = drawing.attributes.get("vertex_color") or drawing.attributes.new("vertex_color", "FLOAT_COLOR", "POINT")
+    fill_colors = (drawing.attributes.get("fill_color") or drawing.attributes.new("fill_color", "FLOAT_COLOR", "CURVE")).data
+    fill_opacities = (drawing.attributes.get("fill_opacity") or drawing.attributes.new("fill_opacity", "FLOAT", "CURVE")).data
+    fill_ids = (drawing.attributes.get("fill_id") or drawing.attributes.new("fill_id", "INT", "CURVE")).data
+    cyclic = (drawing.attributes.get("cyclic") or drawing.attributes.new("cyclic", "BOOLEAN", "CURVE")).data
     point_index = 0
     for stroke_index, stroke in enumerate(strokes):
         for point in stroke["points"]:
@@ -315,6 +339,12 @@ def write_drawing(frame, strokes):
             point_index += 1
 
     for stroke_index, stroke in enumerate(strokes):
+        fill = stroke.get("fill")
+        if fill:
+            fill_colors[stroke_index].color = (*fill["color"], 1.0)
+            fill_opacities[stroke_index].value = fill["opacity"]
+            fill_ids[stroke_index].value = stroke_index + 1
+            cyclic[stroke_index].value = True
         base = tuple(stroke["points"][0]["color"])
         if base not in materials:
             material = bpy.data.materials.new(f"{DATA['name']} · Ink {len(materials) + 1}")
@@ -406,8 +436,19 @@ if DATA["unsupported"]:
 
 fn unsupported_semantics(stroke: &Stroke) -> Option<String> {
     let mut unsupported = Vec::new();
-    if stroke.fill.is_some() {
-        unsupported.push("fill geometry");
+    if let Some(fill) = &stroke.fill {
+        if !fill.holes.is_empty() {
+            unsupported.push("fill holes (only the outer outline is handed off)");
+        }
+        if fill.gradient.is_some() || stroke.gradient.is_some() {
+            unsupported.push("fill gradients (filled handoff supports solid color only)");
+        }
+        if fill.texture.is_some() {
+            unsupported.push("fill texture");
+        }
+        if fill.cylinder.is_some() {
+            unsupported.push("curved fill surface (only planar solid fills are handed off)");
+        }
     }
     if stroke.curve.is_some() {
         unsupported.push("editable curve controls (centerline is flattened)");
