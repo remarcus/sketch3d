@@ -254,3 +254,74 @@ pub fn find_region(
         .map(|p| origin + u * p.x as f32 + v * p.y as f32)
         .collect())
 }
+
+/// Solves a region in the unwrapped chart of one finite saved cylinder. Only
+/// sampled strokes explicitly attached to that guide contribute boundaries.
+pub fn find_cylinder_region(
+    doc: &Document,
+    guide_id: u64,
+    surface: crate::document::CylinderFillSurface,
+    world: Vec3,
+    gap: f32,
+    active_layer: Option<u64>,
+    closing_guides: &[(Vec3, Vec3)],
+) -> Result<Vec<Vec3>, String> {
+    let click = surface
+        .chart_point(world)
+        .ok_or("Click on the finite saved cylinder surface")?;
+    let mut chart_doc = doc.clone();
+    chart_doc.strokes.clear();
+    for source in &doc.strokes {
+        if source.guide_attachment != Some(guide_id)
+            || source.fill.is_some()
+            || source.curve.is_some()
+            || !doc.visible(source)
+        {
+            continue;
+        }
+        let mut stroke = source.clone();
+        let mut valid = true;
+        for point in &mut stroke.points {
+            if let Some(chart) = surface.chart_point(point.position) {
+                point.position = Vec3::new(chart.x, chart.y, 0.0);
+            } else {
+                valid = false;
+                break;
+            }
+        }
+        if valid {
+            stroke.guide_attachment = None;
+            stroke.model_surface = None;
+            chart_doc.strokes.push(stroke);
+        }
+    }
+    let chart_guides = closing_guides
+        .iter()
+        .map(|(a, b)| {
+            let a = surface
+                .chart_point(*a)
+                .ok_or("Temporary closing guide leaves the cylinder bounds")?;
+            let b = surface
+                .chart_point(*b)
+                .ok_or("Temporary closing guide leaves the cylinder bounds")?;
+            Ok((Vec3::new(a.x, a.y, 0.0), Vec3::new(b.x, b.y, 0.0)))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let chart = find_region(
+        &chart_doc,
+        DrawingPlane::default(),
+        Vec3::new(click.x, click.y, 0.0),
+        gap,
+        None,
+        active_layer,
+        &chart_guides,
+    )?;
+    chart
+        .into_iter()
+        .map(|point| {
+            surface
+                .world_point(glam::vec2(point.x, point.y), 0.0)
+                .ok_or_else(|| "Enclosed region crosses the finite cylinder height".to_owned())
+        })
+        .collect()
+}

@@ -5,6 +5,7 @@ use crate::{document::PlanarFill, polygon};
 pub(super) struct FillDraft {
     pub mark: Stroke,
     target: PlanarTarget,
+    cylinder: Option<(u64, crate::document::CylinderFillSurface)>,
     pub(super) original: Option<Stroke>,
     selected_contour: usize,
     selected: usize,
@@ -58,6 +59,39 @@ impl Default for FillUi {
     }
 }
 impl SketchApp {
+    pub(super) fn active_fill_cylinder(
+        &self,
+    ) -> Option<(u64, crate::document::CylinderFillSurface)> {
+        let id = self.doc.active_guide?;
+        let guide = self
+            .doc
+            .guide_resources
+            .iter()
+            .find(|guide| guide.id == id)?;
+        if !guide.visible || guide.locked {
+            return None;
+        }
+        let crate::document::guide_resources::GuideGeometry::Cylinder {
+            center,
+            rotation,
+            radius,
+            height,
+        } = &guide.geometry
+        else {
+            return None;
+        };
+        Some((
+            id,
+            crate::document::CylinderFillSurface {
+                center: *center,
+                rotation: *rotation,
+                radius: *radius,
+                height: *height,
+                angle_origin: 0.0,
+            },
+        ))
+    }
+
     pub(super) fn begin_fill_contour_edit(&mut self) {
         if self.fills.draft.is_some() || self.selected.len() != 1 {
             return;
@@ -74,6 +108,14 @@ impl SketchApp {
         };
         if source.fill.is_none() || !self.doc.editable(&source) {
             self.status = "Select one visible, unlocked planar fill to edit its contour.".into();
+            return;
+        }
+        if source
+            .fill
+            .as_ref()
+            .is_some_and(|fill| fill.cylinder.is_some())
+        {
+            self.status = "Curved cylinder fills can be selected and exported; contour editing is not supported yet.".into();
             return;
         }
         if let Err(error) = polygon::triangulate(&source) {
@@ -94,6 +136,7 @@ impl SketchApp {
         self.fills.draft = Some(FillDraft {
             mark: source.clone(),
             target,
+            cylinder: None,
             original: Some(source),
             selected_contour: 0,
             selected: 0,
@@ -910,7 +953,7 @@ impl SketchApp {
         if !self.fills.enabled {
             return;
         }
-        ui.strong("PLANAR FILL");
+        ui.strong("FILL");
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.fills.region_mode, true, "Enclosed region");
             ui.selectable_value(&mut self.fills.region_mode, false, "Trace contour");
@@ -920,23 +963,54 @@ impl SketchApp {
             ui.color_edit_button_rgb(&mut self.color);
         });
         if self.fills.region_mode {
-            ui.label("Click inside a closed outline to preview its fill. Press Enter to commit or Escape to cancel.");
-            ui.horizontal(|ui| {
-                ui.selectable_value(
-                    &mut self.fills.active_layer_boundaries,
-                    false,
-                    "Visible layers",
-                );
-                ui.selectable_value(
-                    &mut self.fills.active_layer_boundaries,
-                    true,
-                    "Active layer",
-                );
+            ui.label(if self.active_fill_cylinder().is_some() {
+                "Click inside a closed outline on the saved cylinder. Boundaries must be attached to this guide; the finite height is enforced. Enter commits, Escape cancels."
+            } else {
+                "Click inside a closed outline to preview its fill. Press Enter to commit or Escape to cancel."
             });
-            ui.add(
-                egui::Slider::new(&mut self.fills.gap_tolerance, 0.0..=0.05)
-                    .text("Close outline gaps (wu)"),
-            );
+            let scope_changed = ui
+                .horizontal(|ui| {
+                    let visible_changed = ui
+                        .selectable_value(
+                            &mut self.fills.active_layer_boundaries,
+                            false,
+                            "Visible layers",
+                        )
+                        .changed();
+                    let active_changed = ui
+                        .selectable_value(
+                            &mut self.fills.active_layer_boundaries,
+                            true,
+                            "Active layer",
+                        )
+                        .changed();
+                    visible_changed || active_changed
+                })
+                .inner;
+            if scope_changed
+                && self
+                    .fills
+                    .draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.original.is_none())
+            {
+                self.rebuild_region_preview();
+            }
+            let tolerance_changed = ui
+                .add(
+                    egui::Slider::new(&mut self.fills.gap_tolerance, 0.0..=0.05)
+                        .text("Close outline gaps (wu)"),
+                )
+                .changed();
+            if tolerance_changed
+                && self
+                    .fills
+                    .draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.original.is_none())
+            {
+                self.rebuild_region_preview();
+            }
             if self
                 .fills
                 .draft
@@ -969,7 +1043,11 @@ impl SketchApp {
                     }
                 });
             }
-            ui.small(if self.fills.active_layer_boundaries {
+            ui.small(if self.active_fill_cylinder().is_some() && self.fills.active_layer_boundaries {
+                "Visible sampled strokes attached to the active cylinder on the active layer define boundaries. Hidden and unrelated strokes are ignored."
+            } else if self.active_fill_cylinder().is_some() {
+                "Visible sampled strokes attached to the active cylinder define boundaries, including strokes on locked layers. Other guides and free strokes are ignored."
+            } else if self.fills.active_layer_boundaries {
                 "Only visible coplanar strokes on the active layer define boundaries. Hidden and non-coplanar strokes are ignored. Crossing strokes split regions; nested outlines choose the smallest region. Holes are unsupported."
             } else {
                 "Visible coplanar strokes define boundaries, including strokes on locked layers. Hidden and non-coplanar strokes are ignored. Crossing strokes split regions; nested outlines choose the smallest region. Holes are unsupported."
@@ -977,8 +1055,8 @@ impl SketchApp {
         } else {
             ui.label("Click corners on a plane. Click the first corner or press Enter to close and fill. Backspace removes a corner; Escape cancels.");
         }
-        ui.add(egui::Slider::new(&mut self.fills.offset, 0.0..=0.05).text("Paint behind plane"));
-        ui.small("Offset follows the captured plane normal and is saved/exported. Zero may cause z-fighting. Fill uses solid color; pressure and brush textures do not apply.");
+        ui.add(egui::Slider::new(&mut self.fills.offset, 0.0..=0.05).text("Paint behind guide"));
+        ui.small("Offset follows the captured guide surface and is saved/exported. Zero may cause z-fighting. Fill uses solid color; pressure and brush textures do not apply.");
         let count = self.fills.draft.as_ref().map_or(0, |d| d.mark.points.len());
         ui.label(format!(
             "{count}/{} draft corners (not saved)",
@@ -1014,7 +1092,7 @@ impl SketchApp {
             }
         });
         if let Some(draft) = &self.fills.draft {
-            ui.small(format!("Captured layer {} and plane: finish/cancel before switching drawings. Guide changes do not move this contour.",draft.mark.layer_id));
+            ui.small(format!("Captured layer {} and surface: finish/cancel before switching drawings. Guide changes do not move this contour.",draft.mark.layer_id));
         }
         if ui.button("Open painted-house study").clicked() {
             self.request(Pending::FilledStudy);
@@ -1049,17 +1127,33 @@ impl SketchApp {
         else {
             return;
         };
-        match crate::region_fill::find_region(
-            &self.doc,
-            target.plane,
-            anchor,
-            self.fills.gap_tolerance,
-            target.half_extent(),
-            self.fills
-                .active_layer_boundaries
-                .then_some(self.doc.active_layer),
-            &self.fills.closing_guides,
-        ) {
+        let cylinder = self.fills.draft.as_ref().and_then(|draft| draft.cylinder);
+        let region = if let Some((guide_id, surface)) = cylinder {
+            crate::region_fill::find_cylinder_region(
+                &self.doc,
+                guide_id,
+                surface,
+                anchor,
+                self.fills.gap_tolerance,
+                self.fills
+                    .active_layer_boundaries
+                    .then_some(self.doc.active_layer),
+                &self.fills.closing_guides,
+            )
+        } else {
+            crate::region_fill::find_region(
+                &self.doc,
+                target.plane,
+                anchor,
+                self.fills.gap_tolerance,
+                target.half_extent(),
+                self.fills
+                    .active_layer_boundaries
+                    .then_some(self.doc.active_layer),
+                &self.fills.closing_guides,
+            )
+        };
+        match region {
             Ok(points) => {
                 if let Some(draft) = self.fills.draft.as_mut() {
                     draft.mark.points = points
@@ -1072,18 +1166,31 @@ impl SketchApp {
                         })
                         .collect();
                     if let Err(error) = polygon::triangulate(&draft.mark) {
+                        draft.mark.points.clear();
                         self.status = error;
                     }
                 }
             }
-            Err(error) => self.status = error,
+            Err(error) => {
+                if let Some(draft) = self.fills.draft.as_mut() {
+                    draft.mark.points.clear();
+                }
+                self.status = error;
+            }
         }
         self.renderer.invalidate();
     }
     pub(super) fn fill_corner(&mut self, pos: Pos2, rect: Rect) {
-        let Some(target) = self.planar_drawing_target() else {
+        let cylinder = self.active_fill_cylinder();
+        let chart_target = || PlanarTarget::from_curve_frame(Vec3::ZERO, Vec3::Z, Vec3::X, None);
+        let Some(target) = self.planar_drawing_target().or_else(|| {
+            (self.fills.region_mode && cylinder.is_some())
+                .then(chart_target)
+                .flatten()
+        }) else {
             self.status =
-                "Planar fills require a plane guide. Activate a planar guide first.".into();
+                "Fills require a plane guide or an active saved cylinder for enclosed-region mode."
+                    .into();
             return;
         };
         if !self.doc.active_editable() {
@@ -1092,23 +1199,60 @@ impl SketchApp {
         }
         if self.fills.region_mode && self.fills.draft.is_none() {
             let (o, d) = crate::gizmo::ray(&self.camera, rect, pos);
-            let Some(world) = target.hit(o, d) else {
+            let world = match cylinder {
+                Some((_, surface)) => cylinder_fill_hit(surface, o, d),
+                None => target.hit(o, d),
+            };
+            let Some(world) = world else {
                 self.status =
-                    "Plane is edge-on or the click is outside the active image plane.".into();
+                    "No hit on the active fill surface. Click the guide surface or orbit the view."
+                        .into();
                 return;
             };
-            match crate::region_fill::find_region(
-                &self.doc,
-                target.plane,
-                world,
-                self.fills.gap_tolerance,
-                target.half_extent(),
-                self.fills
-                    .active_layer_boundaries
-                    .then_some(self.doc.active_layer),
-                &self.fills.closing_guides,
-            ) {
+            let mut cylinder = cylinder;
+            let region = if let Some((guide_id, mut surface)) = cylinder {
+                let local = surface.rotation.inverse() * (world - surface.center);
+                surface.angle_origin = local.x.atan2(local.z);
+                cylinder = Some((guide_id, surface));
+                crate::region_fill::find_cylinder_region(
+                    &self.doc,
+                    guide_id,
+                    surface,
+                    world,
+                    self.fills.gap_tolerance,
+                    self.fills
+                        .active_layer_boundaries
+                        .then_some(self.doc.active_layer),
+                    &self.fills.closing_guides,
+                )
+            } else {
+                crate::region_fill::find_region(
+                    &self.doc,
+                    target.plane,
+                    world,
+                    self.fills.gap_tolerance,
+                    target.half_extent(),
+                    self.fills
+                        .active_layer_boundaries
+                        .then_some(self.doc.active_layer),
+                    &self.fills.closing_guides,
+                )
+            };
+            match region {
                 Ok(points) => {
+                    let cylinder_frame = cylinder.map(|(_, surface)| surface);
+                    let (normal, tangent) = cylinder_frame.map_or(
+                        (target.plane.basis().2, target.plane.basis().0),
+                        |surface| {
+                            let local = surface.rotation.inverse() * (world - surface.center);
+                            let angle = local.x.atan2(local.z);
+                            (
+                                surface.rotation
+                                    * Vec3::new(local.x, 0.0, local.z).normalize_or_zero(),
+                                surface.rotation * Vec3::new(angle.cos(), 0.0, -angle.sin()),
+                            )
+                        },
+                    );
                     let mark = Stroke {
                         guide_attachment: None,
                         model_surface: None,
@@ -1122,6 +1266,7 @@ impl SketchApp {
                             gradient: None,
                             texture: None,
                             holes: Vec::new(),
+                            cylinder: cylinder_frame,
                         }),
                         group_id: None,
                         layer_id: self.doc.active_layer,
@@ -1130,8 +1275,8 @@ impl SketchApp {
                         gradient: None,
                         radius: 0.025,
                         brush: Brush {
-                            normal: target.plane.basis().2,
-                            tangent: target.plane.basis().0,
+                            normal,
+                            tangent,
                             ..Default::default()
                         },
                         points: points
@@ -1151,6 +1296,7 @@ impl SketchApp {
                     self.fills.draft = Some(FillDraft {
                         mark,
                         target,
+                        cylinder,
                         original: None,
                         selected_contour: 0,
                         selected: 0,
@@ -1172,7 +1318,11 @@ impl SketchApp {
                 return;
             };
             let (o, d) = crate::gizmo::ray(&self.camera, rect, pos);
-            let Some(world) = draft.target.hit(o, d) else {
+            let world = match draft.cylinder {
+                Some((_, surface)) => cylinder_fill_hit(surface, o, d),
+                None => draft.target.hit(o, d),
+            };
+            let Some(world) = world else {
                 self.status =
                     "Click on the active guide to add a temporary closing segment.".into();
                 return;
@@ -1219,6 +1369,7 @@ impl SketchApp {
         }
         let draft = self.fills.draft.get_or_insert_with(|| FillDraft {
             target,
+            cylinder: None,
             original: None,
             selected_contour: 0,
             selected: 0,
@@ -1238,6 +1389,7 @@ impl SketchApp {
                     gradient: None,
                     texture: None,
                     holes: Vec::new(),
+                    cylinder: None,
                 }),
                 group_id: None,
                 layer_id: self.doc.active_layer,
@@ -1288,12 +1440,14 @@ impl SketchApp {
             return;
         }
         let mut mark = draft.mark.clone();
+        let cylinder = draft.mark.fill.as_ref().and_then(|fill| fill.cylinder);
         mark.color = self.color;
         mark.fill = Some(PlanarFill {
             offset: self.fills.offset,
             gradient: None,
             texture: None,
             holes: Vec::new(),
+            cylinder,
         });
         if let Err(error) = polygon::triangulate(&mark) {
             self.status = error;
@@ -1326,7 +1480,9 @@ impl SketchApp {
         self.dirty = true;
         self.record_recovery_edit();
         self.renderer.invalidate();
-        self.status="Planar fill created. Draw outlines on the same guide plane; V selects the filled interior.".into();
+        self.status =
+            "Fill created. Draw outlines on the same guide surface; V selects the filled interior."
+                .into();
     }
     pub(super) fn fill_shortcuts(&mut self, ctx: &egui::Context) {
         let (p, enter, back, escape) = ctx.input(|i| {
@@ -1353,13 +1509,17 @@ impl SketchApp {
         }
         if p && !ctx.input(|i| i.modifiers.command || i.modifiers.alt)
             && self.planar_drawing_target().is_none()
+            && self.active_fill_cylinder().is_none()
         {
             self.status =
-                "Planar fills require a plane guide. Activate a planar guide first.".into();
+                "Fills require a plane guide or a saved cylinder in enclosed-region mode.".into();
         } else if p && !ctx.input(|i| i.modifiers.command || i.modifiers.alt) {
             self.cancel_line_tool();
             self.finish();
             self.fills.enabled = true;
+            if self.planar_drawing_target().is_none() {
+                self.fills.region_mode = true;
+            }
             self.select_mode = false;
             self.eraser = false;
         }
@@ -1581,7 +1741,7 @@ impl SketchApp {
                 crate::gizmo::project(&self.camera, rect, a),
                 crate::gizmo::project(&self.camera, rect, b),
             ) {
-                painter.line_segment([a, b], egui::Stroke::new(2.5, Color32::YELLOW));
+                painter.line_segment([a, b], egui::Stroke::new(2.5_f32, Color32::YELLOW));
             }
         }
         if let Some(start) = self.fills.closing_start {
@@ -1630,4 +1790,32 @@ impl SketchApp {
         self.renderer.lighting.fit_ground(&self.doc);
         self.status="Painted house: editable planar walls/roof and separate outlines. P draws another fill; V selects faces.".into();
     }
+}
+
+fn cylinder_fill_hit(
+    surface: crate::document::CylinderFillSurface,
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<Vec3> {
+    if !surface.valid() {
+        return None;
+    }
+    let rotation = surface.rotation.normalize();
+    let origin = rotation.inverse() * (origin - surface.center);
+    let direction = rotation.inverse() * direction;
+    let a = direction.x * direction.x + direction.z * direction.z;
+    if a < 1e-10 {
+        return None;
+    }
+    let b = 2.0 * (origin.x * direction.x + origin.z * direction.z);
+    let c = origin.x * origin.x + origin.z * origin.z - surface.radius * surface.radius;
+    let discriminant = b * b - 4.0 * a * c;
+    if !discriminant.is_finite() || discriminant < 0.0 {
+        return None;
+    }
+    let root = discriminant.sqrt();
+    let t = [(-b - root) / (2.0 * a), (-b + root) / (2.0 * a)]
+        .into_iter()
+        .find(|t| *t >= 0.0 && (origin.y + direction.y * *t).abs() <= surface.height * 0.5)?;
+    Some(surface.center + rotation * (origin + direction * t))
 }

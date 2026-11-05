@@ -286,6 +286,7 @@ pub fn planar_rectangle(
             gradient: None,
             texture: None,
             holes: Vec::new(),
+            cylinder: None,
         }),
         group_id: None,
         layer_id,

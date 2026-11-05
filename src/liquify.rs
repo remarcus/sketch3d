@@ -282,6 +282,7 @@ mod tests {
             gradient: None,
             texture: None,
             holes: Vec::new(),
+            cylinder: None,
         });
         assert!(edit(&document, &ids, settings()).is_err());
     }

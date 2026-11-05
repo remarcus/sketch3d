@@ -4196,11 +4196,16 @@ impl SketchApp {
         if tool != "Measure" {
             self.cancel_measure_tool();
         }
+        let saved_cylinder_fill = tool == "Fill" && self.active_fill_cylinder().is_some();
         if self.resource_target_active()
             && matches!(tool, "Line" | "Fill" | "Circle" | "Ellipse" | "Curve")
+            && !saved_cylinder_fill
         {
             self.status = "The active image/saved guide currently accepts brush strokes. Switch to the temporary guide for line, fill, shape, or curve tools.".into();
             return;
+        }
+        if saved_cylinder_fill {
+            self.fills.region_mode = true;
         }
         if tool != "Paint" && self.local_color_brush.enabled {
             self.finish_local_color(true);
@@ -4291,8 +4296,9 @@ impl SketchApp {
         let mut items: Vec<_> = tools
             .into_iter()
             .map(|(label, shortcut, command)| {
-                let enabled =
-                    !(unsupported_surface && matches!(label, "Line" | "Curve" | "Shape" | "Fill"));
+                let unsupported_tool = matches!(label, "Line" | "Curve" | "Shape")
+                    || (label == "Fill" && self.active_fill_cylinder().is_none());
+                let enabled = !(unsupported_surface && unsupported_tool);
                 QuickPaletteItem {
                     group: "Tools",
                     label,

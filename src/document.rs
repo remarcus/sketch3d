@@ -1130,6 +1130,68 @@ pub struct PlanarFill {
     /// Nested subtractive loops in world space, captured on the fill plane.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub holes: Vec<Vec<Vec3>>,
+    /// Optional finite saved-cylinder chart for curved enclosed-region fills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cylinder: Option<CylinderFillSurface>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CylinderFillSurface {
+    pub center: Vec3,
+    pub rotation: Quat,
+    pub radius: f32,
+    pub height: f32,
+    pub angle_origin: f32,
+}
+
+impl CylinderFillSurface {
+    pub fn valid(self) -> bool {
+        self.center.is_finite()
+            && self.rotation.is_finite()
+            && self.rotation.length_squared() > 1e-8
+            && self.radius.is_finite()
+            && self.radius > 0.0
+            && self.height.is_finite()
+            && self.height > 0.0
+            && self.angle_origin.is_finite()
+    }
+
+    pub fn chart_point(self, world: Vec3) -> Option<glam::Vec2> {
+        if !self.valid() || !world.is_finite() {
+            return None;
+        }
+        let local = self.rotation.inverse() * (world - self.center);
+        let radial = (local.x * local.x + local.z * local.z).sqrt();
+        if (radial - self.radius).abs() > self.radius.max(1.0) * 0.01
+            || local.y.abs() > self.height * 0.5 + 1e-4
+        {
+            return None;
+        }
+        let angle = local.x.atan2(local.z);
+        let delta = (angle - self.angle_origin + std::f32::consts::PI)
+            .rem_euclid(std::f32::consts::TAU)
+            - std::f32::consts::PI;
+        Some(glam::vec2(delta * self.radius, local.y))
+    }
+
+    pub fn world_point(self, chart: glam::Vec2, offset: f32) -> Option<Vec3> {
+        if !self.valid()
+            || !chart.is_finite()
+            || !offset.is_finite()
+            || offset < 0.0
+            || self.radius <= offset
+            || chart.y.abs() > self.height * 0.5 + 1e-4
+        {
+            return None;
+        }
+        let angle = self.angle_origin + chart.x / self.radius;
+        let radius = self.radius - offset;
+        Some(
+            self.center
+                + self.rotation
+                    * glam::Vec3::new(radius * angle.sin(), chart.y, radius * angle.cos()),
+        )
+    }
 }
 
 impl Default for PlanarFill {
@@ -1139,6 +1201,7 @@ impl Default for PlanarFill {
             gradient: None,
             texture: None,
             holes: Vec::new(),
+            cylinder: None,
         }
     }
 }

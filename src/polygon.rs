@@ -32,6 +32,18 @@ fn intersects(a: DVec2, b: DVec2, c: DVec2, d: DVec2, eps: f64) -> bool {
         || on_segment(b, c, d, eps)
 }
 fn projected(stroke: &Stroke) -> Vec<DVec2> {
+    if let Some(surface) = stroke.fill.as_ref().and_then(|fill| fill.cylinder) {
+        return stroke
+            .points
+            .iter()
+            .map(|point| {
+                surface
+                    .chart_point(point.position)
+                    .map(|point| DVec2::new(point.x as f64, point.y as f64))
+                    .unwrap_or(DVec2::splat(f64::NAN))
+            })
+            .collect();
+    }
     let origin = stroke.points[0].position.as_dvec3();
     let u = stroke.brush.tangent.as_dvec3();
     let v = stroke.brush.normal.as_dvec3().cross(u);
@@ -75,6 +87,27 @@ fn point_in_ring(point: DVec2, ring: &[DVec2]) -> bool {
 }
 
 fn projected_holes(stroke: &Stroke) -> Vec<Vec<DVec2>> {
+    if let Some(surface) = stroke.fill.as_ref().and_then(|fill| fill.cylinder) {
+        return stroke
+            .fill
+            .as_ref()
+            .map(|fill| {
+                fill.holes
+                    .iter()
+                    .map(|hole| {
+                        hole.iter()
+                            .map(|point| {
+                                surface
+                                    .chart_point(*point)
+                                    .map(|point| DVec2::new(point.x as f64, point.y as f64))
+                                    .unwrap_or(DVec2::splat(f64::NAN))
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
     let origin = stroke.points[0].position;
     let u = stroke.brush.tangent.as_dvec3();
     let v = stroke.brush.normal.as_dvec3().cross(u);
@@ -250,18 +283,31 @@ pub fn triangulate(stroke: &Stroke) -> Result<Vec<[usize; 3]>, String> {
     {
         return Err("Invalid fill frame, offset, color mask, or corners".into());
     }
+    if let Some(surface) = fill.cylinder {
+        if !surface.valid()
+            || fill.offset >= surface.radius
+            || stroke
+                .points
+                .iter()
+                .any(|point| surface.chart_point(point.position).is_none())
+        {
+            return Err("Curved fill corners must lie on the finite saved cylinder".into());
+        }
+    }
     let points = projected(stroke);
     let size = points.iter().map(|p| p.length()).fold(1.0_f64, f64::max);
     let eps = (1e-10 * size * size).max(1e-8);
     let origin = stroke.points[0].position;
     let tolerance = 1e-5 * size + 2e-7 * origin.abs().max_element() as f64;
-    if stroke.points.iter().any(|p| {
-        ((p.position - origin)
-            .as_dvec3()
-            .dot(stroke.brush.normal.as_dvec3()))
-        .abs()
-            > tolerance
-    }) {
+    if fill.cylinder.is_none()
+        && stroke.points.iter().any(|p| {
+            ((p.position - origin)
+                .as_dvec3()
+                .dot(stroke.brush.normal.as_dvec3()))
+            .abs()
+                > tolerance
+        })
+    {
         return Err("Fill corners must lie on one plane".into());
     }
     if fill.holes.len() > MAX_HOLES
@@ -407,20 +453,55 @@ pub fn triangulate(stroke: &Stroke) -> Result<Vec<[usize; 3]>, String> {
 pub fn ray_hit(stroke: &Stroke, origin: Vec3, direction: Vec3) -> Option<Vec3> {
     let fill = stroke.fill.as_ref()?;
     let first = stroke.points.first()?.position;
-    let n = stroke.brush.normal;
-    let dot = direction.dot(n);
-    if dot.abs() < 1e-6 {
-        return None;
-    }
-    let t = (first - n * fill.offset - origin).dot(n) / dot;
-    if t < 0.0 {
-        return None;
-    }
-    let hit = origin + direction * t;
-    let d = (hit + n * fill.offset - first).as_dvec3();
-    let u = stroke.brush.tangent.as_dvec3();
-    let v = n.as_dvec3().cross(u);
-    let p = DVec2::new(d.dot(u), d.dot(v));
+    let (hit, p) = if let Some(surface) = fill.cylinder {
+        let rotation = surface.rotation.normalize();
+        let local_origin = rotation.inverse() * (origin - surface.center);
+        let local_direction = rotation.inverse() * direction;
+        let radius = surface.radius - fill.offset;
+        if radius <= 0.0 {
+            return None;
+        }
+        let a = local_direction.x * local_direction.x + local_direction.z * local_direction.z;
+        if a < 1e-10 {
+            return None;
+        }
+        let b = 2.0 * (local_origin.x * local_direction.x + local_origin.z * local_direction.z);
+        let c = local_origin.x * local_origin.x + local_origin.z * local_origin.z - radius * radius;
+        let discriminant = b * b - 4.0 * a * c;
+        if discriminant < 0.0 {
+            return None;
+        }
+        let root = discriminant.sqrt();
+        let t = [(-b - root) / (2.0 * a), (-b + root) / (2.0 * a)]
+            .into_iter()
+            .find(|t| {
+                *t >= 0.0 && (local_origin.y + local_direction.y * *t).abs() <= surface.height * 0.5
+            })?;
+        let local = local_origin + local_direction * t;
+        let angle = local.x.atan2(local.z);
+        let delta = (angle - surface.angle_origin + std::f32::consts::PI)
+            .rem_euclid(std::f32::consts::TAU)
+            - std::f32::consts::PI;
+        (
+            origin + direction * t,
+            DVec2::new((delta * surface.radius) as f64, local.y as f64),
+        )
+    } else {
+        let n = stroke.brush.normal;
+        let dot = direction.dot(n);
+        if dot.abs() < 1e-6 {
+            return None;
+        }
+        let t = (first - n * fill.offset - origin).dot(n) / dot;
+        if t < 0.0 {
+            return None;
+        }
+        let hit = origin + direction * t;
+        let d = (hit + n * fill.offset - first).as_dvec3();
+        let u = stroke.brush.tangent.as_dvec3();
+        let v = n.as_dvec3().cross(u);
+        (hit, DVec2::new(d.dot(u), d.dot(v)))
+    };
     let points = projected(stroke);
     let mut inside = false;
     for i in 0..points.len() {
@@ -493,14 +574,31 @@ pub fn mesh(stroke: &Stroke) -> Vec<crate::geometry::Vertex> {
                 }
             }
         }
+        let (position, normal) = if let Some(surface) = fill.cylinder {
+            let chart = surface.chart_point(position);
+            match chart.and_then(|chart| {
+                surface.world_point(chart, fill.offset).map(|position| {
+                    let angle = surface.angle_origin + chart.x / surface.radius;
+                    (
+                        position,
+                        surface.rotation * glam::Vec3::new(angle.sin(), 0.0, angle.cos()),
+                    )
+                })
+            }) {
+                Some((position, normal)) => (position, normal),
+                None => (position - offset, stroke.brush.normal),
+            }
+        } else {
+            (position - offset, stroke.brush.normal)
+        };
         crate::geometry::Vertex {
             material: 0.0,
             emission: [0.0; 3],
             grain_uv: [0.0; 2],
             grain_dynamics: [1.0; 2],
             gradient_t: 0.0,
-            position: (position - offset).to_array(),
-            normal: stroke.brush.normal.to_array(),
+            position: position.to_array(),
+            normal: normal.to_array(),
             color,
             uv: texture.map_or(uv, |texture| texture.map_uv(uv)).to_array(),
             opacity: stroke.brush.opacity
@@ -592,6 +690,7 @@ pub fn study() -> crate::document::Document {
                 gradient: None,
                 texture: None,
                 holes: Vec::new(),
+                cylinder: None,
             }),
             group_id: None,
             layer_id: 1,
@@ -722,6 +821,7 @@ mod tests {
                 gradient: None,
                 texture: None,
                 holes: Vec::new(),
+                cylinder: None,
             }),
             group_id: None,
             layer_id: 1,

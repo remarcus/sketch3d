@@ -1455,6 +1455,7 @@ mod tests {
             gradient: None,
             texture: None,
             holes: Vec::new(),
+            cylinder: None,
         });
         assert!(split_stroke(&fill, 1, 1, 2).is_err());
         let mut locked = base;
@@ -1536,6 +1537,7 @@ mod tests {
             gradient: None,
             texture: None,
             holes: Vec::new(),
+            cylinder: None,
         });
         assert!(edit_point(&doc, 1, 0, Some(Vec3::Y)).is_err());
     }
