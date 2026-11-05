@@ -492,6 +492,7 @@ enum Pending {
     TutorialClose,
     New,
     House,
+    PencilHouse,
     Lantern,
     Brushes,
     Dynamics,
@@ -694,7 +695,7 @@ pub struct SketchApp {
     procedural_texture_preview: Option<(crate::texture::TextureCacheKey, egui::TextureHandle)>,
     preset_verification_frame: Option<u32>,
     house_verification_frame: Option<u32>,
-    starter_scene: bool,
+    starter_scene: Option<&'static str>,
     cylinder_example: bool,
     cylinder_verification_frame: Option<u32>,
     export_job: Option<export_ui::ExportJob>,
@@ -2262,7 +2263,7 @@ impl SketchApp {
             procedural_texture_preview: None,
             preset_verification_frame: None,
             house_verification_frame: None,
-            starter_scene: false,
+            starter_scene: None,
             cylinder_example: false,
             cylinder_verification_frame: None,
             export_job: None,
@@ -2785,7 +2786,7 @@ impl SketchApp {
         } else if std::env::args().any(|a| a == "--verify-house") {
             app.verification_frame = None;
             app.house_verification_frame = Some(0);
-            app.load_house();
+            app.load_pencil_house();
         } else if app.verification_frame.is_none() {
             if std::env::args().any(|a| a == "--vase") {
                 app.load_vase();
@@ -2800,7 +2801,7 @@ impl SketchApp {
             } else if std::env::args().any(|a| a == "--lantern") {
                 app.load_lantern();
             } else if !std::env::args().any(|a| a == "--blank") {
-                app.load_house();
+                app.load_pencil_house();
             }
         }
         app.renderer.grain = app.presentation.preferences.grain;
@@ -3969,13 +3970,14 @@ impl SketchApp {
                 self.request(Pending::Close);
             }
             Some(Pending::House) => self.load_house(),
+            Some(Pending::PencilHouse) => self.load_pencil_house(),
             Some(Pending::Lantern) => self.load_lantern(),
             Some(Pending::Brushes) => self.load_brushes(),
             Some(Pending::Dynamics) => self.load_dynamics(),
             Some(Pending::Textures) => self.load_textures(),
             Some(Pending::New) => {
                 self.reset_recovery_document();
-                self.starter_scene = false;
+                self.starter_scene = None;
                 self.cylinder_example = false;
                 self.use_cylinder = false;
                 self.use_revolved = false;
@@ -4075,7 +4077,7 @@ impl SketchApp {
                                 let _ = self.renderer.set_image_plane_asset(*id, asset);
                             }
                             self.refresh_obj_reference_meshes();
-                            self.starter_scene = false;
+                            self.starter_scene = None;
                             self.cylinder_example = false;
                             self.file = Some(path);
                             if let Some(saved_path) = &self.file {
@@ -5630,6 +5632,7 @@ impl SketchApp {
             });
             ui.menu_button("Examples", |ui| {
                 for (label, pending) in [
+                    ("Pencil and pastel house", Pending::PencilHouse),
                     ("Japanese garden house", Pending::House),
                     ("Cylindrical lantern", Pending::Lantern),
                     ("Brush sampler", Pending::Brushes),
@@ -7861,15 +7864,15 @@ impl eframe::App for SketchApp {
                         egui::FontId::proportional(13.0),
                         Color32::from_rgb(173, 210, 213),
                     );
-                    if self.starter_scene || self.cylinder_example {
+                    if let Some(title) = if self.cylinder_example {
+                        Some("Cylindrical lantern")
+                    } else {
+                        self.starter_scene
+                    } {
                         ui.painter().text(
                             rect.min + egui::vec2(22.0, 76.0),
                             egui::Align2::LEFT_TOP,
-                            if self.cylinder_example {
-                                "Cylindrical lantern"
-                            } else {
-                                "Japanese garden house"
-                            },
+                            title,
                             egui::FontId::proportional(24.0),
                             Color32::from_rgb(240, 217, 172),
                         );
@@ -9061,7 +9064,7 @@ impl SketchApp {
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","seam-crossing cylinder curves preview across camera orbit and cancel cleanly","committed cylinder curves remain on their captured surface after native reload","cylinder curve edit remains on the captured surface and applies as one undo/redo step","cylinder ellipse preview, cancel, commit, semantic reopen, and undo/redo","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["editable Japanese house strokes","duplicate and undo","New clears starter","House reloads starter","unsaved-change guard","sample save/reload","GPU screenshot"],"strokes":self.doc.strokes.len(),"points":self.doc.strokes.iter().map(|s|s.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["editable pencil and pastel house","duplicate and undo","New clears starter and retains graphite","both house examples remain available","unsaved-change guard","sample save/reload","GPU screenshot"],"strokes":self.doc.strokes.len(),"points":self.doc.strokes.iter().map(|s|s.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else {
                 report
             };

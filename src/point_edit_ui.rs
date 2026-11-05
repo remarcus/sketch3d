@@ -516,7 +516,7 @@ impl SketchApp {
         self.tutorial.offer = false;
         self.recovery_prompt = false;
         self.select_mode = true;
-        self.starter_scene = false;
+        self.starter_scene = None;
         self.cylinder_example = false;
         self.eraser = false;
         self.last_pen_at = None;

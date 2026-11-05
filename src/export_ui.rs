@@ -268,12 +268,11 @@ impl SketchApp {
             .and_then(|p| p.file_name())
             .and_then(|p| p.to_str())
             .map(|s| s.trim_end_matches(".sketch.json").trim_end_matches(".json"))
-            .unwrap_or(if self.starter_scene {
-                "japanese-house"
-            } else if self.cylinder_example {
-                "lantern"
-            } else {
-                "drawing"
+            .unwrap_or(match self.starter_scene {
+                Some("Pencil and pastel house") => "pencil-house",
+                Some(_) => "japanese-house",
+                None if self.cylinder_example => "lantern",
+                None => "drawing",
             });
         let suffix = if selected {
             "-selection"

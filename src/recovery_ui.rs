@@ -197,7 +197,7 @@ impl SketchApp {
         self.use_cylinder = false;
         self.use_revolved = false;
         self.guide_visible = true;
-        self.starter_scene = false;
+        self.starter_scene = None;
         self.cylinder_example = false;
         self.renderer.invalidate();
         self.image_plane_assets.clear();

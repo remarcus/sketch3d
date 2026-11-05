@@ -314,7 +314,7 @@ impl SketchApp {
         self.use_cylinder = false;
         self.use_revolved = false;
         self.guide_visible = false;
-        self.starter_scene = false;
+        self.starter_scene = None;
         self.cylinder_example = false;
         self.file = None;
         self.dirty = false;

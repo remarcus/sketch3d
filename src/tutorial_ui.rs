@@ -32,7 +32,7 @@ pub(super) struct Practice {
     use_cylinder: bool,
     use_revolved: bool,
     guide_visible: bool,
-    starter_scene: bool,
+    starter_scene: Option<&'static str>,
     cylinder_example: bool,
     brush: Brush,
     color: [f32; 3],
@@ -167,7 +167,7 @@ impl SketchApp {
         self.select_mode = false;
         self.eraser = false;
         self.individual_selection = false;
-        self.starter_scene = false;
+        self.starter_scene = None;
         self.cylinder_example = false;
         self.layer_target = 1;
         self.next_id = 1;

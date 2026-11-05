@@ -213,7 +213,7 @@ impl SketchApp {
         self.redo.clear();
         self.selected.clear();
         self.renderer.invalidate();
-        self.starter_scene = false;
+        self.starter_scene = None;
         self.cylinder_example = false;
         self.select_mode = false;
         self.eraser = false;

@@ -30,7 +30,7 @@ Install stable Rust from [rustup.rs](https://rustup.rs). Windows builds also req
 cargo run --release
 ```
 
-The app opens with an editable Japanese-style garden house. Choose **New** for a blank drawing or run `cargo run --release -- --blank` to start blank. Run with `--demo` to open the original three-ring geometry example.
+The app opens with an editable pencil-and-pastel house. The Japanese garden house is available under **Examples**. Choose **New** for a blank drawing or run `cargo run --release -- --blank` to start blank. Run with `--demo` to open the original three-ring geometry example.
 
 On Debian/Ubuntu, install the development packages used by winit, Wayland/X11, and the file-dialog backend: `build-essential pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libvulkan-dev libdbus-1-dev`. On macOS, install Xcode Command Line Tools.
 
