@@ -202,12 +202,7 @@ impl SketchApp {
             }
         };
         let strokes = if blank {
-            self.doc
-                .strokes
-                .iter()
-                .filter(|stroke| stroke.layer_id != layer_id)
-                .cloned()
-                .collect()
+            next.resolve(next.current_frame).unwrap_or_default()
         } else {
             self.doc.strokes.clone()
         };
@@ -781,7 +776,14 @@ impl SketchApp {
                 seek = Some(key.frame);
             }
             if response.dragged() && step > 0.0 {
-                let to = (i64::from(key.frame) + (response.drag_delta().x / step).round() as i64)
+                let offset = ui.input(|input| {
+                    input
+                        .pointer
+                        .interact_pos()
+                        .zip(input.pointer.press_origin())
+                        .map_or(0.0, |(current, start)| current.x - start.x)
+                });
+                let to = (i64::from(key.frame) + (offset / step).round() as i64)
                     .clamp(i64::from(first), i64::from(animation.range_end))
                     as u32;
                 painter.vline(
