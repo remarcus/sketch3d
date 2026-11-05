@@ -1356,6 +1356,7 @@ pub enum LayerAction {
     ClipToBelow(u64, bool),
     MaskSource(u64, Option<u64>),
     InvertMask(u64, bool),
+    HideOnionSkin(u64, bool),
     Visible(u64, bool),
     Lock(u64, bool),
     Activate(u64),
@@ -1393,6 +1394,7 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 locked: false,
                 opacity: 1.0,
                 blend_mode: crate::document::LayerBlendMode::Normal,
+                hide_onion_skin: false,
                 mask_inverted: false,
                 mask_source: None,
                 clip_to_below: false,
@@ -1464,6 +1466,14 @@ pub fn layer_edit(doc: &Document, action: LayerAction) -> Result<Edit, String> {
                 return Err("Choose a named mask source before inverting it".into());
             }
             layer.mask_inverted = value;
+        }
+        LayerAction::HideOnionSkin(id, value) => {
+            after
+                .layers
+                .iter_mut()
+                .find(|layer| layer.id == id)
+                .ok_or("Layer not found")?
+                .hide_onion_skin = value;
         }
         LayerAction::Visible(id, value) => {
             after

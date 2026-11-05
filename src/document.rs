@@ -402,6 +402,8 @@ pub struct Layer {
     pub mask_source: Option<u64>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub mask_inverted: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hide_onion_skin: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -478,6 +480,7 @@ pub fn layers_default() -> Vec<Layer> {
         locked: false,
         opacity: 1.0,
         blend_mode: LayerBlendMode::Normal,
+        hide_onion_skin: false,
         mask_inverted: false,
         mask_source: None,
         clip_to_below: false,
@@ -2559,6 +2562,7 @@ mod layer_tests {
             locked: true,
             opacity: 1.0,
             blend_mode: LayerBlendMode::Normal,
+            hide_onion_skin: false,
             mask_inverted: false,
             mask_source: None,
             clip_to_below: false,
@@ -2620,6 +2624,7 @@ mod layer_tests {
                     locked: false,
                     opacity: 1.0,
                     blend_mode: LayerBlendMode::Normal,
+                    hide_onion_skin: false,
                     mask_inverted: false,
                     mask_source: None,
                     clip_to_below: false,
@@ -3005,6 +3010,7 @@ mod group_tests {
             locked: true,
             opacity: 1.0,
             blend_mode: LayerBlendMode::Normal,
+            hide_onion_skin: false,
             mask_inverted: false,
             mask_source: None,
             clip_to_below: false,
@@ -3075,6 +3081,7 @@ mod group_tests {
             locked: false,
             opacity: 1.0,
             blend_mode: LayerBlendMode::Normal,
+            hide_onion_skin: false,
             mask_inverted: false,
             mask_source: None,
             clip_to_below: false,

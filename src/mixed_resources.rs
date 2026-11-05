@@ -977,6 +977,7 @@ mod tests {
             locked: false,
             opacity: 1.0,
             blend_mode: crate::document::LayerBlendMode::Normal,
+            hide_onion_skin: false,
             mask_inverted: false,
             mask_source: None,
             clip_to_below: false,

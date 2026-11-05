@@ -603,6 +603,12 @@ impl SketchApp {
                     if ui.checkbox(&mut onion, "Onion skin").changed() {
                         self.update_animation_settings(|animation| animation.onion_skins = onion);
                     }
+                    if let Some(layer) = self.doc.layers.iter().find(|layer| layer.id == self.doc.active_layer) {
+                        let mut show_layer = !layer.hide_onion_skin;
+                        if ui.add_enabled(onion && !self.animation_ui.playing, egui::Checkbox::new(&mut show_layer, "Onion skin for active layer")).changed() {
+                            self.apply_layer_action(crate::editing::LayerAction::HideOnionSkin(layer.id, !show_layer));
+                        }
+                    }
                 });
                 if let Some((key_frame, key_exposure)) = self.doc.animation.layer_tracks.iter().find(|track|track.layer_id==self.doc.active_layer).and_then(|track|track.keyframes.iter().rev().find(|key|key.frame<=self.doc.animation.current_frame && self.doc.animation.current_frame-key.frame<key.exposure).map(|key|(key.frame,key.exposure))) {
                     ui.horizontal(|ui| {
@@ -844,26 +850,18 @@ impl SketchApp {
             return;
         }
         if animation.onion_skins {
-            for (frame, color) in [
-                (
-                    animation.current_frame.saturating_sub(1),
-                    Color32::from_rgba_unmultiplied(80, 180, 255, 105),
-                ),
-                (
-                    animation
-                        .current_frame
-                        .saturating_add(1)
-                        .min(animation.range_end),
-                    Color32::from_rgba_unmultiplied(255, 140, 80, 105),
-                ),
-            ] {
-                if frame == animation.current_frame {
-                    continue;
-                }
-                let Some(strokes) = animation.resolve(frame) else {
-                    continue;
-                };
-                for stroke in strokes.iter().filter(|stroke| self.doc.visible(stroke)) {
+            let previous_color = Color32::from_rgba_unmultiplied(80, 180, 255, 105);
+            let next_color = Color32::from_rgba_unmultiplied(255, 140, 80, 105);
+            let frame = animation.current_frame;
+            let paint = |strokes: &[Stroke], color| {
+                for stroke in strokes.iter().filter(|stroke| {
+                    self.doc.visible(stroke)
+                        && self
+                            .doc
+                            .layers
+                            .iter()
+                            .any(|layer| layer.id == stroke.layer_id && !layer.hide_onion_skin)
+                }) {
                     let positions: Vec<_> = stroke
                         .points
                         .iter()
@@ -881,6 +879,38 @@ impl SketchApp {
                             egui::Stroke::new(1.5_f32, color),
                         );
                     }
+                }
+            };
+            for track in &animation.layer_tracks {
+                let upper = track.keyframes.partition_point(|key| key.frame <= frame);
+                let held = upper.checked_sub(1).filter(|&index| {
+                    let key = &track.keyframes[index];
+                    frame - key.frame < key.exposure
+                });
+                // The first key is displayed before its start by the pose resolver.
+                if upper == 0 {
+                    if let Some(key) = track.keyframes.get(1) {
+                        paint(&key.strokes, next_color);
+                    }
+                    continue;
+                }
+                let previous = held.unwrap_or(upper).checked_sub(1);
+                if let Some(index) = previous {
+                    paint(&track.keyframes[index].strokes, previous_color);
+                }
+                if let Some(key) = track.keyframes.get(upper) {
+                    paint(&key.strokes, next_color);
+                }
+            }
+            if animation.layer_tracks.is_empty() {
+                let upper = animation
+                    .keyframes
+                    .partition_point(|key| key.frame <= frame);
+                if let Some(index) = upper.checked_sub(2) {
+                    paint(&animation.keyframes[index].strokes, previous_color);
+                }
+                if let Some(key) = animation.keyframes.get(upper.max(1)) {
+                    paint(&key.strokes, next_color);
                 }
             }
         }
