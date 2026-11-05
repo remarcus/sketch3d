@@ -33,6 +33,9 @@ pub(super) struct FillUi {
     pub region_mode: bool,
     pub gap_tolerance: f32,
     pub active_layer_boundaries: bool,
+    pub region_anchor: Option<Vec3>,
+    pub closing_guides: Vec<(Vec3, Vec3)>,
+    pub closing_start: Option<Vec3>,
     pub draft: Option<FillDraft>,
     pub verification_frame: Option<u32>,
     texture_preview: Option<(u64, bool, egui::TextureHandle)>,
@@ -45,6 +48,9 @@ impl Default for FillUi {
             region_mode: false,
             gap_tolerance: 0.0,
             active_layer_boundaries: false,
+            region_anchor: None,
+            closing_guides: Vec::new(),
+            closing_start: None,
             draft: None,
             verification_frame: None,
             texture_preview: None,
@@ -931,6 +937,38 @@ impl SketchApp {
                 egui::Slider::new(&mut self.fills.gap_tolerance, 0.0..=0.05)
                     .text("Close outline gaps (wu)"),
             );
+            if self
+                .fills
+                .draft
+                .as_ref()
+                .is_some_and(|draft| draft.original.is_none())
+            {
+                ui.small("Click twice on the guide to add a temporary closing segment. It affects this preview only.");
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            !self.fills.closing_guides.is_empty(),
+                            egui::Button::new("Undo closing guide"),
+                        )
+                        .clicked()
+                    {
+                        self.fills.closing_guides.pop();
+                        self.fills.closing_start = None;
+                        self.rebuild_region_preview();
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.fills.closing_guides.is_empty(),
+                            egui::Button::new("Clear closing guides"),
+                        )
+                        .clicked()
+                    {
+                        self.fills.closing_guides.clear();
+                        self.fills.closing_start = None;
+                        self.rebuild_region_preview();
+                    }
+                });
+            }
             ui.small(if self.fills.active_layer_boundaries {
                 "Only visible coplanar strokes on the active layer define boundaries. Hidden and non-coplanar strokes are ignored. Crossing strokes split regions; nested outlines choose the smallest region. Holes are unsupported."
             } else {
@@ -970,6 +1008,9 @@ impl SketchApp {
                 .clicked()
             {
                 self.fills.draft = None;
+                self.fills.region_anchor = None;
+                self.fills.closing_guides.clear();
+                self.fills.closing_start = None;
             }
         });
         if let Some(draft) = &self.fills.draft {
@@ -980,12 +1021,64 @@ impl SketchApp {
         }
     }
     pub(super) fn remove_fill_corner(&mut self) {
+        if self.fills.region_mode && self.fills.draft.is_some() {
+            if self.fills.closing_start.take().is_none() {
+                self.fills.closing_guides.pop();
+                self.rebuild_region_preview();
+            }
+            self.status = "Temporary closing guide removed. It will not be saved.".into();
+            return;
+        }
         if let Some(draft) = &mut self.fills.draft {
             draft.mark.points.pop();
             if draft.mark.points.is_empty() {
                 self.fills.draft = None;
             }
         }
+    }
+    fn rebuild_region_preview(&mut self) {
+        let Some(anchor) = self.fills.region_anchor else {
+            return;
+        };
+        let Some(target) = self
+            .fills
+            .draft
+            .as_ref()
+            .filter(|draft| draft.original.is_none())
+            .map(|draft| draft.target)
+        else {
+            return;
+        };
+        match crate::region_fill::find_region(
+            &self.doc,
+            target.plane,
+            anchor,
+            self.fills.gap_tolerance,
+            target.half_extent(),
+            self.fills
+                .active_layer_boundaries
+                .then_some(self.doc.active_layer),
+            &self.fills.closing_guides,
+        ) {
+            Ok(points) => {
+                if let Some(draft) = self.fills.draft.as_mut() {
+                    draft.mark.points = points
+                        .into_iter()
+                        .map(|position| Point {
+                            position,
+                            pressure: 1.0,
+                            tilt: None,
+                            time_ms: 0,
+                        })
+                        .collect();
+                    if let Err(error) = polygon::triangulate(&draft.mark) {
+                        self.status = error;
+                    }
+                }
+            }
+            Err(error) => self.status = error,
+        }
+        self.renderer.invalidate();
     }
     pub(super) fn fill_corner(&mut self, pos: Pos2, rect: Rect) {
         let Some(target) = self.planar_drawing_target() else {
@@ -1013,6 +1106,7 @@ impl SketchApp {
                 self.fills
                     .active_layer_boundaries
                     .then_some(self.doc.active_layer),
+                &self.fills.closing_guides,
             ) {
                 Ok(points) => {
                     let mark = Stroke {
@@ -1064,6 +1158,9 @@ impl SketchApp {
                         gradient_drag: None,
                         imported_texture_ids: Vec::new(),
                     });
+                    self.fills.region_anchor = Some(world);
+                    self.fills.closing_guides.clear();
+                    self.fills.closing_start = None;
                     self.status = "Region preview ready. Enter commits; Escape cancels.".into();
                 }
                 Err(error) => self.status = error,
@@ -1071,8 +1168,25 @@ impl SketchApp {
             return;
         }
         if self.fills.region_mode && self.fills.draft.is_some() {
-            self.status =
-                "Region preview is active. Press Enter to commit or Escape to cancel.".into();
+            let Some(draft) = self.fills.draft.as_ref() else {
+                return;
+            };
+            let (o, d) = crate::gizmo::ray(&self.camera, rect, pos);
+            let Some(world) = draft.target.hit(o, d) else {
+                self.status =
+                    "Click on the active guide to add a temporary closing segment.".into();
+                return;
+            };
+            if let Some(start) = self.fills.closing_start.take() {
+                self.fills.closing_guides.push((start, world));
+                self.rebuild_region_preview();
+                self.status =
+                    "Temporary closing guide added. Enter commits only the fill; Escape cancels."
+                        .into();
+            } else {
+                self.fills.closing_start = Some(world);
+                self.status = "Closing guide start set. Click its endpoint; Backspace removes the last guide.".into();
+            }
             return;
         }
         if let Some(draft) = &self.fills.draft {
@@ -1206,6 +1320,9 @@ impl SketchApp {
         self.undo.push(edit);
         self.redo.clear();
         self.fills.draft = None;
+        self.fills.region_anchor = None;
+        self.fills.closing_guides.clear();
+        self.fills.closing_start = None;
         self.dirty = true;
         self.record_recovery_edit();
         self.renderer.invalidate();
@@ -1250,11 +1367,14 @@ impl SketchApp {
             if enter {
                 self.commit_fill();
             }
-            if back && !self.fills.region_mode {
+            if back {
                 self.remove_fill_corner();
             }
             if escape {
                 self.fills.draft = None;
+                self.fills.region_anchor = None;
+                self.fills.closing_guides.clear();
+                self.fills.closing_start = None;
             }
         }
     }
@@ -1454,6 +1574,19 @@ impl SketchApp {
                         painter.circle_stroke(*position, 6.0, egui::Stroke::new(1.0_f32, color));
                     }
                 }
+            }
+        }
+        for &(a, b) in &self.fills.closing_guides {
+            if let (Some((a, _)), Some((b, _))) = (
+                crate::gizmo::project(&self.camera, rect, a),
+                crate::gizmo::project(&self.camera, rect, b),
+            ) {
+                painter.line_segment([a, b], egui::Stroke::new(2.5, Color32::YELLOW));
+            }
+        }
+        if let Some(start) = self.fills.closing_start {
+            if let Some((start, _)) = crate::gizmo::project(&self.camera, rect, start) {
+                painter.circle_filled(start, 4.0, Color32::YELLOW);
             }
         }
     }

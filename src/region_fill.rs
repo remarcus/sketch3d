@@ -72,6 +72,7 @@ pub fn find_region(
     gap: f32,
     half_extent: Option<glam::Vec2>,
     active_layer: Option<u64>,
+    closing_guides: &[(Vec3, Vec3)],
 ) -> Result<Vec<Vec3>, String> {
     if !world.is_finite() || !gap.is_finite() || !(0.0..=0.05).contains(&gap) {
         return Err("Invalid region point or gap tolerance".into());
@@ -98,6 +99,25 @@ pub fn find_region(
             if segments.len() > MAX_SEGMENTS {
                 return Err("Region boundary exceeds the 2,000-segment limit".into());
             }
+        }
+    }
+    for &(a, b) in closing_guides {
+        if !a.is_finite()
+            || !b.is_finite()
+            || (a - origin).dot(plane.basis().2).abs() > 0.002
+            || (b - origin).dot(plane.basis().2).abs() > 0.002
+        {
+            return Err("Temporary closing guide is outside the active plane".into());
+        }
+        let da = (a - origin).as_dvec3();
+        let db = (b - origin).as_dvec3();
+        let (u, v, _) = plane.basis();
+        segments.push(Segment {
+            a: DVec2::new(da.dot(u.as_dvec3()), da.dot(v.as_dvec3())),
+            b: DVec2::new(db.dot(u.as_dvec3()), db.dot(v.as_dvec3())),
+        });
+        if segments.len() > MAX_SEGMENTS {
+            return Err("Region boundary exceeds the 2,000-segment limit".into());
         }
     }
     if let Some(extent) = half_extent {
