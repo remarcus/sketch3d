@@ -6,6 +6,231 @@ use crate::{
 };
 use glam::{Mat3, Quat};
 
+#[derive(Clone, Copy)]
+enum SimilarStrokeMode {
+    Brush,
+    Swatch,
+}
+
+#[cfg(test)]
+mod similar_stroke_tests {
+    use super::*;
+    use crate::document::{Brush, Layer, Point, StrokeSwatchBinding, SwatchRole};
+
+    fn stroke(id: u64, layer_id: u64) -> crate::document::Stroke {
+        crate::document::Stroke {
+            guide_attachment: None,
+            model_surface: None,
+            fill: None,
+            material: Default::default(),
+            group_id: None,
+            layer_id,
+            id,
+            color: [0.3, 0.5, 0.7],
+            gradient: None,
+            radius: 0.02,
+            brush: Brush::default(),
+            points: vec![Point {
+                position: Vec3::ZERO,
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 0,
+            }],
+            point_thickness: None,
+            point_colors: None,
+            modifiers: None,
+            curve: None,
+        }
+    }
+
+    #[test]
+    fn brush_match_ignores_captured_pose_and_seed_but_honors_settings_and_active_layer() {
+        let mut doc = crate::document::Document::default();
+        doc.layers.push(Layer {
+            id: 2,
+            name: "Other".into(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            blend_mode: Default::default(),
+            clip_to_below: false,
+            mask_source: None,
+            mask_inverted: false,
+            hide_onion_skin: false,
+        });
+        doc.active_layer = 1;
+        let source = stroke(1, 1);
+        let mut same = stroke(2, 1);
+        same.brush.normal = Vec3::Y;
+        same.brush.tangent = Vec3::X;
+        same.brush.dab_seed = 82;
+        let mut different = stroke(3, 1);
+        different.brush.opacity = 0.5;
+        let other_layer = stroke(4, 2);
+        doc.strokes = vec![source, same, different, other_layer];
+
+        assert_eq!(
+            similar_stroke_ids(&doc, 1, SimilarStrokeMode::Brush).unwrap(),
+            HashSet::from([1, 2])
+        );
+
+        doc.layers[0].locked = true;
+        assert!(similar_stroke_ids(&doc, 1, SimilarStrokeMode::Brush).is_none());
+    }
+
+    #[test]
+    fn swatch_match_is_role_aware_and_selection_edits_undo_as_one_change() {
+        let mut doc = crate::document::Document::default();
+        doc.layers.push(Layer {
+            id: 2,
+            name: "Other".into(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            blend_mode: Default::default(),
+            clip_to_below: false,
+            mask_source: None,
+            mask_inverted: false,
+            hide_onion_skin: false,
+        });
+        let selected = stroke(1, 1);
+        let same = stroke(2, 1);
+        let different_role = stroke(3, 1);
+        let other_layer = stroke(4, 2);
+        doc.strokes = vec![selected, same, different_role, other_layer];
+        doc.color_swatches
+            .swatches
+            .push(crate::document::DocumentColorSwatch {
+                id: 9,
+                name: "Ink".into(),
+                color: [0.1, 0.2, 0.3],
+            });
+        doc.color_swatches.bindings = vec![
+            StrokeSwatchBinding {
+                stroke_id: 1,
+                swatch_id: 9,
+                role: SwatchRole::Stroke,
+            },
+            StrokeSwatchBinding {
+                stroke_id: 2,
+                swatch_id: 9,
+                role: SwatchRole::Stroke,
+            },
+            StrokeSwatchBinding {
+                stroke_id: 3,
+                swatch_id: 9,
+                role: SwatchRole::Fill,
+            },
+            StrokeSwatchBinding {
+                stroke_id: 4,
+                swatch_id: 9,
+                role: SwatchRole::Stroke,
+            },
+        ];
+        let selected_ids = similar_stroke_ids(&doc, 1, SimilarStrokeMode::Swatch).unwrap();
+        assert_eq!(selected_ids, HashSet::from([1, 2]));
+
+        let edit = editing::appearance_edit(
+            &doc,
+            &selected_ids,
+            editing::AppearancePatch {
+                color: Some([0.8, 0.2, 0.1]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        edit.apply(&mut doc, true);
+        assert_eq!(
+            doc.strokes
+                .iter()
+                .filter(|stroke| selected_ids.contains(&stroke.id))
+                .map(|stroke| stroke.color)
+                .collect::<Vec<_>>(),
+            vec![[0.8, 0.2, 0.1]; 2]
+        );
+        edit.apply(&mut doc, false);
+        assert_eq!(
+            doc.strokes
+                .iter()
+                .map(|stroke| stroke.color)
+                .collect::<Vec<_>>(),
+            vec![[0.3, 0.5, 0.7]; 4]
+        );
+    }
+}
+
+fn similar_stroke_ids(
+    doc: &crate::document::Document,
+    source_id: u64,
+    mode: SimilarStrokeMode,
+) -> Option<HashSet<u64>> {
+    let source = doc.strokes.iter().find(|stroke| stroke.id == source_id)?;
+    if source.layer_id != doc.active_layer || !doc.editable(source) {
+        return None;
+    }
+    let active_layer = doc.active_layer;
+    match mode {
+        SimilarStrokeMode::Brush => {
+            if source.fill.is_some() {
+                return None;
+            }
+            let mut brush_key = source.brush;
+            brush_key.normal = Vec3::Z;
+            brush_key.tangent = Vec3::X;
+            brush_key.dab_seed = 0;
+            brush_key.dab_distance_origin = 0.0;
+            brush_key.dab_total_length = 0.0;
+            Some(
+                doc.strokes
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.layer_id == active_layer
+                            && candidate.fill.is_none()
+                            && doc.editable(candidate)
+                            && candidate.radius == source.radius
+                            && {
+                                let mut candidate_key = candidate.brush;
+                                candidate_key.normal = Vec3::Z;
+                                candidate_key.tangent = Vec3::X;
+                                candidate_key.dab_seed = 0;
+                                candidate_key.dab_distance_origin = 0.0;
+                                candidate_key.dab_total_length = 0.0;
+                                candidate_key == brush_key
+                            }
+                    })
+                    .map(|stroke| stroke.id)
+                    .collect(),
+            )
+        }
+        SimilarStrokeMode::Swatch => {
+            let binding = doc
+                .color_swatches
+                .binding(source_id, crate::document::SwatchRole::Stroke)
+                .or_else(|| {
+                    doc.color_swatches
+                        .binding(source_id, crate::document::SwatchRole::Fill)
+                })?;
+            doc.color_swatches.swatch(binding.swatch_id)?;
+            let role = binding.role;
+            Some(
+                doc.strokes
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.layer_id == active_layer
+                            && doc.editable(candidate)
+                            && doc.color_swatches.binding(candidate.id, role).is_some_and(
+                                |candidate_binding| {
+                                    candidate_binding.swatch_id == binding.swatch_id
+                                },
+                            )
+                    })
+                    .map(|stroke| stroke.id)
+                    .collect(),
+            )
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum PivotMode {
     #[default]
@@ -1866,6 +2091,29 @@ impl SketchApp {
             return;
         }
         ui.label(format!("{} stroke(s) selected", self.selected.len()));
+        if self.selected.len() == 1 {
+            let source_id = *self.selected.iter().next().expect("one selected stroke");
+            let brush_ids = similar_stroke_ids(&self.doc, source_id, SimilarStrokeMode::Brush);
+            let swatch_ids = similar_stroke_ids(&self.doc, source_id, SimilarStrokeMode::Swatch);
+            ui.collapsing("Select similar on active layer", |ui| {
+                ui.small("Select visible, unlocked strokes on the active layer. Brush matching includes size and brush controls; linked swatches match by role.");
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(brush_ids.is_some(), egui::Button::new("Same brush settings")).clicked() {
+                        self.selected = brush_ids.clone().unwrap_or_default();
+                        self.sync_selection();
+                        self.status = format!("Selected {} stroke(s) with the same brush settings on the active layer.", self.selected.len());
+                    }
+                    if ui.add_enabled(swatch_ids.is_some(), egui::Button::new("Same linked swatch")).clicked() {
+                        self.selected = swatch_ids.clone().unwrap_or_default();
+                        self.sync_selection();
+                        self.status = format!("Selected {} stroke(s) linked to the same swatch on the active layer.", self.selected.len());
+                    }
+                });
+                if brush_ids.is_none() && swatch_ids.is_none() {
+                    ui.small("Select one editable stroke on the active layer; swatch matching also requires a linked swatch.");
+                }
+            });
+        }
         if self.selected.len() > 1 {
             let cleanup_id = ui.make_persistent_id("selection-cleanup-settings");
             let mut cleanup = ui
