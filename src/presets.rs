@@ -547,7 +547,7 @@ pub(crate) fn startup_pencil() -> Preset {
         .into_iter()
         .find(|preset| preset.name == "Graphite")
         .expect("Graphite is a built-in preset");
-    pencil.color = [crate::presentation::srgb_to_linear(68.0 / 255.0); 3];
+    pencil.color = [crate::presentation::srgb_to_linear(102.0 / 255.0); 3];
     pencil.brush.opacity = 1.0;
     pencil.radius = 0.024;
     pencil
@@ -1332,11 +1332,11 @@ mod tests {
             crate::texture::TextureKind::Graphite
         );
         assert!((startup.radius - 0.024).abs() < f32::EPSILON);
-        let graphite_gray = crate::presentation::srgb_to_linear(68.0 / 255.0);
+        let graphite_gray = crate::presentation::srgb_to_linear(102.0 / 255.0);
         assert_eq!(startup.color, [graphite_gray; 3]);
         assert!((startup.brush.opacity - 1.0).abs() < f32::EPSILON);
         assert!(
-            startup.color[0] < 0.07,
+            startup.color[0] < 0.15,
             "startup graphite remains dark gray"
         );
     }

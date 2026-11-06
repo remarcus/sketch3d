@@ -153,6 +153,15 @@ impl SketchApp {
                     .fold((0usize, 0u8), |(count, max_delta), delta| {
                         (count + 1, max_delta.max(delta))
                     });
+                std::fs::create_dir_all("verification").unwrap();
+                image::save_buffer(
+                    "verification/startup-graphite-stroke-640x360.png",
+                    &stroke_pixels,
+                    640,
+                    360,
+                    image::ColorType::Rgba8,
+                )
+                .expect("startup Graphite GPU render is saved");
                 self.house_graphite_changed_pixels = changed_pixels;
                 self.house_graphite_max_contrast = strongest_contrast;
                 assert!(changed_pixels > 2 && strongest_contrast > 8);
@@ -205,6 +214,14 @@ impl SketchApp {
                 self.renderer
                     .render(&self.doc, &self.camera, GuidePreview::Hidden, [640, 360]);
                 let opening = self.renderer.verification_pixels().to_vec();
+                image::save_buffer(
+                    "verification/pencil-house-opening-640x360.png",
+                    &opening,
+                    640,
+                    360,
+                    image::ColorType::Rgba8,
+                )
+                .expect("opening house GPU render is saved");
                 assert!(opening.chunks_exact(4).any(|pixel| pixel[3] > 0));
                 self.camera.yaw += 0.4;
                 self.camera.pitch -= 0.08;
@@ -212,6 +229,14 @@ impl SketchApp {
                 self.renderer
                     .render(&self.doc, &self.camera, GuidePreview::Hidden, [640, 360]);
                 let orbited = self.renderer.verification_pixels();
+                image::save_buffer(
+                    "verification/pencil-house-orbit-640x360.png",
+                    &orbited,
+                    640,
+                    360,
+                    image::ColorType::Rgba8,
+                )
+                .expect("orbited house GPU render is saved");
                 let changed_pixels = opening
                     .chunks_exact(4)
                     .zip(orbited.chunks_exact(4))
@@ -238,6 +263,7 @@ impl SketchApp {
                     "checks": [
                         "first blank-canvas stroke uses the startup Graphite brush, color, and radius",
                         "the Graphite stroke changes the production GPU render against a blank canvas",
+                        "renderer-only PNGs save the first Graphite stroke and opening/orbited house views",
                         "preset selection matches the startup Graphite brush",
                         "undo removes the first stroke and keeps the brush selection",
                         "New confirmation and reset preserve the Graphite brush",
