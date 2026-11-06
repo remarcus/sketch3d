@@ -54,6 +54,7 @@ mod presets_ui;
 mod recovery;
 mod recovery_store;
 mod region_fill;
+mod mesh_fill;
 mod renderer;
 mod reprojection;
 mod revolved;

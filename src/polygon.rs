@@ -72,7 +72,7 @@ fn normalized_uv(point: DVec2, min: DVec2, max: DVec2) -> glam::Vec2 {
     ((point - min) / size).as_vec2()
 }
 
-fn point_in_ring(point: DVec2, ring: &[DVec2]) -> bool {
+pub(crate) fn point_in_ring(point: DVec2, ring: &[DVec2]) -> bool {
     let mut inside = false;
     for i in 0..ring.len() {
         let a = ring[i];
@@ -130,7 +130,7 @@ fn projected_holes(stroke: &Stroke) -> Vec<Vec<DVec2>> {
         .unwrap_or_default()
 }
 
-fn validate_simple_ring(points: &[DVec2], eps: f64) -> Result<(), String> {
+pub(crate) fn validate_simple_ring(points: &[DVec2], eps: f64) -> Result<(), String> {
     if !(3..=MAX_CORNERS).contains(&points.len()) {
         return Err(format!("A contour needs 3–{MAX_CORNERS} corners"));
     }
@@ -158,7 +158,7 @@ fn validate_simple_ring(points: &[DVec2], eps: f64) -> Result<(), String> {
     Ok(())
 }
 
-fn lyon_mesh(contours: &[Vec<DVec2>]) -> Result<(Vec<DVec2>, Vec<[usize; 3]>), String> {
+pub(crate) fn lyon_mesh(contours: &[Vec<DVec2>]) -> Result<(Vec<DVec2>, Vec<[usize; 3]>), String> {
     let mut builder = Path::builder();
     for contour in contours {
         let Some(first) = contour.first() else {
@@ -264,6 +264,9 @@ pub fn triangulate(stroke: &Stroke) -> Result<Vec<[usize; 3]>, String> {
         .fill
         .as_ref()
         .ok_or("This mark is not a planar fill")?;
+    if fill.mesh.is_some() {
+        return Err("Mesh fills have a baked surface tessellation".into());
+    }
     if !(3..=MAX_CORNERS).contains(&stroke.points.len()) {
         return Err(format!("A fill needs 3–{MAX_CORNERS} corners"));
     }
@@ -450,8 +453,18 @@ pub fn triangulate(stroke: &Stroke) -> Result<Vec<[usize; 3]>, String> {
     }
     Ok(triangles)
 }
+
+pub fn validate(stroke: &Stroke) -> Result<(), String> {
+    if let Some(mesh) = stroke.fill.as_ref().and_then(|fill| fill.mesh.as_ref()) {
+        return mesh.validate(stroke);
+    }
+    triangulate(stroke).map(|_| ())
+}
 pub fn ray_hit(stroke: &Stroke, origin: Vec3, direction: Vec3) -> Option<Vec3> {
     let fill = stroke.fill.as_ref()?;
+    if let Some(mesh) = &fill.mesh {
+        return mesh.ray_hit(origin, direction);
+    }
     let first = stroke.points.first()?.position;
     let (hit, p) = if let Some(surface) = fill.cylinder {
         let rotation = surface.rotation.normalize();
@@ -530,6 +543,9 @@ pub fn ray_hit(stroke: &Stroke, origin: Vec3, direction: Vec3) -> Option<Vec3> {
     inside.then_some(hit)
 }
 pub fn mesh(stroke: &Stroke) -> Vec<crate::geometry::Vertex> {
+    if let Some(mesh) = stroke.fill.as_ref().and_then(|fill| fill.mesh.as_ref()) {
+        return mesh.vertices(stroke);
+    }
     let Ok(triangles) = triangulate(stroke) else {
         return Vec::new();
     };
@@ -691,6 +707,7 @@ pub fn study() -> crate::document::Document {
                 texture: None,
                 holes: Vec::new(),
                 cylinder: None,
+                mesh: None,
                 region_source: None,
             }),
             group_id: None,
@@ -823,6 +840,7 @@ mod tests {
                 texture: None,
                 holes: Vec::new(),
                 cylinder: None,
+                mesh: None,
                 region_source: None,
             }),
             group_id: None,

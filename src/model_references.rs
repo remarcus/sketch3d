@@ -26,24 +26,33 @@ impl From<crate::obj_mesh_index::ObjMeshHit> for ModelInkAnchor {
     }
 }
 
+impl ModelInkAnchor {
+    pub fn is_valid(self) -> bool {
+        self.barycentric.is_finite()
+            && self.barycentric.min_element() >= -1e-4
+            && (self.barycentric.element_sum() - 1.0).abs() <= 1e-4
+    }
+}
+
 impl ModelInkAttachment {
     pub fn is_valid(&self) -> bool {
         !self.anchors.is_empty()
             && self.anchors.len() <= 2_000_000
-            && self.anchors.iter().all(|anchor| {
-                anchor.barycentric.is_finite()
-                    && anchor.barycentric.min_element() >= -1e-4
-                    && (anchor.barycentric.element_sum() - 1.0).abs() <= 1e-4
-            })
+            && self.anchors.iter().all(|anchor| anchor.is_valid())
     }
 }
 
 impl crate::document::Stroke {
     pub fn attached_model(&self) -> Option<u64> {
-        Some(self.model_surface.as_ref()?.attachment.as_ref()?.model_id)
+        self.model_surface.as_ref().and_then(|patch| patch.attachment.as_ref())
+            .map(|attachment| attachment.model_id)
+            .or_else(|| Some(self.fill.as_ref()?.mesh.as_ref()?.source?.model_id))
     }
 
     pub fn detach_model(&mut self) {
+        if let Some(mesh) = self.fill.as_mut().and_then(|fill| fill.mesh.as_mut()) {
+            mesh.source = None;
+        }
         if let Some(patch) = &mut self.model_surface {
             patch.attachment = None;
             if patch.triangles.is_empty() {

@@ -1582,6 +1582,7 @@ mod tests {
             texture: None,
             holes: Vec::new(),
             cylinder: None,
+            mesh: None,
             region_source: None,
         });
         assert!(split_stroke(&fill, 1, 1, 2).is_err());
@@ -1665,6 +1666,7 @@ mod tests {
             texture: None,
             holes: Vec::new(),
             cylinder: None,
+            mesh: None,
             region_source: None,
         });
         assert!(edit_point(&doc, 1, 0, Some(Vec3::Y)).is_err());

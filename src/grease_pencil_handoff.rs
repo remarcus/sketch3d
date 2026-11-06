@@ -448,7 +448,7 @@ fn unsupported_semantics(stroke: &Stroke) -> Option<String> {
         if fill.texture.is_some() {
             unsupported.push("fill texture");
         }
-        if fill.cylinder.is_some() {
+        if fill.cylinder.is_some() || fill.mesh.is_some() {
             unsupported.push("curved fill surface (only planar solid fills are handed off)");
         }
     }

@@ -946,6 +946,7 @@ mod tests {
             texture: None,
             holes: Vec::new(),
             cylinder: None,
+            mesh: None,
             region_source: None,
         });
         assert!(!StrokeModifierStack::default().is_compatible(&fill));

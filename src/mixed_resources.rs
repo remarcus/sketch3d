@@ -263,9 +263,16 @@ fn transformed_state(
             for point in &mut stroke.points {
                 point.position += transform.translation;
             }
-            if stroke.attached_model().is_some() {
-                for triangle in &mut stroke.model_surface.as_mut().unwrap().triangles {
+            if let Some(patch) = stroke.model_surface.as_mut().filter(|patch| patch.attachment.is_some()) {
+                for triangle in &mut patch.triangles {
                     for point in &mut triangle.positions {
+                        *point += transform.translation;
+                    }
+                }
+            }
+            if let Some(mesh) = stroke.fill.as_mut().and_then(|fill| fill.mesh.as_mut()) {
+                for triangle in &mut mesh.triangles {
+                    for point in triangle {
                         *point += transform.translation;
                     }
                 }

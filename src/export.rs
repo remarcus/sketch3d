@@ -142,7 +142,7 @@ fn stroke_mesh_internal(
         ));
     }
     if stroke.fill.is_some() {
-        crate::polygon::triangulate(stroke)?;
+        crate::polygon::validate(stroke)?;
     }
     let expected_tip_ids = stroke.brush.tip_variant_ids();
     let tip_atlas = if stroke.brush.uses_tip_atlas() {

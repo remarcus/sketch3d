@@ -5,6 +5,7 @@ use crate::{
         CylinderFillRegionSource, CylinderFillSurface, FillRegionSource, PlanarFill,
         PlanarFillRegionSource,
     },
+    mesh_fill::{self, MeshFillSource},
     polygon,
 };
 
@@ -365,6 +366,102 @@ impl SketchApp {
         saved_fill_cylinder(&self.doc, id).map(|surface| (id, surface))
     }
 
+    pub(super) fn active_fill_model(&self) -> Option<u64> {
+        self.doc.active_model_reference.filter(|id| {
+            self.obj_reference_models.get(id).is_some_and(|model| {
+                model.source_format == crate::obj_reference::ObjSourceFormat::Obj
+            })
+        })
+    }
+
+    fn mesh_fill_resource(
+        &mut self,
+        id: u64,
+    ) -> Result<(&crate::document::model_references::ObjReferenceResource,
+                 &crate::obj_reference::ObjModel, &crate::obj_mesh_index::ObjMeshIndex), String> {
+        let resource = self.doc.model_references.iter()
+            .find(|resource| resource.id == id && resource.visible && !resource.locked)
+            .ok_or("The fill's OBJ reference is missing, hidden, or locked")?;
+        let model = self.obj_reference_models.get(&id)
+            .filter(|model| model.source_format == crate::obj_reference::ObjSourceFormat::Obj)
+            .ok_or("The fill's OBJ reference is not loaded")?;
+        let index = match self.obj_surface_indices.entry(id) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(crate::obj_mesh_index::ObjMeshIndex::new(model)?),
+        };
+        Ok((resource, model, index))
+    }
+
+    fn mesh_fill_at(&mut self, id: u64, pos: Pos2, rect: Rect) -> Result<FillDraft, String> {
+        if !self.doc.active_editable() {
+            return Err("Choose a visible unlocked layer for a fill".into());
+        }
+        if !self.doc.animation.is_empty() || self.doc.animation.two_bone_rig.is_some() {
+            return Err("Mesh fills require static artwork".into());
+        }
+        let (origin, direction) = crate::gizmo::ray(&self.camera, rect, pos);
+        let (resource, model, index) = self.mesh_fill_resource(id)?;
+        let inverse = resource.rotation.inverse();
+        let hit = index.hit(model, inverse * (origin - resource.center) / resource.scale,
+            inverse * direction / resource.scale)
+            .ok_or("Click inside a closed attached outline on the active OBJ")?;
+        let world = resource.center + resource.rotation * (hit.position * resource.scale);
+        let normal = (resource.rotation * hit.normal).normalize_or_zero();
+        let tangent = normal.any_orthonormal_vector();
+        let target = PlanarTarget::from_curve_frame(world, normal, tangent, None)
+            .ok_or("Invalid mesh fill frame")?;
+        let layer_id = self.doc.active_layer;
+        let source = MeshFillSource {
+            model_id: id,
+            seed: hit.into(),
+            boundary_layer: self.fills.active_layer_boundaries.then_some(layer_id),
+            gap_tolerance: self.fills.gap_tolerance,
+        };
+        let (mesh, points) = self.solve_mesh_fill(source)?;
+        let mark = Stroke {
+            guide_attachment: None,
+            model_surface: None,
+            curve: None,
+            material: Default::default(),
+            point_thickness: None,
+            point_colors: None,
+            modifiers: None,
+            fill: Some(PlanarFill { offset: 0.0, mesh: Some(mesh), ..Default::default() }),
+            group_id: None,
+            layer_id,
+            id: 0,
+            color: self.color,
+            gradient: None,
+            radius: 0.025,
+            brush: Brush { normal, tangent, ..Default::default() },
+            points: contour_points(points),
+        };
+        polygon::validate(&mark)?;
+        Ok(FillDraft {
+            mark,
+            target,
+            cylinder: None,
+            original: None,
+            refreshing: false,
+            selected_contour: 0,
+            selected: 0,
+            drag: None,
+            gradient_drag: None,
+            imported_texture_ids: Vec::new(),
+        })
+    }
+
+    fn solve_mesh_fill(&self, source: MeshFillSource) -> Result<(mesh_fill::MeshFill, Vec<Vec3>), String> {
+        let resource = self.doc.model_references.iter()
+            .find(|model| model.id == source.model_id && model.visible && !model.locked)
+            .ok_or("The fill's OBJ reference is missing, hidden, or locked")?;
+        let model = self.obj_reference_models.get(&source.model_id)
+            .ok_or("The fill's OBJ reference is not loaded")?;
+        let index = self.obj_surface_indices.get(&source.model_id)
+            .ok_or("The fill's OBJ surface index is unavailable")?;
+        mesh_fill::solve(&self.doc, resource, model, index, source)
+    }
+
     pub(super) fn begin_fill_contour_edit(&mut self, refresh: bool) {
         if self.fills.draft.is_some() || self.selected.len() != 1 {
             return;
@@ -387,9 +484,9 @@ impl SketchApp {
             && source
                 .fill
                 .as_ref()
-                .is_some_and(|fill| fill.cylinder.is_some())
+                .is_some_and(|fill| fill.cylinder.is_some() || fill.mesh.is_some())
         {
-            self.status = "Curved cylinder fills can be selected and exported; contour editing is not supported yet.".into();
+            self.status = "Direct contour editing is available for planar fills.".into();
             return;
         }
         if let Err(error) = polygon::triangulate(&source) {
@@ -1206,11 +1303,16 @@ impl SketchApp {
         if !self.fills.enabled {
             return;
         }
+        let mesh_target = self.active_fill_model().is_some();
         ui.strong("FILL");
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.fills.region_mode, true, "Enclosed region");
-            ui.selectable_value(&mut self.fills.region_mode, false, "Trace contour");
-        });
+        if mesh_target {
+            self.fills.region_mode = true;
+        } else {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.fills.region_mode, true, "Enclosed region");
+                ui.selectable_value(&mut self.fills.region_mode, false, "Trace contour");
+            });
+        }
         self.end_fill_session_if_surface_changed();
         ui.horizontal(|ui| {
             ui.label("Fill color");
@@ -1233,7 +1335,7 @@ impl SketchApp {
                 ui.small("Switch off Draw closing guides to click a region. Apply keeps the guides for the next fill.");
             } else if ui
                 .add_enabled(
-                    self.fill_session_surface().is_some(),
+                    !mesh_target && self.fill_session_surface().is_some(),
                     egui::Button::new("Start fill session"),
                 )
                 .clicked()
@@ -1242,7 +1344,9 @@ impl SketchApp {
                 self.fills.session = self.fill_session_surface();
                 self.fills.draw_closing_guides = true;
             }
-            ui.label(if self.active_fill_cylinder().is_some() {
+            ui.label(if mesh_target {
+                "Click inside one closed outline attached to the OBJ. Enter commits and Escape cancels."
+            } else if self.active_fill_cylinder().is_some() {
                 "Click inside a closed outline on the saved cylinder. Boundaries must be attached to this guide; the finite height is enforced. Enter commits, Escape cancels."
             } else {
                 "Click inside a closed outline to preview its fill. Press Enter to commit or Escape to cancel."
@@ -1273,7 +1377,12 @@ impl SketchApp {
                     .as_ref()
                     .is_some_and(|draft| draft.original.is_none())
             {
-                self.rebuild_region_preview();
+                if mesh_target {
+                    self.clear_fill_region_draft();
+                    self.status = "Boundary scope changed. Click inside the OBJ outline again.".into();
+                } else {
+                    self.rebuild_region_preview();
+                }
             }
             let tolerance_changed = ui
                 .add(
@@ -1288,14 +1397,19 @@ impl SketchApp {
                     .as_ref()
                     .is_some_and(|draft| draft.original.is_none())
             {
-                self.rebuild_region_preview();
+                if mesh_target {
+                    self.clear_fill_region_draft();
+                    self.status = "Gap tolerance changed. Click inside the OBJ outline again.".into();
+                } else {
+                    self.rebuild_region_preview();
+                }
             }
-            if self.fills.session.is_some()
+            if !mesh_target && (self.fills.session.is_some()
                 || self
                     .fills
                     .draft
                     .as_ref()
-                    .is_some_and(|draft| draft.original.is_none())
+                    .is_some_and(|draft| draft.original.is_none()))
             {
                 if self.fills.session.is_none() || self.fills.draw_closing_guides {
                     ui.small(
@@ -1327,7 +1441,9 @@ impl SketchApp {
                     }
                 });
             }
-            ui.small(if self.active_fill_cylinder().is_some() && self.fills.active_layer_boundaries {
+            ui.small(if mesh_target {
+                "Only visible attached ink in the chosen layer scope contributes. Mesh outlines join at endpoints within the gap tolerance."
+            } else if self.active_fill_cylinder().is_some() && self.fills.active_layer_boundaries {
                 "Visible sampled strokes attached to the active cylinder on the active layer define boundaries. Hidden and unrelated strokes are ignored."
             } else if self.active_fill_cylinder().is_some() {
                 "Visible sampled strokes attached to the active cylinder define boundaries, including strokes on locked layers. Other guides and free strokes are ignored."
@@ -1339,8 +1455,10 @@ impl SketchApp {
         } else {
             ui.label("Click corners on a plane. Click the first corner or press Enter to close and fill. Backspace removes a corner; Escape cancels.");
         }
-        ui.add(egui::Slider::new(&mut self.fills.offset, 0.0..=0.05).text("Paint behind guide"));
-        ui.small("Offset follows the captured guide surface and is saved/exported. Zero may cause z-fighting. Fill uses solid color; pressure and brush textures do not apply.");
+        if !mesh_target {
+            ui.add(egui::Slider::new(&mut self.fills.offset, 0.0..=0.05).text("Paint behind guide"));
+            ui.small("Offset follows the captured guide surface and is saved/exported. Zero may cause z-fighting. Fill uses solid color; pressure and brush textures do not apply.");
+        }
         let count = self.fills.draft.as_ref().map_or(0, |d| d.mark.points.len());
         ui.label(format!(
             "{count}/{} draft corners (not saved)",
@@ -1503,6 +1621,17 @@ impl SketchApp {
 
     pub(super) fn fill_corner(&mut self, pos: Pos2, rect: Rect) {
         self.end_fill_session_if_surface_changed();
+        if let Some(id) = self.active_fill_model() {
+            self.clear_fill_region_draft();
+            match self.mesh_fill_at(id, pos, rect) {
+                Ok(draft) => {
+                    self.fills.draft = Some(draft);
+                    self.status = "Mesh fill preview ready. Enter commits; Escape cancels.".into();
+                }
+                Err(error) => self.status = error,
+            }
+            return;
+        }
         let cylinder = self.active_fill_cylinder();
         let chart_target = || PlanarTarget::from_curve_frame(Vec3::ZERO, Vec3::Z, Vec3::X, None);
         let Some(target) = self.planar_drawing_target().or_else(|| {
@@ -1589,6 +1718,7 @@ impl SketchApp {
                             texture: None,
                             holes: Vec::new(),
                             cylinder: cylinder_frame,
+                            mesh: None,
                             region_source: None,
                         }),
                         group_id: None,
@@ -1690,6 +1820,7 @@ impl SketchApp {
                     texture: None,
                     holes: Vec::new(),
                     cylinder: None,
+                    mesh: None,
                     region_source: None,
                 }),
                 group_id: None,
@@ -1748,44 +1879,74 @@ impl SketchApp {
             return;
         }
         let mut mark = draft.mark.clone();
-        let cylinder = draft.mark.fill.as_ref().and_then(|fill| fill.cylinder);
         mark.color = self.color;
-        mark.fill = Some(PlanarFill {
-            offset: self.fills.offset,
-            gradient: None,
-            texture: None,
-            holes: Vec::new(),
-            cylinder,
-            region_source: self
-                .fills
-                .region_anchor
-                .filter(|_| self.fills.closing_guides.is_empty())
-                .map(|seed| {
-                    let boundary_layer =
-                        self.fills.active_layer_boundaries.then_some(mark.layer_id);
-                    let gap_tolerance = self.fills.gap_tolerance;
-                    if let Some((guide_id, surface)) = draft.cylinder {
-                        return FillRegionSource::Cylinder(CylinderFillRegionSource {
-                            guide_id,
-                            seed_angle: surface.angle_origin,
-                            seed_height: (surface.rotation.inverse() * (seed - surface.center)).y,
+        if let Some(mesh) = mark.fill.as_ref().and_then(|fill| fill.mesh.as_ref()) {
+            let Some(source) = mesh.source.filter(|source| Some(source.model_id) == self.active_fill_model()) else {
+                self.status = "The active OBJ changed. Click the outline again to preview a new fill.".into();
+                return;
+            };
+            let (updated, points) = match self.solve_mesh_fill(source) {
+                Ok(region) => region,
+                Err(error) => {
+                    self.status = error;
+                    return;
+                }
+            };
+            let points = contour_points(points);
+            if &updated != mesh || points != mark.points {
+                let draft = self.fills.draft.as_mut().unwrap();
+                draft.mark.points = points;
+                draft.mark.fill.as_mut().unwrap().mesh = Some(updated);
+                self.status = "The OBJ or outline changed. Review the updated preview before applying.".into();
+                return;
+            }
+            let triangle_count = self.doc.strokes.iter()
+                .filter_map(|stroke| stroke.fill.as_ref()?.mesh.as_ref())
+                .map(|mesh| mesh.triangles.len()).sum::<usize>();
+            if triangle_count + mesh.triangles.len() > mesh_fill::MAX_DOCUMENT_TRIANGLES {
+                self.status = "Document mesh fill triangle limit reached.".into();
+                return;
+            }
+        } else {
+            let cylinder = draft.mark.fill.as_ref().and_then(|fill| fill.cylinder);
+            mark.fill = Some(PlanarFill {
+                offset: self.fills.offset,
+                gradient: None,
+                texture: None,
+                holes: Vec::new(),
+                cylinder,
+                mesh: None,
+                region_source: self
+                    .fills
+                    .region_anchor
+                    .filter(|_| self.fills.closing_guides.is_empty())
+                    .map(|seed| {
+                        let boundary_layer =
+                            self.fills.active_layer_boundaries.then_some(mark.layer_id);
+                        let gap_tolerance = self.fills.gap_tolerance;
+                        if let Some((guide_id, surface)) = draft.cylinder {
+                            return FillRegionSource::Cylinder(CylinderFillRegionSource {
+                                guide_id,
+                                seed_angle: surface.angle_origin,
+                                seed_height: (surface.rotation.inverse() * (seed - surface.center)).y,
+                                boundary_layer,
+                                gap_tolerance,
+                            });
+                        }
+                        let (tangent, _, normal) = draft.target.plane.basis();
+                        FillRegionSource::Planar(PlanarFillRegionSource {
+                            seed,
+                            origin: draft.target.plane.origin(),
+                            normal,
+                            tangent,
+                            half_extent: draft.target.half_extent(),
                             boundary_layer,
                             gap_tolerance,
-                        });
-                    }
-                    let (tangent, _, normal) = draft.target.plane.basis();
-                    FillRegionSource::Planar(PlanarFillRegionSource {
-                        seed,
-                        origin: draft.target.plane.origin(),
-                        normal,
-                        tangent,
-                        half_extent: draft.target.half_extent(),
-                        boundary_layer,
-                        gap_tolerance,
-                    })
-                }),
-        });
-        if let Err(error) = polygon::triangulate(&mark) {
+                        })
+                    }),
+            });
+        }
+        if let Err(error) = polygon::validate(&mark) {
             self.status = error;
             return;
         }
@@ -1849,9 +2010,10 @@ impl SketchApp {
         if p && !ctx.input(|i| i.modifiers.command || i.modifiers.alt)
             && self.planar_drawing_target().is_none()
             && self.active_fill_cylinder().is_none()
+            && self.active_fill_model().is_none()
         {
             self.status =
-                "Fills require a plane guide or a saved cylinder in enclosed-region mode.".into();
+                "Fills require a plane guide, saved cylinder, or active OBJ.".into();
         } else if p && !ctx.input(|i| i.modifiers.command || i.modifiers.alt) {
             self.cancel_line_tool();
             self.finish();

@@ -4333,15 +4333,16 @@ impl SketchApp {
         if tool != "Measure" {
             self.cancel_measure_tool();
         }
-        let saved_cylinder_fill = tool == "Fill" && self.active_fill_cylinder().is_some();
+        let surface_fill = tool == "Fill"
+            && (self.active_fill_cylinder().is_some() || self.active_fill_model().is_some());
         if self.resource_target_active()
             && matches!(tool, "Line" | "Fill" | "Circle" | "Ellipse" | "Curve")
-            && !saved_cylinder_fill
+            && !surface_fill
         {
             self.status = "The active image/saved guide currently accepts brush strokes. Switch to the temporary guide for line, fill, shape, or curve tools.".into();
             return;
         }
-        if saved_cylinder_fill {
+        if surface_fill {
             self.fills.region_mode = true;
         }
         if tool != "Paint" && self.local_color_brush.enabled {
@@ -4434,7 +4435,9 @@ impl SketchApp {
             .into_iter()
             .map(|(label, shortcut, command)| {
                 let unsupported_tool = matches!(label, "Line" | "Curve" | "Shape")
-                    || (label == "Fill" && self.active_fill_cylinder().is_none());
+                    || (label == "Fill"
+                        && self.active_fill_cylinder().is_none()
+                        && self.active_fill_model().is_none());
                 let enabled = !(unsupported_surface && unsupported_tool);
                 QuickPaletteItem {
                     group: "Tools",

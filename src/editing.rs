@@ -549,6 +549,13 @@ pub fn stroke_bounds(stroke: &Stroke) -> Option<(Vec3, Vec3)> {
     let mut max = Vec3::splat(f32::NEG_INFINITY);
     for evaluated in crate::stroke_modifiers::evaluated_strokes(stroke).ok()? {
         let stroke = evaluated.as_ref();
+        if let Some(mesh) = stroke.fill.as_ref().and_then(|fill| fill.mesh.as_ref()) {
+            for &point in mesh.triangles.iter().flatten() {
+                min = min.min(point);
+                max = max.max(point);
+            }
+            continue;
+        }
         let extent = Vec3::splat(crate::geometry::stroke_extent(stroke));
         for point in &stroke.points {
             let position = point.position
@@ -665,6 +672,13 @@ pub fn transformed_with_scale(
         };
         if let Some(fill) = &mut stroke.fill {
             fill.offset *= normal_factor.recip();
+            if let Some(mesh) = &mut fill.mesh {
+                for triangle in &mut mesh.triangles {
+                    for point in triangle {
+                        *point = pivot + linear * (*point - pivot) + translation;
+                    }
+                }
+            }
             for hole in &mut fill.holes {
                 for point in hole {
                     *point = pivot + linear * (*point - pivot) + translation;
@@ -812,8 +826,8 @@ pub fn transformed_with_scale(
                 return Err("Transform exceeds curve control bounds");
             }
         }
-        if stroke.fill.is_some() && crate::polygon::triangulate(stroke).is_err() {
-            return Err("Transform would exceed planar fill limits");
+        if stroke.fill.is_some() && crate::polygon::validate(stroke).is_err() {
+            return Err("Transform would exceed fill limits");
         }
     }
     Ok(after)
@@ -1106,6 +1120,7 @@ mod tests {
             texture: None,
             holes: Vec::new(),
             cylinder: None,
+            mesh: None,
             region_source: None,
         });
         filled.points = vec![
@@ -2657,6 +2672,7 @@ mod appearance_tests {
             texture: None,
             holes: Vec::new(),
             cylinder: None,
+            mesh: None,
             region_source: None,
         });
         let filled_before = snapshot(&doc, &ids);
@@ -2689,6 +2705,7 @@ mod appearance_tests {
                 texture: None,
                 holes: Vec::new(),
                 cylinder: None,
+                mesh: None,
                 region_source: None,
             })
         );

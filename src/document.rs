@@ -655,7 +655,7 @@ impl ModelSurfacePatch {
     }
 }
 
-fn ray_triangle_distance(origin: Vec3, direction: Vec3, triangle: [Vec3; 3]) -> Option<f32> {
+pub(crate) fn ray_triangle_distance(origin: Vec3, direction: Vec3, triangle: [Vec3; 3]) -> Option<f32> {
     let edge_a = triangle[1] - triangle[0];
     let edge_b = triangle[2] - triangle[0];
     let p = direction.cross(edge_b);
@@ -1136,6 +1136,8 @@ pub struct PlanarFill {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cylinder: Option<CylinderFillSurface>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<crate::mesh_fill::MeshFill>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region_source: Option<FillRegionSource>,
 }
 
@@ -1235,6 +1237,7 @@ impl Default for PlanarFill {
             texture: None,
             holes: Vec::new(),
             cylinder: None,
+            mesh: None,
             region_source: None,
         }
     }
@@ -2015,6 +2018,7 @@ impl Document {
         let mut total_dabs = 0usize;
         let mut total_model_surface_triangles = 0usize;
         let mut total_model_anchors = 0usize;
+        let mut total_mesh_fill_triangles = 0usize;
         let mut groups = std::collections::HashMap::new();
         for stroke in &doc.strokes {
             if let Some(group) = stroke.group_id {
@@ -2046,7 +2050,17 @@ impl Document {
                         "Invalid gradient or missing image texture for a planar fill".into(),
                     );
                 }
-                crate::polygon::triangulate(stroke)?;
+                crate::polygon::validate(stroke)?;
+                if let Some(mesh) = stroke.fill.as_ref().and_then(|fill| fill.mesh.as_ref()) {
+                    total_mesh_fill_triangles += mesh.triangles.len();
+                    if total_mesh_fill_triangles > crate::mesh_fill::MAX_DOCUMENT_TRIANGLES
+                        || mesh.source.is_some_and(|source| {
+                            !doc.model_references.iter().any(|model| model.id == source.model_id)
+                        })
+                    {
+                        return Err("Mesh fill exceeds the document budget or refers to a missing model".into());
+                    }
+                }
             }
             if let Some(image_texture) = stroke.brush.texture.image {
                 if !image_texture.is_valid() || !tip_assets.contains_key(&image_texture.asset_id) {

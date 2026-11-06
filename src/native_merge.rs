@@ -232,6 +232,19 @@ pub fn prepare_insert(
         stroke.id = stroke_id_map[&stroke.id];
         stroke.layer_id = layer_map[&stroke.layer_id];
         if let Some(fill) = stroke.fill.as_mut() {
+            if let Some(mesh) = &mut fill.mesh {
+                for point in mesh.triangles.iter_mut().flatten() {
+                    *point += offset;
+                }
+                if let Some(region) = &mut mesh.source {
+                    if let Some(layer) = region.boundary_layer {
+                        match layer_map.get(&layer) {
+                            Some(&layer) => region.boundary_layer = Some(layer),
+                            None => mesh.source = None,
+                        }
+                    }
+                }
+            }
             if let Some(surface) = fill.cylinder.as_mut() {
                 surface.center += offset;
             }
@@ -384,6 +397,9 @@ pub fn prepare_insert(
             attachment.model_id = *model_map.get(&attachment.model_id).ok_or("Missing attached model")?;
         }
         if let Some(fill) = stroke.fill.as_mut() {
+            if let Some(region) = fill.mesh.as_mut().and_then(|mesh| mesh.source.as_mut()) {
+                region.model_id = *model_map.get(&region.model_id).ok_or("Missing mesh fill model")?;
+            }
             if let Some(crate::document::FillRegionSource::Cylinder(region)) =
                 fill.region_source.as_mut()
             {
