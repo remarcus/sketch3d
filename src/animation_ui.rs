@@ -30,6 +30,11 @@ pub(super) struct AnimationUi {
     rig_pose_frame: Option<u32>,
     rig_root_degrees: f32,
     rig_child_degrees: f32,
+    preview_loop_range: Option<(u32, u32)>,
+    cross_layer_key_selection: BTreeSet<(u64, u32)>,
+    cross_layer_preview: Option<crate::animation::ArtworkAnimation>,
+    cross_layer_source: Option<(crate::animation::ArtworkAnimation, Vec<Stroke>)>,
+    cross_layer_destinations: Vec<(u64, u32)>,
 }
 
 impl Default for AnimationUi {
@@ -54,6 +59,11 @@ impl Default for AnimationUi {
             rig_pose_frame: None,
             rig_root_degrees: 0.0,
             rig_child_degrees: 0.0,
+            preview_loop_range: None,
+            cross_layer_key_selection: BTreeSet::new(),
+            cross_layer_preview: None,
+            cross_layer_source: None,
+            cross_layer_destinations: Vec::new(),
         }
     }
 }
@@ -159,14 +169,13 @@ impl SketchApp {
         let now = ctx.input(|input| input.time);
         let elapsed = (now - self.animation_ui.playback_origin_seconds).max(0.0);
         let frame_offset = (elapsed * f64::from(self.doc.animation.fps)).floor() as u32;
-        let frame_count = self.doc.animation.frame_count().max(1) as u32;
-        let frame = self.doc.animation.range_start
-            + (self
-                .animation_ui
-                .playback_origin_frame
-                .saturating_sub(self.doc.animation.range_start)
-                .saturating_add(frame_offset)
-                % frame_count);
+        let (loop_start, loop_end) = self.animation_ui.preview_loop_range
+            .map(|(start, end)| (start.max(self.doc.animation.range_start), end.min(self.doc.animation.range_end)))
+            .filter(|(start, end)| start <= end)
+            .unwrap_or((self.doc.animation.range_start, self.doc.animation.range_end));
+        let frame_count = loop_end.saturating_sub(loop_start).saturating_add(1).max(1);
+        let frame = loop_start + (self.animation_ui.playback_origin_frame
+            .saturating_sub(loop_start).saturating_add(frame_offset) % frame_count);
         self.seek_artwork_animation(frame, true);
         ctx.request_repaint_after(std::time::Duration::from_secs_f32(
             1.0 / f32::from(self.doc.animation.fps.max(1)),
@@ -190,7 +199,11 @@ impl SketchApp {
             return;
         }
         self.animation_ui.playback_origin_seconds = ctx.input(|input| input.time);
-        self.animation_ui.playback_origin_frame = self.doc.animation.current_frame;
+        let (loop_start, loop_end) = self.animation_ui.preview_loop_range
+            .map(|(start, end)| (start.max(self.doc.animation.range_start), end.min(self.doc.animation.range_end)))
+            .filter(|(start, end)| start <= end)
+            .unwrap_or((self.doc.animation.range_start, self.doc.animation.range_end));
+        self.animation_ui.playback_origin_frame = self.doc.animation.current_frame.clamp(loop_start, loop_end);
         self.animation_ui.playing = true;
         self.undo.clear();
         self.redo.clear();
@@ -495,6 +508,11 @@ impl SketchApp {
                 "The multi-key edit preview expired. Preview it again before applying.".into();
             return;
         };
+        if self.animation_ui.cross_layer_key_selection.iter().any(|(layer, _)| !self.doc.layer_is_editable(*layer)) {
+            self.animation_ui.cross_layer_destinations.clear();
+            self.status = "A selected layer became protected. Preview the move again.".into();
+            return;
+        }
         if self.doc.animation != source_animation || self.doc.strokes != source_strokes {
             self.status =
                 "The drawing changed after the preview. Preview the multi-key edit again.".into();
@@ -526,6 +544,22 @@ impl SketchApp {
                         .clicked()
                     {
                         self.toggle_artwork_playback(ctx);
+                    }
+                    let frame = self.doc.animation.current_frame;
+                    let loop_range = self.animation_ui.preview_loop_range;
+                    if ui.add_enabled(!self.animation_ui.playing, egui::Button::new("Loop in")).clicked() {
+                        let out = loop_range.map_or(self.doc.animation.range_end, |(_, out)| out);
+                        self.animation_ui.preview_loop_range = Some((frame.min(out), frame.max(out)));
+                    }
+                    if ui.add_enabled(!self.animation_ui.playing, egui::Button::new("Loop out")).clicked() {
+                        let start = loop_range.map_or(self.doc.animation.range_start, |(start, _)| start);
+                        self.animation_ui.preview_loop_range = Some((start.min(frame), start.max(frame)));
+                    }
+                    if let Some((start, end)) = self.animation_ui.preview_loop_range {
+                        ui.small(format!("Preview loop {start}–{end}"));
+                        if ui.add_enabled(!self.animation_ui.playing, egui::Button::new("Clear loop")).clicked() {
+                            self.animation_ui.preview_loop_range = None;
+                        }
                     }
                     if ui
                         .add_enabled(!self.animation_ui.playing, egui::Button::new("Key active layer"))
@@ -564,6 +598,56 @@ impl SketchApp {
                 });
                 self.layer_key_strip(ui);
                 self.other_layer_timeline_rows(ui);
+                ui.collapsing("Retime keys across layers", |ui| {
+                    ui.small("Select keys on editable layers, then preview one shared frame shift. Any overlap, protected row, or out of range exposure rejects the whole move.");
+                    let rows = self.doc.animation.layer_tracks.iter().filter_map(|track| {
+                        let layer = self.doc.layers.iter().find(|layer| layer.id == track.layer_id)?;
+                        Some((track.layer_id, layer.name.clone(), track.keyframes.iter().map(|key| (key.frame, key.exposure, key.strokes.is_empty())).collect::<Vec<_>>()))
+                    }).collect::<Vec<_>>();
+                    for (layer_id, name, keys) in rows {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(name);
+                            for (frame, exposure, blank) in keys {
+                                let id = (layer_id, frame);
+                                let mut selected = self.animation_ui.cross_layer_key_selection.contains(&id);
+                                let label = if blank { format!("{frame} ({exposure}f blank)") } else { format!("{frame} ({exposure}f)") };
+                                if ui.checkbox(&mut selected, label).changed() {
+                                    if selected { self.animation_ui.cross_layer_key_selection.insert(id); }
+                                    else { self.animation_ui.cross_layer_key_selection.remove(&id); }
+                                    self.animation_ui.cross_layer_preview = None;
+                                    self.animation_ui.cross_layer_source = None;
+                                    self.animation_ui.cross_layer_destinations.clear();
+                                }
+                            }
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Frame offset");
+                        if ui.add(egui::DragValue::new(&mut self.animation_ui.batch_key_offset).range(-100_000..=100_000)).changed() {
+                            self.animation_ui.cross_layer_preview = None;
+                            self.animation_ui.cross_layer_source = None;
+                            self.animation_ui.cross_layer_destinations.clear();
+                        }
+                        if ui.add_enabled(!self.animation_ui.cross_layer_key_selection.is_empty() && !self.animation_ui.playing, egui::Button::new("Preview move")).clicked() {
+                            self.preview_cross_layer_key_move();
+                        }
+                        if self.animation_ui.cross_layer_preview.is_some() {
+                            if ui.button("Apply move").clicked() { self.apply_cross_layer_key_move(); }
+                            if ui.small_button("Cancel").clicked() {
+                                self.animation_ui.cross_layer_preview = None;
+                                self.animation_ui.cross_layer_source = None;
+                                self.animation_ui.cross_layer_destinations.clear();
+                            }
+                        }
+                    });
+                    if !self.animation_ui.cross_layer_destinations.is_empty() {
+                        let destinations = self.animation_ui.cross_layer_destinations.iter().map(|(layer, frame)| {
+                            let name = self.doc.layers.iter().find(|entry| entry.id == *layer).map_or("Layer", |entry| entry.name.as_str());
+                            format!("{name}:{frame}")
+                        }).collect::<Vec<_>>().join(", ");
+                        ui.small(format!("Destinations: {destinations}"));
+                    }
+                });
                 ui.horizontal(|ui| {
                     ui.label("Frame");
                     let mut frame = self.doc.animation.current_frame;
@@ -1146,6 +1230,84 @@ impl SketchApp {
             Ok(()) => {
                 self.animation_ui.batch_key_destinations.clear();
                 self.animation_ui.selected_key_frames.clear();
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn preview_cross_layer_key_move(&mut self) {
+        if self.animation_ui.playing || self.animation_ui.cross_layer_key_selection.is_empty() {
+            return;
+        }
+        if !self.doc.animation.current_pose_matches(&self.doc.strokes) {
+            self.status = "Set or update the current keyframe before moving selected keys.".into();
+            return;
+        }
+        if !self.doc.linked_stroke_groups.definitions.is_empty()
+            || !self.doc.linked_stroke_groups.instances.is_empty()
+        {
+            self.status = "Make linked instances unique before retiming animation keys.".into();
+            return;
+        }
+        let mut grouped = std::collections::BTreeMap::<u64, Vec<u32>>::new();
+        for &(layer_id, frame) in &self.animation_ui.cross_layer_key_selection {
+            if !self.doc.layer_is_editable(layer_id)
+                || self.doc.animation.two_bone_rig.as_ref().is_some_and(|rig| rig.layer_id == layer_id)
+            {
+                self.status = "The selection includes a protected or locked layer.".into();
+                return;
+            }
+            grouped.entry(layer_id).or_default().push(frame);
+        }
+        let mut preview = self.doc.animation.clone();
+        let mut destinations = Vec::new();
+        for (layer_id, frames) in grouped {
+            match preview.place_layer_keys(layer_id, &frames, self.animation_ui.batch_key_offset, false) {
+                Ok(next) => {
+                    destinations.extend(frames.iter().filter_map(|frame| {
+                        i64::from(*frame).checked_add(i64::from(self.animation_ui.batch_key_offset))
+                            .and_then(|destination| u32::try_from(destination).ok())
+                            .map(|destination| (layer_id, destination))
+                    }));
+                    preview = next;
+                }
+                Err(error) => {
+                    self.animation_ui.cross_layer_preview = None;
+                    self.animation_ui.cross_layer_source = None;
+                    self.animation_ui.cross_layer_destinations.clear();
+                    self.status = error;
+                    return;
+                }
+            }
+        }
+        self.animation_ui.cross_layer_destinations = destinations;
+        self.animation_ui.cross_layer_preview = Some(preview);
+        self.animation_ui.cross_layer_source = Some((self.doc.animation.clone(), self.doc.strokes.clone()));
+        self.status = "Cross-layer destinations previewed. Apply to commit one undo step or cancel.".into();
+    }
+
+    fn apply_cross_layer_key_move(&mut self) {
+        let (Some(animation), Some((source_animation, source_strokes))) = (
+            self.animation_ui.cross_layer_preview.take(),
+            self.animation_ui.cross_layer_source.take(),
+        ) else {
+            return;
+        };
+        if self.animation_ui.cross_layer_key_selection.iter().any(|(layer, _)| !self.doc.layer_is_editable(*layer)) {
+            self.animation_ui.cross_layer_destinations.clear();
+            self.status = "A selected layer became protected. Preview the move again.".into();
+            return;
+        }
+        if self.doc.animation != source_animation || self.doc.strokes != source_strokes {
+            self.animation_ui.cross_layer_destinations.clear();
+            self.status = "The drawing changed after the preview. Preview the move again.".into();
+            return;
+        }
+        let strokes = animation.resolve(animation.current_frame).unwrap_or_else(|| self.doc.strokes.clone());
+        match self.commit_animation_state(animation, strokes, "Selected keys moved across layers in one edit.") {
+            Ok(()) => {
+                self.animation_ui.cross_layer_key_selection.clear();
+                self.animation_ui.cross_layer_destinations.clear();
             }
             Err(error) => self.status = error,
         }
