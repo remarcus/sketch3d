@@ -357,18 +357,32 @@ impl SketchApp {
             pixels[index]
         };
 
-        self.renderer.invalidate();
-        self.renderer
-            .render(&doc, &camera, GuidePreview::Hidden, [600, 450]);
-        let masked = self.renderer.verification_pixels().to_vec();
+        let background = [0.12, 0.14, 0.18];
+        let lighting = crate::lighting::Lighting {
+            ground: false,
+            shadows: false,
+            ..Default::default()
+        };
+        let masked = self
+            .renderer
+            .render_png_pixels(&doc, &camera, [600, 450], background, lighting)
+            .expect("named layer mask renders into an isolated GPU target");
+        image::save_buffer(
+            "verification/named-layer-mask-600x450.png",
+            &masked,
+            600,
+            450,
+            image::ColorType::Rgba8,
+        )
+        .expect("named layer mask GPU render is saved");
         let inside = sample_red(&masked, Vec3::new(0.0, 0.0, 0.1));
         let outside = sample_red(&masked, Vec3::new(0.55, 0.0, 0.1));
 
         doc.layers[1].mask_source = None;
-        self.renderer.invalidate();
-        self.renderer
-            .render(&doc, &camera, GuidePreview::Hidden, [600, 450]);
-        let unmasked = self.renderer.verification_pixels().to_vec();
+        let unmasked = self
+            .renderer
+            .render_png_pixels(&doc, &camera, [600, 450], background, lighting)
+            .expect("unmasked comparison renders into an isolated GPU target");
         let outside_without_mask = sample_red(&unmasked, Vec3::new(0.55, 0.0, 0.1));
 
         assert!(
@@ -379,7 +393,6 @@ impl SketchApp {
             outside_without_mask > outside.saturating_add(60),
             "named mask did not remove outside coverage: masked={outside}, unmasked={outside_without_mask}"
         );
-        self.renderer.invalidate();
     }
 
     fn verify_fill_refresh_transaction(&mut self) {
