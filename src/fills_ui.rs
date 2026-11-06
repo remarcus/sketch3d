@@ -2236,4 +2236,113 @@ mod refresh_tests {
         assert_eq!(refreshed.id, doc.strokes[0].id);
         assert!(refreshed.fill.unwrap().cylinder.is_none());
     }
+
+    #[test]
+    fn planar_refresh_tracks_moved_boundary_and_preserves_the_previous_fill_on_failure() {
+        let mut doc = Document::default();
+        let line = |id, a: Vec3, b: Vec3| Stroke {
+            guide_attachment: None,
+            model_surface: None,
+            curve: None,
+            material: Default::default(),
+            point_thickness: None,
+            point_colors: None,
+            modifiers: None,
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id,
+            color: [0.12, 0.17, 0.20],
+            gradient: None,
+            radius: 0.012,
+            brush: Default::default(),
+            points: [a, b]
+                .into_iter()
+                .map(|position| Point {
+                    position,
+                    pressure: 0.7,
+                    tilt: None,
+                    time_ms: 0,
+                })
+                .collect(),
+        };
+        let rectangle = |right: f32| {
+            let corners = [
+                Vec3::new(-1.0, -1.0, 0.0),
+                Vec3::new(right, -1.0, 0.0),
+                Vec3::new(right, 1.0, 0.0),
+                Vec3::new(-1.0, 1.0, 0.0),
+            ];
+            (0..corners.len())
+                .map(|index| {
+                    line(
+                        index as u64 + 1,
+                        corners[index],
+                        corners[(index + 1) % corners.len()],
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        doc.strokes = rectangle(1.0);
+
+        let mut source = polygon::study().strokes.remove(0);
+        source.id = 50;
+        source.layer_id = 1;
+        source.color = [0.31, 0.52, 0.77];
+        source.brush.opacity = 0.63;
+        source.fill.as_mut().unwrap().offset = 0.014;
+        source.fill.as_mut().unwrap().region_source =
+            Some(FillRegionSource::Planar(PlanarFillRegionSource {
+                seed: Vec3::ZERO,
+                origin: Vec3::ZERO,
+                normal: Vec3::Z,
+                tangent: Vec3::X,
+                half_extent: Some(glam::Vec2::splat(2.0)),
+                boundary_layer: Some(1),
+                gap_tolerance: 0.0,
+            }));
+        let original = refreshed_fill(&doc, &source).unwrap();
+        doc.strokes.push(original.clone());
+
+        doc.strokes = rectangle(1.5);
+        doc.strokes.push(original.clone());
+        let refreshed = refreshed_fill(&doc, &original).unwrap();
+        assert_eq!(
+            (refreshed.id, refreshed.layer_id),
+            (original.id, original.layer_id)
+        );
+        assert_eq!(refreshed.color, original.color);
+        assert_eq!(refreshed.material, original.material);
+        assert_eq!(refreshed.brush.opacity, original.brush.opacity);
+        assert_eq!(
+            refreshed.fill.as_ref().unwrap().offset,
+            original.fill.as_ref().unwrap().offset
+        );
+        assert!(refreshed.points.iter().any(|point| point.position.x > 1.49));
+        assert!(original.points.iter().all(|point| point.position.x <= 1.0));
+
+        let selected = HashSet::from([original.id]);
+        let before = crate::editing::snapshot(&doc, &selected);
+        let mut after = before.clone();
+        after[0].1 = refreshed.clone();
+        let edit = Edit::Change { before, after };
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes.last(), Some(&refreshed));
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes.last(), Some(&original));
+        edit.apply(&mut doc, true);
+        let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(reopened.strokes.last(), Some(&refreshed));
+        let glb = crate::export::encode(&reopened, Some(&selected)).unwrap();
+        assert_eq!(glb.summary.strokes, 1);
+        assert!(glb.summary.triangles > 0);
+
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes.last(), Some(&original));
+        let previous_fill = original.clone();
+        doc.layers.clear();
+        assert!(refreshed_fill(&doc, &original).is_err());
+        assert_eq!(original, previous_fill);
+        assert_eq!(doc.strokes.last(), Some(&previous_fill));
+    }
 }
