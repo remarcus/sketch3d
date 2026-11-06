@@ -7334,20 +7334,20 @@ impl SketchApp {
     }
 }
 
-fn strand_vertex_budget_exceeded(stroke: &Stroke) -> bool {
+pub(crate) fn strand_vertex_budget_exceeded(stroke: &Stroke) -> bool {
     stroke.brush.strands.enabled
         && stroke.brush.strands.vertex_estimate(stroke.points.len())
             > crate::geometry::MAX_STRAND_VERTICES
 }
 
-fn airbrush_vertex_budget_exceeded(stroke: &Stroke) -> bool {
+pub(crate) fn airbrush_vertex_budget_exceeded(stroke: &Stroke) -> bool {
     stroke.brush.flow.enabled
         && (stroke.points.len() > crate::geometry::MAX_AIRBRUSH_POINTS
             || crate::geometry::airbrush_vertex_estimate(stroke)
                 > crate::geometry::MAX_AIRBRUSH_VERTICES)
 }
 
-fn profile_tube_vertex_budget_exceeded(stroke: &Stroke) -> bool {
+pub(crate) fn profile_tube_vertex_budget_exceeded(stroke: &Stroke) -> bool {
     stroke.brush.kind == BrushKind::Round
         && stroke.brush.tube_profile != crate::document::TubeProfile::Round
         && !stroke.brush.flow.enabled

@@ -15,8 +15,10 @@ struct Picked {
 
 impl SketchApp {
     pub(super) fn junction_buttons(&mut self, ui: &mut egui::Ui) {
-        if ui.button(Action::Trim.label()).clicked() {
-            self.begin_junction_edit(Action::Trim);
+        for action in [Action::Trim, Action::Extend] {
+            if ui.button(action.label()).clicked() {
+                self.begin_junction_edit(action);
+            }
         }
     }
 
@@ -39,7 +41,7 @@ impl SketchApp {
             target,
             picked: None,
         });
-        self.status = "Click the section of a stroke to remove.".into();
+        self.status = action_prompt(action).into();
     }
 
     pub(super) fn junction_pointer(&mut self, pos: Pos2, rect: Rect) {
@@ -53,8 +55,8 @@ impl SketchApp {
         }
         let target = core_target(draft.target);
         let action = draft.action;
-        let result =
-            pick_stroke(&self.doc, target, &self.camera, rect, pos).and_then(|(index, at)| {
+        let result = pick_stroke(&self.doc, action, target, &self.camera, rect, pos).and_then(
+            |(index, at)| {
                 let preview =
                     junction_edit::preview(&self.doc, action, target, index, at, self.next_id)?;
                 Ok(Picked {
@@ -62,12 +64,13 @@ impl SketchApp {
                     at,
                     preview,
                 })
-            });
+            },
+        );
         let draft = self.junction_edit.as_mut().unwrap();
         match result {
             Ok(picked) => {
                 draft.picked = Some(picked);
-                self.status = "Trim preview ready. Enter applies; Escape cancels.".into();
+                self.status = "Preview ready. Enter applies and Escape cancels.".into();
             }
             Err(error) => {
                 draft.picked = None;
@@ -81,7 +84,7 @@ impl SketchApp {
             return;
         };
         ui.heading(draft.action.label());
-        ui.label("Click the stroke segment to remove. The preview highlights the removed span.");
+        ui.label(action_prompt(draft.action));
         let ready = draft.picked.is_some();
         let (apply, cancel) = ui
             .horizontal(|ui| {
@@ -122,6 +125,7 @@ impl SketchApp {
         };
         let Some(picked) = &draft.picked else { return };
         let target = draft.target;
+        let action = draft.action;
         let result = self
             .doc
             .strokes
@@ -168,9 +172,9 @@ impl SketchApp {
         self.redo.clear();
         self.junction_edit = None;
         self.dirty = true;
-        self.record_recovery_edit_labeled("Trim to intersection");
+        self.record_recovery_edit_labeled(action.label());
         self.renderer.invalidate();
-        self.status = "Trim applied as one undo step.".into();
+        self.status = format!("{} applied as one undo step.", action.label());
     }
 
     pub(super) fn junction_overlay(&self, ui: &egui::Ui, rect: Rect) {
@@ -182,18 +186,43 @@ impl SketchApp {
             return;
         };
         let painter = ui.painter().with_clip_rect(rect);
-        let warning = ui_style::colors(ui.ctx()).warning;
+        let color = if picked.preview.snap_to.is_some() {
+            ui.visuals().selection.stroke.color
+        } else {
+            ui_style::colors(ui.ctx()).warning
+        };
         let project = |point| crate::gizmo::project(&self.camera, rect, point).map(|(pos, _)| pos);
         for pair in picked.preview.path.windows(2) {
             if let (Some(a), Some(b)) = (project(pair[0]), project(pair[1])) {
-                painter.line_segment([a, b], egui::Stroke::new(4.0_f32, warning));
+                painter.line_segment([a, b], egui::Stroke::new(4.0_f32, color));
             }
         }
         for &join in &picked.preview.joins {
             if let Some(point) = project(join) {
-                painter.circle_stroke(point, 6.0, egui::Stroke::new(2.0_f32, warning));
+                if let Some(id) = picked.preview.snap_to {
+                    snapping::overlay(
+                        ui,
+                        Some(snapping::SnapCue {
+                            screen: point,
+                            kind: snapping::SnapKind::Intersection,
+                            target_ids: [picked.source.id, id],
+                        }),
+                        rect,
+                    );
+                } else {
+                    painter.circle_stroke(point, 6.0, egui::Stroke::new(2.0_f32, color));
+                }
             }
         }
+    }
+}
+
+fn action_prompt(action: Action) -> &'static str {
+    match action {
+        Action::Trim => {
+            "Click the stroke section to remove. The preview highlights the removed span."
+        }
+        Action::Extend => "Click an endpoint to extend along its tangent, up to 1 world unit.",
     }
 }
 
@@ -206,17 +235,27 @@ fn core_target(target: guide_resource_ui::PlanarTarget) -> Target {
 
 fn pick_stroke(
     doc: &Document,
+    action: Action,
     target: Target,
     camera: &Camera,
     rect: Rect,
     pos: Pos2,
 ) -> Result<(usize, f64), String> {
-    let mut best: Option<(f32, usize, f64)> = None;
-    let mut ambiguous = false;
+    let mut picked = PickCandidate::default();
     let mut segment_count = 0;
     let matrix = camera.matrix(rect.aspect_ratio());
     for (index, stroke) in doc.strokes.iter().enumerate() {
         if !junction_edit::editable_source(doc, stroke, target) {
+            continue;
+        }
+        if action == Action::Extend {
+            for endpoint in [0, stroke.points.len() - 1] {
+                if let Some((screen, _)) =
+                    crate::gizmo::project(camera, rect, stroke.points[endpoint].position)
+                {
+                    picked.consider(pos.distance(screen), index, endpoint as f64, 0.0);
+                }
+            }
             continue;
         }
         for (segment, pair) in stroke.points.windows(2).enumerate() {
@@ -244,21 +283,39 @@ fn pick_stroke(
             let wa = (matrix * a.extend(1.0)).w;
             let wb = (matrix * b.extend(1.0)).w;
             let at = segment as f64 + f64::from(t * wa / (wb * (1.0 - t) + wa * t));
-            if best.is_none_or(|(old, _, _)| distance < old - 0.25) {
-                best = Some((distance, index, at));
-                ambiguous = false;
-            } else if best.is_some_and(|(old, old_index, old_at)| {
-                (old - distance).abs() <= 0.25 && (old_index != index || (old_at - at).abs() > 1.0)
-            }) {
-                ambiguous = true;
-            }
+            picked.consider(distance, index, at, 1.0);
         }
     }
-    if ambiguous {
+    if picked.ambiguous {
         return Err(
             "Several stroke sections overlap here. Click farther from the crossing.".into(),
         );
     }
-    best.map(|(_, index, at)| (index, at))
-        .ok_or_else(|| "Click an editable sampled stroke on the active plane.".into())
+    picked
+        .best
+        .map(|(_, index, at)| (index, at))
+        .ok_or_else(|| action_prompt(action).into())
+}
+
+#[derive(Default)]
+struct PickCandidate {
+    best: Option<(f32, usize, f64)>,
+    ambiguous: bool,
+}
+
+impl PickCandidate {
+    fn consider(&mut self, distance: f32, index: usize, at: f64, same_stroke_slop: f64) {
+        if distance > 10.0 {
+            return;
+        }
+        if self.best.is_none_or(|(old, _, _)| distance < old - 0.25) {
+            self.best = Some((distance, index, at));
+            self.ambiguous = false;
+        } else if self.best.is_some_and(|(old, old_index, old_at)| {
+            (old - distance).abs() <= 0.25
+                && (old_index != index || (old_at - at).abs() > same_stroke_slop)
+        }) {
+            self.ambiguous = true;
+        }
+    }
 }
