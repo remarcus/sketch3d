@@ -10987,76 +10987,84 @@ mod inspector_accessibility_tests {
     #[test]
     fn inspector_rail_icons_keep_accessible_names_and_fit_narrow_dark_and_light_layouts() {
         for visuals in [egui::Visuals::dark(), egui::Visuals::light()] {
-            let context = egui::Context::default();
-            context.set_visuals(visuals);
-            context.enable_accesskit();
-            let narrow = Rect::from_min_size(Pos2::ZERO, Vec2::new(64.0, 440.0));
-            let mut button_rects = Vec::new();
-            let output = context.run(
-                egui::RawInput {
-                    screen_rect: Some(narrow),
-                    focused: true,
-                    ..Default::default()
-                },
-                |context| {
-                    egui::CentralPanel::default()
-                        .frame(egui::Frame::NONE)
-                        .show(context, |ui| {
-                            for (icon, label, selected) in [
-                                ("properties", "Properties", true),
-                                ("layers", "Layers", false),
-                                ("references", "References", false),
-                                ("images", "Images", false),
-                            ] {
-                                let response =
-                                    inspector_rail_button(ui, icon, label, selected, true, None);
-                                button_rects.push(response.rect);
-                            }
-                            let expand = inspector_rail_button(
-                                ui,
-                                "expand",
-                                "Expand inspector",
-                                false,
-                                true,
-                                None,
-                            );
-                            let hide = inspector_rail_button(
-                                ui,
-                                "hide",
-                                "Hide inspector",
-                                false,
-                                true,
-                                None,
-                            );
-                            button_rects.extend([expand.rect, hide.rect]);
-                        });
-                },
-            );
-            assert_eq!(button_rects.len(), 6);
-            assert!(button_rects.iter().all(|button| {
-                button.width() >= 44.0
-                    && button.height() >= 44.0
-                    && narrow.contains(button.min)
-                    && narrow.contains(button.max)
-            }));
-            let update = output
-                .platform_output
-                .accesskit_update
-                .expect("the narrow rail emits an AccessKit update");
-            let labels = update
-                .nodes
-                .iter()
-                .filter_map(|(_, node)| node.label().map(str::to_owned))
-                .collect::<Vec<_>>();
-            for expected in [
-                "Properties",
-                "Layers",
-                "References",
-                "Images",
-                "Expand inspector",
-                "Hide inspector",
-            ] {
-                assert!(labels.iter().any(|label| label == expected), "{labels:?}");
+            for zoom in [1.0, 2.0] {
+                let context = egui::Context::default();
+                context.set_visuals(visuals.clone());
+                context.set_zoom_factor(zoom);
+                context.enable_accesskit();
+                let narrow = Rect::from_min_size(Pos2::ZERO, Vec2::new(64.0, 440.0));
+                let mut button_rects = Vec::new();
+                let output = context.run(
+                    egui::RawInput {
+                        screen_rect: Some(narrow),
+                        focused: true,
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().frame(egui::Frame::NONE).show(
+                            context,
+                            |ui| {
+                                for (icon, label, selected) in [
+                                    ("properties", "Properties", true),
+                                    ("layers", "Layers", false),
+                                    ("references", "References", false),
+                                    ("images", "Images", false),
+                                ] {
+                                    let response = inspector_rail_button(
+                                        ui, icon, label, selected, true, None,
+                                    );
+                                    button_rects.push(response.rect);
+                                }
+                                let expand = inspector_rail_button(
+                                    ui,
+                                    "expand",
+                                    "Expand inspector",
+                                    false,
+                                    true,
+                                    None,
+                                );
+                                let hide = inspector_rail_button(
+                                    ui,
+                                    "hide",
+                                    "Hide inspector",
+                                    false,
+                                    true,
+                                    None,
+                                );
+                                button_rects.extend([expand.rect, hide.rect]);
+                            },
+                        );
+                    },
+                );
+                assert_eq!(button_rects.len(), 6);
+                assert!(
+                    button_rects.iter().all(|button| {
+                        button.width() >= 44.0
+                            && button.height() >= 44.0
+                            && narrow.contains(button.min)
+                            && narrow.contains(button.max)
+                    }),
+                    "rail buttons overflow at {zoom}x: {button_rects:?}"
+                );
+                let update = output
+                    .platform_output
+                    .accesskit_update
+                    .expect("the narrow rail emits an AccessKit update");
+                let labels = update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| node.label().map(str::to_owned))
+                    .collect::<Vec<_>>();
+                for expected in [
+                    "Properties",
+                    "Layers",
+                    "References",
+                    "Images",
+                    "Expand inspector",
+                    "Hide inspector",
+                ] {
+                    assert!(labels.iter().any(|label| label == expected), "{labels:?}");
+                }
             }
         }
 
