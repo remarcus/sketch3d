@@ -81,6 +81,102 @@ enum FillSessionSurface {
 }
 
 impl SketchApp {
+    pub(super) fn verify_fill_controls_headlessly(&mut self) {
+        fn render(
+            app: &mut SketchApp,
+            context: &egui::Context,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 900.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.fill_controls(ui));
+                },
+            )
+        }
+
+        fn label_center(output: &egui::FullOutput, label: &str) -> Pos2 {
+            output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        Some(text.pos + text.galley.size() * 0.5)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("fill control label not rendered: {label}"))
+        }
+
+        fn click(app: &mut SketchApp, context: &egui::Context, label: &str) {
+            let output = render(app, context, Vec::new());
+            let pos = label_center(&output, label);
+            render(
+                app,
+                context,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+            render(
+                app,
+                context,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+            );
+        }
+
+        self.fills.enabled = true;
+        self.fills.region_mode = true;
+        self.fills.session = None;
+        self.fills.draw_closing_guides = false;
+        self.fills.active_layer_boundaries = false;
+        let context = egui::Context::default();
+
+        click(self, &context, "Start fill session");
+        assert!(
+            self.fills.session.is_some(),
+            "session control starts a fill session"
+        );
+        assert!(
+            self.fills.draw_closing_guides,
+            "new sessions start in guide mode"
+        );
+
+        click(self, &context, "Draw closing guides");
+        assert!(
+            !self.fills.draw_closing_guides,
+            "guide mode can be switched off"
+        );
+
+        click(self, &context, "Active layer");
+        assert!(
+            self.fills.active_layer_boundaries,
+            "active-layer scope control updates the region solver scope"
+        );
+
+        self.fills.closing_guides.push((Vec3::ZERO, Vec3::X));
+        click(self, &context, "Undo closing guide");
+        assert!(
+            self.fills.closing_guides.is_empty(),
+            "undo closing guide control removes the latest temporary segment"
+        );
+    }
+
     fn fill_session_surface(&self) -> Option<FillSessionSurface> {
         if let Some((id, surface)) = self.active_fill_cylinder() {
             return Some(FillSessionSurface::Cylinder(id, surface));

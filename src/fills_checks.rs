@@ -108,6 +108,7 @@ impl SketchApp {
         }
         if frame == 3 {
             if std::env::args().any(|argument| argument == "--verify-fills-no-capture") {
+                self.verify_fill_controls_headlessly();
                 let path = std::env::current_dir()
                     .unwrap()
                     .join("verification/fills-no-capture-report.json");
@@ -124,7 +125,8 @@ impl SketchApp {
                         "edited planar fill contour is saved as an isolated production GPU render",
                         "the fill renderer pixel checks passed at three camera angles",
                         "named layer masks retain inside coverage and remove outside coverage in GPU pixels",
-                        "encoded GIF frames match still-render mask coverage and preserve the masked/unmasked comparison"
+                        "encoded GIF frames match still-render mask coverage and preserve the masked/unmasked comparison",
+                        "headless egui interactions start fill sessions, switch boundary scope, toggle guide mode, and undo temporary guides"
                     ],
                     "screen_capture": false,
                     "gpu": self.renderer.adapter
