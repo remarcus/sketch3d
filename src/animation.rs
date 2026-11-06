@@ -31,7 +31,18 @@ pub struct LayerArtworkKeyframe {
     pub frame: u32,
     #[serde(default = "default_exposure")]
     pub exposure: u32,
+    /// Pose interpolation after this key's held exposure and before the next key.
+    #[serde(default)]
+    pub interpolation: LayerInterpolation,
     pub strokes: Vec<Stroke>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LayerInterpolation {
+    #[default]
+    Hold,
+    Linear,
+    EaseInOut,
 }
 
 fn default_exposure() -> u32 {
@@ -510,9 +521,22 @@ impl ArtworkAnimation {
                 strokes.retain(|stroke| stroke.layer_id != track.layer_id);
                 let index = track.keyframes.partition_point(|key| key.frame <= frame);
                 let index = index.saturating_sub(1);
-                let (_, end) = track.key_span(index, self.range_start, self.range_end);
+                let key = &track.keyframes[index];
+                let end = key.frame.saturating_add(key.exposure).min(
+                    track.keyframes.get(index + 1).map_or(self.range_end + 1, |next| next.frame),
+                );
                 if frame < end {
-                    strokes.extend(track.keyframes[index].strokes.iter().cloned());
+                    strokes.extend(key.strokes.iter().cloned());
+                } else if let Some(next) = track.keyframes.get(index + 1) {
+                    if key.interpolation != LayerInterpolation::Hold {
+                        let mut t = (frame.saturating_sub(key.frame)) as f32
+                            / (next.frame - key.frame).max(1) as f32;
+                        if key.interpolation == LayerInterpolation::EaseInOut {
+                            t = t * t * (3.0 - 2.0 * t);
+                        }
+                        let blended = interpolate_compatible(&key.strokes, &next.strokes, t);
+                        strokes.extend(blended.unwrap_or_else(|| key.strokes.clone()));
+                    }
                 }
             }
             Some(strokes)
@@ -672,6 +696,7 @@ impl ArtworkAnimation {
                                         .saturating_add(1)
                                         .max(1)
                                 }),
+                            interpolation: LayerInterpolation::Hold,
                             strokes: key
                                 .strokes
                                 .iter()
@@ -728,6 +753,7 @@ impl ArtworkAnimation {
                 LayerArtworkKeyframe {
                     frame,
                     exposure: exposure.max(1),
+                    interpolation: LayerInterpolation::Hold,
                     strokes: layer_strokes.to_vec(),
                 },
             );
@@ -868,6 +894,89 @@ impl ArtworkAnimation {
         keyframes.extend(destinations);
         keyframes.sort_by_key(|key| key.frame);
         track.keyframes = keyframes;
+        Ok(next)
+    }
+
+    pub fn set_layer_interpolation(
+        &self,
+        layer_id: u64,
+        frame: u32,
+        interpolation: LayerInterpolation,
+    ) -> Result<Self, String> {
+        let mut next = self.clone();
+        let track = next.layer_tracks.iter_mut().find(|track| track.layer_id == layer_id)
+            .ok_or("Layer has no animation track")?;
+        let index = track.keyframes.iter().position(|key| key.frame == frame)
+            .ok_or("Layer key no longer exists")?;
+        let key = &track.keyframes[index];
+        let Some(following) = track.keyframes.get(index + 1) else {
+            return Err("Interpolation needs a following key on this layer".into());
+        };
+        if interpolation != LayerInterpolation::Hold {
+            if key.strokes.is_empty() || following.strokes.is_empty() {
+                return Err("Blank exposures stay held and cannot be interpolated".into());
+            }
+            if key.frame.saturating_add(key.exposure) >= following.frame {
+                return Err("Reduce the held exposure to leave an interval to interpolate".into());
+            }
+            if interpolate_compatible(&key.strokes, &following.strokes, 0.5).is_none() {
+                return Err("These poses have incompatible stroke identity, appearance, or sample topology".into());
+            }
+        }
+        track.keyframes[index].interpolation = interpolation;
+        Ok(next)
+    }
+
+    pub fn layer_interpolation_issue(&self, layer_id: u64, frame: u32) -> Option<&'static str> {
+        let track = self.layer_tracks.iter().find(|track| track.layer_id == layer_id)?;
+        let index = track.keyframes.iter().position(|key| key.frame == frame)?;
+        let key = &track.keyframes[index];
+        let Some(next) = track.keyframes.get(index + 1) else { return Some("No following pose exists on this layer."); };
+        if key.strokes.is_empty() || next.strokes.is_empty() { return Some("Blank exposures stay held."); }
+        if key.frame.saturating_add(key.exposure) >= next.frame { return Some("Reduce the held exposure to leave an interval to interpolate."); }
+        if interpolate_compatible(&key.strokes, &next.strokes, 0.5).is_none() { return Some("Incompatible stroke identity, appearance, or sample topology keeps this interval held."); }
+        None
+    }
+
+    pub fn insert_interpolated_layer_key(
+        &self,
+        layer_id: u64,
+        frame: u32,
+    ) -> Result<Self, String> {
+        let track = self.layer_tracks.iter().find(|track| track.layer_id == layer_id)
+            .ok_or("Layer has no animation track")?;
+        if track.keyframes.iter().any(|key| key.frame == frame) {
+            return Err("A layer key already exists at the playhead".into());
+        }
+        let following_index = track.keyframes.partition_point(|key| key.frame < frame);
+        let Some(previous) = following_index.checked_sub(1).map(|index| &track.keyframes[index]) else {
+            return Err("The playhead is outside an interpolated pose interval".into());
+        };
+        let Some(following) = track.keyframes.get(following_index) else {
+            return Err("The playhead is outside an interpolated pose interval".into());
+        };
+        if previous.interpolation == LayerInterpolation::Hold
+            || frame <= previous.frame.saturating_add(previous.exposure).saturating_sub(1)
+            || previous.strokes.is_empty()
+            || following.strokes.is_empty()
+            || interpolate_compatible(&previous.strokes, &following.strokes, 0.5).is_none()
+        {
+            return Err("The playhead is in a held, blank, or incompatible interval".into());
+        }
+        if self.two_bone_rig.as_ref().is_some_and(|rig| rig.layer_id == layer_id) {
+            return Err("Remove the rig prototype before inserting a drawing key".into());
+        }
+        let mode = previous.interpolation;
+        let mut resolved = self.resolve(frame).ok_or("Cannot evaluate the interpolated pose")?;
+        resolved.retain(|stroke| stroke.layer_id == layer_id);
+        let base = self.base_strokes.as_deref().unwrap_or_default();
+        let mut next = self.set_layer_keyframe(frame, layer_id, &resolved, base)?;
+        let inserted = next.layer_tracks.iter_mut().find(|track| track.layer_id == layer_id)
+            .and_then(|track| track.keyframes.iter_mut().find(|key| key.frame == frame))
+            .ok_or("Inserted layer key could not be found")?;
+        inserted.exposure = 1;
+        inserted.interpolation = mode;
+        next.current_frame = frame;
         Ok(next)
     }
 
@@ -1124,6 +1233,7 @@ impl ArtworkAnimation {
             LayerArtworkKeyframe {
                 frame: target_frame,
                 exposure: exposure.max(1),
+                interpolation: LayerInterpolation::Hold,
                 strokes: source.strokes,
             },
         );

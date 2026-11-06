@@ -267,6 +267,19 @@ impl SketchApp {
         }
     }
 
+    fn insert_interpolated_layer_key(&mut self) {
+        let frame = self.doc.animation.current_frame;
+        match self.doc.animation.insert_interpolated_layer_key(self.doc.active_layer, frame) {
+            Ok(animation) => {
+                let strokes = animation.resolve(frame).unwrap_or_else(|| self.doc.strokes.clone());
+                if let Err(error) = self.commit_animation_state(animation, strokes, "Interpolated pose keyed as an editable drawing.") {
+                    self.status = error;
+                }
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
     fn duplicate_artwork_keyframe(&mut self) {
         if !self.doc.linked_stroke_groups.definitions.is_empty()
             || !self.doc.linked_stroke_groups.instances.is_empty()
@@ -598,6 +611,12 @@ impl SketchApp {
                 });
                 self.layer_key_strip(ui);
                 self.other_layer_timeline_rows(ui);
+                let frame = self.doc.animation.current_frame;
+                let can_key_interpolated = self.doc.animation.layer_tracks.iter().any(|track| track.layer_id == self.doc.active_layer)
+                    && !self.doc.animation.layer_tracks.iter().filter(|track| track.layer_id == self.doc.active_layer).flat_map(|track| &track.keyframes).any(|key| key.frame == frame);
+                if ui.add_enabled(can_key_interpolated && !self.animation_ui.playing && self.doc.active_editable(), egui::Button::new("Key interpolated pose as drawing")).clicked() {
+                    self.insert_interpolated_layer_key();
+                }
                 ui.collapsing("Retime keys across layers", |ui| {
                     ui.small("Select keys on editable layers, then preview one shared frame shift. Any overlap, protected row, or out of range exposure rejects the whole move.");
                     let rows = self.doc.animation.layer_tracks.iter().filter_map(|track| {
@@ -729,7 +748,7 @@ impl SketchApp {
                         }
                     }
                 });
-                if let Some((key_frame, key_exposure)) = self.doc.animation.layer_tracks.iter().find(|track|track.layer_id==self.doc.active_layer).and_then(|track|track.keyframes.iter().rev().find(|key|key.frame<=self.doc.animation.current_frame).filter(|key|self.doc.animation.current_frame-key.frame<key.exposure).map(|key|(key.frame,key.exposure))) {
+                if let Some((key_frame, key_exposure, interpolation)) = self.doc.animation.layer_tracks.iter().find(|track|track.layer_id==self.doc.active_layer).and_then(|track|track.keyframes.iter().rev().find(|key|key.frame<=self.doc.animation.current_frame && self.doc.animation.current_frame-key.frame<key.exposure).map(|key|(key.frame,key.exposure,key.interpolation))) {
                     ui.horizontal(|ui| {
                         ui.label("Active layer exposure");
                         let mut exposure=key_exposure;
@@ -739,6 +758,28 @@ impl SketchApp {
                                 Ok(next)=>{let strokes=next.resolve(next.current_frame).unwrap_or_else(||self.doc.strokes.clone());if let Err(error)=self.commit_animation_state(next,strokes,"Layer exposure changed."){self.status=error;}},
                                 Err(error)=>self.status=error,
                             }
+                        }
+                        let mut mode = interpolation;
+                        egui::ComboBox::from_id_salt(("layer-interpolation", self.doc.active_layer, key_frame))
+                            .selected_text(match mode { crate::animation::LayerInterpolation::Hold => "Hold", crate::animation::LayerInterpolation::Linear => "Linear", crate::animation::LayerInterpolation::EaseInOut => "Ease In/Out" })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut mode, crate::animation::LayerInterpolation::Hold, "Hold");
+                                ui.add_enabled_ui(!self.animation_ui.playing, |ui| {
+                                    ui.selectable_value(&mut mode, crate::animation::LayerInterpolation::Linear, "Linear");
+                                    ui.selectable_value(&mut mode, crate::animation::LayerInterpolation::EaseInOut, "Ease In/Out");
+                                });
+                            });
+                        if mode != interpolation {
+                            match self.doc.animation.set_layer_interpolation(self.doc.active_layer, key_frame, mode) {
+                                Ok(next) => {
+                                    let strokes = next.resolve(next.current_frame).unwrap_or_else(|| self.doc.strokes.clone());
+                                    if let Err(error) = self.commit_animation_state(next, strokes, "Layer interpolation changed.") { self.status = error; }
+                                }
+                                Err(error) => self.status = error,
+                            }
+                        }
+                        if let Some(issue) = self.doc.animation.layer_interpolation_issue(self.doc.active_layer, key_frame) {
+                            ui.small(issue);
                         }
                         self.layer_key_frame_entry(ui, key_frame);
                     });
