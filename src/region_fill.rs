@@ -412,22 +412,24 @@ mod boundary_scope_tests {
             point(0.0, 1.0),
             point(-1.0, 1.0),
         ];
-        let mut doc = crate::document::Document::default();
-        doc.strokes = (0..corners.len())
-            .map(|index| {
-                let start = if index == 0 {
-                    corners[index] - v * 0.01
-                } else {
-                    corners[index]
-                };
-                let end = if index == 5 {
-                    corners[(index + 1) % corners.len()] + v * 0.01
-                } else {
-                    corners[(index + 1) % corners.len()]
-                };
-                line(index as u64 + 1, 1, start, end)
-            })
-            .collect();
+        let doc = crate::document::Document {
+            strokes: (0..corners.len())
+                .map(|index| {
+                    let start = if index == 0 {
+                        corners[index] - v * 0.01
+                    } else {
+                        corners[index]
+                    };
+                    let end = if index == 5 {
+                        corners[(index + 1) % corners.len()] + v * 0.01
+                    } else {
+                        corners[(index + 1) % corners.len()]
+                    };
+                    line(index as u64 + 1, 1, start, end)
+                })
+                .collect(),
+            ..Default::default()
+        };
         let before = doc.strokes.clone();
         let seed = point(-0.5, 0.5);
         assert!(find_region(&doc, plane, seed, 0.0, None, None, &[]).is_err());
@@ -512,15 +514,17 @@ mod boundary_scope_tests {
 
     #[test]
     fn crossing_boundary_strokes_split_the_clicked_face() {
-        let mut doc = crate::document::Document::default();
-        doc.strokes = vec![
-            line(1, 1, Vec3::new(-1.0, -1.0, 0.0), Vec3::new(1.0, -1.0, 0.0)),
-            line(2, 1, Vec3::new(1.0, -1.0, 0.0), Vec3::new(1.0, 1.0, 0.0)),
-            line(3, 1, Vec3::new(1.0, 1.0, 0.0), Vec3::new(-1.0, 1.0, 0.0)),
-            line(4, 1, Vec3::new(-1.0, 1.0, 0.0), Vec3::new(-1.0, -1.0, 0.0)),
-            line(5, 1, Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)),
-            line(6, 1, Vec3::new(0.0, -1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)),
-        ];
+        let doc = crate::document::Document {
+            strokes: vec![
+                line(1, 1, Vec3::new(-1.0, -1.0, 0.0), Vec3::new(1.0, -1.0, 0.0)),
+                line(2, 1, Vec3::new(1.0, -1.0, 0.0), Vec3::new(1.0, 1.0, 0.0)),
+                line(3, 1, Vec3::new(1.0, 1.0, 0.0), Vec3::new(-1.0, 1.0, 0.0)),
+                line(4, 1, Vec3::new(-1.0, 1.0, 0.0), Vec3::new(-1.0, -1.0, 0.0)),
+                line(5, 1, Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)),
+                line(6, 1, Vec3::new(0.0, -1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)),
+            ],
+            ..Default::default()
+        };
         let original = doc.strokes.clone();
         let region = find_region(
             &doc,
@@ -544,14 +548,16 @@ mod boundary_scope_tests {
 
     #[test]
     fn temporary_closing_segment_solves_a_gap_without_mutating_boundary_art() {
-        let mut doc = crate::document::Document::default();
-        doc.strokes = vec![
-            line(1, 1, Vec3::new(-1.0, -1.0, 0.0), Vec3::new(1.0, -1.0, 0.0)),
-            line(2, 1, Vec3::new(1.0, -1.0, 0.0), Vec3::new(1.0, 1.0, 0.0)),
-            line(3, 1, Vec3::new(1.0, 1.0, 0.0), Vec3::new(-1.0, 1.0, 0.0)),
-            line(4, 1, Vec3::new(-1.0, 1.0, 0.0), Vec3::new(-1.0, 0.1, 0.0)),
-            line(5, 1, Vec3::new(-1.0, -0.1, 0.0), Vec3::new(-1.0, -1.0, 0.0)),
-        ];
+        let doc = crate::document::Document {
+            strokes: vec![
+                line(1, 1, Vec3::new(-1.0, -1.0, 0.0), Vec3::new(1.0, -1.0, 0.0)),
+                line(2, 1, Vec3::new(1.0, -1.0, 0.0), Vec3::new(1.0, 1.0, 0.0)),
+                line(3, 1, Vec3::new(1.0, 1.0, 0.0), Vec3::new(-1.0, 1.0, 0.0)),
+                line(4, 1, Vec3::new(-1.0, 1.0, 0.0), Vec3::new(-1.0, 0.1, 0.0)),
+                line(5, 1, Vec3::new(-1.0, -0.1, 0.0), Vec3::new(-1.0, -1.0, 0.0)),
+            ],
+            ..Default::default()
+        };
         let before = doc.strokes.clone();
         let plane = DrawingPlane::default();
         let click = Vec3::ZERO;

@@ -635,8 +635,10 @@ impl SketchApp {
             .render_png_pixels(&following_doc, &camera, size, background, lighting)
             .expect("stroke-following texture comparison renders through the GPU pipeline");
         let changed = textured
-            .chunks_exact(4)
-            .zip(plain.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(plain.as_chunks::<4>().0)
             .filter(|(textured, plain)| {
                 textured[..3]
                     .iter()
@@ -645,8 +647,10 @@ impl SketchApp {
             })
             .count();
         let mapping_changed = textured
-            .chunks_exact(4)
-            .zip(following.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(following.as_chunks::<4>().0)
             .filter(|(captured, following)| {
                 captured[..3]
                     .iter()
@@ -673,8 +677,10 @@ impl SketchApp {
                 .render_png_pixels(&following_doc, &camera, render_size, background, lighting)
                 .expect("stroke-following comparison renders at each verification scale");
             let changed = captured_pixels
-                .chunks_exact(4)
-                .zip(following_pixels.chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(following_pixels.as_chunks::<4>().0)
                 .filter(|(captured, following)| {
                     captured[..3]
                         .iter()
@@ -742,8 +748,10 @@ impl SketchApp {
             .render_png_pixels(&tip_only_doc, &camera, size, background, lighting)
             .expect("image tip without repeating grain renders through the GPU pipeline");
         let combined_changed = combined
-            .chunks_exact(4)
-            .zip(tip_only.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(tip_only.as_chunks::<4>().0)
             .filter(|(combined, tip_only)| {
                 combined[..3]
                     .iter()

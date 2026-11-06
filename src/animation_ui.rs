@@ -91,8 +91,13 @@ impl AnimationUi {
 
 impl SketchApp {
     pub(super) fn followed_shot_camera(&self) -> Option<crate::camera_bookmarks::CameraView> {
-        self.animation_ui.shot_camera_preview
-            .then(|| self.doc.animation.camera_at(self.doc.animation.current_frame))
+        self.animation_ui
+            .shot_camera_preview
+            .then(|| {
+                self.doc
+                    .animation
+                    .camera_at(self.doc.animation.current_frame)
+            })
             .flatten()
     }
 
@@ -139,7 +144,9 @@ impl SketchApp {
         let frame = frame.clamp(current.range_start, current.range_end);
         if frame == current.current_frame {
             if self.animation_ui.shot_camera_preview {
-                if let Some(view) = current.camera_at(frame) { let _ = view.apply(&mut self.camera); }
+                if let Some(view) = current.camera_at(frame) {
+                    let _ = view.apply(&mut self.camera);
+                }
             }
             return;
         }
@@ -187,13 +194,25 @@ impl SketchApp {
         let now = ctx.input(|input| input.time);
         let elapsed = (now - self.animation_ui.playback_origin_seconds).max(0.0);
         let frame_offset = (elapsed * f64::from(self.doc.animation.fps)).floor() as u32;
-        let (loop_start, loop_end) = self.animation_ui.preview_loop_range
-            .map(|(start, end)| (start.max(self.doc.animation.range_start), end.min(self.doc.animation.range_end)))
+        let (loop_start, loop_end) = self
+            .animation_ui
+            .preview_loop_range
+            .map(|(start, end)| {
+                (
+                    start.max(self.doc.animation.range_start),
+                    end.min(self.doc.animation.range_end),
+                )
+            })
             .filter(|(start, end)| start <= end)
             .unwrap_or((self.doc.animation.range_start, self.doc.animation.range_end));
         let frame_count = loop_end.saturating_sub(loop_start).saturating_add(1).max(1);
-        let frame = loop_start + (self.animation_ui.playback_origin_frame
-            .saturating_sub(loop_start).saturating_add(frame_offset) % frame_count);
+        let frame = loop_start
+            + (self
+                .animation_ui
+                .playback_origin_frame
+                .saturating_sub(loop_start)
+                .saturating_add(frame_offset)
+                % frame_count);
         self.seek_artwork_animation(frame, true);
         ctx.request_repaint_after(std::time::Duration::from_secs_f32(
             1.0 / f32::from(self.doc.animation.fps.max(1)),
@@ -217,11 +236,19 @@ impl SketchApp {
             return;
         }
         self.animation_ui.playback_origin_seconds = ctx.input(|input| input.time);
-        let (loop_start, loop_end) = self.animation_ui.preview_loop_range
-            .map(|(start, end)| (start.max(self.doc.animation.range_start), end.min(self.doc.animation.range_end)))
+        let (loop_start, loop_end) = self
+            .animation_ui
+            .preview_loop_range
+            .map(|(start, end)| {
+                (
+                    start.max(self.doc.animation.range_start),
+                    end.min(self.doc.animation.range_end),
+                )
+            })
             .filter(|(start, end)| start <= end)
             .unwrap_or((self.doc.animation.range_start, self.doc.animation.range_end));
-        self.animation_ui.playback_origin_frame = self.doc.animation.current_frame.clamp(loop_start, loop_end);
+        self.animation_ui.playback_origin_frame =
+            self.doc.animation.current_frame.clamp(loop_start, loop_end);
         self.animation_ui.playing = true;
         self.undo.clear();
         self.redo.clear();
@@ -287,10 +314,20 @@ impl SketchApp {
 
     fn insert_interpolated_layer_key(&mut self) {
         let frame = self.doc.animation.current_frame;
-        match self.doc.animation.insert_interpolated_layer_key(self.doc.active_layer, frame) {
+        match self
+            .doc
+            .animation
+            .insert_interpolated_layer_key(self.doc.active_layer, frame)
+        {
             Ok(animation) => {
-                let strokes = animation.resolve(frame).unwrap_or_else(|| self.doc.strokes.clone());
-                if let Err(error) = self.commit_animation_state(animation, strokes, "Interpolated pose keyed as an editable drawing.") {
+                let strokes = animation
+                    .resolve(frame)
+                    .unwrap_or_else(|| self.doc.strokes.clone());
+                if let Err(error) = self.commit_animation_state(
+                    animation,
+                    strokes,
+                    "Interpolated pose keyed as an editable drawing.",
+                ) {
                     self.status = error;
                 }
             }
@@ -539,7 +576,12 @@ impl SketchApp {
                 "The multi-key edit preview expired. Preview it again before applying.".into();
             return;
         };
-        if self.animation_ui.cross_layer_key_selection.iter().any(|(layer, _)| !self.doc.layer_is_editable(*layer)) {
+        if self
+            .animation_ui
+            .cross_layer_key_selection
+            .iter()
+            .any(|(layer, _)| !self.doc.layer_is_editable(*layer))
+        {
             self.animation_ui.cross_layer_destinations.clear();
             self.status = "A selected layer became protected. Preview the move again.".into();
             return;
@@ -1270,20 +1312,30 @@ impl SketchApp {
     }
 
     fn camera_timeline_row(&mut self, ui: &mut egui::Ui) {
-        if self.doc.animation.camera_keys.is_empty() { return; }
+        if self.doc.animation.camera_keys.is_empty() {
+            return;
+        }
         let start = self.doc.animation.range_start;
         let end = self.doc.animation.range_end;
         let frame = self.doc.animation.current_frame;
         let keys = self.doc.animation.camera_keys.clone();
-        let (rect, response) = ui.horizontal(|ui| {
-            ui.add_sized(egui::vec2(84.0, 22.0), egui::Label::new("Camera").truncate());
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::click())
-        }).inner;
+        let (rect, response) = ui
+            .horizontal(|ui| {
+                ui.add_sized(
+                    egui::vec2(84.0, 22.0),
+                    egui::Label::new("Camera").truncate(),
+                );
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::click())
+            })
+            .inner;
         let step = rect.width() / (end - start + 1) as f32;
         let x = |key_frame: u32| rect.left() + (key_frame - start) as f32 * step;
         if response.clicked() && !self.animation_ui.playing {
             if let Some(position) = response.interact_pointer_pos() {
-                let target = start + ((position.x - rect.left()) / step.max(0.0001)).floor().max(0.0) as u32;
+                let target = start
+                    + ((position.x - rect.left()) / step.max(0.0001))
+                        .floor()
+                        .max(0.0) as u32;
                 self.seek_artwork_animation(target.min(end), false);
             }
         }
@@ -1291,10 +1343,18 @@ impl SketchApp {
         painter.rect_filled(rect, 3.0, ui.visuals().faint_bg_color);
         for key in keys {
             let center = egui::pos2(x(key.frame) + step * 0.5, rect.center().y);
-            let color = if self.animation_ui.selected_camera_key == Some(key.frame) { egui::Color32::YELLOW } else { ui.visuals().selection.bg_fill };
+            let color = if self.animation_ui.selected_camera_key == Some(key.frame) {
+                egui::Color32::YELLOW
+            } else {
+                ui.visuals().selection.bg_fill
+            };
             painter.circle_filled(center, 4.0_f32.max(step.min(6.0) * 0.5), color);
         }
-        painter.vline(x(frame), rect.y_range(), egui::Stroke::new(1.0_f32, ui.visuals().text_color()));
+        painter.vline(
+            x(frame),
+            rect.y_range(),
+            egui::Stroke::new(1.0_f32, ui.visuals().text_color()),
+        );
     }
 
     fn layer_key_frame_entry(&mut self, ui: &mut egui::Ui, from: u32) {
@@ -1411,7 +1471,12 @@ impl SketchApp {
         let mut grouped = std::collections::BTreeMap::<u64, Vec<u32>>::new();
         for &(layer_id, frame) in &self.animation_ui.cross_layer_key_selection {
             if !self.doc.layer_is_editable(layer_id)
-                || self.doc.animation.two_bone_rig.as_ref().is_some_and(|rig| rig.layer_id == layer_id)
+                || self
+                    .doc
+                    .animation
+                    .two_bone_rig
+                    .as_ref()
+                    .is_some_and(|rig| rig.layer_id == layer_id)
             {
                 self.status = "The selection includes a protected or locked layer.".into();
                 return;
@@ -1421,10 +1486,16 @@ impl SketchApp {
         let mut preview = self.doc.animation.clone();
         let mut destinations = Vec::new();
         for (layer_id, frames) in grouped {
-            match preview.place_layer_keys(layer_id, &frames, self.animation_ui.batch_key_offset, false) {
+            match preview.place_layer_keys(
+                layer_id,
+                &frames,
+                self.animation_ui.batch_key_offset,
+                false,
+            ) {
                 Ok(next) => {
                     destinations.extend(frames.iter().filter_map(|frame| {
-                        i64::from(*frame).checked_add(i64::from(self.animation_ui.batch_key_offset))
+                        i64::from(*frame)
+                            .checked_add(i64::from(self.animation_ui.batch_key_offset))
                             .and_then(|destination| u32::try_from(destination).ok())
                             .map(|destination| (layer_id, destination))
                     }));
@@ -1441,8 +1512,10 @@ impl SketchApp {
         }
         self.animation_ui.cross_layer_destinations = destinations;
         self.animation_ui.cross_layer_preview = Some(preview);
-        self.animation_ui.cross_layer_source = Some((self.doc.animation.clone(), self.doc.strokes.clone()));
-        self.status = "Cross-layer destinations previewed. Apply to commit one undo step or cancel.".into();
+        self.animation_ui.cross_layer_source =
+            Some((self.doc.animation.clone(), self.doc.strokes.clone()));
+        self.status =
+            "Cross-layer destinations previewed. Apply to commit one undo step or cancel.".into();
     }
 
     fn apply_cross_layer_key_move(&mut self) {
@@ -1452,7 +1525,12 @@ impl SketchApp {
         ) else {
             return;
         };
-        if self.animation_ui.cross_layer_key_selection.iter().any(|(layer, _)| !self.doc.layer_is_editable(*layer)) {
+        if self
+            .animation_ui
+            .cross_layer_key_selection
+            .iter()
+            .any(|(layer, _)| !self.doc.layer_is_editable(*layer))
+        {
             self.animation_ui.cross_layer_destinations.clear();
             self.status = "A selected layer became protected. Preview the move again.".into();
             return;
@@ -1462,8 +1540,14 @@ impl SketchApp {
             self.status = "The drawing changed after the preview. Preview the move again.".into();
             return;
         }
-        let strokes = animation.resolve(animation.current_frame).unwrap_or_else(|| self.doc.strokes.clone());
-        match self.commit_animation_state(animation, strokes, "Selected keys moved across layers in one edit.") {
+        let strokes = animation
+            .resolve(animation.current_frame)
+            .unwrap_or_else(|| self.doc.strokes.clone());
+        match self.commit_animation_state(
+            animation,
+            strokes,
+            "Selected keys moved across layers in one edit.",
+        ) {
             Ok(()) => {
                 self.animation_ui.cross_layer_key_selection.clear();
                 self.animation_ui.cross_layer_destinations.clear();

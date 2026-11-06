@@ -1,8 +1,8 @@
 //! Clip parallel centerlines against the same even-odd contours as a fill.
 use crate::{
     document::{
-        Brush, CylinderFillSurface, Document, FillRegionSource, Point, Stroke,
-        guide_resources::GuideGeometry,
+        guide_resources::GuideGeometry, Brush, CylinderFillSurface, Document, FillRegionSource,
+        Point, Stroke,
     },
     dynamics::DabSurfaceTarget,
     polygon,
@@ -426,18 +426,16 @@ mod tests {
         assert!(Document::from_json(&serde_json::to_string(&doc).unwrap()).is_ok());
         edit.apply(&mut doc, false);
         assert_eq!(doc.strokes, vec![source.clone()]);
-        assert!(
-            build(
-                &doc,
-                &source,
-                Settings {
-                    spacing: MIN_SPACING,
-                    ..settings
-                },
-                ink(),
-                2
-            )
-            .is_err()
-        );
+        assert!(build(
+            &doc,
+            &source,
+            Settings {
+                spacing: MIN_SPACING,
+                ..settings
+            },
+            ink(),
+            2
+        )
+        .is_err());
     }
 }

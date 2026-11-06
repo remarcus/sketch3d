@@ -2181,12 +2181,14 @@ mod tests {
         let composite = composite.expect("tip and grain must bake into one texture");
         let alpha: Vec<_> = composite
             .pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|pixel| pixel[3])
             .collect();
-        assert!(alpha.iter().any(|value| *value == 0));
+        assert!(alpha.contains(&0));
         assert!(alpha.iter().any(|value| (1..192).contains(value)));
-        assert!(alpha.iter().any(|value| *value == 192));
+        assert!(alpha.contains(&192));
 
         let document = Document {
             strokes: vec![mark],

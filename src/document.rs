@@ -655,7 +655,11 @@ impl ModelSurfacePatch {
     }
 }
 
-pub(crate) fn ray_triangle_distance(origin: Vec3, direction: Vec3, triangle: [Vec3; 3]) -> Option<f32> {
+pub(crate) fn ray_triangle_distance(
+    origin: Vec3,
+    direction: Vec3,
+    triangle: [Vec3; 3],
+) -> Option<f32> {
     let edge_a = triangle[1] - triangle[0];
     let edge_b = triangle[2] - triangle[0];
     let p = direction.cross(edge_b);
@@ -1402,17 +1406,32 @@ pub struct LocalLight {
 
 impl Default for LocalLight {
     fn default() -> Self {
-        Self { enabled: false, position: glam::Vec3::new(2.0, 3.0, 2.0), color: [1.0, 0.72, 0.38], intensity: 1.0, range: 8.0, shadows: false }
+        Self {
+            enabled: false,
+            position: glam::Vec3::new(2.0, 3.0, 2.0),
+            color: [1.0, 0.72, 0.38],
+            intensity: 1.0,
+            range: 8.0,
+            shadows: false,
+        }
     }
 }
 
 impl LocalLight {
     pub fn validate(self) -> Result<(), String> {
-        if !self.position.is_finite() || self.position.abs().max_element() > 10_000.0
-            || self.color.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
-            || !self.intensity.is_finite() || !(0.0..=4.0).contains(&self.intensity)
-            || !self.range.is_finite() || !(0.1..=1_000.0).contains(&self.range)
-        { return Err("Local light settings are outside supported limits".into()); }
+        if !self.position.is_finite()
+            || self.position.abs().max_element() > 10_000.0
+            || self
+                .color
+                .iter()
+                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+            || !self.intensity.is_finite()
+            || !(0.0..=4.0).contains(&self.intensity)
+            || !self.range.is_finite()
+            || !(0.1..=1_000.0).contains(&self.range)
+        {
+            return Err("Local light settings are outside supported limits".into());
+        }
         Ok(())
     }
 }
@@ -2032,10 +2051,14 @@ impl Document {
         guide_resources::validate_catalog(&doc.guide_resources, doc.active_guide)?;
         for stroke in &doc.strokes {
             if let Some(id) = stroke.guide_attachment {
-                if !doc.guide_resources.iter().any(|guide| {
-                    guide.id == id && guide.geometry.supports_drawn_attachment()
-                }) {
-                    return Err("Stroke attachment references a missing or unsupported guide".into());
+                if !doc
+                    .guide_resources
+                    .iter()
+                    .any(|guide| guide.id == id && guide.geometry.supports_drawn_attachment())
+                {
+                    return Err(
+                        "Stroke attachment references a missing or unsupported guide".into(),
+                    );
                 }
             }
         }
@@ -2082,10 +2105,15 @@ impl Document {
                     total_mesh_fill_triangles += mesh.triangles.len();
                     if total_mesh_fill_triangles > crate::mesh_fill::MAX_DOCUMENT_TRIANGLES
                         || mesh.source.is_some_and(|source| {
-                            !doc.model_references.iter().any(|model| model.id == source.model_id)
+                            !doc.model_references
+                                .iter()
+                                .any(|model| model.id == source.model_id)
                         })
                     {
-                        return Err("Mesh fill exceeds the document budget or refers to a missing model".into());
+                        return Err(
+                            "Mesh fill exceeds the document budget or refers to a missing model"
+                                .into(),
+                        );
                     }
                 }
             }
@@ -2123,7 +2151,10 @@ impl Document {
                 if let Some(attachment) = &patch.attachment {
                     total_model_anchors += attachment.anchors.len();
                     if stroke.guide_attachment.is_some()
-                        || !doc.model_references.iter().any(|model| model.id == attachment.model_id)
+                        || !doc
+                            .model_references
+                            .iter()
+                            .any(|model| model.id == attachment.model_id)
                         || !attachment.is_valid()
                         || total_model_anchors > 2_000_000
                     {
@@ -2134,7 +2165,8 @@ impl Document {
                     || patch.triangles.len() > MAX_MODEL_SURFACE_TRIANGLES_PER_STROKE
                     || total_model_surface_triangles > MAX_MODEL_SURFACE_TRIANGLES_PER_DOCUMENT
                     || (!patch.triangles.is_empty()
-                        && !stroke.brush.dabs.enabled && stroke.brush.tip_asset_id == 0)
+                        && !stroke.brush.dabs.enabled
+                        && stroke.brush.tip_asset_id == 0)
                     || stroke.brush.dabs.surface_target.is_some()
                     || patch
                         .triangles

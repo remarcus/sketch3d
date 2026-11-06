@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     document::{
-        Document, Stroke,
         model_references::{ModelInkAnchor, ObjReferenceResource},
+        Document, Stroke,
     },
     geometry::Vertex,
     obj_mesh_index::ObjMeshIndex,
@@ -543,7 +543,7 @@ pub fn replace_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{ModelSurfacePatch, Point, model_references::ModelInkAttachment};
+    use crate::document::{model_references::ModelInkAttachment, ModelSurfacePatch, Point};
 
     #[test]
     fn fills_and_refreshes_a_crease_and_rejects_an_open_boundary() {
@@ -672,11 +672,9 @@ mod tests {
         edit.apply(&mut doc, false);
         assert_eq!(doc.strokes[1], original);
         doc.strokes[0].points.pop();
-        assert!(
-            solve(&doc, &resource, &model, &index, source)
-                .unwrap_err()
-                .contains("open")
-        );
+        assert!(solve(&doc, &resource, &model, &index, source)
+            .unwrap_err()
+            .contains("open"));
         assert_eq!(doc.strokes[1], original);
     }
 }

@@ -263,7 +263,11 @@ fn transformed_state(
             for point in &mut stroke.points {
                 point.position += transform.translation;
             }
-            if let Some(patch) = stroke.model_surface.as_mut().filter(|patch| patch.attachment.is_some()) {
+            if let Some(patch) = stroke
+                .model_surface
+                .as_mut()
+                .filter(|patch| patch.attachment.is_some())
+            {
                 for triangle in &mut patch.triangles {
                     for point in &mut triangle.positions {
                         *point += transform.translation;
@@ -371,7 +375,10 @@ fn capture_state(
                 id: *stroke_id,
             });
         }
-        if stroke.attached_model().is_some_and(|id| !selection.obj_reference_ids.contains(&id)) {
+        if stroke
+            .attached_model()
+            .is_some_and(|id| !selection.obj_reference_ids.contains(&id))
+        {
             return Err(MoveError::InvalidTransformDetail(
                 "Select the model too, or detach its ink before moving it independently.".into(),
             ));
@@ -412,10 +419,18 @@ fn capture_state(
         }
         state.obj_references.push(model.clone());
     }
-    state.strokes.extend(document.strokes.iter().filter(|stroke| {
-        !selection.stroke_ids.contains(&stroke.id)
-            && stroke.attached_model().is_some_and(|id| selection.obj_reference_ids.contains(&id))
-    }).cloned());
+    state.strokes.extend(
+        document
+            .strokes
+            .iter()
+            .filter(|stroke| {
+                !selection.stroke_ids.contains(&stroke.id)
+                    && stroke
+                        .attached_model()
+                        .is_some_and(|id| selection.obj_reference_ids.contains(&id))
+            })
+            .cloned(),
+    );
     for id in &selection.guide_ids {
         if document
             .strokes

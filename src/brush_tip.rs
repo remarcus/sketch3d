@@ -537,7 +537,12 @@ mod repeating_texture_tests {
             .repeating_preview_pixels(mask, [0.3, 0.6, 0.9])
             .unwrap();
         assert_eq!(preview.size, [14, 11]);
-        assert!(preview.pixels.chunks_exact(4).all(|pixel| pixel[3] == 255));
+        assert!(preview
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[3] == 255));
         let gutter = (2 * preview.size[0] + 2) as usize * 4;
         assert!(preview.pixels[gutter..gutter + 3]
             .iter()

@@ -102,12 +102,13 @@ fn transform_attached_stroke(
                 changed.brush.dabs.surface_target,
                 Some(crate::dynamics::DabSurfaceTarget::Cylinder { .. })
             ) {
-                changed.brush.dabs.surface_target = Some(crate::dynamics::DabSurfaceTarget::Cylinder {
-                    center: new.origin,
-                    rotation: new.rotation,
-                    radius: next_radius,
-                    height: next_height,
-                });
+                changed.brush.dabs.surface_target =
+                    Some(crate::dynamics::DabSurfaceTarget::Cylinder {
+                        center: new.origin,
+                        rotation: new.rotation,
+                        radius: next_radius,
+                        height: next_height,
+                    });
             }
             for (point, source) in changed.points.iter_mut().zip(&stroke.points) {
                 let position =
@@ -140,15 +141,18 @@ fn reshape_attached_stroke(
 ) -> Result<Stroke, &'static str> {
     let mut changed = stroke.clone();
     for (index, point) in changed.points.iter_mut().enumerate() {
-        let (u, v) = old.attachment_coordinates(point.position)
+        let (u, v) = old
+            .attachment_coordinates(point.position)
             .ok_or("An attached sample is off its guide. Detach the ink before reshaping.")?;
-        let (previous, old_tangent, old_normal) = old.attachment_sample(u, v)
+        let (previous, old_tangent, old_normal) = old
+            .attachment_sample(u, v)
             .ok_or("The previous guide has no attachment frame.")?;
         let tolerance = 0.00015 + point.position.abs().max_element() * f32::EPSILON * 16.0;
         if previous.distance(point.position) > tolerance {
             return Err("An attached sample is off its guide. Detach the ink before reshaping.");
         }
-        let (position, tangent, normal) = new.attachment_sample(u, v)
+        let (position, tangent, normal) = new
+            .attachment_sample(u, v)
             .ok_or("The revised guide has no attachment frame.")?;
         let basis = |t: Vec3, n: Vec3| glam::Mat3::from_cols(t, n.cross(t), n);
         let old_basis = basis(old_tangent, old_normal);
@@ -188,16 +192,27 @@ fn attached_guide_changes(
     let mut reshape_samples = 0;
     let mut dab_delta = 0_i64;
     for (index, stroke) in doc.strokes.iter().enumerate() {
-        let Some(id) = stroke.guide_attachment else { continue };
-        let old = before.iter().find(|guide| guide.id == id).map(|guide| &guide.geometry);
-        let new = after.iter().find(|guide| guide.id == id).map(|guide| &guide.geometry);
+        let Some(id) = stroke.guide_attachment else {
+            continue;
+        };
+        let old = before
+            .iter()
+            .find(|guide| guide.id == id)
+            .map(|guide| &guide.geometry);
+        let new = after
+            .iter()
+            .find(|guide| guide.id == id)
+            .map(|guide| &guide.geometry);
         if old == new {
             continue;
         }
         if !doc.editable(stroke) {
             return Err("Unlock and show the attached ink before changing its guide.");
         }
-        let parametric = old.into_iter().chain(new).any(GuideGeometry::supports_parametric_attachment);
+        let parametric = old
+            .into_iter()
+            .chain(new)
+            .any(GuideGeometry::supports_parametric_attachment);
         let changed = match (old, new) {
             (Some(old), Some(new)) if parametric => {
                 if !old.attachment_compatible_with(new) {
@@ -210,7 +225,10 @@ fn attached_guide_changes(
                 reshape_attached_stroke(stroke, old, new)?
             }
             _ => transform_attached_stroke(
-                index, stroke, attachment_frame(before, id), attachment_frame(after, id),
+                index,
+                stroke,
+                attachment_frame(before, id),
+                attachment_frame(after, id),
             )?,
         };
         if changed.brush.dabs.enabled {
@@ -223,9 +241,11 @@ fn attached_guide_changes(
         ink_before.push((index, stroke.clone()));
         ink_after.push((index, changed));
     }
-    if dab_delta > 0 && crate::dab_placement::document_count(doc)
-        .map_err(|_| "Attached ink exceeds the document dab limit.")? + dab_delta as usize
-        > crate::dab_placement::MAX_DOCUMENT_DABS
+    if dab_delta > 0
+        && crate::dab_placement::document_count(doc)
+            .map_err(|_| "Attached ink exceeds the document dab limit.")?
+            + dab_delta as usize
+            > crate::dab_placement::MAX_DOCUMENT_DABS
     {
         return Err("Guide edit would exceed the document dab limit.");
     }
@@ -405,11 +425,14 @@ impl SketchApp {
             && self.brush.dabs.surface_target.is_none()
             && self.brush.texture.anchor_mode != crate::texture::TextureAnchorMode::CapturedPlanar
             && (!geometry.supports_parametric_attachment()
-                || (!self.brush.flow.enabled && !self.brush.dabs.enabled && self.brush.tip_asset_id == 0));
+                || (!self.brush.flow.enabled
+                    && !self.brush.dabs.enabled
+                    && self.brush.tip_asset_id == 0));
         (geometry.supports_drawn_attachment()
             && supported_brush
             && self.doc.animation.is_empty()
-            && self.doc.animation.two_bone_rig.is_none()).then_some(id)
+            && self.doc.animation.two_bone_rig.is_none())
+        .then_some(id)
     }
 
     pub(super) fn begin_guide_bend(&mut self, guide_id: u64) {
@@ -584,8 +607,11 @@ impl SketchApp {
         if before.1.is_some() || after.1.is_some() {
             if self.active.is_some() {
                 Edit::Guides {
-                    before: before.clone(), after: after.clone(), ink: None,
-                }.apply(&mut self.doc, false);
+                    before: before.clone(),
+                    after: after.clone(),
+                    ink: None,
+                }
+                .apply(&mut self.doc, false);
             }
             self.finish();
             self.cancel_line_tool();
@@ -597,7 +623,12 @@ impl SketchApp {
         let ink = match attached_guide_changes(&self.doc, &before.0, &after.0) {
             Ok(ink) => ink,
             Err(error) => {
-                Edit::Guides { before, after, ink: None }.apply(&mut self.doc, false);
+                Edit::Guides {
+                    before,
+                    after,
+                    ink: None,
+                }
+                .apply(&mut self.doc, false);
                 self.status = error.into();
                 return false;
             }
@@ -2793,8 +2824,12 @@ mod planar_attachment_tests {
         let surface = FreeformSurface {
             center: Vec3::ZERO,
             rotation: glam::Quat::IDENTITY,
-            directrix: [glam::vec2(-1.0, 0.0), glam::vec2(-0.3, 0.25),
-                glam::vec2(0.3, -0.25), glam::vec2(1.0, 0.0)],
+            directrix: [
+                glam::vec2(-1.0, 0.0),
+                glam::vec2(-0.3, 0.25),
+                glam::vec2(0.3, -0.25),
+                glam::vec2(1.0, 0.0),
+            ],
             depth: 2.0,
             bend: 0.15,
         };
@@ -2821,7 +2856,11 @@ mod planar_attachment_tests {
         let before = (vec![old.clone()], None, Vec::new(), None, None);
         let after = (vec![new], None, Vec::new(), None, None);
         let ink = attached_guide_changes(&doc, &before.0, &after.0).unwrap();
-        let edit = Edit::Guides { before: before.clone(), after: after.clone(), ink };
+        let edit = Edit::Guides {
+            before: before.clone(),
+            after: after.clone(),
+            ink,
+        };
         edit.apply(&mut doc, true);
         for (sample, (u, v)) in doc.strokes[0].points.iter().zip(parameters) {
             assert!(sample.position.distance(next.point(u, v)) < 1e-5);
@@ -2831,7 +2870,10 @@ mod planar_attachment_tests {
         assert_eq!(reopened.strokes, doc.strokes);
         let incompatible = vec![guide(Vec3::ZERO, glam::Quat::IDENTITY)];
         assert!(attached_guide_changes(&doc, &after.0, &incompatible).is_err());
-        let detached = attached_guide_changes(&doc, &after.0, &[]).unwrap().unwrap().1;
+        let detached = attached_guide_changes(&doc, &after.0, &[])
+            .unwrap()
+            .unwrap()
+            .1;
         assert_eq!(detached[0].1.guide_attachment, None);
         assert_eq!(detached[0].1.points, doc.strokes[0].points);
         edit.apply(&mut doc, false);
@@ -2865,17 +2907,26 @@ mod planar_attachment_tests {
         stroke.point_thickness = None;
         stroke.point_colors = None;
         for v in [0.41, 0.47, 0.53, 0.62] {
-            stroke.points.extend(stabilizer.push(Point {
-                position: surface.point(0.37, v),
-                pressure: 0.4 + v * 0.3,
-                tilt: None,
-                time_ms: 0,
-            }, 0.0));
+            stroke.points.extend(stabilizer.push(
+                Point {
+                    position: surface.point(0.37, v),
+                    pressure: 0.4 + v * 0.3,
+                    tilt: None,
+                    time_ms: 0,
+                },
+                0.0,
+            ));
         }
         stroke.points.extend(stabilizer.finish());
-        assert!(stroke.points.iter().any(|point| point.position.distance(surface.point(0.37, 0.5)) < 1e-5));
-        let parameters: Vec<_> = stroke.points.iter()
-            .map(|point| surface.coordinates(point.position).unwrap()).collect();
+        assert!(stroke
+            .points
+            .iter()
+            .any(|point| point.position.distance(surface.point(0.37, 0.5)) < 1e-5));
+        let parameters: Vec<_> = stroke
+            .points
+            .iter()
+            .map(|point| surface.coordinates(point.position).unwrap())
+            .collect();
         let mut old = guide(Vec3::ZERO, glam::Quat::IDENTITY);
         old.geometry = GuideGeometry::Loft { surface };
         let mut next = surface;
@@ -2898,7 +2949,13 @@ mod planar_attachment_tests {
         }
         let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
         assert_eq!(reopened.strokes, doc.strokes);
-        assert_eq!(crate::export::encode(&reopened, None).unwrap().summary.strokes, 1);
+        assert_eq!(
+            crate::export::encode(&reopened, None)
+                .unwrap()
+                .summary
+                .strokes,
+            1
+        );
         let mut incompatible = new.clone();
         next.section_count = 2;
         incompatible.geometry = GuideGeometry::Loft { surface: next };
@@ -2909,7 +2966,9 @@ mod planar_attachment_tests {
 
     #[test]
     fn cylinder_hatch_crosses_the_seam_and_follows_a_radius_edit() {
-        use crate::document::{CylinderFillRegionSource, CylinderFillSurface, FillRegionSource, PlanarFill};
+        use crate::document::{
+            CylinderFillRegionSource, CylinderFillSurface, FillRegionSource, PlanarFill,
+        };
 
         let chart = CylinderFillSurface {
             center: Vec3::ZERO,
@@ -2928,21 +2987,31 @@ mod planar_attachment_tests {
                 pressure: 1.0,
                 tilt: None,
                 time_ms: 0,
-            }).to_vec();
+            })
+            .to_vec();
         source.fill = Some(PlanarFill {
             cylinder: Some(chart),
             region_source: Some(FillRegionSource::Cylinder(CylinderFillRegionSource {
-                guide_id: 7, seed_angle: chart.angle_origin, seed_height: 0.0,
-                boundary_layer: None, gap_tolerance: 0.0,
+                guide_id: 7,
+                seed_angle: chart.angle_origin,
+                seed_height: 0.0,
+                boundary_layer: None,
+                gap_tolerance: 0.0,
             })),
             ..Default::default()
         });
         let mut doc = Document::default();
         doc.guide_resources.push(cylinder_guide(1.0, 4.0));
         doc.strokes.push(source.clone());
-        let settings = crate::hatch::Settings { angle: 0.0, spacing: 0.2 };
+        let settings = crate::hatch::Settings {
+            angle: 0.0,
+            spacing: 0.2,
+        };
         let ink = crate::hatch::Ink {
-            brush: Brush::default(), color: [0.3; 3], radius: 0.02, layer: 1,
+            brush: Brush::default(),
+            color: [0.3; 3],
+            radius: 0.02,
+            layer: 1,
         };
         let hatches = crate::hatch::build(&doc, &source, settings, ink, 50).unwrap();
         assert!(hatches.len() >= 3);
@@ -2950,8 +3019,14 @@ mod planar_attachment_tests {
             assert_eq!(stroke.guide_attachment, Some(7));
             assert!(stroke.points.first().unwrap().position.x > 0.0);
             assert!(stroke.points.last().unwrap().position.x < 0.0);
-            assert!(stroke.points.windows(2).all(|pair| pair[0].position.distance(pair[1].position) <= 0.036));
-            assert!(stroke.points.iter().all(|point| chart.chart_point(point.position).is_some()));
+            assert!(stroke
+                .points
+                .windows(2)
+                .all(|pair| pair[0].position.distance(pair[1].position) <= 0.036));
+            assert!(stroke
+                .points
+                .iter()
+                .all(|point| chart.chart_point(point.position).is_some()));
         }
         let add = Edit::AddBatch(hatches.clone());
         add.apply(&mut doc, true);
@@ -2971,7 +3046,13 @@ mod planar_attachment_tests {
         assert_eq!(doc.strokes[0], source);
         let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
         assert_eq!(reopened.strokes, doc.strokes);
-        assert_eq!(crate::export::encode(&reopened, None).unwrap().summary.strokes, 1 + hatches.len());
+        assert_eq!(
+            crate::export::encode(&reopened, None)
+                .unwrap()
+                .summary
+                .strokes,
+            1 + hatches.len()
+        );
         edit.apply(&mut doc, false);
         assert_eq!(&doc.strokes[1..], hatches.as_slice());
         add.apply(&mut doc, false);

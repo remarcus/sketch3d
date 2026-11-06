@@ -967,11 +967,15 @@ impl VideoExportUi {
                         .range_start
                         .saturating_add(job.next_frame as u32);
                     if let Some(view) = job.document.animation.camera_at(frame) {
-                        if view.apply(&mut camera).is_err() { valid_camera = false; }
+                        if view.apply(&mut camera).is_err() {
+                            valid_camera = false;
+                        }
                     }
                     if let Some(strokes) = job.document.animation.resolve(frame) {
                         job.document.strokes = strokes;
-                    } else if job.document.animation.layer_tracks.is_empty() && job.document.animation.keyframes.is_empty() {
+                    } else if job.document.animation.layer_tracks.is_empty()
+                        && job.document.animation.keyframes.is_empty()
+                    {
                         // Camera-only shot: retain the document's static drawing.
                     } else {
                         valid_camera = false;

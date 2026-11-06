@@ -139,8 +139,10 @@ impl SketchApp {
                 );
                 let stroke_pixels = self.renderer.verification_pixels();
                 let (changed_pixels, strongest_contrast) = blank_pixels
-                    .chunks_exact(4)
-                    .zip(stroke_pixels.chunks_exact(4))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(stroke_pixels.as_chunks::<4>().0)
                     .filter_map(|(blank, stroke)| {
                         let delta = blank[..3]
                             .iter()
@@ -222,7 +224,7 @@ impl SketchApp {
                     image::ColorType::Rgba8,
                 )
                 .expect("opening house GPU render is saved");
-                assert!(opening.chunks_exact(4).any(|pixel| pixel[3] > 0));
+                assert!(opening.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
                 self.camera.yaw += 0.4;
                 self.camera.pitch -= 0.08;
                 self.renderer.invalidate();
@@ -238,8 +240,10 @@ impl SketchApp {
                 )
                 .expect("orbited house GPU render is saved");
                 let changed_pixels = opening
-                    .chunks_exact(4)
-                    .zip(orbited.chunks_exact(4))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(orbited.as_chunks::<4>().0)
                     .filter(|(before, after)| {
                         before[..3]
                             .iter()

@@ -121,7 +121,9 @@ impl LoftSurface {
     pub fn frame(&self, u: f32, v: f32) -> (Vec3, Vec3) {
         let (along, across) = self.local_derivatives(u.clamp(0.0, 1.0), v.clamp(0.0, 1.0));
         let tangent = along.normalize_or_zero();
-        let normal = tangent.cross(across.normalize_or_zero()).normalize_or_zero();
+        let normal = tangent
+            .cross(across.normalize_or_zero())
+            .normalize_or_zero();
         (self.rotation * tangent, self.rotation * normal)
     }
 

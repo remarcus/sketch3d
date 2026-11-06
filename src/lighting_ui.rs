@@ -88,17 +88,33 @@ impl SketchApp {
                 ui.separator();ui.small("Local light settings save with the drawing. Directional lighting and ground remain presentation settings. The ground is not paintable or selectable; use a drawing guide for ink.");
             });
         if local_light.enabled && self.last_canvas_rect.is_positive() {
-            if let Some((screen, _)) = crate::gizmo::project(&self.camera, self.last_canvas_rect, local_light.position) {
+            if let Some((screen, _)) =
+                crate::gizmo::project(&self.camera, self.last_canvas_rect, local_light.position)
+            {
                 egui::Area::new(egui::Id::new("local-point-light-handle"))
                     .order(egui::Order::Foreground)
                     .fixed_pos(screen - egui::vec2(10.0, 10.0))
                     .show(ctx, |ui| {
-                        let response = ui.add(egui::Button::new("✦").fill(egui::Color32::from_rgb(255, 184, 74)).sense(egui::Sense::click_and_drag()));
-                        response.clone().on_hover_text("Drag to move the local light in the camera-facing plane.");
-                        if response.drag_started() { self.local_light_drag_before = Some(self.doc.local_light); }
+                        let response = ui.add(
+                            egui::Button::new("✦")
+                                .fill(egui::Color32::from_rgb(255, 184, 74))
+                                .sense(egui::Sense::click_and_drag()),
+                        );
+                        response.clone().on_hover_text(
+                            "Drag to move the local light in the camera-facing plane.",
+                        );
+                        if response.drag_started() {
+                            self.local_light_drag_before = Some(self.doc.local_light);
+                        }
                         if response.dragged() {
                             if let Some(pointer) = response.interact_pointer_pos() {
-                                if let Some(position) = crate::gizmo::plane_hit(&self.camera, self.last_canvas_rect, pointer, local_light.position, self.camera.basis().2) {
+                                if let Some(position) = crate::gizmo::plane_hit(
+                                    &self.camera,
+                                    self.last_canvas_rect,
+                                    pointer,
+                                    local_light.position,
+                                    self.camera.basis().2,
+                                ) {
                                     local_light.position = position;
                                     self.doc.local_light.position = position;
                                     self.renderer.invalidate();
@@ -122,7 +138,10 @@ impl SketchApp {
         if local_light != self.doc.local_light {
             let before = self.doc.local_light;
             self.doc.local_light = local_light;
-            self.undo.push(Edit::LocalLight { before, after: local_light });
+            self.undo.push(Edit::LocalLight {
+                before,
+                after: local_light,
+            });
             self.redo.clear();
             self.renderer.invalidate();
             self.dirty = true;

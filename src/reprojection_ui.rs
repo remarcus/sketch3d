@@ -195,7 +195,10 @@ impl SketchApp {
             let model_target = matches!(draft.target, TargetChoice::ObjReference(_));
             if model_target {
                 changed |= ui
-                    .checkbox(&mut draft.attach_to_model, "Attach projected strokes to model")
+                    .checkbox(
+                        &mut draft.attach_to_model,
+                        "Attach projected strokes to model",
+                    )
                     .changed();
             }
             let attach = model_target && draft.attach_to_model;
@@ -303,16 +306,14 @@ impl SketchApp {
                     TargetChoice::SavedCurvedGuide(id) => {
                         draft.rebuild_on_curved_guide(doc, id, rect)
                     }
-                    TargetChoice::ObjReference(id) => {
-                        rebuild_model_preview(
-                            draft,
-                            doc,
-                            &self.obj_reference_models,
-                            &mut self.obj_surface_indices,
-                            id,
-                            rect,
-                        )
-                    }
+                    TargetChoice::ObjReference(id) => rebuild_model_preview(
+                        draft,
+                        doc,
+                        &self.obj_reference_models,
+                        &mut self.obj_surface_indices,
+                        id,
+                        rect,
+                    ),
                     _ => draft
                         .target_plane(doc, active_plane)
                         .and_then(|plane| draft.rebuild(plane, rect)),

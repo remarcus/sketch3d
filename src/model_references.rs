@@ -22,7 +22,10 @@ pub struct ModelInkAnchor {
 
 impl From<crate::obj_mesh_index::ObjMeshHit> for ModelInkAnchor {
     fn from(hit: crate::obj_mesh_index::ObjMeshHit) -> Self {
-        Self { triangle: hit.triangle_index, barycentric: hit.barycentric }
+        Self {
+            triangle: hit.triangle_index,
+            barycentric: hit.barycentric,
+        }
     }
 }
 
@@ -44,7 +47,9 @@ impl ModelInkAttachment {
 
 impl crate::document::Stroke {
     pub fn attached_model(&self) -> Option<u64> {
-        self.model_surface.as_ref().and_then(|patch| patch.attachment.as_ref())
+        self.model_surface
+            .as_ref()
+            .and_then(|patch| patch.attachment.as_ref())
             .map(|attachment| attachment.model_id)
             .or_else(|| Some(self.fill.as_ref()?.mesh.as_ref()?.source?.model_id))
     }
@@ -69,10 +74,18 @@ pub fn update_attached_ink(
     let mut before = Vec::new();
     let mut after = Vec::new();
     for (index, stroke) in document.strokes.iter().enumerate() {
-        let Some(id) = stroke.attached_model() else { continue };
-        let Some(old) = previous_models.iter().find(|model| model.id == id) else { continue };
+        let Some(id) = stroke.attached_model() else {
+            continue;
+        };
+        let Some(old) = previous_models.iter().find(|model| model.id == id) else {
+            continue;
+        };
         let mut updated = stroke.clone();
-        match document.model_references.iter().find(|model| model.id == id) {
+        match document
+            .model_references
+            .iter()
+            .find(|model| model.id == id)
+        {
             Some(new) if old.asset == new.asset => {
                 let rotation = (new.rotation * old.rotation.inverse()).normalize();
                 let scale = new.scale / old.scale;

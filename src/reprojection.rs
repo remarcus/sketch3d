@@ -225,7 +225,8 @@ impl Draft {
             return Err(error);
         }
         if self.attach_to_model
-            && (resource.locked || model.source_format != crate::obj_reference::ObjSourceFormat::Obj)
+            && (resource.locked
+                || model.source_format != crate::obj_reference::ObjSourceFormat::Obj)
         {
             let error = "Attachment requires a visible, unlocked OBJ reference.";
             self.reset_failed_preview(error);
@@ -576,11 +577,7 @@ impl Draft {
                 let world_normal = (target.resource.rotation * hit.normal)
                     .try_normalize()
                     .ok_or("OBJ surface returned an invalid normal")?;
-                Ok(Some((
-                    world_position,
-                    world_normal,
-                    Some(hit),
-                )))
+                Ok(Some((world_position, world_normal, Some(hit))))
             }
         }
     }
@@ -589,7 +586,10 @@ impl Draft {
         if self.preview == self.before {
             return Err("Reprojection produces no changes.".into());
         }
-        if self.preview.iter().any(|stroke| stroke.attached_model().is_some())
+        if self
+            .preview
+            .iter()
+            .any(|stroke| stroke.attached_model().is_some())
             && (!doc.animation.is_empty() || doc.animation.two_bone_rig.is_some())
         {
             return Err("Model attachment requires static artwork.".into());

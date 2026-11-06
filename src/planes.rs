@@ -201,8 +201,7 @@ impl SketchApp {
             &self.doc.guide_resources,
             self.doc.active_guide,
             self.plane_picker.hovered_guide.map(|(id, _)| id),
-            active_color,
-            inactive_color,
+            [active_color, inactive_color],
         );
         if let Some((id, position)) = self.plane_picker.hovered_guide {
             if let Some(guide) = self.doc.guide_resources.iter().find(|guide| guide.id == id) {
@@ -505,8 +504,7 @@ fn draw_saved_plane_overlays(
     guides: &[crate::document::guide_resources::GuideResource],
     active_guide: Option<u64>,
     hovered_guide: Option<u64>,
-    active_color: Color32,
-    inactive_color: Color32,
+    [active_color, inactive_color]: [Color32; 2],
 ) {
     // Saved planes are independent guide resources, so display every visible
     // planar one at once. Curved guides keep their dedicated rendering path.
@@ -545,6 +543,84 @@ fn plane_grid_extent(camera: &Camera, rect: Rect, origin: Vec3) -> Option<f32> {
     let world_per_pixel = camera.world_per_pixel(origin, rect.height());
     (world_per_pixel.is_finite() && world_per_pixel > 0.0)
         .then(|| (world_per_pixel * 55.0).clamp(0.25, 500.0))
+}
+
+fn draw_plane_grid(
+    painter: &egui::Painter,
+    camera: &Camera,
+    rect: Rect,
+    origin: Vec3,
+    u: Vec3,
+    v: Vec3,
+    style: PlaneGridStyle<'_>,
+) {
+    if !origin.is_finite() || !u.is_finite() || !v.is_finite() {
+        return;
+    }
+    let Some(extent) = plane_grid_extent(camera, rect, origin) else {
+        return;
+    };
+    // Keep the guide footprint legible across zoom levels while bounding the
+    // world-space coordinates sent through projection.
+    let corners = [
+        origin - u * extent - v * extent,
+        origin + u * extent - v * extent,
+        origin + u * extent + v * extent,
+        origin - u * extent + v * extent,
+    ];
+    let Some(projected) = corners
+        .into_iter()
+        .map(|point| gizmo::project(camera, rect, point).map(|(screen, _)| screen))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return;
+    };
+
+    let edge_width = if style.active { 1.8_f32 } else { 1.0_f32 };
+    let edge = egui::Stroke::new(edge_width, style.color);
+    for index in 0..4 {
+        painter.line_segment([projected[index], projected[(index + 1) % 4]], edge);
+    }
+
+    // Three interior divisions in each direction make plane orientation
+    // visible without flooding the viewport with a dense infinite grid.
+    let grid_color = Color32::from_rgba_unmultiplied(
+        style.color.r(),
+        style.color.g(),
+        style.color.b(),
+        if style.active { 90 } else { 44 },
+    );
+    let grid = egui::Stroke::new(0.8_f32, grid_color);
+    for step in 1..4 {
+        let offset = -extent + extent * 0.5 * step as f32;
+        let u_start = origin - u * extent + v * offset;
+        let u_end = origin + u * extent + v * offset;
+        let v_start = origin + u * offset - v * extent;
+        let v_end = origin + u * offset + v * extent;
+        if let (Some((a, _)), Some((b, _))) = (
+            gizmo::project(camera, rect, u_start),
+            gizmo::project(camera, rect, u_end),
+        ) {
+            painter.line_segment([a, b], grid);
+        }
+        if let (Some((a, _)), Some((b, _))) = (
+            gizmo::project(camera, rect, v_start),
+            gizmo::project(camera, rect, v_end),
+        ) {
+            painter.line_segment([a, b], grid);
+        }
+    }
+
+    if let Some((screen, _)) = gizmo::project(camera, rect, origin) {
+        painter.circle_filled(screen, if style.active { 4.0 } else { 2.5 }, style.color);
+        painter.text(
+            screen + egui::vec2(7.0, -8.0),
+            egui::Align2::LEFT_BOTTOM,
+            style.label,
+            egui::FontId::proportional(if style.active { 12.0 } else { 10.0 }),
+            style.color,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -718,8 +794,10 @@ mod guide_picker_tests {
                     &guides,
                     Some(1),
                     None,
-                    Color32::from_rgb(60, 180, 240),
-                    Color32::from_rgba_unmultiplied(220, 140, 100, 95),
+                    [
+                        Color32::from_rgb(60, 180, 240),
+                        Color32::from_rgba_unmultiplied(220, 140, 100, 95),
+                    ],
                 );
             },
         );
@@ -742,83 +820,5 @@ mod guide_picker_tests {
         assert!(line_widths.iter().filter(|width| **width == 1.0).count() >= 4);
         assert!(line_widths.iter().filter(|width| **width == 0.8).count() >= 12);
         assert!(output.shapes.iter().all(|shape| shape.clip_rect == rect));
-    }
-}
-
-fn draw_plane_grid(
-    painter: &egui::Painter,
-    camera: &Camera,
-    rect: Rect,
-    origin: Vec3,
-    u: Vec3,
-    v: Vec3,
-    style: PlaneGridStyle<'_>,
-) {
-    if !origin.is_finite() || !u.is_finite() || !v.is_finite() {
-        return;
-    }
-    let Some(extent) = plane_grid_extent(camera, rect, origin) else {
-        return;
-    };
-    // Keep the guide footprint legible across zoom levels while bounding the
-    // world-space coordinates sent through projection.
-    let corners = [
-        origin - u * extent - v * extent,
-        origin + u * extent - v * extent,
-        origin + u * extent + v * extent,
-        origin - u * extent + v * extent,
-    ];
-    let Some(projected) = corners
-        .into_iter()
-        .map(|point| gizmo::project(camera, rect, point).map(|(screen, _)| screen))
-        .collect::<Option<Vec<_>>>()
-    else {
-        return;
-    };
-
-    let edge_width = if style.active { 1.8_f32 } else { 1.0_f32 };
-    let edge = egui::Stroke::new(edge_width, style.color);
-    for index in 0..4 {
-        painter.line_segment([projected[index], projected[(index + 1) % 4]], edge);
-    }
-
-    // Three interior divisions in each direction make plane orientation
-    // visible without flooding the viewport with a dense infinite grid.
-    let grid_color = Color32::from_rgba_unmultiplied(
-        style.color.r(),
-        style.color.g(),
-        style.color.b(),
-        if style.active { 90 } else { 44 },
-    );
-    let grid = egui::Stroke::new(0.8_f32, grid_color);
-    for step in 1..4 {
-        let offset = -extent + extent * 0.5 * step as f32;
-        let u_start = origin - u * extent + v * offset;
-        let u_end = origin + u * extent + v * offset;
-        let v_start = origin + u * offset - v * extent;
-        let v_end = origin + u * offset + v * extent;
-        if let (Some((a, _)), Some((b, _))) = (
-            gizmo::project(camera, rect, u_start),
-            gizmo::project(camera, rect, u_end),
-        ) {
-            painter.line_segment([a, b], grid);
-        }
-        if let (Some((a, _)), Some((b, _))) = (
-            gizmo::project(camera, rect, v_start),
-            gizmo::project(camera, rect, v_end),
-        ) {
-            painter.line_segment([a, b], grid);
-        }
-    }
-
-    if let Some((screen, _)) = gizmo::project(camera, rect, origin) {
-        painter.circle_filled(screen, if style.active { 4.0 } else { 2.5 }, style.color);
-        painter.text(
-            screen + egui::vec2(7.0, -8.0),
-            egui::Align2::LEFT_BOTTOM,
-            style.label,
-            egui::FontId::proportional(if style.active { 12.0 } else { 10.0 }),
-            style.color,
-        );
     }
 }

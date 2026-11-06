@@ -397,6 +397,10 @@ enum LineArtCommand {
     SetLive(u64, Option<crate::model_line_art::Settings>),
     BakeLive(u64),
 }
+#[path = "hatch_ui.rs"]
+mod hatch_ui;
+#[path = "junction_edit_ui.rs"]
+mod junction_edit_ui;
 #[path = "palette_ui.rs"]
 mod palette_ui;
 #[path = "partial_eraser_ui.rs"]
@@ -411,10 +415,6 @@ mod planes;
 pub(crate) mod png_export_ui;
 #[path = "point_edit_ui.rs"]
 mod point_edit_ui;
-#[path = "junction_edit_ui.rs"]
-mod junction_edit_ui;
-#[path = "hatch_ui.rs"]
-mod hatch_ui;
 #[path = "presentation_checks.rs"]
 mod presentation_checks;
 #[path = "presentation_ui.rs"]
@@ -3374,15 +3374,13 @@ impl SketchApp {
             }
             _ => None,
         });
-        let saved_guide_hit = saved_geometry
-            .as_ref()
-            .and_then(|geometry| {
-                geometry.clone().hit(origin, direction).filter(|&world| {
-                    !self.attach_drawn_strokes
-                        || !geometry.supports_parametric_attachment()
-                        || geometry.attachment_coordinates(world).is_some()
-                })
-            });
+        let saved_guide_hit = saved_geometry.as_ref().and_then(|geometry| {
+            geometry.clone().hit(origin, direction).filter(|&world| {
+                !self.attach_drawn_strokes
+                    || !geometry.supports_parametric_attachment()
+                    || geometry.attachment_coordinates(world).is_some()
+            })
+        });
         let saved_surface = self.saved_guide_surface();
         let saved_guide_frame = saved_guide_hit.and_then(|world| self.saved_guide_frame(world));
         let unsupported_texture_surface = if self.doc.active_guide.is_some() {
@@ -3484,7 +3482,8 @@ impl SketchApp {
                 pressure_samples_available,
                 ..texture
             };
-            let guide_attachment = self.attach_drawn_strokes
+            let guide_attachment = self
+                .attach_drawn_strokes
                 .then(|| self.drawn_guide_attachment())
                 .flatten();
             if self.attach_drawn_strokes && guide_attachment.is_none() {
@@ -3678,8 +3677,7 @@ impl SketchApp {
             && model.source_format == crate::obj_reference::ObjSourceFormat::Obj
             && self.doc.animation.is_empty()
             && self.doc.animation.two_bone_rig.is_none()
-            && self.brush.texture.anchor_mode
-                != crate::texture::TextureAnchorMode::CapturedPlanar
+            && self.brush.texture.anchor_mode != crate::texture::TextureAnchorMode::CapturedPlanar
             && !self.brush.flow.enabled;
         let contact_patch = if capture_model_surface {
             match self
@@ -3860,7 +3858,9 @@ impl SketchApp {
                 {
                     stroke.points.pop();
                     self.status = "Stroke reached its airbrush, dab, strand, or tube-profile geometry limit; further input was ignored.".into();
-                } else if let Some(attachment) = stroke.model_surface.as_mut()
+                } else if let Some(attachment) = stroke
+                    .model_surface
+                    .as_mut()
                     .and_then(|surface| surface.attachment.as_mut())
                 {
                     attachment.anchors.push(hit.into());
@@ -6730,7 +6730,11 @@ impl SketchApp {
         }
         if self.junction_edit.is_some() {
             self.junction_pointer(
-                pos, pressure, tilt, rect, if begin { Phase::Down } else { Phase::Move },
+                pos,
+                pressure,
+                tilt,
+                rect,
+                if begin { Phase::Down } else { Phase::Move },
             );
             return;
         }
@@ -6944,7 +6948,8 @@ impl SketchApp {
             }
             let inside = inside_canvas(sample.position);
             let previous = self.pen_previous.replace(sample.position);
-            if self.redraw_contact_active() && (blocked || space || sample.barrel || sample.eraser) {
+            if self.redraw_contact_active() && (blocked || space || sample.barrel || sample.eraser)
+            {
                 self.cancel_redraw_contact();
             }
             if (self.junction_edit.is_some() || self.hatch_draft.is_some()) && sample.eraser {
@@ -6986,7 +6991,9 @@ impl SketchApp {
                 } else {
                     self.pen_barrel_contact
                 };
-                if contact == Some(true) && (self.junction_edit.is_some() || self.hatch_draft.is_some()) {
+                if contact == Some(true)
+                    && (self.junction_edit.is_some() || self.hatch_draft.is_some())
+                {
                     continue;
                 }
                 if contact == Some(true) {

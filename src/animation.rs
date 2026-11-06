@@ -385,7 +385,9 @@ impl ArtworkAnimation {
         match (before, after) {
             (None, Some(next)) => Some(next.view),
             (Some(previous), None) => Some(previous.view),
-            (Some(previous), Some(next)) if previous.view.projection != next.view.projection => Some(previous.view),
+            (Some(previous), Some(next)) if previous.view.projection != next.view.projection => {
+                Some(previous.view)
+            }
             (Some(previous), Some(next)) => {
                 let t = (frame - previous.frame) as f32 / (next.frame - previous.frame) as f32;
                 Some(previous.view.interpolate(next.view, t))
@@ -394,26 +396,43 @@ impl ArtworkAnimation {
         }
     }
 
-    pub fn set_camera_key(&self, frame: u32, view: crate::camera_bookmarks::CameraView) -> Result<Self, String> {
-        if frame < self.range_start || frame > self.range_end { return Err("Camera key must be inside the shot range".into()); }
+    pub fn set_camera_key(
+        &self,
+        frame: u32,
+        view: crate::camera_bookmarks::CameraView,
+    ) -> Result<Self, String> {
+        if frame < self.range_start || frame > self.range_end {
+            return Err("Camera key must be inside the shot range".into());
+        }
         view.validate()?;
         let mut next = self.clone();
         if let Some(key) = next.camera_keys.iter_mut().find(|key| key.frame == frame) {
             key.view = view;
         } else {
-            if next.camera_keys.len() >= MAX_KEYFRAMES { return Err("Shot already contains 120 camera keys".into()); }
+            if next.camera_keys.len() >= MAX_KEYFRAMES {
+                return Err("Shot already contains 120 camera keys".into());
+            }
             let index = next.camera_keys.partition_point(|key| key.frame < frame);
-            next.camera_keys.insert(index, CameraAnimationKey { frame, view });
+            next.camera_keys
+                .insert(index, CameraAnimationKey { frame, view });
         }
         next.current_frame = frame;
         Ok(next)
     }
 
     pub fn move_camera_key(&self, from: u32, to: u32) -> Result<Self, String> {
-        if to < self.range_start || to > self.range_end { return Err("Camera key destination is outside the shot range".into()); }
+        if to < self.range_start || to > self.range_end {
+            return Err("Camera key destination is outside the shot range".into());
+        }
         let mut next = self.clone();
-        if next.camera_keys.iter().any(|key| key.frame == to) { return Err("A camera key already exists at the destination".into()); }
-        let index = next.camera_keys.iter().position(|key| key.frame == from).ok_or("Camera key no longer exists")?;
+        if next.camera_keys.iter().any(|key| key.frame == to) {
+            return Err("A camera key already exists at the destination".into());
+        }
+        let index = next
+            .camera_keys
+            .iter()
+            .position(|key| key.frame == from)
+            .ok_or("Camera key no longer exists")?;
         let mut key = next.camera_keys.remove(index);
         key.frame = to;
         let index = next.camera_keys.partition_point(|entry| entry.frame < to);
@@ -423,7 +442,11 @@ impl ArtworkAnimation {
 
     pub fn delete_camera_key(&self, frame: u32) -> Result<Self, String> {
         let mut next = self.clone();
-        let index = next.camera_keys.iter().position(|key| key.frame == frame).ok_or("There is no camera key at this frame")?;
+        let index = next
+            .camera_keys
+            .iter()
+            .position(|key| key.frame == frame)
+            .ok_or("There is no camera key at this frame")?;
         next.camera_keys.remove(index);
         Ok(next)
     }
@@ -451,7 +474,9 @@ impl ArtworkAnimation {
                 || key.frame > self.range_end
                 || previous_camera.is_some_and(|frame| frame >= key.frame)
             {
-                return Err("Camera keys must be ordered, unique, and inside the shot range".into());
+                return Err(
+                    "Camera keys must be ordered, unique, and inside the shot range".into(),
+                );
             }
             key.view.validate()?;
             previous_camera = Some(key.frame);
@@ -595,7 +620,10 @@ impl ArtworkAnimation {
                 let index = index.saturating_sub(1);
                 let key = &track.keyframes[index];
                 let end = key.frame.saturating_add(key.exposure).min(
-                    track.keyframes.get(index + 1).map_or(self.range_end + 1, |next| next.frame),
+                    track
+                        .keyframes
+                        .get(index + 1)
+                        .map_or(self.range_end + 1, |next| next.frame),
                 );
                 if frame < end {
                     strokes.extend(key.strokes.iter().cloned());
@@ -976,9 +1004,15 @@ impl ArtworkAnimation {
         interpolation: LayerInterpolation,
     ) -> Result<Self, String> {
         let mut next = self.clone();
-        let track = next.layer_tracks.iter_mut().find(|track| track.layer_id == layer_id)
+        let track = next
+            .layer_tracks
+            .iter_mut()
+            .find(|track| track.layer_id == layer_id)
             .ok_or("Layer has no animation track")?;
-        let index = track.keyframes.iter().position(|key| key.frame == frame)
+        let index = track
+            .keyframes
+            .iter()
+            .position(|key| key.frame == frame)
             .ok_or("Layer key no longer exists")?;
         let key = &track.keyframes[index];
         let Some(following) = track.keyframes.get(index + 1) else {
@@ -992,7 +1026,10 @@ impl ArtworkAnimation {
                 return Err("Reduce the held exposure to leave an interval to interpolate".into());
             }
             if interpolate_compatible(&key.strokes, &following.strokes, 0.5).is_none() {
-                return Err("These poses have incompatible stroke identity, appearance, or sample topology".into());
+                return Err(
+                    "These poses have incompatible stroke identity, appearance, or sample topology"
+                        .into(),
+                );
             }
         }
         track.keyframes[index].interpolation = interpolation;
@@ -1000,50 +1037,76 @@ impl ArtworkAnimation {
     }
 
     pub fn layer_interpolation_issue(&self, layer_id: u64, frame: u32) -> Option<&'static str> {
-        let track = self.layer_tracks.iter().find(|track| track.layer_id == layer_id)?;
+        let track = self
+            .layer_tracks
+            .iter()
+            .find(|track| track.layer_id == layer_id)?;
         let index = track.keyframes.iter().position(|key| key.frame == frame)?;
         let key = &track.keyframes[index];
-        let Some(next) = track.keyframes.get(index + 1) else { return Some("No following pose exists on this layer."); };
-        if key.strokes.is_empty() || next.strokes.is_empty() { return Some("Blank exposures stay held."); }
-        if key.frame.saturating_add(key.exposure) >= next.frame { return Some("Reduce the held exposure to leave an interval to interpolate."); }
-        if interpolate_compatible(&key.strokes, &next.strokes, 0.5).is_none() { return Some("Incompatible stroke identity, appearance, or sample topology keeps this interval held."); }
+        let Some(next) = track.keyframes.get(index + 1) else {
+            return Some("No following pose exists on this layer.");
+        };
+        if key.strokes.is_empty() || next.strokes.is_empty() {
+            return Some("Blank exposures stay held.");
+        }
+        if key.frame.saturating_add(key.exposure) >= next.frame {
+            return Some("Reduce the held exposure to leave an interval to interpolate.");
+        }
+        if interpolate_compatible(&key.strokes, &next.strokes, 0.5).is_none() {
+            return Some("Incompatible stroke identity, appearance, or sample topology keeps this interval held.");
+        }
         None
     }
 
-    pub fn insert_interpolated_layer_key(
-        &self,
-        layer_id: u64,
-        frame: u32,
-    ) -> Result<Self, String> {
-        let track = self.layer_tracks.iter().find(|track| track.layer_id == layer_id)
+    pub fn insert_interpolated_layer_key(&self, layer_id: u64, frame: u32) -> Result<Self, String> {
+        let track = self
+            .layer_tracks
+            .iter()
+            .find(|track| track.layer_id == layer_id)
             .ok_or("Layer has no animation track")?;
         if track.keyframes.iter().any(|key| key.frame == frame) {
             return Err("A layer key already exists at the playhead".into());
         }
         let following_index = track.keyframes.partition_point(|key| key.frame < frame);
-        let Some(previous) = following_index.checked_sub(1).map(|index| &track.keyframes[index]) else {
+        let Some(previous) = following_index
+            .checked_sub(1)
+            .map(|index| &track.keyframes[index])
+        else {
             return Err("The playhead is outside an interpolated pose interval".into());
         };
         let Some(following) = track.keyframes.get(following_index) else {
             return Err("The playhead is outside an interpolated pose interval".into());
         };
         if previous.interpolation == LayerInterpolation::Hold
-            || frame <= previous.frame.saturating_add(previous.exposure).saturating_sub(1)
+            || frame
+                <= previous
+                    .frame
+                    .saturating_add(previous.exposure)
+                    .saturating_sub(1)
             || previous.strokes.is_empty()
             || following.strokes.is_empty()
             || interpolate_compatible(&previous.strokes, &following.strokes, 0.5).is_none()
         {
             return Err("The playhead is in a held, blank, or incompatible interval".into());
         }
-        if self.two_bone_rig.as_ref().is_some_and(|rig| rig.layer_id == layer_id) {
+        if self
+            .two_bone_rig
+            .as_ref()
+            .is_some_and(|rig| rig.layer_id == layer_id)
+        {
             return Err("Remove the rig prototype before inserting a drawing key".into());
         }
         let mode = previous.interpolation;
-        let mut resolved = self.resolve(frame).ok_or("Cannot evaluate the interpolated pose")?;
+        let mut resolved = self
+            .resolve(frame)
+            .ok_or("Cannot evaluate the interpolated pose")?;
         resolved.retain(|stroke| stroke.layer_id == layer_id);
         let base = self.base_strokes.as_deref().unwrap_or_default();
         let mut next = self.set_layer_keyframe(frame, layer_id, &resolved, base)?;
-        let inserted = next.layer_tracks.iter_mut().find(|track| track.layer_id == layer_id)
+        let inserted = next
+            .layer_tracks
+            .iter_mut()
+            .find(|track| track.layer_id == layer_id)
             .and_then(|track| track.keyframes.iter_mut().find(|key| key.frame == frame))
             .ok_or("Inserted layer key could not be found")?;
         inserted.exposure = 1;
@@ -1488,13 +1551,18 @@ mod tests {
             ..ArtworkAnimation::default()
         };
         animation = animation
-            .set_layer_keyframe(0, 2, &[animated_stroke.clone()], &[static_stroke.clone()])
+            .set_layer_keyframe(
+                0,
+                2,
+                &[animated_stroke.clone()],
+                std::slice::from_ref(&static_stroke),
+            )
             .unwrap();
         animation = animation.set_layer_exposure(2, 0, 3).unwrap();
         let mut later_stroke = animated_stroke.clone();
         later_stroke.points[0].position.x = 5.0;
         animation = animation
-            .set_layer_keyframe(5, 2, &[later_stroke], &[static_stroke.clone()])
+            .set_layer_keyframe(5, 2, &[later_stroke], std::slice::from_ref(&static_stroke))
             .unwrap()
             .set_layer_exposure(2, 5, 4)
             .unwrap();

@@ -377,12 +377,23 @@ impl SketchApp {
     fn mesh_fill_resource(
         &mut self,
         id: u64,
-    ) -> Result<(&crate::document::model_references::ObjReferenceResource,
-                 &crate::obj_reference::ObjModel, &crate::obj_mesh_index::ObjMeshIndex), String> {
-        let resource = self.doc.model_references.iter()
+    ) -> Result<
+        (
+            &crate::document::model_references::ObjReferenceResource,
+            &crate::obj_reference::ObjModel,
+            &crate::obj_mesh_index::ObjMeshIndex,
+        ),
+        String,
+    > {
+        let resource = self
+            .doc
+            .model_references
+            .iter()
             .find(|resource| resource.id == id && resource.visible && !resource.locked)
             .ok_or("The fill's OBJ reference is missing, hidden, or locked")?;
-        let model = self.obj_reference_models.get(&id)
+        let model = self
+            .obj_reference_models
+            .get(&id)
             .filter(|model| model.source_format == crate::obj_reference::ObjSourceFormat::Obj)
             .ok_or("The fill's OBJ reference is not loaded")?;
         let index = match self.obj_surface_indices.entry(id) {
@@ -402,8 +413,12 @@ impl SketchApp {
         let (origin, direction) = crate::gizmo::ray(&self.camera, rect, pos);
         let (resource, model, index) = self.mesh_fill_resource(id)?;
         let inverse = resource.rotation.inverse();
-        let hit = index.hit(model, inverse * (origin - resource.center) / resource.scale,
-            inverse * direction / resource.scale)
+        let hit = index
+            .hit(
+                model,
+                inverse * (origin - resource.center) / resource.scale,
+                inverse * direction / resource.scale,
+            )
             .ok_or("Click inside a closed attached outline on the active OBJ")?;
         let world = resource.center + resource.rotation * (hit.position * resource.scale);
         let normal = (resource.rotation * hit.normal).normalize_or_zero();
@@ -426,14 +441,22 @@ impl SketchApp {
             point_thickness: None,
             point_colors: None,
             modifiers: None,
-            fill: Some(PlanarFill { offset: 0.0, mesh: Some(mesh), ..Default::default() }),
+            fill: Some(PlanarFill {
+                offset: 0.0,
+                mesh: Some(mesh),
+                ..Default::default()
+            }),
             group_id: None,
             layer_id,
             id: 0,
             color: self.color,
             gradient: None,
             radius: 0.025,
-            brush: Brush { normal, tangent, ..Default::default() },
+            brush: Brush {
+                normal,
+                tangent,
+                ..Default::default()
+            },
             points: contour_points(points),
         };
         polygon::validate(&mark)?;
@@ -451,13 +474,23 @@ impl SketchApp {
         })
     }
 
-    fn solve_mesh_fill(&self, source: MeshFillSource) -> Result<(mesh_fill::MeshFill, Vec<Vec3>), String> {
-        let resource = self.doc.model_references.iter()
+    fn solve_mesh_fill(
+        &self,
+        source: MeshFillSource,
+    ) -> Result<(mesh_fill::MeshFill, Vec<Vec3>), String> {
+        let resource = self
+            .doc
+            .model_references
+            .iter()
             .find(|model| model.id == source.model_id && model.visible && !model.locked)
             .ok_or("The fill's OBJ reference is missing, hidden, or locked")?;
-        let model = self.obj_reference_models.get(&source.model_id)
+        let model = self
+            .obj_reference_models
+            .get(&source.model_id)
             .ok_or("The fill's OBJ reference is not loaded")?;
-        let index = self.obj_surface_indices.get(&source.model_id)
+        let index = self
+            .obj_surface_indices
+            .get(&source.model_id)
             .ok_or("The fill's OBJ surface index is unavailable")?;
         mesh_fill::solve(&self.doc, resource, model, index, source)
     }
@@ -544,7 +577,9 @@ impl SketchApp {
         let Some(mesh) = original.fill.as_ref().and_then(|fill| fill.mesh.as_ref()) else {
             return refreshed_fill(&self.doc, original);
         };
-        let source = mesh.source.ok_or("This mesh fill is detached from its original OBJ")?;
+        let source = mesh
+            .source
+            .ok_or("This mesh fill is detached from its original OBJ")?;
         self.mesh_fill_resource(source.model_id)?;
         let (updated, points) = self.solve_mesh_fill(source)?;
         mesh_fill::replace_geometry(&self.doc, original, updated, contour_points(points))
@@ -1389,7 +1424,8 @@ impl SketchApp {
             {
                 if mesh_target {
                     self.clear_fill_region_draft();
-                    self.status = "Boundary scope changed. Click inside the OBJ outline again.".into();
+                    self.status =
+                        "Boundary scope changed. Click inside the OBJ outline again.".into();
                 } else {
                     self.rebuild_region_preview();
                 }
@@ -1409,17 +1445,19 @@ impl SketchApp {
             {
                 if mesh_target {
                     self.clear_fill_region_draft();
-                    self.status = "Gap tolerance changed. Click inside the OBJ outline again.".into();
+                    self.status =
+                        "Gap tolerance changed. Click inside the OBJ outline again.".into();
                 } else {
                     self.rebuild_region_preview();
                 }
             }
-            if !mesh_target && (self.fills.session.is_some()
-                || self
-                    .fills
-                    .draft
-                    .as_ref()
-                    .is_some_and(|draft| draft.original.is_none()))
+            if !mesh_target
+                && (self.fills.session.is_some()
+                    || self
+                        .fills
+                        .draft
+                        .as_ref()
+                        .is_some_and(|draft| draft.original.is_none()))
             {
                 if self.fills.session.is_none() || self.fills.draw_closing_guides {
                     ui.small(
@@ -1466,7 +1504,9 @@ impl SketchApp {
             ui.label("Click corners on a plane. Click the first corner or press Enter to close and fill. Backspace removes a corner; Escape cancels.");
         }
         if !mesh_target {
-            ui.add(egui::Slider::new(&mut self.fills.offset, 0.0..=0.05).text("Paint behind guide"));
+            ui.add(
+                egui::Slider::new(&mut self.fills.offset, 0.0..=0.05).text("Paint behind guide"),
+            );
             ui.small("Offset follows the captured guide surface and is saved/exported. Zero may cause z-fighting. Fill uses solid color; pressure and brush textures do not apply.");
         }
         let count = self.fills.draft.as_ref().map_or(0, |d| d.mark.points.len());
@@ -1891,8 +1931,12 @@ impl SketchApp {
         let mut mark = draft.mark.clone();
         mark.color = self.color;
         if let Some(mesh) = mark.fill.as_ref().and_then(|fill| fill.mesh.as_ref()) {
-            let Some(source) = mesh.source.filter(|source| Some(source.model_id) == self.active_fill_model()) else {
-                self.status = "The active OBJ changed. Click the outline again to preview a new fill.".into();
+            let Some(source) = mesh
+                .source
+                .filter(|source| Some(source.model_id) == self.active_fill_model())
+            else {
+                self.status =
+                    "The active OBJ changed. Click the outline again to preview a new fill.".into();
                 return;
             };
             let (updated, points) = match self.solve_mesh_fill(source) {
@@ -1907,12 +1951,18 @@ impl SketchApp {
                 let draft = self.fills.draft.as_mut().unwrap();
                 draft.mark.points = points;
                 draft.mark.fill.as_mut().unwrap().mesh = Some(updated);
-                self.status = "The OBJ or outline changed. Review the updated preview before applying.".into();
+                self.status =
+                    "The OBJ or outline changed. Review the updated preview before applying."
+                        .into();
                 return;
             }
-            let triangle_count = self.doc.strokes.iter()
+            let triangle_count = self
+                .doc
+                .strokes
+                .iter()
                 .filter_map(|stroke| stroke.fill.as_ref()?.mesh.as_ref())
-                .map(|mesh| mesh.triangles.len()).sum::<usize>();
+                .map(|mesh| mesh.triangles.len())
+                .sum::<usize>();
             if triangle_count + mesh.triangles.len() > mesh_fill::MAX_DOCUMENT_TRIANGLES {
                 self.status = "Document mesh fill triangle limit reached.".into();
                 return;
@@ -1938,7 +1988,8 @@ impl SketchApp {
                             return FillRegionSource::Cylinder(CylinderFillRegionSource {
                                 guide_id,
                                 seed_angle: surface.angle_origin,
-                                seed_height: (surface.rotation.inverse() * (seed - surface.center)).y,
+                                seed_height: (surface.rotation.inverse() * (seed - surface.center))
+                                    .y,
                                 boundary_layer,
                                 gap_tolerance,
                             });
@@ -2022,8 +2073,7 @@ impl SketchApp {
             && self.active_fill_cylinder().is_none()
             && self.active_fill_model().is_none()
         {
-            self.status =
-                "Fills require a plane guide, saved cylinder, or active OBJ.".into();
+            self.status = "Fills require a plane guide, saved cylinder, or active OBJ.".into();
         } else if p && !ctx.input(|i| i.modifiers.command || i.modifiers.alt) {
             self.cancel_line_tool();
             self.finish();

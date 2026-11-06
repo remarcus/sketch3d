@@ -128,11 +128,24 @@ pub fn shadow_fit(min: Vec3, max: Vec3, lighting: Lighting) -> ShadowFit {
 pub fn local_shadow_fit(min: Vec3, max: Vec3, position: Vec3) -> ShadowFit {
     let center = (min + max) * 0.5;
     let mut direction = (center - position).normalize_or_zero();
-    if direction.length_squared() < 1.0e-6 { direction = Vec3::Z; }
-    let up = if direction.dot(Vec3::Y).abs() > 0.95 { Vec3::Z } else { Vec3::Y };
+    if direction.length_squared() < 1.0e-6 {
+        direction = Vec3::Z;
+    }
+    let up = if direction.dot(Vec3::Y).abs() > 0.95 {
+        Vec3::Z
+    } else {
+        Vec3::Y
+    };
     let view = Mat4::look_to_rh(position, direction, up);
-    let radius = [min.x, max.x].into_iter().flat_map(|x| [min.y, max.y].into_iter().flat_map(move |y| [min.z, max.z].into_iter().map(move |z| Vec3::new(x,y,z))))
-        .map(|point| point.distance(position)).fold(0.5_f32, f32::max);
+    let radius = [min.x, max.x]
+        .into_iter()
+        .flat_map(|x| {
+            [min.y, max.y]
+                .into_iter()
+                .flat_map(move |y| [min.z, max.z].into_iter().map(move |z| Vec3::new(x, y, z)))
+        })
+        .map(|point| point.distance(position))
+        .fold(0.5_f32, f32::max);
     let far = (radius * 1.2).max(0.6);
     ShadowFit {
         matrix: Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.05, far) * view,

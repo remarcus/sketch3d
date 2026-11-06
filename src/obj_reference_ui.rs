@@ -211,7 +211,11 @@ impl SketchApp {
             return;
         }
         let after = self.model_reference_edit_state();
-        self.undo.push(Edit::ModelReferences { before, after, ink: None });
+        self.undo.push(Edit::ModelReferences {
+            before,
+            after,
+            ink: None,
+        });
         self.redo.clear();
         self.dirty = true;
         self.record_recovery_edit_labeled("Change live model line art");
