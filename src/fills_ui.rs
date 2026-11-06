@@ -177,6 +177,157 @@ impl SketchApp {
         );
     }
 
+    pub(super) fn verify_region_scope_and_closing_guide_workflow(&mut self, rect: Rect) {
+        let line = |id, a: Vec3, b: Vec3| Stroke {
+            guide_attachment: None,
+            model_surface: None,
+            curve: None,
+            material: Default::default(),
+            point_thickness: None,
+            point_colors: None,
+            modifiers: None,
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id,
+            color: [0.1, 0.12, 0.16],
+            gradient: None,
+            radius: 0.012,
+            brush: Brush::default(),
+            points: [a, b]
+                .into_iter()
+                .map(|position| Point {
+                    position,
+                    pressure: 1.0,
+                    tilt: None,
+                    time_ms: 0,
+                })
+                .collect(),
+        };
+
+        let original_camera = self.camera;
+        self.camera = Camera::default();
+        self.guide = DrawingPlane::default();
+        self.use_cylinder = false;
+        self.use_revolved = false;
+        self.doc = Document::default();
+        let target = self
+            .planar_drawing_target()
+            .expect("headless fill workflow has a planar target");
+        let origin = target.plane.origin();
+        let (u, v, _) = target.plane.basis();
+        let point = |x: f32, y: f32| origin + u * x + v * y;
+        let boundaries = vec![
+            line(1, point(-1.0, -1.0), point(1.0, -1.0)),
+            line(2, point(1.0, -1.0), point(1.0, 1.0)),
+            line(3, point(1.0, 1.0), point(-1.0, 1.0)),
+            line(4, point(-1.0, 1.0), point(-1.0, 0.1)),
+            line(5, point(-1.0, -0.1), point(-1.0, -1.0)),
+        ];
+        self.doc.strokes = boundaries.clone();
+        self.next_id = 6;
+        self.undo.clear();
+        self.redo.clear();
+        self.selected.clear();
+        self.fills.enabled = true;
+        self.fills.region_mode = true;
+        self.fills.session = self.fill_session_surface();
+        self.fills.draw_closing_guides = true;
+        self.fills.active_layer_boundaries = true;
+        // Screen-space endpoint picking is approximate; use a small world-unit
+        // closure tolerance just as a user can on the fill controls.
+        self.fills.gap_tolerance = 0.001;
+        self.fills.closing_guides.clear();
+        self.fills.closing_start = None;
+        self.fills.draft = None;
+        self.fills.region_anchor = None;
+
+        let camera = self.camera;
+        let screen = |position| crate::gizmo::project(&camera, rect, position).unwrap().0;
+        self.fill_corner(screen(point(-1.0, 0.1)), rect);
+        self.fill_corner(screen(point(-1.0, -0.1)), rect);
+        assert_eq!(self.fills.closing_guides.len(), 1);
+        assert_eq!(
+            self.doc.strokes, boundaries,
+            "guide input never edits source art"
+        );
+        crate::region_fill::find_region(
+            &self.doc,
+            target.plane,
+            origin,
+            self.fills.gap_tolerance,
+            target.half_extent(),
+            Some(1),
+            &self.fills.closing_guides,
+        )
+        .expect("temporary guide closes the planar test boundary");
+
+        self.fills.draw_closing_guides = false;
+        self.fill_corner(screen(origin), rect);
+        assert!(
+            self.fills.draft.is_some(),
+            "closed region previews after guide input: {}; guides {:?}",
+            self.status,
+            self.fills.closing_guides
+        );
+        self.commit_fill();
+        assert_eq!(self.doc.strokes.len(), boundaries.len() + 1);
+        assert_eq!(&self.doc.strokes[..boundaries.len()], boundaries.as_slice());
+        let committed = self.doc.strokes.last().unwrap();
+        assert!(committed.fill.is_some(), "Apply commits an editable fill");
+        assert!(
+            committed.fill.as_ref().unwrap().region_source.is_none(),
+            "temporary-guide fills do not claim a reusable source boundary"
+        );
+        assert_eq!(
+            self.fills.closing_guides.len(),
+            1,
+            "Apply preserves session guides"
+        );
+
+        let pixels = self
+            .renderer
+            .render_png_pixels(
+                &self.doc,
+                &self.camera,
+                [600, 450],
+                [0.12, 0.14, 0.18],
+                crate::lighting::Lighting {
+                    ground: false,
+                    shadows: false,
+                    ..Default::default()
+                },
+            )
+            .expect("temporary-guide fill renders through the production GPU pipeline");
+        image::save_buffer(
+            "verification/temporary-guide-fill-600x450.png",
+            &pixels,
+            600,
+            450,
+            image::ColorType::Rgba8,
+        )
+        .expect("temporary-guide fill GPU preview is saved");
+
+        self.undo();
+        assert_eq!(
+            self.doc.strokes, boundaries,
+            "one undo removes only the fill"
+        );
+        self.fill_corner(screen(origin), rect);
+        assert!(self.fills.draft.is_some());
+        self.clear_fill_region_draft();
+        assert_eq!(
+            self.doc.strokes, boundaries,
+            "Cancel discards the fill draft"
+        );
+        assert!(
+            self.fills.closing_guides.is_empty(),
+            "Cancel clears temporary guides"
+        );
+        assert!(self.fills.session.is_none(), "Cancel ends the fill session");
+        self.camera = original_camera;
+    }
+
     fn fill_session_surface(&self) -> Option<FillSessionSurface> {
         if let Some((id, surface)) = self.active_fill_cylinder() {
             return Some(FillSessionSurface::Cylinder(id, surface));

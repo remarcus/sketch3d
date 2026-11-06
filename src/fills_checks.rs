@@ -109,6 +109,7 @@ impl SketchApp {
         if frame == 3 {
             if std::env::args().any(|argument| argument == "--verify-fills-no-capture") {
                 self.verify_fill_controls_headlessly();
+                self.verify_region_scope_and_closing_guide_workflow(rect);
                 let path = std::env::current_dir()
                     .unwrap()
                     .join("verification/fills-no-capture-report.json");
@@ -126,7 +127,8 @@ impl SketchApp {
                         "the fill renderer pixel checks passed at three camera angles",
                         "named layer masks retain inside coverage and remove outside coverage in GPU pixels",
                         "encoded GIF frames match still-render mask coverage and preserve the masked/unmasked comparison",
-                        "headless egui interactions start fill sessions, switch boundary scope, toggle guide mode, and undo temporary guides"
+                        "headless egui interactions start fill sessions, switch boundary scope, toggle guide mode, and undo temporary guides",
+                        "temporary closing guides preview and apply a scoped fill without changing source art; Apply retains session guides, undo removes one fill, Cancel discards the draft and guides, and the applied fill is rendered through the production GPU pipeline"
                     ],
                     "screen_capture": false,
                     "gpu": self.renderer.adapter
