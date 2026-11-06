@@ -2665,6 +2665,21 @@ mod planar_attachment_tests {
         }
     }
 
+    fn cylinder_guide(radius: f32, height: f32) -> GuideResource {
+        GuideResource {
+            id: 7,
+            name: "Attached cylinder".into(),
+            visible: true,
+            locked: false,
+            geometry: GuideGeometry::Cylinder {
+                center: Vec3::ZERO,
+                rotation: glam::Quat::IDENTITY,
+                radius,
+                height,
+            },
+        }
+    }
+
     #[test]
     fn planar_guide_motion_is_one_undoable_edit_and_survives_reopen_recovery_and_glb() {
         let old_guide = guide(Vec3::ZERO, glam::Quat::IDENTITY);
@@ -2808,5 +2823,120 @@ mod planar_attachment_tests {
         edit.apply(&mut destination, false);
         assert!(destination.guide_resources.is_empty());
         assert!(destination.strokes.is_empty());
+    }
+
+    #[test]
+    fn cylinder_radius_edit_preserves_seam_ink_and_detach_is_reversible_in_place() {
+        let old_guide = cylinder_guide(1.0, 4.0);
+        let new_guide = cylinder_guide(1.2, 4.0);
+        let mut source = attached_stroke();
+        source.points[0].position = Vec3::new(-1.05, -0.2, -0.02);
+        source.points[1].position = Vec3::new(-1.05, 0.2, 0.02);
+        let before_snapshot = vec![(0, source.clone())];
+        let old_frame = attachment_frame(std::slice::from_ref(&old_guide), 7).unwrap();
+        let new_frame = attachment_frame(std::slice::from_ref(&new_guide), 7).unwrap();
+        let after_snapshot = vec![(
+            0,
+            transform_attached_stroke(0, &source, Some(old_frame), Some(new_frame)).unwrap(),
+        )];
+        let mut doc = Document {
+            guide_resources: vec![old_guide.clone()],
+            active_guide: Some(7),
+            strokes: vec![source.clone()],
+            ..Document::default()
+        };
+        let original = serde_json::to_value(&doc).unwrap();
+        let guide_edit = crate::editing::Edit::Guides {
+            before: (vec![old_guide], Some(7), Vec::new(), None, None),
+            after: (vec![new_guide], Some(7), Vec::new(), None, None),
+            ink: Some(Box::new((before_snapshot, after_snapshot.clone()))),
+        };
+        guide_edit.apply(&mut doc, true);
+        let moved = doc.strokes[0].clone();
+        assert_eq!(moved.guide_attachment, Some(7));
+        assert!(
+            (moved.points[0].position.x.hypot(moved.points[0].position.z) - 1.25019).abs() < 1e-4
+        );
+        assert!(
+            (moved.points[1].position.x.hypot(moved.points[1].position.z) - 1.25019).abs() < 1e-4
+        );
+        assert!(moved.points[0].position.distance(moved.points[1].position) < 0.41);
+        assert_eq!(
+            moved
+                .points
+                .iter()
+                .map(|point| (point.pressure, point.time_ms))
+                .collect::<Vec<_>>(),
+            source
+                .points
+                .iter()
+                .map(|point| (point.pressure, point.time_ms))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(moved.brush.normal, source.brush.normal);
+        assert_eq!(moved.brush.tangent, source.brush.tangent);
+
+        guide_edit.apply(&mut doc, false);
+        assert_eq!(serde_json::to_value(&doc).unwrap(), original);
+        guide_edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes[0], after_snapshot[0].1);
+
+        let detach_before = vec![(0, doc.strokes[0].clone())];
+        let mut detached_stroke = doc.strokes[0].clone();
+        detached_stroke.guide_attachment = None;
+        let detach_after = vec![(0, detached_stroke)];
+        let detach = crate::editing::Edit::Change {
+            before: detach_before,
+            after: detach_after,
+        };
+        detach.apply(&mut doc, true);
+        assert_eq!(doc.strokes[0].guide_attachment, None);
+        assert_eq!(
+            doc.strokes[0].points, moved.points,
+            "detaching leaves world-space geometry in place"
+        );
+        detach.apply(&mut doc, false);
+        assert_eq!(doc.strokes[0], moved);
+
+        let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(reopened.strokes[0], moved);
+        let camera = crate::geometry::Camera::default();
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let midpoint = (moved.points[0].position + moved.points[1].position) * 0.5;
+        let cursor = crate::gizmo::project(&camera, rect, midpoint).unwrap().0;
+        assert_eq!(
+            crate::gizmo::pick(&reopened, &camera, rect, cursor),
+            Some(31)
+        );
+
+        let recovery_root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let snapshot = crate::recovery_store::RecoverySnapshot::new(
+            "cylinder-guide-attachment".into(),
+            None,
+            reopened.clone(),
+        );
+        crate::recovery_store::write(recovery_root.path(), &snapshot).unwrap();
+        let recovered =
+            crate::recovery_store::scan(recovery_root.path(), "cylinder-reader").unwrap();
+        assert_eq!(recovered.candidates.len(), 1);
+        assert_eq!(recovered.candidates[0].snapshot.document.strokes[0], moved);
+
+        let export = crate::export::encode(&reopened, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&export.bytes).unwrap();
+        let positions = gltf
+            .meshes()
+            .next()
+            .unwrap()
+            .primitives()
+            .next()
+            .unwrap()
+            .reader(|_| gltf.blob.as_deref())
+            .read_positions()
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert!(positions.iter().any(|position| {
+            let radial = position[0].hypot(position[2]);
+            (1.20..=1.30).contains(&radial)
+        }));
     }
 }
