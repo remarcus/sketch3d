@@ -1095,6 +1095,7 @@ mod tests {
             texture: None,
             holes: Vec::new(),
             cylinder: None,
+            region_source: None,
         });
         filled.points = vec![
             Point {
@@ -2576,6 +2577,7 @@ mod appearance_tests {
             texture: None,
             holes: Vec::new(),
             cylinder: None,
+            region_source: None,
         });
         let filled_before = snapshot(&doc, &ids);
         assert!(appearance_edit(
@@ -2607,6 +2609,7 @@ mod appearance_tests {
                 texture: None,
                 holes: Vec::new(),
                 cylinder: None,
+                region_source: None,
             })
         );
         recolor.apply(&mut doc, false);

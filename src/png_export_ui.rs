@@ -475,6 +475,7 @@ fn append_storefront_details(doc: &mut Document) {
                 texture: None,
                 holes: Vec::new(),
                 cylinder: None,
+                region_source: None,
             }),
             group_id: None,
             layer_id: doc.active_layer,

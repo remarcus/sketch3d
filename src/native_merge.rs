@@ -231,6 +231,18 @@ pub fn prepare_insert(
     for stroke in &mut source.strokes {
         stroke.id = stroke_id_map[&stroke.id];
         stroke.layer_id = layer_map[&stroke.layer_id];
+        if let Some(fill) = stroke.fill.as_mut() {
+            if let Some(region) = fill.region_source.as_mut() {
+                region.seed += offset;
+                region.origin += offset;
+                if let Some(source_layer) = region.boundary_layer {
+                    match layer_map.get(&source_layer) {
+                        Some(&layer) => region.boundary_layer = Some(layer),
+                        None => fill.region_source = None,
+                    }
+                }
+            }
+        }
         stroke.group_id = top_group.or_else(|| stroke.group_id.map(|group| group_map[&group]));
         for point in &mut stroke.points {
             point.position += offset;

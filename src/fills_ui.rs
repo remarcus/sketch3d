@@ -1,12 +1,16 @@
 use super::guide_resource_ui::PlanarTarget;
 use super::*;
-use crate::{document::PlanarFill, polygon};
+use crate::{
+    document::{FillRegionSource, PlanarFill},
+    polygon,
+};
 
 pub(super) struct FillDraft {
     pub mark: Stroke,
     target: PlanarTarget,
     cylinder: Option<(u64, crate::document::CylinderFillSurface)>,
     pub(super) original: Option<Stroke>,
+    refreshing: bool,
     selected_contour: usize,
     selected: usize,
     pub(super) drag: Option<FillPointDrag>,
@@ -92,7 +96,7 @@ impl SketchApp {
         ))
     }
 
-    pub(super) fn begin_fill_contour_edit(&mut self) {
+    pub(super) fn begin_fill_contour_edit(&mut self, refresh: bool) {
         if self.fills.draft.is_some() || self.selected.len() != 1 {
             return;
         }
@@ -131,13 +135,62 @@ impl SketchApp {
             self.status = "The fill's captured plane frame is invalid.".into();
             return;
         };
+        let mut mark = source.clone();
+        if refresh {
+            let Some(region) = source.fill.as_ref().and_then(|fill| {
+                fill.holes
+                    .is_empty()
+                    .then_some(fill.region_source)
+                    .flatten()
+            }) else {
+                self.status = "Refresh requires a planar enclosed fill with a saved seed and no cutouts or temporary closing guides.".into();
+                return;
+            };
+            let Some(captured) = PlanarTarget::from_curve_frame(
+                region.origin,
+                region.normal,
+                region.tangent,
+                region.half_extent,
+            ) else {
+                self.status = "The original fill surface is invalid.".into();
+                return;
+            };
+            if !captured.contains(region.seed)
+                || region
+                    .boundary_layer
+                    .is_some_and(|id| !self.doc.layers.iter().any(|layer| layer.id == id))
+            {
+                self.status = "The original fill seed or boundary layer is unavailable.".into();
+                return;
+            }
+            match crate::region_fill::find_region(
+                &self.doc,
+                captured.plane,
+                region.seed,
+                region.gap_tolerance,
+                region.half_extent,
+                region.boundary_layer,
+                &[],
+            ) {
+                Ok(points) => mark.points = contour_points(points),
+                Err(error) => {
+                    self.status = error;
+                    return;
+                }
+            }
+            if let Err(error) = polygon::triangulate(&mark) {
+                self.status = error;
+                return;
+            }
+        }
         self.finish();
         self.fills.enabled = false;
         self.fills.draft = Some(FillDraft {
-            mark: source.clone(),
+            mark,
             target,
             cylinder: None,
             original: Some(source),
+            refreshing: refresh,
             selected_contour: 0,
             selected: 0,
             drag: None,
@@ -149,13 +202,28 @@ impl SketchApp {
         self.presentation.preferences.layout.inspector_open = true;
         self.presentation.preferences.layout.inspector_tab =
             crate::presentation::InspectorTab::Properties;
-        self.status = "Edit fill contour: drag handles or use numeric coordinates. Apply commits one edit; Escape cancels.".into();
+        self.status = if refresh {
+            "Refreshed fill preview ready. Apply commits one edit. Escape cancels."
+        } else {
+            "Drag fill contour handles or use numeric coordinates. Apply commits one edit. Escape cancels."
+        }.into();
     }
 
     fn fill_contour_controls(&mut self, ui: &mut egui::Ui) {
         let Some(draft) = self.fills.draft.as_mut() else {
             return;
         };
+        if draft.refreshing {
+            ui.heading("Refresh enclosed fill");
+            ui.label("Preview from the original seed and current boundary strokes.");
+            let (apply, cancel) = ui
+                .horizontal(|ui| (ui.button("Apply").clicked(), ui.button("Cancel").clicked()))
+                .inner;
+            if apply || cancel {
+                self.finish_fill_contour_edit(apply);
+            }
+            return;
+        }
         ui.heading("Edit fill contour");
         ui.small("Fill contours use the even-odd rule. Nested cutouts alternate between empty and filled regions.");
         let hole_count = draft.mark.fill.as_ref().map_or(0, |fill| fill.holes.len());
@@ -669,7 +737,7 @@ impl SketchApp {
             .fills
             .draft
             .as_mut()
-            .filter(|draft| draft.original.is_some())
+            .filter(|draft| draft.original.is_some() && !draft.refreshing)
         else {
             return;
         };
@@ -803,7 +871,7 @@ impl SketchApp {
             .fills
             .draft
             .as_mut()
-            .filter(|draft| draft.original.is_some())
+            .filter(|draft| draft.original.is_some() && !draft.refreshing)
         else {
             return;
         };
@@ -1118,26 +1186,27 @@ impl SketchApp {
         let Some(anchor) = self.fills.region_anchor else {
             return;
         };
-        let Some(target) = self
+        let Some(draft) = self
             .fills
             .draft
             .as_ref()
             .filter(|draft| draft.original.is_none())
-            .map(|draft| draft.target)
         else {
             return;
         };
-        let cylinder = self.fills.draft.as_ref().and_then(|draft| draft.cylinder);
-        let region = if let Some((guide_id, surface)) = cylinder {
+        let target = draft.target;
+        let boundary_layer = self
+            .fills
+            .active_layer_boundaries
+            .then_some(draft.mark.layer_id);
+        let region = if let Some((guide_id, surface)) = draft.cylinder {
             crate::region_fill::find_cylinder_region(
                 &self.doc,
                 guide_id,
                 surface,
                 anchor,
                 self.fills.gap_tolerance,
-                self.fills
-                    .active_layer_boundaries
-                    .then_some(self.doc.active_layer),
+                boundary_layer,
                 &self.fills.closing_guides,
             )
         } else {
@@ -1147,24 +1216,14 @@ impl SketchApp {
                 anchor,
                 self.fills.gap_tolerance,
                 target.half_extent(),
-                self.fills
-                    .active_layer_boundaries
-                    .then_some(self.doc.active_layer),
+                boundary_layer,
                 &self.fills.closing_guides,
             )
         };
         match region {
             Ok(points) => {
                 if let Some(draft) = self.fills.draft.as_mut() {
-                    draft.mark.points = points
-                        .into_iter()
-                        .map(|position| Point {
-                            position,
-                            pressure: 1.0,
-                            tilt: None,
-                            time_ms: 0,
-                        })
-                        .collect();
+                    draft.mark.points = contour_points(points);
                     if let Err(error) = polygon::triangulate(&draft.mark) {
                         draft.mark.points.clear();
                         self.status = error;
@@ -1267,6 +1326,7 @@ impl SketchApp {
                             texture: None,
                             holes: Vec::new(),
                             cylinder: cylinder_frame,
+                            region_source: None,
                         }),
                         group_id: None,
                         layer_id: self.doc.active_layer,
@@ -1279,15 +1339,7 @@ impl SketchApp {
                             tangent,
                             ..Default::default()
                         },
-                        points: points
-                            .into_iter()
-                            .map(|position| Point {
-                                position,
-                                pressure: 1.0,
-                                tilt: None,
-                                time_ms: 0,
-                            })
-                            .collect(),
+                        points: contour_points(points),
                     };
                     if let Err(error) = polygon::triangulate(&mark) {
                         self.status = error;
@@ -1298,6 +1350,7 @@ impl SketchApp {
                         target,
                         cylinder,
                         original: None,
+                        refreshing: false,
                         selected_contour: 0,
                         selected: 0,
                         drag: None,
@@ -1371,6 +1424,7 @@ impl SketchApp {
             target,
             cylinder: None,
             original: None,
+            refreshing: false,
             selected_contour: 0,
             selected: 0,
             drag: None,
@@ -1390,6 +1444,7 @@ impl SketchApp {
                     texture: None,
                     holes: Vec::new(),
                     cylinder: None,
+                    region_source: None,
                 }),
                 group_id: None,
                 layer_id: self.doc.active_layer,
@@ -1432,6 +1487,9 @@ impl SketchApp {
             self.finish_fill_contour_edit(true);
             return;
         }
+        if self.fills.region_mode {
+            self.rebuild_region_preview();
+        }
         let Some(draft) = &self.fills.draft else {
             return;
         };
@@ -1448,6 +1506,22 @@ impl SketchApp {
             texture: None,
             holes: Vec::new(),
             cylinder,
+            region_source: self
+                .fills
+                .region_anchor
+                .filter(|_| cylinder.is_none() && self.fills.closing_guides.is_empty())
+                .map(|seed| {
+                    let (tangent, _, normal) = draft.target.plane.basis();
+                    FillRegionSource {
+                        seed,
+                        origin: draft.target.plane.origin(),
+                        normal,
+                        tangent,
+                        half_extent: draft.target.half_extent(),
+                        boundary_layer: self.fills.active_layer_boundaries.then_some(mark.layer_id),
+                        gap_tolerance: self.fills.gap_tolerance,
+                    }
+                }),
         });
         if let Err(error) = polygon::triangulate(&mark) {
             self.status = error;
@@ -1790,6 +1864,18 @@ impl SketchApp {
         self.renderer.lighting.fit_ground(&self.doc);
         self.status="Painted house: editable planar walls/roof and separate outlines. P draws another fill; V selects faces.".into();
     }
+}
+
+fn contour_points(points: Vec<Vec3>) -> Vec<Point> {
+    points
+        .into_iter()
+        .map(|position| Point {
+            position,
+            pressure: 1.0,
+            tilt: None,
+            time_ms: 0,
+        })
+        .collect()
 }
 
 fn cylinder_fill_hit(

@@ -1133,6 +1133,20 @@ pub struct PlanarFill {
     /// Optional finite saved-cylinder chart for curved enclosed-region fills.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cylinder: Option<CylinderFillSurface>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_source: Option<FillRegionSource>,
+}
+
+/// The original world-space solve target and boundary settings.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FillRegionSource {
+    pub seed: Vec3,
+    pub origin: Vec3,
+    pub normal: Vec3,
+    pub tangent: Vec3,
+    pub half_extent: Option<glam::Vec2>,
+    pub boundary_layer: Option<u64>,
+    pub gap_tolerance: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -1202,6 +1216,7 @@ impl Default for PlanarFill {
             texture: None,
             holes: Vec::new(),
             cylinder: None,
+            region_source: None,
         }
     }
 }

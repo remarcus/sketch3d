@@ -160,6 +160,7 @@ impl SketchApp {
                     texture: None,
                     holes: Vec::new(),
                     cylinder: None,
+                    region_source: None,
                 }),
                 group_id: None,
                 layer_id: 1,

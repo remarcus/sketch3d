@@ -4773,7 +4773,18 @@ impl SketchApp {
                     .add_enabled(editable_fill, egui::Button::new("Edit fill contour…"))
                     .clicked()
                 {
-                    self.begin_fill_contour_edit();
+                    self.begin_fill_contour_edit(false);
+                }
+                let refreshable_fill = editable_fill && self.doc.strokes.iter().any(|stroke| {
+                    self.selected.contains(&stroke.id) && stroke.fill.as_ref().is_some_and(|fill| {
+                        fill.region_source.is_some() && fill.holes.is_empty()
+                    })
+                });
+                if ui.add_enabled(refreshable_fill, egui::Button::new("Refresh enclosed fill…"))
+                    .on_disabled_hover_text("Requires a planar enclosed fill saved with its seed, without cutouts or temporary closing guides.")
+                    .clicked()
+                {
+                    self.begin_fill_contour_edit(true);
                 }
             } else if self.fills.enabled {
                 ui.label(RichText::new("Planar fill").strong());
