@@ -2215,6 +2215,57 @@ mod tests {
     }
 
     #[test]
+    fn glb_records_named_layer_mask_source_and_mesh_export_fallback() {
+        let source = stroke(1701, [0.15, 0.25, 0.35]);
+        let mut consumer = stroke(1702, [0.8, 0.4, 0.2]);
+        consumer.layer_id = 2;
+        let mut source_layer = crate::document::layers_default().remove(0);
+        source_layer.name = "Ink source".into();
+        let consumer_layer = crate::document::Layer {
+            id: 2,
+            name: "Masked paint".into(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            blend_mode: crate::document::LayerBlendMode::Normal,
+            clip_to_below: true,
+            mask_source: Some(source_layer.id),
+            mask_inverted: false,
+            hide_onion_skin: false,
+        };
+        source_layer.clip_to_below = false;
+        let document = Document {
+            layers: vec![source_layer, consumer_layer],
+            strokes: vec![source, consumer],
+            ..Document::default()
+        };
+
+        assert_eq!(document.layer_clip_source(2), Some(1));
+        let encoded = encode(&document, None).unwrap();
+        let json_length = u32::from_le_bytes(encoded.bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value =
+            serde_json::from_slice(&encoded.bytes[20..20 + json_length]).unwrap();
+        let consumer_node = json["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["extras"]["spatialSketchStrokeId"] == "1702")
+            .expect("masked stroke exports as its own node");
+        assert_eq!(
+            consumer_node["extras"]["spatialSketchLayerMaskSourceId"],
+            "1"
+        );
+        assert_eq!(
+            consumer_node["extras"]["spatialSketchLayerClipFallback"],
+            "not_applied_by_mesh_export"
+        );
+        assert_eq!(
+            consumer_node["extras"]["spatialSketchLayerClipToBelow"],
+            false
+        );
+    }
+
+    #[test]
     fn gradient_stops_survive_native_recovery_merge_and_export_fallbacks() {
         let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let mut gradient_stroke = stroke(701, [0.4, 0.3, 0.2]);
