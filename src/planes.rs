@@ -194,46 +194,16 @@ impl SketchApp {
             95,
         );
 
-        // Saved planes are independent guide resources, so display every
-        // visible planar one at once. Curved guides keep their existing
-        // dedicated interaction and rendering paths.
-        for guide in self
-            .doc
-            .guide_resources
-            .iter()
-            .filter(|guide| guide.visible)
-        {
-            let crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } =
-                &guide.geometry
-            else {
-                continue;
-            };
-            let active = self.doc.active_guide == Some(guide.id);
-            let hovered = self
-                .plane_picker
-                .hovered_guide
-                .is_some_and(|(id, _)| id == guide.id);
-            let color = if hovered {
-                Color32::from_rgb(255, 210, 90)
-            } else if active {
-                active_color
-            } else {
-                inactive_color
-            };
-            draw_plane_grid(
-                &painter,
-                &self.camera,
-                rect,
-                *origin,
-                *rotation * Vec3::X,
-                *rotation * Vec3::Y,
-                PlaneGridStyle {
-                    color,
-                    active: active || hovered,
-                    label: &guide.name,
-                },
-            );
-        }
+        draw_saved_plane_overlays(
+            &painter,
+            &self.camera,
+            rect,
+            &self.doc.guide_resources,
+            self.doc.active_guide,
+            self.plane_picker.hovered_guide.map(|(id, _)| id),
+            active_color,
+            inactive_color,
+        );
         if let Some((id, position)) = self.plane_picker.hovered_guide {
             if let Some(guide) = self.doc.guide_resources.iter().find(|guide| guide.id == id) {
                 let color = Color32::from_rgb(255, 210, 90);
@@ -528,6 +498,49 @@ struct PlaneGridStyle<'a> {
     label: &'a str,
 }
 
+fn draw_saved_plane_overlays(
+    painter: &egui::Painter,
+    camera: &Camera,
+    rect: Rect,
+    guides: &[crate::document::guide_resources::GuideResource],
+    active_guide: Option<u64>,
+    hovered_guide: Option<u64>,
+    active_color: Color32,
+    inactive_color: Color32,
+) {
+    // Saved planes are independent guide resources, so display every visible
+    // planar one at once. Curved guides keep their dedicated rendering path.
+    for guide in guides.iter().filter(|guide| guide.visible) {
+        let crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } =
+            &guide.geometry
+        else {
+            continue;
+        };
+        let active = active_guide == Some(guide.id);
+        let hovered = hovered_guide == Some(guide.id);
+        let color = if hovered {
+            Color32::from_rgb(255, 210, 90)
+        } else if active {
+            active_color
+        } else {
+            inactive_color
+        };
+        draw_plane_grid(
+            painter,
+            camera,
+            rect,
+            *origin,
+            *rotation * Vec3::X,
+            *rotation * Vec3::Y,
+            PlaneGridStyle {
+                color,
+                active: active || hovered,
+                label: &guide.name,
+            },
+        );
+    }
+}
+
 fn plane_grid_extent(camera: &Camera, rect: Rect, origin: Vec3) -> Option<f32> {
     let world_per_pixel = camera.world_per_pixel(origin, rect.height());
     (world_per_pixel.is_finite() && world_per_pixel > 0.0)
@@ -665,6 +678,70 @@ mod guide_picker_tests {
         let cursor = rect.center();
         let unavailable = vec![cylinder(10, false, false), cylinder(11, true, true)];
         assert!(pick_saved_guide(&camera, rect, cursor, &unavailable).is_none());
+    }
+
+    #[test]
+    fn saved_plane_overlay_paints_each_visible_plane_with_active_emphasis_and_labels() {
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let camera = Camera::default();
+        let mut active = plane(1, true, false);
+        active.name = "Wall".into();
+        let mut inactive = plane(2, true, false);
+        inactive.name = "Floor".into();
+        inactive.geometry = GuideGeometry::Plane {
+            origin: Vec3::new(0.4, -0.2, 0.3),
+            rotation: Quat::from_rotation_y(0.35),
+        };
+        let guides = vec![
+            active,
+            inactive,
+            plane(3, false, false),
+            cylinder(4, true, false),
+        ];
+        let output = context.run(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            },
+            |context| {
+                let painter = context
+                    .layer_painter(egui::LayerId::new(
+                        egui::Order::Background,
+                        egui::Id::new("saved plane overlay test"),
+                    ))
+                    .with_clip_rect(rect);
+                draw_saved_plane_overlays(
+                    &painter,
+                    &camera,
+                    rect,
+                    &guides,
+                    Some(1),
+                    None,
+                    Color32::from_rgb(60, 180, 240),
+                    Color32::from_rgba_unmultiplied(220, 140, 100, 95),
+                );
+            },
+        );
+
+        let labels = output
+            .shapes
+            .iter()
+            .filter(|shape| matches!(shape.shape, egui::Shape::Text(_)))
+            .count();
+        let line_widths = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::LineSegment { stroke, .. } => Some(stroke.width),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(labels, 2, "each visible planar guide has a name label");
+        assert!(line_widths.iter().filter(|width| **width == 1.8).count() >= 4);
+        assert!(line_widths.iter().filter(|width| **width == 1.0).count() >= 4);
+        assert!(line_widths.iter().filter(|width| **width == 0.8).count() >= 12);
+        assert!(output.shapes.iter().all(|shape| shape.clip_rect == rect));
     }
 }
 
