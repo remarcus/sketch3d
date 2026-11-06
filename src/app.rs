@@ -6955,6 +6955,10 @@ impl SketchApp {
                     });
                     let _ = request.reply.send(Ok(snapshot));
                 }
+                crate::live_mcp::LiveUiCommand::SceneOutline { cursor, page_size } => {
+                    let result = self.live_mcp_scene_outline(cursor.as_deref(), page_size);
+                    let _ = request.reply.send(result);
+                }
                 crate::live_mcp::LiveUiCommand::CaptureViewport => {
                     if self.live_mcp_capture_reply.is_some() {
                         let _ = request
@@ -7016,6 +7020,82 @@ impl SketchApp {
         hash ^= u64::from(self.dirty);
         hash = hash.wrapping_mul(0x100000001b3);
         Ok(format!("fnv1a64:{hash:016x}"))
+    }
+
+    fn live_mcp_scene_outline(
+        &self,
+        cursor: Option<&str>,
+        page_size: usize,
+    ) -> Result<serde_json::Value, String> {
+        const MAX_NAME_CHARS: usize = 96;
+        let revision = self.live_mcp_revision()?;
+        let offset = if let Some(cursor) = cursor {
+            let Some((cursor_revision, raw_offset)) = cursor.split_once('/') else {
+                return Err("Invalid scene outline cursor; request the first page again".into());
+            };
+            if cursor_revision != revision {
+                return Err(
+                    "Scene changed; this cursor is stale. Request the first page again".into(),
+                );
+            }
+            raw_offset
+                .parse::<usize>()
+                .ok()
+                .filter(|offset| *offset <= self.doc.layers.len() + self.doc.guide_resources.len())
+                .ok_or_else(|| {
+                    "Invalid scene outline cursor; request the first page again".to_owned()
+                })?
+        } else {
+            0
+        };
+
+        let safe_name = |name: &str| -> String {
+            name.chars()
+                .filter(|character| !character.is_control())
+                .take(MAX_NAME_CHARS)
+                .collect()
+        };
+        let mut items = Vec::with_capacity(self.doc.layers.len() + self.doc.guide_resources.len());
+        for layer in &self.doc.layers {
+            items.push(serde_json::json!({
+                "kind": "layer",
+                "id": layer.id,
+                "name": safe_name(&layer.name),
+                "active": layer.id == self.doc.active_layer,
+                "visible": layer.visible && self.doc.layer_folder_visible(layer.id),
+                "locked": layer.locked || self.doc.layer_folder_locked(layer.id)
+            }));
+        }
+        for guide in &self.doc.guide_resources {
+            let guide_type = match &guide.geometry {
+                crate::document::guide_resources::GuideGeometry::Plane { .. } => "plane",
+                crate::document::guide_resources::GuideGeometry::Cylinder { .. } => "cylinder",
+                crate::document::guide_resources::GuideGeometry::Revolved { .. } => "revolved",
+                crate::document::guide_resources::GuideGeometry::Sphere { .. } => "sphere",
+                crate::document::guide_resources::GuideGeometry::Ring { .. } => "ring",
+                crate::document::guide_resources::GuideGeometry::Cone { .. } => "cone",
+                crate::document::guide_resources::GuideGeometry::Freeform { .. } => "freeform",
+                crate::document::guide_resources::GuideGeometry::Loft { .. } => "loft",
+            };
+            items.push(serde_json::json!({
+                "kind": "guide",
+                "id": guide.id,
+                "name": safe_name(&guide.name),
+                "guide_type": guide_type,
+                "active": self.doc.active_guide == Some(guide.id),
+                "visible": guide.visible,
+                "locked": guide.locked
+            }));
+        }
+        let end = offset.saturating_add(page_size).min(items.len());
+        let next_cursor = (end < items.len()).then(|| format!("{revision}/{end}"));
+        Ok(serde_json::json!({
+            "revision": revision,
+            "active_layer_id": self.doc.active_layer,
+            "active_guide_id": self.doc.active_guide,
+            "items": items[offset..end],
+            "next_cursor": next_cursor
+        }))
     }
 
     fn live_mcp_gesture_active(&self) -> bool {

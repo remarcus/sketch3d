@@ -9,6 +9,12 @@ The server exposes read-only inspection tools and one explicitly previewed edit:
 - `live_document_snapshot` reports the active file's base name, whether it is
   saved, whether it has unsaved changes, bounded document counts, and selected
   stroke IDs. It does not return artwork data or absolute file paths.
+- `live_scene_outline` returns bounded pages of stable layer and saved-guide
+  IDs and names, effective layer visibility and lock state (including folder
+  state), guide type and state, and the active layer and guide IDs. The first
+  request omits `cursor`; follow `next_cursor` to read further pages. Each
+  cursor is bound to the document revision and is rejected after a scene
+  change. Names are bounded, and the outline omits geometry and file paths.
 - `live_viewport_capture` asks the UI thread for a screenshot and returns a PNG.
   Captures are limited to 4096 × 4096 pixels and 1,000,000 encoded bytes.
 - `live_preview_selected_color` previews a solid RGB color on the selected

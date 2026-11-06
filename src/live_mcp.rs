@@ -22,6 +22,10 @@ static NEXT_PREVIEW_ID: AtomicU64 = AtomicU64::new(0);
 
 pub enum LiveUiCommand {
     Snapshot,
+    SceneOutline {
+        cursor: Option<String>,
+        page_size: usize,
+    },
     CaptureViewport,
     PreviewColor {
         revision: String,
@@ -197,6 +201,30 @@ fn handle_message(ui_requests: &Sender<LiveUiRequest>, message: Value) -> Option
                 .unwrap_or_else(|| json!({}));
             let command = match name {
                 "live_document_snapshot" => LiveUiCommand::Snapshot,
+                "live_scene_outline" => {
+                    let cursor = match arguments.get("cursor") {
+                        None | Some(Value::Null) => None,
+                        Some(Value::String(value)) if !value.is_empty() && value.len() <= 128 => {
+                            Some(value.clone())
+                        }
+                        _ => return Some(rpc_result(id, tool_error("A valid cursor is required"))),
+                    };
+                    let page_size = match arguments.get("page_size") {
+                        None => 50,
+                        Some(value) => value
+                            .as_u64()
+                            .filter(|value| (1..=100).contains(value))
+                            .map(|value| value as usize)
+                            .unwrap_or(0),
+                    };
+                    if page_size == 0 {
+                        return Some(rpc_result(
+                            id,
+                            tool_error("page_size must be from 1 to 100"),
+                        ));
+                    }
+                    LiveUiCommand::SceneOutline { cursor, page_size }
+                }
                 "live_viewport_capture" => LiveUiCommand::CaptureViewport,
                 "live_preview_selected_color" => {
                     let revision = match arguments.get("revision").and_then(Value::as_str) {
@@ -264,6 +292,12 @@ fn tools() -> Value {
             "name":"live_document_snapshot",
             "description":"Read the active document identity, change revision, bounded counts, selected stroke IDs, and unsaved state from the live UI session. No drawing content or local file path is returned.",
             "inputSchema":{"type":"object","properties":{},"additionalProperties":false},
+            "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}
+        },
+        {
+            "name":"live_scene_outline",
+            "description":"Read a bounded page of layer and saved-guide names, stable IDs, effective visibility and lock state, plus active layer and guide IDs. Use next_cursor for further pages; cursors are tied to the returned document revision and become invalid after a scene change. No geometry or file paths are returned.",
+            "inputSchema":{"type":"object","properties":{"cursor":{"type":"string","maxLength":128},"page_size":{"type":"integer","minimum":1,"maximum":100,"default":50}},"additionalProperties":false},
             "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}
         },
         {
