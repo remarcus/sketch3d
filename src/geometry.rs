@@ -3663,6 +3663,7 @@ mod texture_uv_tests {
         second.brush.texture.mapping = first.brush.texture.mapping;
         let a = stroke_mesh(&first);
         let b = stroke_mesh(&second);
+        let mut shared_positions = 0;
         for vertex in a.iter().filter(|v| {
             let p = Vec3::from_array(v.position);
             (p.z - 1.2).abs() < 1e-5
@@ -3672,8 +3673,29 @@ mod texture_uv_tests {
                 .iter()
                 .find(|other| Vec3::from_array(other.position).distance(world) < 1e-5)
             {
+                shared_positions += 1;
                 assert!(Vec2::from(vertex.uv).distance(Vec2::from(overlap.uv)) < 1e-5);
             }
+        }
+        assert!(
+            shared_positions > 0,
+            "reversed strokes must overlap in world space"
+        );
+
+        let mut tap = mark(BrushKind::Round, vec![Vec3::new(0.9, 0.0, 1.2)]);
+        tap.brush.texture.anchor_mode = TextureAnchorMode::CapturedPlanar;
+        tap.brush.texture.frame = Some(frame);
+        tap.brush.texture.mapping = first.brush.texture.mapping;
+        let tap_mesh = stroke_mesh(&tap);
+        assert!(!tap_mesh.is_empty());
+        for vertex in &tap_mesh {
+            let world = Vec3::from_array(vertex.position);
+            let expected = tap
+                .brush
+                .texture
+                .mapping
+                .map(frame.project(world, tap.brush.texture.scale));
+            assert!(Vec2::from(vertex.uv).distance(Vec2::from(expected)) < 1e-5);
         }
 
         // Reanchoring clears the shared frame; the next stroke captures the new plane.
