@@ -328,3 +328,91 @@ pub fn find_cylinder_region(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod boundary_scope_tests {
+    use super::*;
+    use crate::document::{Brush, Layer, Point, Stroke};
+
+    fn line(id: u64, layer_id: u64, a: Vec3, b: Vec3) -> Stroke {
+        Stroke {
+            guide_attachment: None,
+            model_surface: None,
+            fill: None,
+            material: Default::default(),
+            group_id: None,
+            layer_id,
+            id,
+            color: [0.2, 0.4, 0.6],
+            gradient: None,
+            radius: 0.01,
+            brush: Brush::default(),
+            points: [a, b]
+                .into_iter()
+                .map(|position| Point {
+                    position,
+                    pressure: 1.0,
+                    tilt: None,
+                    time_ms: 0,
+                })
+                .collect(),
+            point_thickness: None,
+            point_colors: None,
+            modifiers: None,
+            curve: None,
+        }
+    }
+
+    fn area(points: &[Vec3]) -> f32 {
+        points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .take(points.len())
+            .map(|(a, b)| a.x * b.y - b.x * a.y)
+            .sum::<f32>()
+            .abs()
+            * 0.5
+    }
+
+    #[test]
+    fn visible_layer_boundaries_split_a_region_but_active_layer_scope_ignores_them() {
+        let mut doc = crate::document::Document::default();
+        doc.layers.push(Layer {
+            id: 2,
+            name: "Detail".into(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            blend_mode: Default::default(),
+            hide_onion_skin: false,
+            mask_inverted: false,
+            mask_source: None,
+            clip_to_below: false,
+        });
+        doc.strokes = vec![
+            line(1, 1, Vec3::new(-1.0, -1.0, 0.0), Vec3::new(1.0, -1.0, 0.0)),
+            line(2, 1, Vec3::new(1.0, -1.0, 0.0), Vec3::new(1.0, 1.0, 0.0)),
+            line(3, 1, Vec3::new(1.0, 1.0, 0.0), Vec3::new(-1.0, 1.0, 0.0)),
+            line(4, 1, Vec3::new(-1.0, 1.0, 0.0), Vec3::new(-1.0, -1.0, 0.0)),
+            line(5, 2, Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)),
+        ];
+        let plane = DrawingPlane::default();
+        let click = Vec3::new(0.0, 0.5, 0.0);
+        let visible = find_region(&doc, plane, click, 0.0, None, None, &[]).unwrap();
+        let active = find_region(&doc, plane, click, 0.0, None, Some(1), &[]).unwrap();
+        assert!(
+            (area(&visible) - 2.0).abs() < 1e-4,
+            "visible region area {}: {visible:?}",
+            area(&visible)
+        );
+        assert!(
+            (area(&active) - 4.0).abs() < 1e-4,
+            "active region area {}: {active:?}",
+            area(&active)
+        );
+
+        doc.layers[1].visible = false;
+        let hidden = find_region(&doc, plane, click, 0.0, None, None, &[]).unwrap();
+        assert!((area(&hidden) - 4.0).abs() < 1e-4);
+    }
+}
