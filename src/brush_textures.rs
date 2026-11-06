@@ -528,7 +528,7 @@ impl SketchApp {
                 }
             });
     }
-    fn verify_custom_repeating_texture_render(&mut self) -> usize {
+    fn verify_custom_repeating_texture_render(&mut self) -> (usize, usize) {
         let mask = image::RgbaImage::from_fn(4, 4, |x, y| {
             let covered = (x + 2 * y) % 4 < 2;
             image::Rgba([255, 255, 255, if covered { 255 } else { 0 }])
@@ -559,6 +559,16 @@ impl SketchApp {
                     contrast: 1.0,
                     strength: 1.0,
                 }),
+                anchor_mode: crate::texture::TextureAnchorMode::CapturedPlanar,
+                frame: Some(crate::texture::TextureFrame::from_plane(
+                    Vec3::ZERO,
+                    glam::Quat::from_rotation_z(0.37),
+                )),
+                mapping: crate::texture::TextureMapping {
+                    rotation_degrees: 27.0,
+                    scale: [1.4, 0.75],
+                    offset: [0.23, -0.12],
+                },
                 scale: 0.22,
                 strength: 1.0,
                 ..Default::default()
@@ -614,6 +624,14 @@ impl SketchApp {
             .renderer
             .render_png_pixels(&plain_doc, &camera, size, background, lighting)
             .expect("solid comparison stroke renders through the GPU pipeline");
+        let mut following_doc = doc.clone();
+        following_doc.strokes[0].brush.texture.anchor_mode =
+            crate::texture::TextureAnchorMode::StrokeFollowing;
+        following_doc.strokes[0].brush.texture.frame = None;
+        let following = self
+            .renderer
+            .render_png_pixels(&following_doc, &camera, size, background, lighting)
+            .expect("stroke-following texture comparison renders through the GPU pipeline");
         let changed = textured
             .chunks_exact(4)
             .zip(plain.chunks_exact(4))
@@ -624,21 +642,44 @@ impl SketchApp {
                     .any(|(a, b)| a.abs_diff(*b) > 24)
             })
             .count();
+        let mapping_changed = textured
+            .chunks_exact(4)
+            .zip(following.chunks_exact(4))
+            .filter(|(captured, following)| {
+                captured[..3]
+                    .iter()
+                    .zip(&following[..3])
+                    .any(|(a, b)| a.abs_diff(*b) > 24)
+            })
+            .count();
         assert!(
             changed > 500,
             "repeating image texture should change substantial rendered coverage, got {changed} pixels"
         );
+        assert!(
+            mapping_changed > 500,
+            "captured planar mapping should visibly differ from stroke-following placement, got {mapping_changed} pixels"
+        );
+        let output = std::env::current_dir()
+            .unwrap()
+            .join("verification/sketch-072");
         image::save_buffer(
-            std::env::current_dir()
-                .unwrap()
-                .join("verification/sketch-072/custom-repeating-texture-800x400.png"),
+            output.join("custom-repeating-texture-800x400.png"),
             &textured,
             size[0],
             size[1],
             image::ColorType::Rgba8,
         )
         .expect("custom repeating-texture render is saved");
-        changed
+        image::save_buffer(
+            output.join("custom-repeating-texture-following-800x400.png"),
+            &following,
+            size[0],
+            size[1],
+            image::ColorType::Rgba8,
+        )
+        .expect("stroke-following comparison render is saved");
+        (changed, mapping_changed)
     }
 
     pub(super) fn load_textures(&mut self) {
@@ -829,7 +870,7 @@ impl SketchApp {
                         }));
                     }
                 }
-                let custom_repeating_texture_changed_pixels =
+                let (custom_repeating_texture_changed_pixels, captured_mapping_changed_pixels) =
                     self.verify_custom_repeating_texture_render();
                 std::fs::write(
                     output.join("texture-render-report.json"),
@@ -843,6 +884,14 @@ impl SketchApp {
                             "changed_pixels_vs_solid_brush": custom_repeating_texture_changed_pixels,
                             "passed": custom_repeating_texture_changed_pixels > 500,
                         },
+                        "captured_planar_mapping": {
+                            "comparison_file": "custom-repeating-texture-following-800x400.png",
+                            "changed_pixels_vs_stroke_following": captured_mapping_changed_pixels,
+                            "rotation_degrees": 27.0,
+                            "scale": [1.4, 0.75],
+                            "offset": [0.23, -0.12],
+                            "passed": captured_mapping_changed_pixels > 500,
+                        },
                         "physical_tablet_tested": false,
                     }))
                     .unwrap(),
@@ -855,6 +904,7 @@ impl SketchApp {
                     "checks": [
                         "texture study renders front and orbit views at 640x360, 1280x720, and 2560x1440",
                         "custom repeating alpha-mask image texture renders on the GPU and differs from a solid brush",
+                        "captured planar mapping with non-default rotation, independent scale, and offset differs from stroke-following placement",
                         "texture settings survive transform, duplicate, native save/reopen, picking, erase, and undo",
                         "render artifacts are produced directly by the GPU renderer; no desktop screenshot was captured"
                     ],
