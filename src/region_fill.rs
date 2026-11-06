@@ -511,6 +511,38 @@ mod boundary_scope_tests {
     }
 
     #[test]
+    fn crossing_boundary_strokes_split_the_clicked_face() {
+        let mut doc = crate::document::Document::default();
+        doc.strokes = vec![
+            line(1, 1, Vec3::new(-1.0, -1.0, 0.0), Vec3::new(1.0, -1.0, 0.0)),
+            line(2, 1, Vec3::new(1.0, -1.0, 0.0), Vec3::new(1.0, 1.0, 0.0)),
+            line(3, 1, Vec3::new(1.0, 1.0, 0.0), Vec3::new(-1.0, 1.0, 0.0)),
+            line(4, 1, Vec3::new(-1.0, 1.0, 0.0), Vec3::new(-1.0, -1.0, 0.0)),
+            line(5, 1, Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)),
+            line(6, 1, Vec3::new(0.0, -1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)),
+        ];
+        let original = doc.strokes.clone();
+        let region = find_region(
+            &doc,
+            DrawingPlane::default(),
+            Vec3::new(0.5, 0.5, 0.0),
+            0.0,
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        assert!((area(&region) - 1.0).abs() < 1e-4);
+        assert!(region
+            .iter()
+            .all(|point| point.x >= -1e-4 && point.y >= -1e-4));
+        assert_eq!(
+            doc.strokes, original,
+            "crossing boundaries remain unchanged"
+        );
+    }
+
+    #[test]
     fn temporary_closing_segment_solves_a_gap_without_mutating_boundary_art() {
         let mut doc = crate::document::Document::default();
         doc.strokes = vec![
