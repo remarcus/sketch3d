@@ -2139,6 +2139,7 @@ impl SketchApp {
             return;
         }
         if self.appearance_draft.is_none() {
+            self.junction_buttons(ui);
             self.point_edit_controls(ui);
             let can_multi_edit = self.selected_model_reference.is_none()
                 && !self.selected.is_empty()
@@ -2445,6 +2446,10 @@ if ui.button("Delete").on_hover_text("Delete / Backspace").clicked(){self.delete
         ui.label(RichText::new("One drag = one undo step. Escape cancels a drag.").small());
     }
     pub(super) fn selection_overlay(&self, ui: &egui::Ui, rect: Rect) {
+        if self.junction_edit.is_some() {
+            self.junction_overlay(ui, rect);
+            return;
+        }
         if self.selection_cleanup_draft.is_some() {
             self.canvas_point_overlay(ui, rect);
             return;

@@ -422,7 +422,7 @@ fn intersection_parameters(a: Pos2, b: Pos2, c: Pos2, d: Pos2) -> Option<(f32, f
     ((0.0..=1.0).contains(&ta) && (0.0..=1.0).contains(&tb)).then_some((ta, tb))
 }
 
-fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> {
+pub(crate) fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> {
     let distances = crate::dynamics::arc_lengths(&stroke.points);
     let mut fragments: Vec<(Vec<Point>, f32)> = Vec::new();
     let mut current: Vec<Point> = Vec::new();
@@ -564,7 +564,7 @@ fn append_interval(
     }
 }
 
-fn interpolate_point(a: &Point, b: &Point, t: f32) -> Point {
+pub(crate) fn interpolate_point(a: &Point, b: &Point, t: f32) -> Point {
     if t <= 0.000001 {
         return *a;
     }

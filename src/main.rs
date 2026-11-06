@@ -45,6 +45,7 @@ mod partial_eraser;
 mod performance_benchmark;
 mod placement;
 mod point_edit;
+mod junction_edit;
 mod polygon;
 mod post_effects_check;
 mod presentation;

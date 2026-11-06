@@ -411,6 +411,8 @@ mod planes;
 pub(crate) mod png_export_ui;
 #[path = "point_edit_ui.rs"]
 mod point_edit_ui;
+#[path = "junction_edit_ui.rs"]
+mod junction_edit_ui;
 #[path = "presentation_checks.rs"]
 mod presentation_checks;
 #[path = "presentation_ui.rs"]
@@ -689,6 +691,7 @@ pub struct SketchApp {
     alignment_distribute: bool,
     point_draft: Option<crate::point_edit::Draft>,
     selection_cleanup_draft: Option<crate::point_edit::SelectionCleanupDraft>,
+    junction_edit: Option<junction_edit_ui::JunctionDraft>,
     point_drag: Option<point_edit_ui::PointDrag>,
     point_multi_draft: Option<crate::point_edit::MultiDraft>,
     point_multi_drag: Option<point_edit_ui::MultiPointRegionDrag>,
@@ -2336,6 +2339,7 @@ impl SketchApp {
             alignment_distribute: false,
             point_draft: None,
             selection_cleanup_draft: None,
+            junction_edit: None,
             point_drag: None,
             point_multi_draft: None,
             point_multi_drag: None,
@@ -3246,6 +3250,7 @@ impl SketchApp {
         }
     }
     fn cancel(&mut self) {
+        self.junction_edit = None;
         self.pen_barrel_contact = None;
         self.placement.stamp = None;
         self.plane_picker.active = false;
@@ -4107,6 +4112,7 @@ impl SketchApp {
         }
     }
     fn request(&mut self, mut pending: Pending) {
+        self.junction_edit = None;
         if self.video_export.is_running() {
             self.status =
                 "Wait for the animated export to finish or cancel it before switching drawings."
@@ -4330,6 +4336,7 @@ impl SketchApp {
         self.status = "Demo scene. New starts a blank drawing.".into();
     }
     fn choose_tool(&mut self, tool: &str) {
+        self.junction_edit = None;
         if tool != "Measure" {
             self.cancel_measure_tool();
         }
@@ -4559,6 +4566,7 @@ impl SketchApp {
             && !self.local_color_active()
             && self.point_draft.is_none()
             && self.selection_cleanup_draft.is_none()
+            && self.junction_edit.is_none()
             && self.point_multi_draft.is_none()
             && self.reprojection_draft.is_none()
             && !self.mixed_resource_preview_active()
@@ -6525,7 +6533,9 @@ impl SketchApp {
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
-                        if self.selection_cleanup_draft.is_some() {
+                        if self.junction_edit.is_some() {
+                            self.junction_controls(ui);
+                        } else if self.selection_cleanup_draft.is_some() {
                             self.selection_cleanup_controls(ui);
                         } else if self.point_draft.is_some() {
                             self.canvas_point_controls(ui);
@@ -6704,6 +6714,12 @@ impl SketchApp {
         shift: bool,
         tilt: Option<Vec3>,
     ) {
+        if self.junction_edit.is_some() {
+            if begin {
+                self.junction_pointer(pos, rect);
+            }
+            return;
+        }
         if self.selection_cleanup_draft.is_some() {
             return;
         }
@@ -8145,6 +8161,9 @@ impl eframe::App for SketchApp {
             self.presentation_shortcuts(ctx);
         }
         let was_placing = self.placement.active;
+        if !self.confirm && !live_mcp_edit_locked {
+            self.junction_shortcuts(ctx);
+        }
         if !self.confirm
             && !live_mcp_edit_locked
             && self.quick_palette.is_none()
@@ -8156,6 +8175,7 @@ impl eframe::App for SketchApp {
             && self.point_draft.is_none()
             && self.point_multi_draft.is_none()
             && self.reprojection_draft.is_none()
+            && self.junction_edit.is_none()
             && !self.mixed_resource_preview_active()
             && self.camera_playback.is_none()
             && self.repeat.is_none()
@@ -8170,6 +8190,7 @@ impl eframe::App for SketchApp {
         }
         if !self.confirm
             && !live_mcp_edit_locked
+            && self.junction_edit.is_none()
             && self.quick_palette.is_none()
             && !self.placement.active
             && !was_placing
