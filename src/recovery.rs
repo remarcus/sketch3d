@@ -653,6 +653,22 @@ mod tests {
         .unwrap();
 
         let mut document = document();
+        document.layers.push(crate::document::Layer {
+            id: 2,
+            name: "Mask consumer".into(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            blend_mode: crate::document::LayerBlendMode::Normal,
+            clip_to_below: false,
+            mask_source: Some(1),
+            mask_inverted: false,
+            hide_onion_skin: false,
+        });
+        let mut masked_stroke = document.strokes[0].clone();
+        masked_stroke.id = 2;
+        masked_stroke.layer_id = 2;
+        document.strokes.push(masked_stroke);
         document.strokes[0].brush.tip_asset_id = asset.id;
         document.strokes[0].brush.tip_aspect = asset.size[0] as f32 / asset.size[1] as f32;
         document.strokes[0].brush.dabs.enabled = true;
@@ -680,6 +696,7 @@ mod tests {
             Document::from_json(&std::fs::read_to_string(&relocated_path).unwrap()).unwrap();
         assert_eq!(reopened.strokes[0].brush.tip_asset_id, asset.id);
         assert_eq!(reopened.strokes[0].brush.texture.image, Some(image_texture));
+        assert_eq!(reopened.layers[1].mask_source, Some(1));
         assert_eq!(reopened.brush_tip_assets, vec![asset.clone()]);
         let relocated_asset = reopened
             .brush_tip_assets
@@ -712,6 +729,7 @@ mod tests {
         assert_eq!(snapshot.original_path, Some(relocated_path));
         let recovered = &snapshot.document;
         assert_eq!(recovered.strokes[0].brush.tip_asset_id, asset.id);
+        assert_eq!(recovered.layers[1].mask_source, Some(1));
         assert_eq!(
             recovered.strokes[0].brush.texture.image,
             Some(image_texture)
