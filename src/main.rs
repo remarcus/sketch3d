@@ -46,6 +46,7 @@ mod performance_benchmark;
 mod placement;
 mod point_edit;
 mod junction_edit;
+mod hatch;
 mod polygon;
 mod post_effects_check;
 mod presentation;

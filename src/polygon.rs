@@ -31,7 +31,7 @@ fn intersects(a: DVec2, b: DVec2, c: DVec2, d: DVec2, eps: f64) -> bool {
         || on_segment(a, c, d, eps)
         || on_segment(b, c, d, eps)
 }
-fn projected(stroke: &Stroke) -> Vec<DVec2> {
+pub(crate) fn projected(stroke: &Stroke) -> Vec<DVec2> {
     if let Some(surface) = stroke.fill.as_ref().and_then(|fill| fill.cylinder) {
         return stroke
             .points
@@ -86,7 +86,7 @@ pub(crate) fn point_in_ring(point: DVec2, ring: &[DVec2]) -> bool {
     inside
 }
 
-fn projected_holes(stroke: &Stroke) -> Vec<Vec<DVec2>> {
+pub(crate) fn projected_holes(stroke: &Stroke) -> Vec<Vec<DVec2>> {
     if let Some(surface) = stroke.fill.as_ref().and_then(|fill| fill.cylinder) {
         return stroke
             .fill

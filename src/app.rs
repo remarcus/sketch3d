@@ -413,6 +413,8 @@ pub(crate) mod png_export_ui;
 mod point_edit_ui;
 #[path = "junction_edit_ui.rs"]
 mod junction_edit_ui;
+#[path = "hatch_ui.rs"]
+mod hatch_ui;
 #[path = "presentation_checks.rs"]
 mod presentation_checks;
 #[path = "presentation_ui.rs"]
@@ -692,6 +694,8 @@ pub struct SketchApp {
     point_draft: Option<crate::point_edit::Draft>,
     selection_cleanup_draft: Option<crate::point_edit::SelectionCleanupDraft>,
     junction_edit: Option<junction_edit_ui::JunctionDraft>,
+    hatch_settings: crate::hatch::Settings,
+    hatch_draft: Option<hatch_ui::HatchDraft>,
     point_drag: Option<point_edit_ui::PointDrag>,
     point_multi_draft: Option<crate::point_edit::MultiDraft>,
     point_multi_drag: Option<point_edit_ui::MultiPointRegionDrag>,
@@ -2340,6 +2344,8 @@ impl SketchApp {
             point_draft: None,
             selection_cleanup_draft: None,
             junction_edit: None,
+            hatch_settings: Default::default(),
+            hatch_draft: None,
             point_drag: None,
             point_multi_draft: None,
             point_multi_drag: None,
@@ -3250,6 +3256,7 @@ impl SketchApp {
         }
     }
     fn cancel(&mut self) {
+        self.cancel_hatch();
         self.junction_edit = None;
         self.pen_barrel_contact = None;
         self.placement.stamp = None;
@@ -4103,6 +4110,7 @@ impl SketchApp {
         }
     }
     fn request(&mut self, mut pending: Pending) {
+        self.cancel_hatch();
         self.junction_edit = None;
         if self.video_export.is_running() {
             self.status =
@@ -4327,6 +4335,7 @@ impl SketchApp {
         self.status = "Demo scene. New starts a blank drawing.".into();
     }
     fn choose_tool(&mut self, tool: &str) {
+        self.cancel_hatch();
         self.junction_edit = None;
         if tool != "Measure" {
             self.cancel_measure_tool();
@@ -4558,6 +4567,7 @@ impl SketchApp {
             && self.point_draft.is_none()
             && self.selection_cleanup_draft.is_none()
             && self.junction_edit.is_none()
+            && self.hatch_draft.is_none()
             && self.point_multi_draft.is_none()
             && self.reprojection_draft.is_none()
             && !self.mixed_resource_preview_active()
@@ -5184,6 +5194,12 @@ impl SketchApp {
                     .clicked()
                 {
                     self.begin_fill_contour_edit(false);
+                }
+                let hatchable = editable_fill && self.doc.strokes.iter().any(|stroke| {
+                    self.selected.contains(&stroke.id) && crate::hatch::supported(stroke)
+                });
+                if ui.add_enabled(hatchable, egui::Button::new("Hatch fill…")).clicked() {
+                    self.begin_hatch();
                 }
                 let refreshable_fill = editable_fill && self.doc.strokes.iter().any(|stroke| {
                     self.selected.contains(&stroke.id) && stroke.fill.as_ref().is_some_and(|fill| {
@@ -6524,7 +6540,9 @@ impl SketchApp {
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
-                        if self.junction_edit.is_some() {
+                        if self.hatch_draft.is_some() {
+                            self.hatch_controls(ui);
+                        } else if self.junction_edit.is_some() {
                             self.junction_controls(ui);
                         } else if self.selection_cleanup_draft.is_some() {
                             self.selection_cleanup_controls(ui);
@@ -6705,6 +6723,9 @@ impl SketchApp {
         shift: bool,
         tilt: Option<Vec3>,
     ) {
+        if self.hatch_draft.is_some() {
+            return;
+        }
         if self.junction_edit.is_some() {
             self.junction_pointer(
                 pos, pressure, tilt, rect, if begin { Phase::Down } else { Phase::Move },
@@ -6924,7 +6945,7 @@ impl SketchApp {
             if self.redraw_contact_active() && (blocked || space || sample.barrel || sample.eraser) {
                 self.cancel_redraw_contact();
             }
-            if self.junction_edit.is_some() && sample.eraser {
+            if (self.junction_edit.is_some() || self.hatch_draft.is_some()) && sample.eraser {
                 continue;
             }
             if self.measure.enabled && inside && sample.phase == Phase::Move {
@@ -6963,7 +6984,7 @@ impl SketchApp {
                 } else {
                     self.pen_barrel_contact
                 };
-                if contact == Some(true) && self.junction_edit.is_some() {
+                if contact == Some(true) && (self.junction_edit.is_some() || self.hatch_draft.is_some()) {
                     continue;
                 }
                 if contact == Some(true) {
@@ -7667,6 +7688,7 @@ impl SketchApp {
             || self.point_multi_draft.is_some()
             || self.selection_cleanup_draft.is_some()
             || self.junction_edit.is_some()
+            || self.hatch_draft.is_some()
             || self.reprojection_draft.is_some()
             || self.fills.draft.is_some()
             || self.curve_draft_active()
@@ -8180,6 +8202,7 @@ impl eframe::App for SketchApp {
         let was_placing = self.placement.active;
         if !self.confirm && !live_mcp_edit_locked {
             self.junction_shortcuts(ctx);
+            self.hatch_shortcuts(ctx);
         }
         if !self.confirm
             && !live_mcp_edit_locked
@@ -8193,6 +8216,7 @@ impl eframe::App for SketchApp {
             && self.point_multi_draft.is_none()
             && self.reprojection_draft.is_none()
             && self.junction_edit.is_none()
+            && self.hatch_draft.is_none()
             && !self.mixed_resource_preview_active()
             && self.camera_playback.is_none()
             && self.repeat.is_none()
@@ -8208,6 +8232,7 @@ impl eframe::App for SketchApp {
         if !self.confirm
             && !live_mcp_edit_locked
             && self.junction_edit.is_none()
+            && self.hatch_draft.is_none()
             && self.quick_palette.is_none()
             && !self.placement.active
             && !was_placing

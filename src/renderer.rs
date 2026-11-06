@@ -390,7 +390,7 @@ pub struct SceneRenderer {
     fill_textures: HashMap<(u64, bool), ImagePlaneTexture>,
     screen_background: Option<ScreenBackgroundTexture>,
     obj_reference_meshes: HashMap<u64, ObjReferenceMeshes>,
-    repeat_preview: Vec<(crate::document::Stroke, Mesh)>,
+    stroke_preview: Vec<(crate::document::Stroke, Mesh)>,
     selected: HashSet<u64>,
     grid: Option<(GuidePreview, Mesh)>,
     ground: Option<(Lighting, Mesh)>,
@@ -1232,7 +1232,7 @@ impl SceneRenderer {
             fill_textures: HashMap::new(),
             screen_background: None,
             obj_reference_meshes: HashMap::new(),
-            repeat_preview: Vec::new(),
+            stroke_preview: Vec::new(),
             selected: HashSet::new(),
             grid: None,
             ground: None,
@@ -1456,7 +1456,7 @@ impl SceneRenderer {
             .strokes
             .iter()
             .filter(|stroke| doc.visible(stroke))
-            .chain(self.repeat_preview.iter().map(|(stroke, _)| stroke))
+            .chain(self.stroke_preview.iter().map(|(stroke, _)| stroke))
         {
             let ids = stroke.brush.tip_variant_ids();
             if ids.len() > 1 {
@@ -1506,7 +1506,7 @@ impl SceneRenderer {
             .filter(|stroke| doc.visible(stroke))
             .filter_map(|stroke| stroke.brush.texture.image)
             .chain(
-                self.repeat_preview
+                self.stroke_preview
                     .iter()
                     .filter_map(|(stroke, _)| stroke.brush.texture.image),
             )
@@ -1541,7 +1541,7 @@ impl SceneRenderer {
             .map(|texture| (texture.asset_id, texture.repeat))
             .collect();
         fill_needed.extend(
-            self.repeat_preview
+            self.stroke_preview
                 .iter()
                 .filter_map(|(stroke, _)| stroke.fill.as_ref().and_then(|fill| fill.texture))
                 .map(|texture| (texture.asset_id, texture.repeat)),
@@ -1986,19 +1986,19 @@ impl SceneRenderer {
     pub fn sample_count(&self) -> u32 {
         self.target.as_ref().map_or(1, |target| target.sample_count)
     }
-    pub fn set_repeat_preview(&mut self, strokes: &[crate::document::Stroke], doc: &Document) {
+    pub fn set_stroke_preview(&mut self, strokes: &[crate::document::Stroke], doc: &Document) {
         if self
-            .repeat_preview
+            .stroke_preview
             .iter()
             .map(|(stroke, _)| stroke)
             .eq(strokes.iter())
-            && self.repeat_preview.iter().all(|(stroke, mesh)| {
+            && self.stroke_preview.iter().all(|(stroke, mesh)| {
                 (mesh.layer_opacity - doc.layer_opacity(stroke.layer_id)).abs() < 0.000_001
             })
         {
             return;
         }
-        self.repeat_preview = strokes
+        self.stroke_preview = strokes
             .iter()
             .map(|stroke| {
                 let mut vertices = geometry::stroke_mesh(stroke);
@@ -2450,7 +2450,7 @@ impl SceneRenderer {
             .iter()
             .map(|s| texture::key(s.brush.texture))
             .chain(
-                self.repeat_preview
+                self.stroke_preview
                     .iter()
                     .map(|(stroke, _)| texture::key(stroke.brush.texture)),
             )
@@ -2459,7 +2459,7 @@ impl SceneRenderer {
         self.textures.retain(|key, _| needed.contains(key));
         for settings in std::iter::once(solid)
             .chain(doc.strokes.iter().map(|s| s.brush.texture))
-            .chain(self.repeat_preview.iter().map(|(s, _)| s.brush.texture))
+            .chain(self.stroke_preview.iter().map(|(s, _)| s.brush.texture))
         {
             let key = texture::key(settings);
             if !self.textures.contains_key(&key) {
@@ -2883,7 +2883,7 @@ impl SceneRenderer {
                 pass.set_vertex_buffer(0, mesh.buffer.slice(..));
                 pass.draw(0..mesh.count, 0..1);
             }
-            for (stroke, mesh) in &self.repeat_preview {
+            for (stroke, mesh) in &self.stroke_preview {
                 let mode = doc.layer_blend_mode(stroke.layer_id);
                 let pipeline = if stroke.material == StrokeMaterial::Cutout {
                     &self.cutout_triangles

@@ -1295,17 +1295,17 @@ impl SketchApp {
 
     fn update_repeat_preview(&mut self) -> Result<Vec<Stroke>, String> {
         let Some(repeat) = &self.repeat else {
-            self.renderer.set_repeat_preview(&[], &self.doc);
+            self.renderer.set_stroke_preview(&[], &self.doc);
             return Ok(Vec::new());
         };
         match self.repeated_strokes(repeat) {
             Ok(copies) => {
                 let strokes: Vec<_> = copies.into_iter().map(|(_, stroke)| stroke).collect();
-                self.renderer.set_repeat_preview(&strokes, &self.doc);
+                self.renderer.set_stroke_preview(&strokes, &self.doc);
                 Ok(strokes)
             }
             Err(error) => {
-                self.renderer.set_repeat_preview(&[], &self.doc);
+                self.renderer.set_stroke_preview(&[], &self.doc);
                 Err(error)
             }
         }
@@ -1352,7 +1352,7 @@ impl SketchApp {
 
     fn cancel_repeat(&mut self) {
         self.repeat = None;
-        self.renderer.set_repeat_preview(&[], &self.doc);
+        self.renderer.set_stroke_preview(&[], &self.doc);
     }
 
     fn apply_repeat(&mut self) {
@@ -1531,7 +1531,7 @@ impl SketchApp {
             let copied_ids: HashSet<_> = copies.iter().map(|(_, stroke)| stroke.id).collect();
             assert_eq!(copied_ids.len(), expected_copy_count);
             assert!(copied_ids.is_disjoint(&source_ids));
-            self.renderer.set_repeat_preview(
+            self.renderer.set_stroke_preview(
                 &copies
                     .iter()
                     .map(|(_, stroke)| stroke.clone())

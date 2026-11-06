@@ -198,6 +198,7 @@ impl SketchApp {
         }
         if self.line.draft.is_some()
             || self.fills.draft.is_some()
+            || self.hatch_draft.is_some()
             || self.placement.active
             || self.tutorial.practice.is_some()
             || self.tutorial.offer
