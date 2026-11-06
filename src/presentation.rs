@@ -281,21 +281,30 @@ mod tests {
     }
 
     #[test]
-    fn workspace_layout_roundtrips_open_width_and_inspector_tab() {
+    fn workspace_layout_roundtrips_expanded_collapsed_and_hidden_states() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("presentation.json");
-        let prefs = Preferences {
-            layout: LayoutPreferences {
-                inspector_open: false,
-                inspector_collapsed: true,
-                inspector_width: 410.0,
-                inspector_tab: InspectorTab::Layers,
-                canvas_strip_visible: false,
-            },
-            ..Default::default()
-        };
-        prefs.save(&path).unwrap();
-        assert_eq!(Preferences::load(&path).unwrap(), prefs);
+        for (inspector_open, inspector_collapsed) in [(true, false), (true, true), (false, false)] {
+            for inspector_tab in [
+                InspectorTab::Properties,
+                InspectorTab::Layers,
+                InspectorTab::References,
+                InspectorTab::ImagePlanes,
+            ] {
+                let prefs = Preferences {
+                    layout: LayoutPreferences {
+                        inspector_open,
+                        inspector_collapsed,
+                        inspector_width: 410.0,
+                        inspector_tab,
+                        canvas_strip_visible: false,
+                    },
+                    ..Default::default()
+                };
+                prefs.save(&path).unwrap();
+                assert_eq!(Preferences::load(&path).unwrap(), prefs);
+            }
+        }
     }
 
     #[test]
