@@ -118,7 +118,8 @@ impl SketchApp {
                         "Apply commits the moved-boundary contour as one undoable edit",
                         "one undo and redo restore the source and refreshed fill",
                         "the fill renderer pixel checks passed at three camera angles",
-                        "named layer masks retain inside coverage and remove outside coverage in GPU pixels"
+                        "named layer masks retain inside coverage and remove outside coverage in GPU pixels",
+                        "encoded GIF frames match still-render mask coverage and preserve the masked/unmasked comparison"
                     ],
                     "screen_capture": false,
                     "gpu": self.renderer.adapter
@@ -392,6 +393,49 @@ impl SketchApp {
         assert!(
             outside_without_mask > outside.saturating_add(60),
             "named mask did not remove outside coverage: masked={outside}, unmasked={outside_without_mask}"
+        );
+
+        let output = std::env::current_dir()
+            .unwrap()
+            .join("verification/named-layer-mask-video.gif");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(Some(masked)).unwrap();
+        sender.send(Some(unmasked)).unwrap();
+        drop(sender);
+        crate::app::video_export_ui::encode_gif(
+            receiver,
+            &output,
+            [600, 450],
+            2,
+            2,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .expect("named layer mask still frame encodes through the GIF video encoder");
+        use image::AnimationDecoder;
+        let frames = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(
+            std::fs::File::open(output).unwrap(),
+        ))
+        .unwrap()
+        .into_frames()
+        .collect_frames()
+        .unwrap();
+        assert_eq!(
+            frames.len(),
+            2,
+            "video encoder preserves both mask comparison frames"
+        );
+        let masked_video = frames[0].buffer().as_raw();
+        let unmasked_video = frames[1].buffer().as_raw();
+        let video_inside = sample_red(masked_video, Vec3::new(0.0, 0.0, 0.1));
+        let video_outside = sample_red(masked_video, Vec3::new(0.55, 0.0, 0.1));
+        let unmasked_video_outside = sample_red(unmasked_video, Vec3::new(0.55, 0.0, 0.1));
+        assert!(
+            video_inside > 150
+                && video_outside.saturating_add(60) < video_inside
+                && unmasked_video_outside > video_outside.saturating_add(60)
+                && video_inside.abs_diff(inside) <= 24
+                && video_outside.abs_diff(outside) <= 24,
+            "encoded video must preserve masked/unmasked coverage: inside={video_inside}, masked_outside={video_outside}, unmasked_outside={unmasked_video_outside}"
         );
     }
 
