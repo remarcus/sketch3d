@@ -528,7 +528,9 @@ impl SketchApp {
                 }
             });
     }
-    fn verify_custom_repeating_texture_render(&mut self) -> (usize, usize, usize) {
+    fn verify_custom_repeating_texture_render(
+        &mut self,
+    ) -> (usize, usize, Vec<(u32, u32, usize)>, usize) {
         let mask = image::RgbaImage::from_fn(4, 4, |x, y| {
             let covered = (x + 2 * y) % 4 < 2;
             image::Rgba([255, 255, 255, if covered { 255 } else { 0 }])
@@ -660,6 +662,32 @@ impl SketchApp {
             mapping_changed > 500,
             "captured planar mapping should visibly differ from stroke-following placement, got {mapping_changed} pixels"
         );
+        let mut mapping_multi_scale = Vec::new();
+        for render_size in [[640, 360], [1280, 720], [2560, 1440]] {
+            let captured_pixels = self
+                .renderer
+                .render_png_pixels(&doc, &camera, render_size, background, lighting)
+                .expect("captured planar texture renders at each verification scale");
+            let following_pixels = self
+                .renderer
+                .render_png_pixels(&following_doc, &camera, render_size, background, lighting)
+                .expect("stroke-following comparison renders at each verification scale");
+            let changed = captured_pixels
+                .chunks_exact(4)
+                .zip(following_pixels.chunks_exact(4))
+                .filter(|(captured, following)| {
+                    captured[..3]
+                        .iter()
+                        .zip(&following[..3])
+                        .any(|(a, b)| a.abs_diff(*b) > 24)
+                })
+                .count();
+            assert!(
+                changed > 500,
+                "captured mapping should differ from stroke-following at {render_size:?}, got {changed} pixels"
+            );
+            mapping_multi_scale.push((render_size[0], render_size[1], changed));
+        }
         let output = std::env::current_dir()
             .unwrap()
             .join("verification/sketch-072");
@@ -743,7 +771,12 @@ impl SketchApp {
             image::ColorType::Rgba8,
         )
         .expect("image-tip-only comparison render is saved");
-        (changed, mapping_changed, combined_changed)
+        (
+            changed,
+            mapping_changed,
+            mapping_multi_scale,
+            combined_changed,
+        )
     }
 
     pub(super) fn load_textures(&mut self) {
@@ -937,6 +970,7 @@ impl SketchApp {
                 let (
                     custom_repeating_texture_changed_pixels,
                     captured_mapping_changed_pixels,
+                    captured_mapping_multi_scale,
                     combined_grain_changed_pixels,
                 ) = self.verify_custom_repeating_texture_render();
                 std::fs::write(
@@ -959,6 +993,10 @@ impl SketchApp {
                             "offset": [0.23, -0.12],
                             "passed": captured_mapping_changed_pixels > 500,
                         },
+                        "captured_planar_multi_scale": {
+                            "renders": captured_mapping_multi_scale.iter().map(|(width, height, changed)| serde_json::json!({"size":[width,height],"changed_pixels_vs_stroke_following":changed})).collect::<Vec<_>>(),
+                            "passed": captured_mapping_multi_scale.iter().all(|(_, _, changed)| *changed > 500),
+                        },
                         "combined_tip_grain": {
                             "file": "combined-image-tip-grain-800x400.png",
                             "comparison_file": "image-tip-without-grain-800x400.png",
@@ -977,7 +1015,7 @@ impl SketchApp {
                     "checks": [
                         "texture study renders front and orbit views at 640x360, 1280x720, and 2560x1440",
                         "custom repeating alpha-mask image texture renders on the GPU and differs from a solid brush",
-                        "captured planar mapping with non-default rotation, independent scale, and offset differs from stroke-following placement",
+                        "captured planar mapping with non-default rotation, independent scale, and offset differs from stroke-following placement at three output sizes",
                         "repeating image grain changes rendered image-tip coverage compared with the same tip alone",
                         "texture settings survive transform, duplicate, native save/reopen, picking, erase, and undo",
                         "render artifacts are produced directly by the GPU renderer; no desktop screenshot was captured"
