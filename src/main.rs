@@ -429,6 +429,7 @@ fn main() -> eframe::Result {
                 | "--verify-obj-references"
                 | "--verify-camera-bookmarks"
                 | "--verify-artwork-animation"
+                | "--verify-fills-no-capture"
                 | "--verify-appearance-layout"
                 | "--record-capability-demo"
         )

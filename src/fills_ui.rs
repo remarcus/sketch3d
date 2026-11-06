@@ -1920,7 +1920,7 @@ fn cylinder_fill_frame(surface: CylinderFillSurface) -> (Vec3, Vec3) {
     )
 }
 
-fn refreshed_fill(doc: &Document, source: &Stroke) -> Result<Stroke, String> {
+pub(super) fn refreshed_fill(doc: &Document, source: &Stroke) -> Result<Stroke, String> {
     let mut mark = source.clone();
     let (fill, region) = mark.fill.as_mut().filter(|fill| fill.holes.is_empty())
         .and_then(|fill| fill.region_source.map(|region| (fill, region)))

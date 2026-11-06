@@ -102,9 +102,32 @@ impl SketchApp {
             self.dirty = false;
             self.request(Pending::FilledStudy);
             self.check_fill_pixels();
+            self.verify_fill_refresh_transaction();
             self.status="Filled shapes passed: concavity, draft safety, picking, groups, transforms, history, native save, and depth-tested outlines.".into();
         }
         if frame == 3 {
+            if std::env::args().any(|argument| argument == "--verify-fills-no-capture") {
+                let path = std::env::current_dir()
+                    .unwrap()
+                    .join("verification/fills-no-capture-report.json");
+                let report = serde_json::json!({
+                    "passed": true,
+                    "checks": [
+                        "planar fill refresh preview leaves source artwork and history unchanged",
+                        "Cancel restores the exact drawing without an undo entry",
+                        "Apply commits the moved-boundary contour as one undoable edit",
+                        "one undo and redo restore the source and refreshed fill",
+                        "the fill renderer pixel checks passed at three camera angles"
+                    ],
+                    "screen_capture": false,
+                    "gpu": self.renderer.adapter
+                });
+                std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+                self.fills.verification_frame = None;
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }
         assert!(frame < 100, "Fill screenshot timed out");
@@ -256,5 +279,127 @@ impl SketchApp {
             image::ColorType::Rgba8,
         )
         .unwrap();
+    }
+
+    fn verify_fill_refresh_transaction(&mut self) {
+        let saved_doc = self.doc.clone();
+        let saved_selected = self.selected.clone();
+        let saved_undo = self.undo.clone();
+        let saved_redo = self.redo.clone();
+        let saved_fills = std::mem::take(&mut self.fills);
+        let saved_dirty = self.dirty;
+        let saved_select_mode = self.select_mode;
+
+        let boundary = |right: f32| {
+            let corners = [
+                Vec3::new(-1.0, -1.0, 0.0),
+                Vec3::new(right, -1.0, 0.0),
+                Vec3::new(right, 1.0, 0.0),
+                Vec3::new(-1.0, 1.0, 0.0),
+            ];
+            (0..corners.len())
+                .map(|index| Stroke {
+                    guide_attachment: None,
+                    model_surface: None,
+                    curve: None,
+                    material: Default::default(),
+                    point_thickness: None,
+                    point_colors: None,
+                    modifiers: None,
+                    fill: None,
+                    group_id: None,
+                    layer_id: 1,
+                    id: index as u64 + 1,
+                    color: [0.12, 0.17, 0.20],
+                    gradient: None,
+                    radius: 0.012,
+                    brush: Default::default(),
+                    points: [corners[index], corners[(index + 1) % corners.len()]]
+                        .into_iter()
+                        .map(|position| Point {
+                            position,
+                            pressure: 0.7,
+                            tilt: None,
+                            time_ms: 0,
+                        })
+                        .collect(),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut source = crate::polygon::study().strokes.remove(0);
+        source.id = 50;
+        source.layer_id = 1;
+        source.color = [0.31, 0.52, 0.77];
+        source.brush.opacity = 0.63;
+        source.fill.as_mut().unwrap().region_source = Some(
+            crate::document::FillRegionSource::Planar(crate::document::PlanarFillRegionSource {
+                seed: Vec3::ZERO,
+                origin: Vec3::ZERO,
+                normal: Vec3::Z,
+                tangent: Vec3::X,
+                half_extent: Some(glam::Vec2::splat(2.0)),
+                boundary_layer: Some(1),
+                gap_tolerance: 0.0,
+            }),
+        );
+        self.doc = Document::default();
+        self.doc.strokes = boundary(1.0);
+        let original = crate::app::fills_ui::refreshed_fill(&self.doc, &source).unwrap();
+        self.doc.strokes = boundary(1.5);
+        self.doc.strokes.push(original.clone());
+        self.selected = HashSet::from([original.id]);
+        self.fills.draft = None;
+        let before_strokes = self.doc.strokes.clone();
+        let history_len = self.undo.len();
+
+        self.begin_fill_contour_edit(true);
+        let preview = self.fills.draft.as_ref().unwrap().mark.clone();
+        assert!(preview.points.iter().any(|point| point.position.x > 1.49));
+        assert_eq!(
+            self.doc.strokes, before_strokes,
+            "refresh preview must not mutate artwork"
+        );
+        assert_eq!(
+            self.undo.len(),
+            history_len,
+            "preview must not enter history"
+        );
+        self.finish_fill_contour_edit(false);
+        assert_eq!(
+            self.doc.strokes, before_strokes,
+            "cancel must preserve artwork exactly"
+        );
+        assert_eq!(
+            self.undo.len(),
+            history_len,
+            "cancel must not enter history"
+        );
+
+        self.begin_fill_contour_edit(true);
+        assert_eq!(self.fills.draft.as_ref().unwrap().mark, preview);
+        self.finish_fill_contour_edit(true);
+        assert_eq!(self.doc.strokes.last(), Some(&preview));
+        assert_eq!(
+            self.undo.len(),
+            history_len + 1,
+            "Apply must create one history edit"
+        );
+        self.undo();
+        assert_eq!(
+            self.doc.strokes, before_strokes,
+            "one undo restores the source fill"
+        );
+        self.redo();
+        assert_eq!(self.doc.strokes.last(), Some(&preview));
+
+        self.doc = saved_doc;
+        self.selected = saved_selected;
+        self.undo = saved_undo;
+        self.redo = saved_redo;
+        self.fills = saved_fills;
+        self.dirty = saved_dirty;
+        self.select_mode = saved_select_mode;
+        self.renderer.invalidate();
     }
 }

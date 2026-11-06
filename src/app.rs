@@ -2842,7 +2842,9 @@ impl SketchApp {
             app.verification_frame = None;
             app.placement.verification_frame = Some(0);
             app.load_fill_study();
-        } else if std::env::args().any(|a| a == "--verify-fills") {
+        } else if std::env::args()
+            .any(|a| a == "--verify-fills" || a == "--verify-fills-no-capture")
+        {
             app.verification_frame = None;
             app.fills.verification_frame = Some(0);
             app.load_fill_study();
