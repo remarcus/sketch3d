@@ -415,4 +415,27 @@ mod boundary_scope_tests {
         let hidden = find_region(&doc, plane, click, 0.0, None, None, &[]).unwrap();
         assert!((area(&hidden) - 4.0).abs() < 1e-4);
     }
+
+    #[test]
+    fn temporary_closing_segment_solves_a_gap_without_mutating_boundary_art() {
+        let mut doc = crate::document::Document::default();
+        doc.strokes = vec![
+            line(1, 1, Vec3::new(-1.0, -1.0, 0.0), Vec3::new(1.0, -1.0, 0.0)),
+            line(2, 1, Vec3::new(1.0, -1.0, 0.0), Vec3::new(1.0, 1.0, 0.0)),
+            line(3, 1, Vec3::new(1.0, 1.0, 0.0), Vec3::new(-1.0, 1.0, 0.0)),
+            line(4, 1, Vec3::new(-1.0, 1.0, 0.0), Vec3::new(-1.0, 0.1, 0.0)),
+            line(5, 1, Vec3::new(-1.0, -0.1, 0.0), Vec3::new(-1.0, -1.0, 0.0)),
+        ];
+        let before = doc.strokes.clone();
+        let plane = DrawingPlane::default();
+        let click = Vec3::ZERO;
+        assert!(find_region(&doc, plane, click, 0.0, None, None, &[]).is_err());
+        let guides = [(Vec3::new(-1.0, 0.1, 0.0), Vec3::new(-1.0, -0.1, 0.0))];
+        let closed = find_region(&doc, plane, click, 0.0, None, None, &guides).unwrap();
+        assert!((area(&closed) - 4.0).abs() < 1e-4);
+        assert_eq!(
+            doc.strokes, before,
+            "temporary guides are solver input, never document artwork"
+        );
+    }
 }
