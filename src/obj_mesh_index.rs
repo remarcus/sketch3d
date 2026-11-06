@@ -491,6 +491,7 @@ impl ObjMeshIndex {
         model: &ObjModel,
         point: Vec3,
         triangle_budget: usize,
+        ambiguous_as_miss: bool,
     ) -> Result<(Option<ObjMeshHit>, usize), String> {
         if !point.is_finite() || model.triangles.len() != self.adjacency.len() {
             return Ok((None, 0));
@@ -567,6 +568,9 @@ impl ObjMeshIndex {
             }
         }
         if ambiguous {
+            if ambiguous_as_miss {
+                return Ok((None, tested));
+            }
             return Err(
                 "Closest OBJ surface point is ambiguous across disconnected components".into(),
             );

@@ -38,6 +38,7 @@ pub struct Draft {
     pub offset: f32,
     pub resample_spacing: f32,
     pub keep_original: bool,
+    pub attach_to_model: bool,
     pub convert_curves: bool,
     pub captured_camera: Camera,
     pub error: Option<String>,
@@ -90,6 +91,7 @@ impl Draft {
             offset: 0.0,
             resample_spacing: 0.25,
             keep_original: false,
+            attach_to_model: false,
             convert_curves: false,
             captured_camera: camera,
             error: None,
@@ -222,6 +224,13 @@ impl Draft {
             self.reset_failed_preview(&error);
             return Err(error);
         }
+        if self.attach_to_model
+            && (resource.locked || model.source_format != crate::obj_reference::ObjSourceFormat::Obj)
+        {
+            let error = "Attachment requires a visible, unlocked OBJ reference.";
+            self.reset_failed_preview(error);
+            return Err(error.into());
+        }
         let result = self.build_preview_with_target(
             ProjectionTarget::Obj(ObjProjectionTarget {
                 resource,
@@ -286,6 +295,7 @@ impl Draft {
             target,
             ProjectionTarget::Curved(_) | ProjectionTarget::Obj(_)
         );
+        let attach = self.attach_to_model && matches!(target, ProjectionTarget::Obj(_));
         if conforming_target
             && (!self.resample_spacing.is_finite()
                 || !(0.05..=2.0).contains(&self.resample_spacing))
@@ -310,7 +320,18 @@ impl Draft {
         let mut preview = Vec::with_capacity(self.before.len());
         let mut kept_original_samples = 0;
         let mut obj_triangle_tests = 0usize;
-        for source in &self.before {
+        'strokes: for source in &self.before {
+            if attach
+                && (source.curve.is_some() && !self.convert_curves
+                    || source.brush.flow.enabled
+                    || source.brush.dabs.enabled
+                    || source.brush.tip_asset_id != 0
+                    || source.brush.texture.anchor_mode
+                        == crate::texture::TextureAnchorMode::CapturedPlanar)
+            {
+                preview.push(source.clone());
+                continue;
+            }
             let mut stroke = source.clone();
             if stroke.curve.is_some() && !self.convert_curves {
                 return Err("Selected semantic curves need the explicit Convert curves option before reprojection.".into());
@@ -323,11 +344,16 @@ impl Draft {
             }
             let mut first_surface_normal = None;
             let mut previous_mesh_triangle = None;
+            let mut anchors = Vec::new();
             for point in &mut stroke.points {
                 let original = point.position;
-                let Some((projected, normal, mesh_triangle)) =
+                let Some((projected, normal, mesh_hit)) =
                     self.project_sample(target, original, rect, &mut obj_triangle_tests)?
                 else {
+                    if attach {
+                        preview.push(source.clone());
+                        continue 'strokes;
+                    }
                     if self.keep_original {
                         kept_original_samples += 1;
                         previous_mesh_triangle = None;
@@ -339,10 +365,20 @@ impl Draft {
                         ProjectionTarget::Obj(_) => "A source sample misses the OBJ target; enable Keep Original or choose another projection.",
                     }.into());
                 };
+                let mesh_triangle = mesh_hit.map(|hit| hit.triangle_index);
                 if let (ProjectionTarget::Obj(target), Some(previous), Some(current)) =
                     (target, previous_mesh_triangle, mesh_triangle)
                 {
-                    if !target.index.triangles_connected(previous, current) {
+                    let connected = if attach {
+                        target.index.triangles_adjacent(previous, current)
+                    } else {
+                        target.index.triangles_connected(previous, current)
+                    };
+                    if !connected {
+                        if attach {
+                            preview.push(source.clone());
+                            continue 'strokes;
+                        }
                         if self.keep_original {
                             kept_original_samples += 1;
                             previous_mesh_triangle = Some(current);
@@ -351,9 +387,22 @@ impl Draft {
                         return Err("Projection crosses to a disconnected OBJ component or seam; enable Keep Original or select a continuous region.".into());
                     }
                 }
-                let position = projected + normal * self.offset;
+                let position = if attach {
+                    projected
+                } else {
+                    projected + normal * self.offset
+                };
                 if !position.is_finite() || position.abs().max_element() > 10000.0 {
+                    if attach {
+                        preview.push(source.clone());
+                        continue 'strokes;
+                    }
                     return Err("Reprojected point exceeds the ±10000 world-unit limit".into());
+                }
+                if attach {
+                    anchors.extend(
+                        mesh_hit.map(crate::document::model_references::ModelInkAnchor::from),
+                    );
                 }
                 point.position = position;
                 first_surface_normal.get_or_insert(normal);
@@ -366,6 +415,10 @@ impl Draft {
                     .map(|pair| pair[0].position.distance(pair[1].position))
                     .sum();
                 if !length.is_finite() || length <= 1.0e-6 {
+                    if attach {
+                        preview.push(source.clone());
+                        continue 'strokes;
+                    }
                     return Err("Projection collapses a stroke to a degenerate point; revise the target or keep the original samples.".into());
                 }
             }
@@ -398,6 +451,16 @@ impl Draft {
             if !stroke.brush.is_valid() {
                 return Err("Projected brush frame is invalid".into());
             }
+            if let (true, ProjectionTarget::Obj(target)) = (attach, target) {
+                stroke.guide_attachment = None;
+                stroke.model_surface = Some(crate::document::ModelSurfacePatch {
+                    triangles: Vec::new(),
+                    attachment: Some(crate::document::model_references::ModelInkAttachment {
+                        model_id: target.resource.id,
+                        anchors,
+                    }),
+                });
+            }
             preview.push(stroke);
         }
         Ok((preview, kept_original_samples))
@@ -409,7 +472,7 @@ impl Draft {
         original: Vec3,
         rect: Rect,
         obj_triangle_tests: &mut usize,
-    ) -> Result<Option<(Vec3, Vec3, Option<u32>)>, String> {
+    ) -> Result<Option<(Vec3, Vec3, Option<crate::obj_mesh_index::ObjMeshHit>)>, String> {
         match target {
             ProjectionTarget::Plane(plane) => {
                 let (_, _, normal) = plane.basis();
@@ -474,6 +537,7 @@ impl Draft {
                             target.model,
                             local_point,
                             remaining,
+                            self.attach_to_model,
                         )?;
                         *obj_triangle_tests = obj_triangle_tests
                             .checked_add(tested)
@@ -515,7 +579,7 @@ impl Draft {
                 Ok(Some((
                     world_position,
                     world_normal,
-                    Some(hit.triangle_index),
+                    Some(hit),
                 )))
             }
         }
@@ -524,6 +588,11 @@ impl Draft {
     pub fn edit(&self, doc: &Document) -> Result<Edit, String> {
         if self.preview == self.before {
             return Err("Reprojection produces no changes.".into());
+        }
+        if self.preview.iter().any(|stroke| stroke.attached_model().is_some())
+            && (!doc.animation.is_empty() || doc.animation.two_bone_rig.is_some())
+        {
+            return Err("Model attachment requires static artwork.".into());
         }
         if let Some((guide_id, expected_geometry)) = &self.target_guide_snapshot {
             let target_is_unchanged = matches!(self.target, TargetChoice::SavedCurvedGuide(id) if id == *guide_id)

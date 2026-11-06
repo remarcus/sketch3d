@@ -13,7 +13,17 @@ impl SketchApp {
                 if active_plane.is_some() {
                     draft.target = TargetChoice::ActivePlanarGuide;
                 }
-                if let Ok(plane) = draft.target_plane(&self.doc, active_plane) {
+                if let Some(id) = self.doc.active_model_reference {
+                    draft.target = TargetChoice::ObjReference(id);
+                    let _ = rebuild_model_preview(
+                        &mut draft,
+                        &self.doc,
+                        &self.obj_reference_models,
+                        &mut self.obj_surface_indices,
+                        id,
+                        self.last_canvas_rect,
+                    );
+                } else if let Ok(plane) = draft.target_plane(&self.doc, active_plane) {
                     let _ = draft.rebuild(plane, self.last_canvas_rect);
                 }
                 self.finish();
@@ -182,15 +192,24 @@ impl SketchApp {
                     )
                     .changed();
             });
-            changed |= super::ui_style::numeric_row(
-                ui,
-                "Normal offset",
-                "reproject-offset",
-                &mut draft.offset,
-                Some(-100.0..=100.0),
-                "wu",
-            )
-            .changed();
+            let model_target = matches!(draft.target, TargetChoice::ObjReference(_));
+            if model_target {
+                changed |= ui
+                    .checkbox(&mut draft.attach_to_model, "Attach projected strokes to model")
+                    .changed();
+            }
+            let attach = model_target && draft.attach_to_model;
+            if !attach {
+                changed |= super::ui_style::numeric_row(
+                    ui,
+                    "Normal offset",
+                    "reproject-offset",
+                    &mut draft.offset,
+                    Some(-100.0..=100.0),
+                    "wu",
+                )
+                .changed();
+            }
             if matches!(
                 draft.target,
                 TargetChoice::SavedCurvedGuide(_) | TargetChoice::ObjReference(_)
@@ -204,15 +223,31 @@ impl SketchApp {
                     .changed();
                 ui.small("Surface targets add samples along the original path before projection, preserving pressure, tilt, timing, local color, and thickness. The preview is capped at 65,536 samples.");
             }
-            changed |= ui
-                .checkbox(
-                    &mut draft.keep_original,
-                    "Keep original samples when projection misses",
-                )
-                .changed();
+            if !attach {
+                changed |= ui
+                    .checkbox(
+                        &mut draft.keep_original,
+                        "Keep original samples when projection misses",
+                    )
+                    .changed();
+            }
             if matches!(draft.target, TargetChoice::SavedCurvedGuide(_)) {
                 ui.small("Cylinder and Sphere targets use the nearest surface point or the first forward hit along captured view rays. Samples through cylinder ends or ambiguous center points report a miss; keeping them can leave segments crossing the surface.");
-            } else if matches!(draft.target, TargetChoice::ObjReference(_)) {
+            } else if attach {
+                let skipped: Vec<_> = draft
+                    .preview
+                    .iter()
+                    .filter(|stroke| stroke.attached_model().is_none())
+                    .map(|stroke| stroke.id.to_string())
+                    .collect();
+                ui.small("Attachment needs a continuous projection across neighboring OBJ faces. Choose a smaller sample spacing for small faces.");
+                if !skipped.is_empty() && !changed {
+                    ui.colored_label(
+                        ui_style::colors(ui.ctx()).warning,
+                        format!("Strokes left in place (no continuous projection or unsupported brush): {}", skipped.join(", ")),
+                    );
+                }
+            } else if model_target {
                 ui.small("OBJ targets use the closest triangle or first forward ray hit. Projection rejects ambiguous nearest points and disconnected triangle transitions; tangent rays and mesh gaps count as misses.");
             } else if draft.mode == ProjectionMode::CapturedViewRay {
                 ui.small("Samples outside the captured view or without a forward target hit report a miss.");
@@ -269,43 +304,14 @@ impl SketchApp {
                         draft.rebuild_on_curved_guide(doc, id, rect)
                     }
                     TargetChoice::ObjReference(id) => {
-                        let resource = doc
-                            .model_references
-                            .iter()
-                            .find(|resource| resource.id == id);
-                        let model = self.obj_reference_models.get(&id);
-                        let mut index_error = None;
-                        if let std::collections::hash_map::Entry::Vacant(entry) =
-                            self.obj_surface_indices.entry(id)
-                        {
-                            if let Some(model) = model {
-                                match crate::obj_mesh_index::ObjMeshIndex::new(model) {
-                                    Ok(index) => {
-                                        entry.insert(index);
-                                    }
-                                    Err(error) => index_error = Some(error),
-                                }
-                            }
-                        }
-                        let index = self.obj_surface_indices.get(&id);
-                        if let Some(error) = index_error {
-                            draft.reject_preview(&error);
-                            Err(error)
-                        } else if let (Some(resource), Some(model), Some(index)) =
-                            (resource, model, index)
-                        {
-                            draft.rebuild_on_obj_reference(resource, model, index, rect)
-                        } else {
-                            let error = if resource.is_none() {
-                                "Selected OBJ target no longer exists"
-                            } else if model.is_none() {
-                                "Selected OBJ target is not loaded"
-                            } else {
-                                "Selected OBJ target index is unavailable"
-                            };
-                            draft.reject_preview(error);
-                            Err(error.into())
-                        }
+                        rebuild_model_preview(
+                            draft,
+                            doc,
+                            &self.obj_reference_models,
+                            &mut self.obj_surface_indices,
+                            id,
+                            rect,
+                        )
                     }
                     _ => draft
                         .target_plane(doc, active_plane)
@@ -371,4 +377,31 @@ fn target_label(
             .map(|entry| entry.1.clone())
             .unwrap_or_else(|| "Missing OBJ reference".into()),
     }
+}
+
+fn rebuild_model_preview(
+    draft: &mut Draft,
+    doc: &Document,
+    models: &std::collections::HashMap<u64, crate::obj_reference::ObjModel>,
+    indices: &mut std::collections::HashMap<u64, crate::obj_mesh_index::ObjMeshIndex>,
+    id: u64,
+    rect: Rect,
+) -> Result<(), String> {
+    let result = (|| {
+        let resource = doc
+            .model_references
+            .iter()
+            .find(|resource| resource.id == id)
+            .ok_or("Selected OBJ target no longer exists")?;
+        let model = models.get(&id).ok_or("Selected OBJ target is not loaded")?;
+        let index = match indices.entry(id) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(crate::obj_mesh_index::ObjMeshIndex::new(model)?),
+        };
+        draft.rebuild_on_obj_reference(resource, model, index, rect)
+    })();
+    if let Err(error) = &result {
+        draft.reject_preview(error);
+    }
+    result
 }
