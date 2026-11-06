@@ -1,0 +1,101 @@
+{
+  "app_commit": "7678420ca252730e11a9928ba6e63343145d2d0d",
+  "capture_export_action": null,
+  "capture_import_action": false,
+  "capture_insert_action": false,
+  "capture_mode": "deterministic hidden in-app replay through canvas_input",
+  "capture_size": [
+    1280,
+    720
+  ],
+  "clip": "dusk-house",
+  "cursor_cue": "A synthetic pointer ring is labeled DRAW while drawing, SELECT while editing, and ORBIT during camera navigation; persistent text discloses synthetic input and no pressure data.",
+  "dpi_percent": 100,
+  "duration_seconds": 12,
+  "encoding": {
+    "gif": "Accelerated six-second preview of the same 60 replay checkpoints; plays once without a loop extension. Use the captioned MP4 master for normal-speed instruction.",
+    "mp4": "Captured full-viewport RGBA frames; Blender H.264 fallback; 10 fps; repeated frame holds preserve the 12s duration.",
+    "poster": "Selected full-resolution action frame encoded as PNG."
+  },
+  "fixture": "Editable dusk house starter scene",
+  "fixture_version": 1,
+  "format": "spatial-sketch-capability-demo",
+  "frame_rate": 10,
+  "gif_size": [
+    640,
+    360
+  ],
+  "input_note": "This deterministic tutorial uses synthetic pressure=None pointer samples. Drawing, selection, transform, undo/redo, native save, and native reopen use production app handlers. MP4 checkpoints are held to make the action steps readable; no tablet pressure or latency was measured.",
+  "license_or_provenance": "Original procedural Sketch3D scene with editable planar fills, graphite linework, window-light fills, a ground shadow, and saved wall, roof, and chimney guides.",
+  "manifest_version": 1,
+  "mp4_frame_count": 120,
+  "outputs": {
+    "artwork_still": {
+      "bytes": 127076,
+      "dimensions": [
+        1920,
+        1080
+      ],
+      "exported_by": "production artwork image export",
+      "file": "dusk-house-still.png"
+    },
+    "captions": {
+      "bytes": 560,
+      "file": "dusk-house.en.vtt",
+      "format": "WebVTT",
+      "timing_reviewed": true
+    },
+    "gif": {
+      "bytes": 2882754,
+      "file": "dusk-house.gif"
+    },
+    "mp4": {
+      "bytes": 687020,
+      "file": "dusk-house.mp4"
+    },
+    "native_sample": {
+      "bytes": 237236,
+      "file": "dusk-house-saved.sketch.json",
+      "saved_and_reopened_through_production_handlers": true
+    },
+    "poster": {
+      "alt": "A clear two-story dusk house with amber windows, a cool shaded side, a ground shadow, and a graphite detail.",
+      "bytes": 191657,
+      "file": "dusk-house.png",
+      "frame_index": 57,
+      "frame_index_base": 0
+    },
+    "sha256": {
+      "mp4": "93bf7e3b7f8a01e96484a2bf0410633f69995e4e559ff97bd83cd179bfb7cf9e",
+      "saved.sketch.json": "d731728d173e5d8ac5d61460cc356c951dbdfe1796273054057fa679e2c6282c",
+      "en.vtt": "7fb7789e163f0b3bf5c48e9a54631f77305c41f9d97fa9be5c01ffdf3aa45dc8",
+      "png": "38b9bbbdada0e3505b56eac92f45fb2ac4d0c8f28adb1fb977962aeb0da5a7af",
+      "gif": "61d9e1f94ff88708e71c3c3ac077e05a9cea7ac7d77d417716385382ec8e0f40",
+      "still.png": "70a576b5b355a83bcb844587d2a1719416e3e7534e3e3c0ec57e9b6bdd6899dc"
+    },
+    "gif_preview": "Accelerated 6-second preview; use the MP4 and timed VTT for normal-speed playback."
+  },
+  "prepared_scene_export": null,
+  "recorded_unix_seconds": 1793970519,
+  "review": {
+    "captions_timing_checked": true,
+    "intended_readme_surface_checked": true,
+    "loop_boundary_checked": true,
+    "notes": "Reviewed the 12-second MP4 at representative action checkpoints and all 60 GIF checkpoints in sequence. Captions match the draw, select/move, orbit, save/reopen, and artwork-only sections. The poster and full-resolution still show the intended colors; the GIF plays once with a deliberate artwork-only ending. The README preview and links were checked, and no private content is visible.",
+    "private_content_checked": true,
+    "reviewed": true,
+    "reviewer": "Codex"
+  },
+  "shot_steps": [
+    "Draw a graphite accent on the saved front-wall guide through production canvas input.",
+    "Save and reopen the edited native scene through production document handlers, then orbit to reveal its depth.",
+    "Export a full-resolution still through the artwork image exporter and finish in artwork-only view."
+  ],
+  "source_tree_dirty": false,
+  "theme": "Dark",
+  "viewport": [
+    1280,
+    720
+  ],
+  "window_visible": false
+}
