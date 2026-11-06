@@ -742,6 +742,52 @@ mod tests {
     }
 
     #[test]
+    fn dense_scene_region_queries_return_stable_bounded_hits() {
+        let camera = Camera {
+            yaw: 0.0,
+            pitch: 0.0,
+            ..Camera::default()
+        };
+        let canvas = canvas();
+        let center = screen_point(&camera, canvas, Vec3::ZERO);
+        let region = [
+            Pos2::new(center.x - 40.0, center.y - 40.0),
+            Pos2::new(center.x + 40.0, center.y - 40.0),
+            Pos2::new(center.x + 40.0, center.y + 40.0),
+            Pos2::new(center.x - 40.0, center.y + 40.0),
+        ];
+        let strokes = (0..5_000)
+            .map(|index| {
+                let column = (index % 100) as f32 - 50.0;
+                let row = (index / 100) as f32 - 25.0;
+                stroke(
+                    index as u64 + 1,
+                    1,
+                    None,
+                    Vec3::new(column * 0.15, row * 0.15, 0.0),
+                )
+            })
+            .collect();
+        let doc = Document {
+            strokes,
+            ..Document::default()
+        };
+
+        let hits = region_hit_ids(&doc, &camera, canvas, &region, false, true, true).unwrap();
+        let repeated = region_hit_ids(&doc, &camera, canvas, &region, false, true, true).unwrap();
+        assert_eq!(hits, repeated, "dense-scene query is deterministic");
+        assert!(
+            hits.contains(&2_551),
+            "the stroke at the region center is selected"
+        );
+        assert!(
+            !hits.is_empty() && hits.len() < 500,
+            "small lasso should return a bounded subset of 5,000 strokes, got {}",
+            hits.len()
+        );
+    }
+
+    #[test]
     fn screen_radius_is_stable_across_projection_modes_and_zoom_levels() {
         let canvas = canvas();
         for projection in [Projection::Perspective, Projection::Orthographic] {
