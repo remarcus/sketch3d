@@ -30,6 +30,9 @@ struct SceneUniform {
     camera: [f32; 4],
     background: [f32; 4],
     resolution: [f32; 4],
+    local_light_position: [f32; 4],
+    local_light_color: [f32; 4],
+    local_light_shadow: [f32; 4],
 }
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -423,6 +426,9 @@ impl SceneRenderer {
                 camera: [0.0; 4],
                 background: [0.0; 4],
                 resolution: [1.0, 1.0, 0.0, 0.0],
+                local_light_position: [0.0; 4],
+                local_light_color: [0.0; 4],
+                local_light_shadow: [0.0; 4],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -2610,8 +2616,9 @@ impl SceneRenderer {
             .filter(|s| doc.visible(s))
             .filter_map(|s| self.meshes.get(&s.id)?.bounds)
             .reduce(|(lo, hi), (min, max)| (lo.min(min), hi.max(max)));
-        let shadow_enabled = settings.shadows && bounds.is_some();
-        let fit = bounds.map(|(min, max)| lighting::shadow_fit(min, max, settings));
+        let local_shadow_enabled = doc.local_light.enabled && doc.local_light.shadows && bounds.is_some();
+        let shadow_enabled = (settings.shadows || local_shadow_enabled) && bounds.is_some();
+        let fit = bounds.map(|(min, max)| if local_shadow_enabled { lighting::local_shadow_fit(min, max, doc.local_light.position) } else { lighting::shadow_fit(min, max, settings) });
         let light = settings.direction();
         let uniform = SceneUniform {
             view: camera
@@ -2642,6 +2649,9 @@ impl SceneRenderer {
                 1.0,
             ],
             resolution: [size[0] as f32, size[1] as f32, 0.0, 0.0],
+            local_light_position: [doc.local_light.position.x, doc.local_light.position.y, doc.local_light.position.z, doc.local_light.range],
+            local_light_color: [doc.local_light.color[0], doc.local_light.color[1], doc.local_light.color[2], if doc.local_light.enabled { doc.local_light.intensity } else { 0.0 }],
+            local_light_shadow: [f32::from(local_shadow_enabled), 0.0, 0.0, 0.0],
         };
         self.state
             .queue
@@ -3173,8 +3183,9 @@ impl SceneRenderer {
             .iter()
             .filter_map(|(_, mesh)| mesh.bounds)
             .reduce(|(lo, hi), (min, max)| (lo.min(min), hi.max(max)));
-        let shadow_enabled = settings.shadows && bounds.is_some();
-        let fit = bounds.map(|(min, max)| lighting::shadow_fit(min, max, settings));
+        let local_shadow_enabled = doc.local_light.enabled && doc.local_light.shadows && bounds.is_some();
+        let shadow_enabled = (settings.shadows || local_shadow_enabled) && bounds.is_some();
+        let fit = bounds.map(|(min, max)| if local_shadow_enabled { lighting::local_shadow_fit(min, max, doc.local_light.position) } else { lighting::shadow_fit(min, max, settings) });
         let light = settings.direction();
         let uniform = SceneUniform {
             view: camera
@@ -3207,6 +3218,9 @@ impl SceneRenderer {
                 ]
             }),
             resolution: [size[0] as f32, size[1] as f32, 0.0, 0.0],
+            local_light_position: [doc.local_light.position.x, doc.local_light.position.y, doc.local_light.position.z, doc.local_light.range],
+            local_light_color: [doc.local_light.color[0], doc.local_light.color[1], doc.local_light.color[2], if doc.local_light.enabled { doc.local_light.intensity } else { 0.0 }],
+            local_light_shadow: [f32::from(local_shadow_enabled), 0.0, 0.0, 0.0],
         };
         self.state
             .queue

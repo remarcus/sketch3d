@@ -124,9 +124,30 @@ pub fn shadow_fit(min: Vec3, max: Vec3, lighting: Lighting) -> ShadowFit {
         depth_span: span.z,
     }
 }
+
+pub fn local_shadow_fit(min: Vec3, max: Vec3, position: Vec3) -> ShadowFit {
+    let center = (min + max) * 0.5;
+    let mut direction = (center - position).normalize_or_zero();
+    if direction.length_squared() < 1.0e-6 { direction = Vec3::Z; }
+    let up = if direction.dot(Vec3::Y).abs() > 0.95 { Vec3::Z } else { Vec3::Y };
+    let view = Mat4::look_to_rh(position, direction, up);
+    let radius = [min.x, max.x].into_iter().flat_map(|x| [min.y, max.y].into_iter().flat_map(move |y| [min.z, max.z].into_iter().map(move |z| Vec3::new(x,y,z))))
+        .map(|point| point.distance(position)).fold(0.5_f32, f32::max);
+    let far = (radius * 1.2).max(0.6);
+    ShadowFit {
+        matrix: Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.05, far) * view,
+        depth_span: far - 0.05,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn point_shadow_fit_is_finite_at_scene_center() {
+        let bounds = Vec3::splat(2.0);
+        let fit = local_shadow_fit(-bounds, bounds, Vec3::ZERO);
+        assert!(fit.matrix.is_finite());
+    }
     #[test]
     fn fit_contains_casters_and_ground_projections_at_extreme_angles() {
         for (min, max) in [

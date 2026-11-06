@@ -16,6 +16,7 @@ impl SketchApp {
         let grain_before = self.presentation.preferences.grain;
         let toon_before = self.presentation.preferences.toon_shading;
         let effects_before = self.presentation.preferences.post_effects;
+        let mut local_light = self.doc.local_light;
         egui::Window::new("Scene lighting").open(&mut self.show_scene).default_width(300.0)
             .max_height((ctx.screen_rect().height()-100.0).max(200.0)).vscroll(true)
             .anchor(egui::Align2::RIGHT_TOP,egui::vec2(-255.0,60.0)).show(ctx,|ui| {
@@ -34,6 +35,20 @@ impl SketchApp {
                     self.presentation.preferences.grain = 0.0;
                 }
                 ui.checkbox(&mut self.presentation.preferences.toon_shading, "Toon shading (4 light bands)");
+                ui_style::section(ui, "Local point light");
+                ui.checkbox(&mut local_light.enabled, "Enable local light");
+                ui.add_enabled_ui(local_light.enabled, |ui| {
+                    for (index, axis) in ["X", "Y", "Z"].iter().enumerate() {
+                        ui_style::numeric_row(ui, &format!("Position {axis}"), ("local-light-position", index), &mut local_light.position[index], Some(-10_000.0..=10_000.0), "wu");
+                    }
+                    for (index, channel) in ["R", "G", "B"].iter().enumerate() {
+                        ui_style::slider_row(ui, &format!("Color {channel}"), ("local-light-color", index), &mut local_light.color[index], 0.0..=1.0, 100.0, "%");
+                    }
+                    ui_style::slider_row(ui, "Intensity", "local-light-intensity", &mut local_light.intensity, 0.0..=4.0, 100.0, "%");
+                    ui_style::slider_row(ui, "Range", "local-light-range", &mut local_light.range, 0.1..=1000.0, 1.0, "wu");
+                    ui.checkbox(&mut local_light.shadows, "Cast local shadows");
+                    ui.small("Local shadows use one bounded 2048 px shadow pass. Emissive marks keep their stored glow.");
+                });
                 ui_style::section(ui, "Post-processing");
                 let effects = &mut self.presentation.preferences.post_effects;
                 ui_style::slider_row(ui, "Glow", "effect-glow", &mut effects.glow, 0.0..=1.0, 100.0, "%");
@@ -70,8 +85,49 @@ impl SketchApp {
                     });
                 });
                 if ui.button("Reset scene lighting").clicked() {*light=Lighting::default();}
-                ui.separator();ui.small("Lighting and ground reset on restart. Background uses Remember background. Native Save, recovery, and GLB export contain artwork only. The ground is not paintable or selectable; use a drawing guide for ink.");
+                ui.separator();ui.small("Local light settings save with the drawing. Directional lighting and ground remain presentation settings. The ground is not paintable or selectable; use a drawing guide for ink.");
             });
+        if local_light.enabled && self.last_canvas_rect.is_positive() {
+            if let Some((screen, _)) = crate::gizmo::project(&self.camera, self.last_canvas_rect, local_light.position) {
+                egui::Area::new(egui::Id::new("local-point-light-handle"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(screen - egui::vec2(10.0, 10.0))
+                    .show(ctx, |ui| {
+                        let response = ui.add(egui::Button::new("✦").fill(egui::Color32::from_rgb(255, 184, 74)).sense(egui::Sense::click_and_drag()));
+                        response.clone().on_hover_text("Drag to move the local light in the camera-facing plane.");
+                        if response.drag_started() { self.local_light_drag_before = Some(self.doc.local_light); }
+                        if response.dragged() {
+                            if let Some(pointer) = response.interact_pointer_pos() {
+                                if let Some(position) = crate::gizmo::plane_hit(&self.camera, self.last_canvas_rect, pointer, local_light.position, self.camera.basis().2) {
+                                    local_light.position = position;
+                                    self.doc.local_light.position = position;
+                                    self.renderer.invalidate();
+                                }
+                            }
+                        }
+                        if response.drag_stopped() {
+                            if let Some(before) = self.local_light_drag_before.take() {
+                                let after = self.doc.local_light;
+                                if before != after {
+                                    self.undo.push(Edit::LocalLight { before, after });
+                                    self.redo.clear();
+                                    self.dirty = true;
+                                    self.record_recovery_edit_labeled("Move local point light");
+                                }
+                            }
+                        }
+                    });
+            }
+        }
+        if local_light != self.doc.local_light {
+            let before = self.doc.local_light;
+            self.doc.local_light = local_light;
+            self.undo.push(Edit::LocalLight { before, after: local_light });
+            self.redo.clear();
+            self.renderer.invalidate();
+            self.dirty = true;
+            self.record_recovery_edit_labeled("Local point light");
+        }
         if self.presentation.preferences.grain != grain_before
             || self.presentation.preferences.toon_shading != toon_before
             || self.presentation.preferences.post_effects != effects_before

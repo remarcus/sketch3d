@@ -113,6 +113,7 @@ pub(super) fn build_export_document_snapshot(
         active_model_reference: None,
         brush_tip_assets: Vec::new(),
         animation: Default::default(),
+        local_light: document.local_light,
         measurements: Vec::new(),
         strokes: document
             .strokes

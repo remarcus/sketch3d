@@ -701,6 +701,7 @@ pub struct SketchApp {
     point_multi_drag: Option<point_edit_ui::MultiPointRegionDrag>,
     reprojection_draft: Option<crate::reprojection::Draft>,
     last_canvas_rect: Rect,
+    local_light_drag_before: Option<crate::document::LocalLight>,
     point_verification_frame: Option<u32>,
     active: Option<u64>,
     active_started_at: Option<Instant>,
@@ -2351,6 +2352,7 @@ impl SketchApp {
             point_multi_drag: None,
             reprojection_draft: None,
             last_canvas_rect: Rect::NOTHING,
+            local_light_drag_before: None,
             point_verification_frame: std::env::args()
                 .any(|arg| arg == "--verify-point-edit")
                 .then_some(0),

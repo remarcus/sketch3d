@@ -5,6 +5,9 @@ struct SceneUniform {
     settings: vec4<f32>,
     shadow: vec4<f32>,
     camera: vec4<f32>,
+    local_light_position: vec4<f32>,
+    local_light_color: vec4<f32>,
+    local_light_shadow: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> scene: SceneUniform;

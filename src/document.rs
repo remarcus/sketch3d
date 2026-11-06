@@ -1382,9 +1382,39 @@ pub struct Document {
     /// Editable artwork keyframes. This is separate from construction history.
     #[serde(default)]
     pub animation: crate::animation::ArtworkAnimation,
+    /// Optional local point light used by shaded materials and saved with the scene.
+    #[serde(default)]
+    pub local_light: LocalLight,
     /// Pinned world-space measurements shown as drawing annotations.
     #[serde(default)]
     pub measurements: Vec<MeasurementAnnotation>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalLight {
+    pub enabled: bool,
+    pub position: glam::Vec3,
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub range: f32,
+    pub shadows: bool,
+}
+
+impl Default for LocalLight {
+    fn default() -> Self {
+        Self { enabled: false, position: glam::Vec3::new(2.0, 3.0, 2.0), color: [1.0, 0.72, 0.38], intensity: 1.0, range: 8.0, shadows: false }
+    }
+}
+
+impl LocalLight {
+    pub fn validate(self) -> Result<(), String> {
+        if !self.position.is_finite() || self.position.abs().max_element() > 10_000.0
+            || self.color.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+            || !self.intensity.is_finite() || !(0.0..=4.0).contains(&self.intensity)
+            || !self.range.is_finite() || !(0.1..=1_000.0).contains(&self.range)
+        { return Err("Local light settings are outside supported limits".into()); }
+        Ok(())
+    }
 }
 
 /// A persisted distance and angle annotation captured in a planar frame.
@@ -1428,6 +1458,7 @@ impl Default for Document {
             brush_tip_assets: Vec::new(),
             linked_stroke_groups: LinkedStrokeGroups::default(),
             animation: crate::animation::ArtworkAnimation::default(),
+            local_light: LocalLight::default(),
             measurements: Vec::new(),
         }
     }
@@ -1965,6 +1996,7 @@ impl Document {
         }
         crate::image_planes::validate_catalog(&doc.image_planes)?;
         crate::brush_tip::validate_catalog(&doc.brush_tip_assets)?;
+        doc.local_light.validate()?;
         let tip_assets: std::collections::HashMap<_, _> = doc
             .brush_tip_assets
             .iter()
@@ -2236,6 +2268,7 @@ mod tests {
             s.brush.dynamics.tilt_orientation = true;
             s.points[0].tilt = Some(Vec3::X);
             let doc = Document {
+                local_light: LocalLight::default(),
                 linked_stroke_groups: Default::default(),
                 color_swatches: Default::default(),
                 layer_folders: Vec::new(),
@@ -2262,6 +2295,7 @@ mod tests {
     fn legacy_documents_upgrade_without_changing_ink() {
         let original = stroke();
         let mut old = serde_json::to_value(Document {
+            local_light: LocalLight::default(),
             linked_stroke_groups: Default::default(),
             color_swatches: Default::default(),
             layer_folders: Vec::new(),
@@ -2385,6 +2419,7 @@ mod tests {
             let mut s = stroke();
             s.brush = brush;
             let doc = Document {
+                local_light: LocalLight::default(),
                 linked_stroke_groups: Default::default(),
                 color_swatches: Default::default(),
                 layer_folders: Vec::new(),
@@ -2424,6 +2459,7 @@ mod tests {
     fn rejects_invalid_documents() {
         assert!(Document::from_json("{\"version\":99,\"strokes\":[]}").is_err());
         let mut doc = Document {
+            local_light: LocalLight::default(),
             linked_stroke_groups: Default::default(),
             color_swatches: Default::default(),
             layer_folders: Vec::new(),
@@ -2453,6 +2489,7 @@ mod tests {
         original.brush.thickness = 0.6;
         original.brush.angle_degrees = 43.0;
         let mut value = serde_json::to_value(Document {
+            local_light: LocalLight::default(),
             linked_stroke_groups: Default::default(),
             color_swatches: Default::default(),
             layer_folders: Vec::new(),
@@ -2480,6 +2517,7 @@ mod tests {
     #[test]
     fn rejects_invalid_dynamics_and_tilt_metadata() {
         let original = Document {
+            local_light: LocalLight::default(),
             linked_stroke_groups: Default::default(),
             color_swatches: Default::default(),
             layer_folders: Vec::new(),
@@ -2560,6 +2598,7 @@ mod tests {
             ..TextureSettings::default()
         };
         let doc = Document {
+            local_light: LocalLight::default(),
             linked_stroke_groups: Default::default(),
             color_swatches: Default::default(),
             layer_folders: Vec::new(),
@@ -2596,6 +2635,7 @@ mod tests {
             ("strength", -0.1),
         ] {
             let mut doc = serde_json::to_value(Document {
+                local_light: LocalLight::default(),
                 linked_stroke_groups: Default::default(),
                 color_swatches: Default::default(),
                 layer_folders: Vec::new(),

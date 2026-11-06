@@ -1,6 +1,7 @@
 struct Scene {
     view_projection: mat4x4<f32>, light_projection: mat4x4<f32>,
     light: vec4<f32>, settings: vec4<f32>, shadow: vec4<f32>, camera: vec4<f32>, background: vec4<f32>, resolution: vec4<f32>,
+    local_light_position: vec4<f32>, local_light_color: vec4<f32>, local_light_shadow: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(1) @binding(0) var brush_mask: texture_2d<f32>;
@@ -42,7 +43,10 @@ fn grain_coverage(in: Output, brush_alpha: f32) -> f32 {
 }
 fn visibility(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     if scene.settings.y<0.5 { return 1.0; }
-    let oriented=select(-normal,normal,dot(normal,scene.light.xyz)>=0.0);
+    let local_shadow_delta=scene.local_light_position.xyz-world;
+    let local_shadow_direction=local_shadow_delta/max(length(local_shadow_delta),0.0001);
+    let shadow_direction=select(scene.light.xyz,local_shadow_direction,scene.local_light_shadow.x>0.5);
+    let oriented=select(-normal,normal,dot(normal,shadow_direction)>=0.0);
     let clip=scene.light_projection*vec4<f32>(world+oriented*scene.shadow.y,1.0);
     let p=clip.xyz/clip.w;
     let uv=vec2<f32>(p.x*0.5+0.5,0.5-p.y*0.5);
@@ -72,10 +76,17 @@ fn material_output(in: Output, alpha: f32, sampled_color: vec3<f32>) -> Fragment
     let pbr_reference = in.grain_uv.x < -0.5;
     var shade=1.0;
     var specular=vec3<f32>(0.0);
+    var local_illumination=vec3<f32>(0.0);
     if material<0.5 && length(in.normal)>=0.1 {
         let normal=normalize(in.normal);
+        let local_delta=scene.local_light_position.xyz-in.world;
+        let local_distance=length(local_delta);
+        let local_direction=local_delta/max(local_distance,0.0001);
+        let local_attenuation=pow(clamp(1.0-local_distance/max(scene.local_light_position.w,0.001),0.0,1.0),2.0);
+        let local_visibility=select(1.0,visibility(in.world,normal),scene.local_light_shadow.x>0.5);
+        local_illumination=scene.local_light_color.rgb*scene.local_light_color.w*local_attenuation*max(dot(normal,local_direction),0.0)*local_visibility;
         let light_amount = abs(dot(normal,scene.light.xyz));
-        let visible_light = visibility(in.world,normal);
+        let visible_light = select(visibility(in.world,normal),1.0,scene.local_light_shadow.x>0.5);
         if pbr_reference {
             let metallic = clamp(in.material / 0.49, 0.0, 1.0);
             let roughness = clamp(in.grain_uv.y, 0.04, 1.0);
@@ -94,7 +105,7 @@ fn material_output(in: Output, alpha: f32, sampled_color: vec3<f32>) -> Fragment
         }
         if scene.shadow.w > 0.5 { shade=floor(shade*4.0+0.5)/4.0; }
     }
-    var color=in.color*sampled_color*shade+specular;
+    var color=in.color*sampled_color*(shade+local_illumination)+specular;
     var emission=vec3<f32>(0.0);
     if material>1.5 && material<2.5 {
         emission=in.color*sampled_color*2.0;

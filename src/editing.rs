@@ -241,6 +241,10 @@ pub enum Edit {
         before: ArtworkAnimationState,
         after: ArtworkAnimationState,
     },
+    LocalLight {
+        before: crate::document::LocalLight,
+        after: crate::document::LocalLight,
+    },
     /// One undoable named-swatch edit, including all stored animation poses
     /// whose literal fallback colors are kept in sync for render and export.
     DocumentColorSwatches {
@@ -395,6 +399,9 @@ impl Edit {
                 let state = if forward { after } else { before };
                 doc.animation = state.animation.clone();
                 doc.strokes = state.strokes.clone();
+            }
+            Self::LocalLight { before, after } => {
+                doc.local_light = if forward { *after } else { *before };
             }
             Self::DocumentColorSwatches { before, after } => {
                 let state = if forward { after } else { before };
