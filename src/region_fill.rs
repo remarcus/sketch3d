@@ -140,7 +140,10 @@ pub fn find_region(
     if segments.is_empty() {
         return Err("No visible coplanar stroke boundaries were found".into());
     }
-    let mut cuts = vec![vec![(0.0, segments[0].a), (1.0, segments[0].b)]; segments.len()];
+    let mut cuts: Vec<_> = segments
+        .iter()
+        .map(|segment| vec![(0.0, segment.a), (1.0, segment.b)])
+        .collect();
     let mut checks = 0usize;
     for i in 0..segments.len() {
         for j in i + 1..segments.len() {
