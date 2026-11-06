@@ -55,6 +55,12 @@ pub struct LayerAnimationTrack {
     pub keyframes: Vec<LayerArtworkKeyframe>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CameraAnimationKey {
+    pub frame: u32,
+    pub view: crate::camera_bookmarks::CameraView,
+}
+
 impl LayerAnimationTrack {
     /// Half-open playback interval. The first key also supplies the lead-in.
     pub fn key_span(&self, index: usize, range_start: u32, range_end: u32) -> (u32, u32) {
@@ -319,6 +325,8 @@ pub struct ArtworkAnimation {
     pub base_strokes: Option<Vec<Stroke>>,
     #[serde(default)]
     pub layer_tracks: Vec<LayerAnimationTrack>,
+    #[serde(default)]
+    pub camera_keys: Vec<CameraAnimationKey>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub two_bone_rig: Option<TwoBoneRig>,
 }
@@ -348,6 +356,7 @@ impl Default for ArtworkAnimation {
             keyframes: Vec::new(),
             base_strokes: None,
             layer_tracks: Vec::new(),
+            camera_keys: Vec::new(),
             two_bone_rig: None,
         }
     }
@@ -355,7 +364,7 @@ impl Default for ArtworkAnimation {
 
 impl ArtworkAnimation {
     pub fn is_empty(&self) -> bool {
-        self.keyframes.is_empty() && self.layer_tracks.is_empty()
+        self.keyframes.is_empty() && self.layer_tracks.is_empty() && self.camera_keys.is_empty()
     }
 
     pub fn frame_count(&self) -> usize {
@@ -366,6 +375,57 @@ impl ArtworkAnimation {
 
     pub fn duration_seconds(&self) -> f32 {
         self.frame_count() as f32 / self.fps.max(1) as f32
+    }
+
+    pub fn camera_at(&self, frame: u32) -> Option<crate::camera_bookmarks::CameraView> {
+        let frame = frame.clamp(self.range_start, self.range_end);
+        let upper = self.camera_keys.partition_point(|key| key.frame <= frame);
+        let before = upper.checked_sub(1).map(|index| self.camera_keys[index]);
+        let after = self.camera_keys.get(upper).copied();
+        match (before, after) {
+            (None, Some(next)) => Some(next.view),
+            (Some(previous), None) => Some(previous.view),
+            (Some(previous), Some(next)) if previous.view.projection != next.view.projection => Some(previous.view),
+            (Some(previous), Some(next)) => {
+                let t = (frame - previous.frame) as f32 / (next.frame - previous.frame) as f32;
+                Some(previous.view.interpolate(next.view, t))
+            }
+            (None, None) => None,
+        }
+    }
+
+    pub fn set_camera_key(&self, frame: u32, view: crate::camera_bookmarks::CameraView) -> Result<Self, String> {
+        if frame < self.range_start || frame > self.range_end { return Err("Camera key must be inside the shot range".into()); }
+        view.validate()?;
+        let mut next = self.clone();
+        if let Some(key) = next.camera_keys.iter_mut().find(|key| key.frame == frame) {
+            key.view = view;
+        } else {
+            if next.camera_keys.len() >= MAX_KEYFRAMES { return Err("Shot already contains 120 camera keys".into()); }
+            let index = next.camera_keys.partition_point(|key| key.frame < frame);
+            next.camera_keys.insert(index, CameraAnimationKey { frame, view });
+        }
+        next.current_frame = frame;
+        Ok(next)
+    }
+
+    pub fn move_camera_key(&self, from: u32, to: u32) -> Result<Self, String> {
+        if to < self.range_start || to > self.range_end { return Err("Camera key destination is outside the shot range".into()); }
+        let mut next = self.clone();
+        if next.camera_keys.iter().any(|key| key.frame == to) { return Err("A camera key already exists at the destination".into()); }
+        let index = next.camera_keys.iter().position(|key| key.frame == from).ok_or("Camera key no longer exists")?;
+        let mut key = next.camera_keys.remove(index);
+        key.frame = to;
+        let index = next.camera_keys.partition_point(|entry| entry.frame < to);
+        next.camera_keys.insert(index, key);
+        Ok(next)
+    }
+
+    pub fn delete_camera_key(&self, frame: u32) -> Result<Self, String> {
+        let mut next = self.clone();
+        let index = next.camera_keys.iter().position(|key| key.frame == frame).ok_or("There is no camera key at this frame")?;
+        next.camera_keys.remove(index);
+        Ok(next)
     }
 
     pub fn validate(
@@ -381,8 +441,20 @@ impl ArtworkAnimation {
             || self.current_frame > self.range_end
             || self.keyframes.len() > MAX_KEYFRAMES
             || self.layer_tracks.len() > 128
+            || self.camera_keys.len() > MAX_KEYFRAMES
         {
             return Err("Animation settings or keyframe count are outside supported limits".into());
+        }
+        let mut previous_camera = None;
+        for key in &self.camera_keys {
+            if key.frame < self.range_start
+                || key.frame > self.range_end
+                || previous_camera.is_some_and(|frame| frame >= key.frame)
+            {
+                return Err("Camera keys must be ordered, unique, and inside the shot range".into());
+            }
+            key.view.validate()?;
+            previous_camera = Some(key.frame);
         }
         let mut previous = None;
         let mut total_points = 0usize;

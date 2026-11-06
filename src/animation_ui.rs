@@ -35,6 +35,8 @@ pub(super) struct AnimationUi {
     cross_layer_preview: Option<crate::animation::ArtworkAnimation>,
     cross_layer_source: Option<(crate::animation::ArtworkAnimation, Vec<Stroke>)>,
     cross_layer_destinations: Vec<(u64, u32)>,
+    shot_camera_preview: bool,
+    selected_camera_key: Option<u32>,
 }
 
 impl Default for AnimationUi {
@@ -64,6 +66,8 @@ impl Default for AnimationUi {
             cross_layer_preview: None,
             cross_layer_source: None,
             cross_layer_destinations: Vec::new(),
+            shot_camera_preview: false,
+            selected_camera_key: None,
         }
     }
 }
@@ -86,6 +90,12 @@ impl AnimationUi {
 }
 
 impl SketchApp {
+    pub(super) fn followed_shot_camera(&self) -> Option<crate::camera_bookmarks::CameraView> {
+        self.animation_ui.shot_camera_preview
+            .then(|| self.doc.animation.camera_at(self.doc.animation.current_frame))
+            .flatten()
+    }
+
     fn animation_state(&self) -> crate::editing::ArtworkAnimationState {
         crate::editing::ArtworkAnimationState {
             animation: self.doc.animation.clone(),
@@ -128,6 +138,9 @@ impl SketchApp {
         let current = &self.doc.animation;
         let frame = frame.clamp(current.range_start, current.range_end);
         if frame == current.current_frame {
+            if self.animation_ui.shot_camera_preview {
+                if let Some(view) = current.camera_at(frame) { let _ = view.apply(&mut self.camera); }
+            }
             return;
         }
         self.animation_ui.batch_key_preview = None;
@@ -143,6 +156,11 @@ impl SketchApp {
             .unwrap_or_else(|| self.doc.strokes.clone());
         self.doc.animation = animation;
         self.doc.strokes = strokes;
+        if self.animation_ui.shot_camera_preview {
+            if let Some(view) = self.doc.animation.camera_at(frame) {
+                let _ = view.apply(&mut self.camera);
+            }
+        }
         self.renderer.invalidate();
         self.selected.clear();
         if !playback {
@@ -611,12 +629,84 @@ impl SketchApp {
                 });
                 self.layer_key_strip(ui);
                 self.other_layer_timeline_rows(ui);
+                self.camera_timeline_row(ui);
                 let frame = self.doc.animation.current_frame;
                 let can_key_interpolated = self.doc.animation.layer_tracks.iter().any(|track| track.layer_id == self.doc.active_layer)
                     && !self.doc.animation.layer_tracks.iter().filter(|track| track.layer_id == self.doc.active_layer).flat_map(|track| &track.keyframes).any(|key| key.frame == frame);
                 if ui.add_enabled(can_key_interpolated && !self.animation_ui.playing && self.doc.active_editable(), egui::Button::new("Key interpolated pose as drawing")).clicked() {
                     self.insert_interpolated_layer_key();
                 }
+                ui.collapsing("Shot camera", |ui| {
+                    let camera_bookmarks = self.camera_bookmarks.bookmarks.clone();
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(!self.animation_ui.playing, egui::Button::new("Key current view")).clicked() {
+                            match crate::camera_bookmarks::CameraView::capture(&self.camera)
+                                .and_then(|view| self.doc.animation.set_camera_key(self.doc.animation.current_frame, view)) {
+                                Ok(animation) => {
+                                    let strokes = animation.resolve(animation.current_frame).unwrap_or_else(|| self.doc.strokes.clone());
+                                    if let Err(error) = self.commit_animation_state(animation, strokes, "Camera view keyed on the shot timeline.") { self.status = error; }
+                                }
+                                Err(error) => self.status = error,
+                            }
+                        }
+                        egui::ComboBox::from_id_salt("copy-bookmark-to-shot")
+                            .selected_text("Copy bookmark at playhead")
+                            .show_ui(ui, |ui| {
+                                for bookmark in &camera_bookmarks {
+                                    if ui.selectable_label(false, &bookmark.name).clicked() {
+                                        match self.doc.animation.set_camera_key(self.doc.animation.current_frame, bookmark.view) {
+                                            Ok(animation) => {
+                                                let strokes = animation.resolve(animation.current_frame).unwrap_or_else(|| self.doc.strokes.clone());
+                                                if let Err(error) = self.commit_animation_state(animation, strokes, "Camera bookmark copied to the shot timeline.") { self.status = error; }
+                                            }
+                                            Err(error) => self.status = error,
+                                        }
+                                    }
+                                }
+                            });
+                        let mut follow = self.animation_ui.shot_camera_preview;
+                        if ui.checkbox(&mut follow, "Follow shot camera").changed() {
+                            self.animation_ui.shot_camera_preview = follow;
+                            if follow {
+                                if let Some(view) = self.doc.animation.camera_at(self.doc.animation.current_frame) {
+                                    let _ = view.apply(&mut self.camera);
+                                }
+                            }
+                        }
+                        if ui.button("Free orbit").clicked() { self.animation_ui.shot_camera_preview = false; }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        for key in &self.doc.animation.camera_keys {
+                            let selected = self.animation_ui.selected_camera_key == Some(key.frame);
+                            if ui.selectable_label(selected, format!("Camera {}", key.frame)).clicked() {
+                                self.animation_ui.selected_camera_key = Some(key.frame);
+                            }
+                        }
+                        let frame = self.doc.animation.current_frame;
+                        if let Some(source) = self.animation_ui.selected_camera_key {
+                            if ui.add_enabled(source != frame && !self.animation_ui.playing, egui::Button::new(format!("Move {source} → {frame}"))).clicked() {
+                                match self.doc.animation.move_camera_key(source, frame) {
+                                    Ok(animation) => {
+                                        let strokes = animation.resolve(animation.current_frame).unwrap_or_else(|| self.doc.strokes.clone());
+                                        if let Err(error) = self.commit_animation_state(animation, strokes, "Camera key moved.") { self.status = error; }
+                                        self.animation_ui.selected_camera_key = Some(frame);
+                                    }
+                                    Err(error) => self.status = error,
+                                }
+                            }
+                            if ui.add_enabled(!self.animation_ui.playing, egui::Button::new("Delete camera key")).clicked() {
+                                match self.doc.animation.delete_camera_key(source) {
+                                    Ok(animation) => {
+                                        let strokes = animation.resolve(animation.current_frame).unwrap_or_else(|| self.doc.strokes.clone());
+                                        if let Err(error) = self.commit_animation_state(animation, strokes, "Camera key deleted.") { self.status = error; }
+                                        self.animation_ui.selected_camera_key = None;
+                                    }
+                                    Err(error) => self.status = error,
+                                }
+                            }
+                        }
+                    });
+                });
                 ui.collapsing("Retime keys across layers", |ui| {
                     ui.small("Select keys on editable layers, then preview one shared frame shift. Any overlap, protected row, or out of range exposure rejects the whole move.");
                     let rows = self.doc.animation.layer_tracks.iter().filter_map(|track| {
@@ -1177,6 +1267,34 @@ impl SketchApp {
                 egui::Stroke::new(1.0_f32, ui.visuals().text_color()),
             );
         }
+    }
+
+    fn camera_timeline_row(&mut self, ui: &mut egui::Ui) {
+        if self.doc.animation.camera_keys.is_empty() { return; }
+        let start = self.doc.animation.range_start;
+        let end = self.doc.animation.range_end;
+        let frame = self.doc.animation.current_frame;
+        let keys = self.doc.animation.camera_keys.clone();
+        let (rect, response) = ui.horizontal(|ui| {
+            ui.add_sized(egui::vec2(84.0, 22.0), egui::Label::new("Camera").truncate());
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::click())
+        }).inner;
+        let step = rect.width() / (end - start + 1) as f32;
+        let x = |key_frame: u32| rect.left() + (key_frame - start) as f32 * step;
+        if response.clicked() && !self.animation_ui.playing {
+            if let Some(position) = response.interact_pointer_pos() {
+                let target = start + ((position.x - rect.left()) / step.max(0.0001)).floor().max(0.0) as u32;
+                self.seek_artwork_animation(target.min(end), false);
+            }
+        }
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 3.0, ui.visuals().faint_bg_color);
+        for key in keys {
+            let center = egui::pos2(x(key.frame) + step * 0.5, rect.center().y);
+            let color = if self.animation_ui.selected_camera_key == Some(key.frame) { egui::Color32::YELLOW } else { ui.visuals().selection.bg_fill };
+            painter.circle_filled(center, 4.0_f32.max(step.min(6.0) * 0.5), color);
+        }
+        painter.vline(x(frame), rect.y_range(), egui::Stroke::new(1.0_f32, ui.visuals().text_color()));
     }
 
     fn layer_key_frame_entry(&mut self, ui: &mut egui::Ui, from: u32) {

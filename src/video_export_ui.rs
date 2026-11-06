@@ -515,7 +515,7 @@ impl VideoExportUi {
                             ui.selectable_value(
                                 &mut self.mode,
                                 ExportMode::ArtworkAnimation,
-                                "Artwork animation",
+                                if document.animation.camera_keys.is_empty() { "Artwork animation" } else { "Shot (artwork + camera)" },
                             );
                         }
                         for sequence in sequences {
@@ -562,7 +562,7 @@ impl VideoExportUi {
                         ));
                         ui.small("Snapshots are replayed at recorded times. Speed changes the export duration; trim percentages select a portion of the session. A very short selection exports at least two frames.");
                     } else if self.mode == ExportMode::ArtworkAnimation {
-                        ui.small("Exports the saved integer frame range at the animation FPS. Onion skins and editor overlays are excluded.");
+                        ui.small("Exports the saved shot range at the animation FPS. Artwork and keyed camera views are evaluated on the same frame; projection changes are cuts. Onion skins and editor overlays are excluded.");
                     }
                     ui.horizontal(|ui| {
                         ui.add(
@@ -966,8 +966,13 @@ impl VideoExportUi {
                         .animation
                         .range_start
                         .saturating_add(job.next_frame as u32);
+                    if let Some(view) = job.document.animation.camera_at(frame) {
+                        if view.apply(&mut camera).is_err() { valid_camera = false; }
+                    }
                     if let Some(strokes) = job.document.animation.resolve(frame) {
                         job.document.strokes = strokes;
+                    } else if job.document.animation.layer_tracks.is_empty() && job.document.animation.keyframes.is_empty() {
+                        // Camera-only shot: retain the document's static drawing.
                     } else {
                         valid_camera = false;
                     }

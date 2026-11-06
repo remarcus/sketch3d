@@ -105,7 +105,7 @@ impl CameraView {
         Ok(())
     }
 
-    fn interpolate(self, next: Self, t: f32) -> Self {
+    pub(crate) fn interpolate(self, next: Self, t: f32) -> Self {
         let t = smoothstep(t.clamp(0.0, 1.0));
         Self {
             projection: self.projection,

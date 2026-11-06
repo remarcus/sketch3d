@@ -326,7 +326,13 @@ impl SketchApp {
             return;
         }
         self.status = "Rendering artwork image…".into();
-        let camera = self.camera;
+        let mut camera = self.camera;
+        if let Some(view) = self.followed_shot_camera() {
+            if let Err(error) = view.apply(&mut camera) {
+                self.status = error;
+                return;
+            }
+        }
         let background = if format == StillFormat::Jpeg {
             jpeg_background_color(jpeg_background, self.presentation.preferences.background)
         } else {
