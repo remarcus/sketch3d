@@ -247,8 +247,19 @@ impl SketchApp {
             assert_ne!(self.plane_picker.hovered_guide.map(|(id, _)| id), Some(id));
             self.doc.guide_resources[index].visible = true;
             let previous = self.doc.active_guide;
-            self.cancel_plane_picker();
+            ctx.input_mut(|input| {
+                input.events = vec![egui::Event::Key {
+                    key: Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }]
+            });
+            self.plane_picker_shortcuts(ctx);
+            ctx.input_mut(|input| input.events.clear());
             assert_eq!(self.doc.active_guide, previous);
+            assert!(!self.plane_picker.active, "Escape cancels guide picking");
             self.begin_plane_picker();
             self.canvas_input(
                 ctx,
@@ -257,6 +268,17 @@ impl SketchApp {
             );
             assert_eq!(self.doc.active_guide, Some(id));
             assert!(!self.plane_picker.active);
+            self.undo();
+            assert_eq!(
+                self.doc.active_guide, previous,
+                "guide selection is undoable"
+            );
+            self.redo();
+            assert_eq!(
+                self.doc.active_guide,
+                Some(id),
+                "guide selection is redoable"
+            );
             self.canvas_input(
                 ctx,
                 rect,

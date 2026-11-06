@@ -339,47 +339,7 @@ impl SketchApp {
     }
 
     fn pick_saved_guide(&self, cursor: Pos2, rect: Rect) -> Option<(u64, Pos2)> {
-        let (ray_origin, ray_direction) = gizmo::ray(&self.camera, rect, cursor);
-        let mut best: Option<(f32, u64, Pos2)> = None;
-        for guide in self
-            .doc
-            .guide_resources
-            .iter()
-            .filter(|guide| guide.visible && !guide.locked)
-        {
-            let Some(hit) = guide.geometry.clone().hit(ray_origin, ray_direction) else {
-                continue;
-            };
-            if let crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } =
-                &guide.geometry
-            {
-                let Some(extent) = plane_grid_extent(&self.camera, rect, *origin) else {
-                    continue;
-                };
-                let local = rotation.inverse() * (hit - *origin);
-                if local.x.abs().max(local.y.abs()) > extent {
-                    continue;
-                }
-            }
-            let Some((position, _)) = gizmo::project(&self.camera, rect, hit) else {
-                continue;
-            };
-            let distance = hit.distance(ray_origin);
-            if !distance.is_finite() {
-                continue;
-            }
-            let Some((best_distance, best_id, _)) = best else {
-                best = Some((distance, guide.id, position));
-                continue;
-            };
-            let tie_tolerance = 1.0e-5 * distance.max(best_distance).max(1.0);
-            if distance < best_distance - tie_tolerance
-                || ((distance - best_distance).abs() <= tie_tolerance && guide.id < best_id)
-            {
-                best = Some((distance, guide.id, position));
-            }
-        }
-        best.map(|(_, id, position)| (id, position))
+        pick_saved_guide(&self.camera, rect, cursor, &self.doc.guide_resources)
     }
 
     pub(super) fn pick_saved_plane_at(&mut self, cursor: Pos2, rect: Rect) {
@@ -518,6 +478,50 @@ impl SketchApp {
     }
 }
 
+fn pick_saved_guide(
+    camera: &Camera,
+    rect: Rect,
+    cursor: Pos2,
+    guides: &[crate::document::guide_resources::GuideResource],
+) -> Option<(u64, Pos2)> {
+    let (ray_origin, ray_direction) = gizmo::ray(camera, rect, cursor);
+    let mut best: Option<(f32, u64, Pos2)> = None;
+    for guide in guides.iter().filter(|guide| guide.visible && !guide.locked) {
+        let Some(hit) = guide.geometry.clone().hit(ray_origin, ray_direction) else {
+            continue;
+        };
+        if let crate::document::guide_resources::GuideGeometry::Plane { origin, rotation } =
+            &guide.geometry
+        {
+            let Some(extent) = plane_grid_extent(camera, rect, *origin) else {
+                continue;
+            };
+            let local = rotation.inverse() * (hit - *origin);
+            if local.x.abs().max(local.y.abs()) > extent {
+                continue;
+            }
+        }
+        let Some((position, _)) = gizmo::project(camera, rect, hit) else {
+            continue;
+        };
+        let distance = hit.distance(ray_origin);
+        if !distance.is_finite() {
+            continue;
+        }
+        let Some((best_distance, best_id, _)) = best else {
+            best = Some((distance, guide.id, position));
+            continue;
+        };
+        let tie_tolerance = 1.0e-5 * distance.max(best_distance).max(1.0);
+        if distance < best_distance - tie_tolerance
+            || ((distance - best_distance).abs() <= tie_tolerance && guide.id < best_id)
+        {
+            best = Some((distance, guide.id, position));
+        }
+    }
+    best.map(|(_, id, position)| (id, position))
+}
+
 struct PlaneGridStyle<'a> {
     color: Color32,
     active: bool,
@@ -528,6 +532,84 @@ fn plane_grid_extent(camera: &Camera, rect: Rect, origin: Vec3) -> Option<f32> {
     let world_per_pixel = camera.world_per_pixel(origin, rect.height());
     (world_per_pixel.is_finite() && world_per_pixel > 0.0)
         .then(|| (world_per_pixel * 55.0).clamp(0.25, 500.0))
+}
+
+#[cfg(test)]
+mod guide_picker_tests {
+    use super::*;
+    use crate::document::guide_resources::{GuideGeometry, GuideResource};
+    use glam::Quat;
+
+    fn plane(id: u64, visible: bool, locked: bool) -> GuideResource {
+        GuideResource {
+            id,
+            name: format!("Plane {id}"),
+            visible,
+            locked,
+            geometry: GuideGeometry::Plane {
+                origin: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+            },
+        }
+    }
+
+    #[test]
+    fn overlapping_guides_choose_the_lowest_id_independent_of_resource_order() {
+        let camera = Camera::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let cursor = rect.center();
+        let first_order = vec![plane(20, true, false), plane(4, true, false)];
+        let reverse_order = first_order.iter().cloned().rev().collect::<Vec<_>>();
+
+        assert_eq!(
+            pick_saved_guide(&camera, rect, cursor, &first_order)
+                .unwrap()
+                .0,
+            4
+        );
+        assert_eq!(
+            pick_saved_guide(&camera, rect, cursor, &reverse_order)
+                .unwrap()
+                .0,
+            4
+        );
+    }
+
+    #[test]
+    fn nearer_curved_target_wins_over_a_farther_plane_even_with_a_higher_id() {
+        let camera = Camera::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let cursor = rect.center();
+        let plane = plane(1, true, false);
+        let cylinder = GuideResource {
+            id: 99,
+            name: "Cylinder".into(),
+            visible: true,
+            locked: false,
+            geometry: GuideGeometry::Cylinder {
+                center: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                radius: 1.0,
+                height: 4.0,
+            },
+        };
+        assert_eq!(
+            pick_saved_guide(&camera, rect, cursor, &[plane, cylinder])
+                .unwrap()
+                .0,
+            99
+        );
+    }
+
+    #[test]
+    fn hidden_locked_and_missing_guides_are_misses() {
+        let camera = Camera::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let cursor = rect.center();
+        let unavailable = vec![plane(1, false, false), plane(2, true, true)];
+        assert!(pick_saved_guide(&camera, rect, cursor, &unavailable).is_none());
+        assert!(pick_saved_guide(&camera, rect, cursor, &[]).is_none());
+    }
 }
 
 fn draw_plane_grid(
