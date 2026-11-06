@@ -489,6 +489,28 @@ mod boundary_scope_tests {
     }
 
     #[test]
+    fn image_plane_edges_close_region_around_an_interior_boundary() {
+        let plane = DrawingPlane::default();
+        let doc = crate::document::Document {
+            strokes: vec![line(
+                1,
+                1,
+                Vec3::new(0.0, -1.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            )],
+            ..Default::default()
+        };
+        let seed = Vec3::new(-0.5, 0.0, 0.0);
+        assert!(find_region(&doc, plane, seed, 0.0, None, None, &[]).is_err());
+
+        let region = find_region(&doc, plane, seed, 0.0, Some(glam::Vec2::ONE), None, &[]).unwrap();
+        assert!((area(&region) - 2.0).abs() < 1e-4);
+        assert!(region.iter().all(|point| point.x <= 1e-4));
+        assert!(region.iter().all(|point| point.x >= -1.0 - 1e-4));
+        assert!(region.iter().all(|point| point.y.abs() <= 1.0 + 1e-4));
+    }
+
+    #[test]
     fn temporary_closing_segment_solves_a_gap_without_mutating_boundary_art() {
         let mut doc = crate::document::Document::default();
         doc.strokes = vec![
