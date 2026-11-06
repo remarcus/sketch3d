@@ -1,7 +1,10 @@
 use super::guide_resource_ui::PlanarTarget;
 use super::*;
 use crate::{
-    document::{FillRegionSource, PlanarFill},
+    document::{
+        CylinderFillRegionSource, CylinderFillSurface, FillRegionSource, PlanarFill,
+        PlanarFillRegionSource,
+    },
     polygon,
 };
 
@@ -110,37 +113,9 @@ impl SketchApp {
         }
     }
 
-    pub(super) fn active_fill_cylinder(
-        &self,
-    ) -> Option<(u64, crate::document::CylinderFillSurface)> {
+    pub(super) fn active_fill_cylinder(&self) -> Option<(u64, CylinderFillSurface)> {
         let id = self.doc.active_guide?;
-        let guide = self
-            .doc
-            .guide_resources
-            .iter()
-            .find(|guide| guide.id == id)?;
-        if !guide.visible || guide.locked {
-            return None;
-        }
-        let crate::document::guide_resources::GuideGeometry::Cylinder {
-            center,
-            rotation,
-            radius,
-            height,
-        } = &guide.geometry
-        else {
-            return None;
-        };
-        Some((
-            id,
-            crate::document::CylinderFillSurface {
-                center: *center,
-                rotation: *rotation,
-                radius: *radius,
-                height: *height,
-                angle_origin: 0.0,
-            },
-        ))
+        saved_fill_cylinder(&self.doc, id).map(|surface| (id, surface))
     }
 
     pub(super) fn begin_fill_contour_edit(&mut self, refresh: bool) {
@@ -161,10 +136,11 @@ impl SketchApp {
             self.status = "Select one visible, unlocked planar fill to edit its contour.".into();
             return;
         }
-        if source
-            .fill
-            .as_ref()
-            .is_some_and(|fill| fill.cylinder.is_some())
+        if !refresh
+            && source
+                .fill
+                .as_ref()
+                .is_some_and(|fill| fill.cylinder.is_some())
         {
             self.status = "Curved cylinder fills can be selected and exported; contour editing is not supported yet.".into();
             return;
@@ -182,54 +158,17 @@ impl SketchApp {
             self.status = "The fill's captured plane frame is invalid.".into();
             return;
         };
-        let mut mark = source.clone();
-        if refresh {
-            let Some(region) = source.fill.as_ref().and_then(|fill| {
-                fill.holes
-                    .is_empty()
-                    .then_some(fill.region_source)
-                    .flatten()
-            }) else {
-                self.status = "Refresh requires a planar enclosed fill with a saved seed and no cutouts or temporary closing guides.".into();
-                return;
-            };
-            let Some(captured) = PlanarTarget::from_curve_frame(
-                region.origin,
-                region.normal,
-                region.tangent,
-                region.half_extent,
-            ) else {
-                self.status = "The original fill surface is invalid.".into();
-                return;
-            };
-            if !captured.contains(region.seed)
-                || region
-                    .boundary_layer
-                    .is_some_and(|id| !self.doc.layers.iter().any(|layer| layer.id == id))
-            {
-                self.status = "The original fill seed or boundary layer is unavailable.".into();
-                return;
-            }
-            match crate::region_fill::find_region(
-                &self.doc,
-                captured.plane,
-                region.seed,
-                region.gap_tolerance,
-                region.half_extent,
-                region.boundary_layer,
-                &[],
-            ) {
-                Ok(points) => mark.points = contour_points(points),
+        let mark = if refresh {
+            match refreshed_fill(&self.doc, &source) {
+                Ok(mark) => mark,
                 Err(error) => {
                     self.status = error;
                     return;
                 }
             }
-            if let Err(error) = polygon::triangulate(&mark) {
-                self.status = error;
-                return;
-            }
-        }
+        } else {
+            source.clone()
+        };
         self.finish();
         self.clear_fill_region_draft();
         self.fills.enabled = false;
@@ -866,7 +805,7 @@ impl SketchApp {
     }
 
     pub(super) fn finish_fill_contour_edit(&mut self, apply: bool) {
-        let Some(draft) = self.fills.draft.take() else {
+        let Some(mut draft) = self.fills.draft.take() else {
             return;
         };
         let Some(original) = draft.original.as_ref().cloned() else {
@@ -879,12 +818,6 @@ impl SketchApp {
             self.status = "Fill contour edit cancelled; the drawing is unchanged.".into();
             return;
         }
-        if draft.mark == original {
-            self.cleanup_imported_fill_textures(&draft.imported_texture_ids);
-            self.select_mode = true;
-            self.status = "No contour changes to apply.".into();
-            return;
-        }
         if !self.doc.editable(&original)
             || !self.doc.strokes.iter().any(|stroke| stroke == &original)
         {
@@ -894,6 +827,29 @@ impl SketchApp {
                 "The fill changed or its layer is now protected; contour edit cancelled.".into();
             return;
         }
+        if draft.refreshing {
+            match refreshed_fill(&self.doc, &original) {
+                Ok(mark) if mark != draft.mark => {
+                    draft.mark = mark;
+                    self.fills.draft = Some(draft);
+                    self.status =
+                        "The boundary changed. Review the updated preview before applying.".into();
+                    return;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.select_mode = true;
+                    self.status = error;
+                    return;
+                }
+            }
+        }
+        if draft.mark == original {
+            self.cleanup_imported_fill_textures(&draft.imported_texture_ids);
+            self.select_mode = true;
+            self.status = "No contour changes to apply.".into();
+            return;
+        }
         if let Err(error) = polygon::triangulate(&draft.mark) {
             self.fills.draft = Some(draft);
             self.status = error;
@@ -901,7 +857,13 @@ impl SketchApp {
         }
         let before = crate::editing::snapshot(&self.doc, &HashSet::from([original.id]));
         let mut after = before.clone();
-        after[0].1 = draft.mark;
+        let Some((_, stroke)) = after.first_mut() else {
+            self.cleanup_imported_fill_textures(&draft.imported_texture_ids);
+            self.select_mode = true;
+            self.status = "The selected fill can no longer be edited.".into();
+            return;
+        };
+        *stroke = draft.mark;
         let edit = Edit::Change { before, after };
         edit.apply(&mut self.doc, true);
         self.undo.push(edit);
@@ -911,7 +873,12 @@ impl SketchApp {
         self.record_recovery_edit();
         self.renderer.invalidate_ids(&self.selected);
         self.select_mode = true;
-        self.status = "Fill contour edits applied as one undo step.".into();
+        self.status = if draft.refreshing {
+            "Refreshed fill applied as one undo step."
+        } else {
+            "Fill contour edits applied as one undo step."
+        }
+        .into();
     }
 
     pub(super) fn fill_contour_pointer(&mut self, pos: Pos2, rect: Rect, begin: bool) {
@@ -1435,17 +1402,9 @@ impl SketchApp {
             match region {
                 Ok(points) => {
                     let cylinder_frame = cylinder.map(|(_, surface)| surface);
-                    let (normal, tangent) = cylinder_frame.map_or(
-                        (target.plane.basis().2, target.plane.basis().0),
-                        |surface| {
-                            let local = surface.rotation.inverse() * (world - surface.center);
-                            let angle = local.x.atan2(local.z);
-                            (
-                                surface.rotation
-                                    * Vec3::new(local.x, 0.0, local.z).normalize_or_zero(),
-                                surface.rotation * Vec3::new(angle.cos(), 0.0, -angle.sin()),
-                            )
-                        },
+                    let (normal, tangent) = cylinder_frame.map_or_else(
+                        || (target.plane.basis().2, target.plane.basis().0),
+                        cylinder_fill_frame,
                     );
                     let mark = Stroke {
                         guide_attachment: None,
@@ -1631,18 +1590,30 @@ impl SketchApp {
             region_source: self
                 .fills
                 .region_anchor
-                .filter(|_| cylinder.is_none() && self.fills.closing_guides.is_empty())
+                .filter(|_| self.fills.closing_guides.is_empty())
                 .map(|seed| {
+                    let boundary_layer =
+                        self.fills.active_layer_boundaries.then_some(mark.layer_id);
+                    let gap_tolerance = self.fills.gap_tolerance;
+                    if let Some((guide_id, surface)) = draft.cylinder {
+                        return FillRegionSource::Cylinder(CylinderFillRegionSource {
+                            guide_id,
+                            seed_angle: surface.angle_origin,
+                            seed_height: (surface.rotation.inverse() * (seed - surface.center)).y,
+                            boundary_layer,
+                            gap_tolerance,
+                        });
+                    }
                     let (tangent, _, normal) = draft.target.plane.basis();
-                    FillRegionSource {
+                    FillRegionSource::Planar(PlanarFillRegionSource {
                         seed,
                         origin: draft.target.plane.origin(),
                         normal,
                         tangent,
                         half_extent: draft.target.half_extent(),
-                        boundary_layer: self.fills.active_layer_boundaries.then_some(mark.layer_id),
-                        gap_tolerance: self.fills.gap_tolerance,
-                    }
+                        boundary_layer,
+                        gap_tolerance,
+                    })
                 }),
         });
         if let Err(error) = polygon::triangulate(&mark) {
@@ -1919,7 +1890,7 @@ impl SketchApp {
                 );
             }
         }
-        if draft.original.is_some() {
+        if draft.original.is_some() && !draft.refreshing {
             for (index, point) in projected.iter().enumerate() {
                 if let Some((position, _)) = point {
                     if rect.contains(*position) {
@@ -1996,6 +1967,108 @@ impl SketchApp {
     }
 }
 
+fn saved_fill_cylinder(doc: &Document, id: u64) -> Option<CylinderFillSurface> {
+    let guide = doc.guide_resources.iter().find(|guide| guide.id == id)?;
+    if !guide.visible || guide.locked {
+        return None;
+    }
+    let crate::document::guide_resources::GuideGeometry::Cylinder {
+        center,
+        rotation,
+        radius,
+        height,
+    } = guide.geometry
+    else {
+        return None;
+    };
+    Some(CylinderFillSurface {
+        center,
+        rotation,
+        radius,
+        height,
+        angle_origin: 0.0,
+    })
+}
+
+fn cylinder_fill_frame(surface: CylinderFillSurface) -> (Vec3, Vec3) {
+    let (sin, cos) = surface.angle_origin.sin_cos();
+    (
+        surface.rotation * Vec3::new(sin, 0.0, cos),
+        surface.rotation * Vec3::new(cos, 0.0, -sin),
+    )
+}
+
+fn refreshed_fill(doc: &Document, source: &Stroke) -> Result<Stroke, String> {
+    let mut mark = source.clone();
+    let (fill, region) = mark.fill.as_mut().filter(|fill| fill.holes.is_empty())
+        .and_then(|fill| fill.region_source.map(|region| (fill, region)))
+        .ok_or("Refresh requires an enclosed fill with a saved seed, without cutouts or temporary closing guides.")?;
+    let boundary_layer = match region {
+        FillRegionSource::Planar(region) => region.boundary_layer,
+        FillRegionSource::Cylinder(region) => region.boundary_layer,
+    };
+    if boundary_layer.is_some_and(|id| !doc.layers.iter().any(|layer| layer.id == id)) {
+        return Err("The original boundary layer is unavailable.".into());
+    }
+    let points = match region {
+        FillRegionSource::Planar(region) => {
+            let target = PlanarTarget::from_curve_frame(
+                region.origin,
+                region.normal,
+                region.tangent,
+                region.half_extent,
+            )
+            .ok_or("The original fill surface is invalid.")?;
+            if !target.contains(region.seed) {
+                return Err("The original fill seed is outside the captured surface.".into());
+            }
+            crate::region_fill::find_region(
+                doc,
+                target.plane,
+                region.seed,
+                region.gap_tolerance,
+                region.half_extent,
+                boundary_layer,
+                &[],
+            )?
+        }
+        FillRegionSource::Cylinder(region) => {
+            let mut surface = saved_fill_cylinder(doc, region.guide_id)
+                .ok_or("The source cylinder is missing, hidden, locked, or has changed type.")?;
+            surface.angle_origin = region.seed_angle;
+            let seed = surface
+                .world_point(glam::vec2(0.0, region.seed_height), 0.0)
+                .ok_or("The original fill seed is outside the current cylinder.")?;
+            let points = crate::region_fill::find_cylinder_region(
+                doc,
+                region.guide_id,
+                surface,
+                seed,
+                region.gap_tolerance,
+                boundary_layer,
+                &[],
+            )?;
+            fill.cylinder = Some(surface);
+            (mark.brush.normal, mark.brush.tangent) = cylinder_fill_frame(surface);
+            points
+        }
+    };
+    if points.len() > source.points.len()
+        && doc
+            .strokes
+            .iter()
+            .map(|stroke| stroke.points.len())
+            .sum::<usize>()
+            + (points.len() - source.points.len())
+            > 2_000_000
+    {
+        return Err("The refreshed contour would exceed the document point limit.".into());
+    }
+    mark.points = contour_points(points);
+    polygon::triangulate(&mark)?;
+    Ok(mark)
+}
+
 fn contour_points(points: Vec<Vec3>) -> Vec<Point> {
     points
         .into_iter()
@@ -2034,4 +2107,133 @@ fn cylinder_fill_hit(
         .into_iter()
         .find(|t| *t >= 0.0 && (origin.y + direction.y * *t).abs() <= surface.height * 0.5)?;
     Some(surface.center + rotation * (origin + direction * t))
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+    use crate::document::guide_resources::{GuideGeometry, GuideResource};
+
+    #[test]
+    fn refresh_cylinder_crosses_seam_and_preserves_fill_through_undo_reopen_and_export() {
+        let angle = std::f32::consts::PI;
+        let mut doc = Document::default();
+        doc.guide_resources.push(GuideResource {
+            id: 10,
+            name: "Cylinder".into(),
+            visible: true,
+            locked: false,
+            geometry: GuideGeometry::Cylinder {
+                center: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                radius: 1.0,
+                height: 3.0,
+            },
+        });
+        let mut surface = saved_fill_cylinder(&doc, 10).unwrap();
+        surface.angle_origin = angle;
+        let boundary = |surface: CylinderFillSurface, right: f32| {
+            contour_points(
+                [
+                    (-0.4, -0.5),
+                    (right, -0.5),
+                    (right, 0.5),
+                    (-0.4, 0.5),
+                    (-0.4, -0.5),
+                ]
+                .into_iter()
+                .map(|(angle, y)| {
+                    surface
+                        .world_point(glam::vec2(angle * surface.radius, y), 0.0)
+                        .unwrap()
+                })
+                .collect(),
+            )
+        };
+        let study = polygon::study();
+        let mut outline = study.strokes[1].clone();
+        outline.guide_attachment = Some(10);
+        outline.points = boundary(surface, 0.4);
+        doc.strokes.push(outline);
+        let mut source = study.strokes[0].clone();
+        source.brush.opacity = 0.6;
+        source.fill.as_mut().unwrap().region_source =
+            Some(FillRegionSource::Cylinder(CylinderFillRegionSource {
+                guide_id: 10,
+                seed_angle: angle,
+                seed_height: 0.0,
+                boundary_layer: Some(1),
+                gap_tolerance: 0.0,
+            }));
+        let original = refreshed_fill(&doc, &source).unwrap();
+        doc.strokes.push(original.clone());
+
+        surface.radius = 1.5;
+        let GuideGeometry::Cylinder { radius, .. } = &mut doc.guide_resources[0].geometry else {
+            unreachable!();
+        };
+        *radius = surface.radius;
+        doc.strokes[0].points = boundary(surface, 0.65);
+        let refreshed = refreshed_fill(&doc, &original).unwrap();
+        assert_eq!(
+            (refreshed.id, refreshed.layer_id),
+            (original.id, original.layer_id)
+        );
+        assert_eq!(refreshed.color, original.color);
+        assert_eq!(refreshed.material, original.material);
+        assert_eq!(refreshed.brush.opacity, original.brush.opacity);
+        let fill = refreshed.fill.as_ref().unwrap();
+        assert_eq!(fill.offset, original.fill.as_ref().unwrap().offset);
+        assert_eq!(fill.cylinder, Some(surface));
+        assert!(refreshed
+            .points
+            .iter()
+            .any(|point| { surface.chart_point(point.position).unwrap().x > 0.9 }));
+
+        let selection = HashSet::from([original.id]);
+        let edit = Edit::Change {
+            before: vec![(1, original.clone())],
+            after: vec![(1, refreshed.clone())],
+        };
+        edit.apply(&mut doc, true);
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes[1], original);
+        edit.apply(&mut doc, true);
+        let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(reopened.strokes[1], refreshed);
+        let glb = crate::export::encode(&reopened, Some(&selection)).unwrap();
+        assert_eq!(glb.summary.strokes, 1);
+        assert!(glb.summary.triangles > 0);
+        assert!(gltf::Gltf::from_slice(&glb.bytes).is_ok());
+
+        doc.strokes[0].points.pop();
+        assert!(refreshed_fill(&doc, &refreshed).is_err());
+        doc.guide_resources.clear();
+        assert!(refreshed_fill(&doc, &refreshed).is_err());
+        assert_eq!(doc.strokes[1], refreshed);
+    }
+
+    #[test]
+    fn legacy_planar_seed_decodes_and_refreshes_in_the_captured_plane() {
+        let mut doc = polygon::study();
+        doc.strokes.truncate(2);
+        let source = &mut doc.strokes[0];
+        let seed = source
+            .points
+            .iter()
+            .map(|point| point.position)
+            .sum::<Vec3>()
+            / source.points.len() as f32;
+        let legacy = serde_json::json!({
+            "seed": seed, "origin": seed, "normal": source.brush.normal,
+            "tangent": source.brush.tangent, "half_extent": null,
+            "boundary_layer": 1, "gap_tolerance": 0.0
+        });
+        let region = serde_json::from_value::<FillRegionSource>(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(region).unwrap(), legacy);
+        source.fill.as_mut().unwrap().region_source = Some(region);
+        let refreshed = refreshed_fill(&doc, &doc.strokes[0]).unwrap();
+        assert_eq!(refreshed.id, doc.strokes[0].id);
+        assert!(refreshed.fill.unwrap().cylinder.is_none());
+    }
 }

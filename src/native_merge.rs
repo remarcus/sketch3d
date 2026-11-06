@@ -232,12 +232,22 @@ pub fn prepare_insert(
         stroke.id = stroke_id_map[&stroke.id];
         stroke.layer_id = layer_map[&stroke.layer_id];
         if let Some(fill) = stroke.fill.as_mut() {
+            if let Some(surface) = fill.cylinder.as_mut() {
+                surface.center += offset;
+            }
             if let Some(region) = fill.region_source.as_mut() {
-                region.seed += offset;
-                region.origin += offset;
-                if let Some(source_layer) = region.boundary_layer {
+                use crate::document::FillRegionSource;
+                let boundary_layer = match region {
+                    FillRegionSource::Planar(region) => {
+                        region.seed += offset;
+                        region.origin += offset;
+                        &mut region.boundary_layer
+                    }
+                    FillRegionSource::Cylinder(region) => &mut region.boundary_layer,
+                };
+                if let Some(source_layer) = *boundary_layer {
                     match layer_map.get(&source_layer) {
-                        Some(&layer) => region.boundary_layer = Some(layer),
+                        Some(&layer) => *boundary_layer = Some(layer),
                         None => fill.region_source = None,
                     }
                 }
@@ -369,6 +379,16 @@ pub fn prepare_insert(
     for stroke in &mut source.strokes {
         if let Some(id) = stroke.guide_attachment {
             stroke.guide_attachment = Some(*guide_map.get(&id).ok_or("Missing attached guide")?);
+        }
+        if let Some(fill) = stroke.fill.as_mut() {
+            if let Some(crate::document::FillRegionSource::Cylinder(region)) =
+                fill.region_source.as_mut()
+            {
+                match guide_map.get(&region.guide_id) {
+                    Some(&guide_id) => region.guide_id = guide_id,
+                    None => fill.region_source = None,
+                }
+            }
         }
     }
     let model_copy_sources: Vec<(u64, ObjModel)> = source

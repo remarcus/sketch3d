@@ -1137,14 +1137,31 @@ pub struct PlanarFill {
     pub region_source: Option<FillRegionSource>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FillRegionSource {
+    Planar(PlanarFillRegionSource),
+    Cylinder(CylinderFillRegionSource),
+}
+
 /// The original world-space solve target and boundary settings.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct FillRegionSource {
+pub struct PlanarFillRegionSource {
     pub seed: Vec3,
     pub origin: Vec3,
     pub normal: Vec3,
     pub tangent: Vec3,
     pub half_extent: Option<glam::Vec2>,
+    pub boundary_layer: Option<u64>,
+    pub gap_tolerance: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CylinderFillRegionSource {
+    pub guide_id: u64,
+    /// Local angle in radians and local height in world units.
+    pub seed_angle: f32,
+    pub seed_height: f32,
     pub boundary_layer: Option<u64>,
     pub gap_tolerance: f32,
 }

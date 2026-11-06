@@ -4786,7 +4786,7 @@ impl SketchApp {
                     })
                 });
                 if ui.add_enabled(refreshable_fill, egui::Button::new("Refresh enclosed fill…"))
-                    .on_disabled_hover_text("Requires a planar enclosed fill saved with its seed, without cutouts or temporary closing guides.")
+                    .on_disabled_hover_text("Requires an enclosed fill saved with its seed, without cutouts or temporary closing guides.")
                     .clicked()
                 {
                     self.begin_fill_contour_edit(true);
