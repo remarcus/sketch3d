@@ -1,6 +1,15 @@
 use super::*;
 use std::collections::BTreeSet;
 
+fn timeline_key_handle(rect: Rect, first_frame: u32, frame: u32, step: f32) -> Rect {
+    let left = rect.left() + frame.saturating_sub(first_frame) as f32 * step;
+    let width = step.clamp(0.0, 8.0);
+    Rect::from_min_max(
+        egui::pos2(left, rect.top()),
+        egui::pos2((left + width).min(rect.right()), rect.bottom()),
+    )
+}
+
 pub(super) struct AnimationUi {
     pub(super) playing: bool,
     playback_origin_seconds: f64,
@@ -836,10 +845,7 @@ impl SketchApp {
                     next.frame.min(key.frame + key.exposure)
                 });
             let left = x(key.frame);
-            let handle = Rect::from_min_max(
-                egui::pos2(left, rect.top()),
-                egui::pos2((left + 8.0).min(rect.right()), rect.bottom()),
-            );
+            let handle = timeline_key_handle(rect, first, key.frame, step);
             let response = ui.interact(
                 handle,
                 ui.id().with(("retime", layer_id, key.frame)),
@@ -1259,6 +1265,35 @@ impl SketchApp {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod timeline_handle_tests {
+    use super::egui::{pos2, vec2, Rect};
+    use super::timeline_key_handle;
+
+    #[test]
+    fn key_drag_handles_stay_inside_their_frame_cells() {
+        for (width, frame_count) in [(200.0, 100), (800.0, 100), (2000.0, 100)] {
+            let rect = Rect::from_min_size(pos2(20.0, 5.0), vec2(width, 24.0));
+            let step = width / frame_count as f32;
+            let handles = (0..frame_count)
+                .map(|frame| timeline_key_handle(rect, 10, 10 + frame, step))
+                .collect::<Vec<_>>();
+
+            assert!(handles.iter().all(|handle| {
+                handle.height() == rect.height()
+                    && handle.left() >= rect.left()
+                    && handle.right() <= rect.right()
+                    && handle.width() <= step.min(8.0) + 0.001
+            }));
+            assert!(handles
+                .windows(2)
+                .all(|pair| pair[0].right() <= pair[1].left() + 0.001));
+            assert!((handles[0].left() - rect.left()).abs() < 0.001);
+            assert!(handles.last().unwrap().right() <= rect.right());
         }
     }
 }
