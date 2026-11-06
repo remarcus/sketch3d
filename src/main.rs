@@ -431,6 +431,7 @@ fn main() -> eframe::Result {
                 | "--verify-artwork-animation"
                 | "--verify-fills-no-capture"
                 | "--verify-house-no-capture"
+                | "--verify-textures-no-capture"
                 | "--verify-appearance-layout"
                 | "--record-capability-demo"
         )

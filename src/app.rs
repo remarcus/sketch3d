@@ -2901,7 +2901,9 @@ impl SketchApp {
             app.verification_frame = None;
             app.preset_verification_frame = Some(0);
             app.load_textures();
-        } else if std::env::args().any(|a| a == "--verify-textures") {
+        } else if std::env::args()
+            .any(|a| a == "--verify-textures" || a == "--verify-textures-no-capture")
+        {
             app.verification_frame = None;
             app.texture_verification_frame = Some(0);
             app.load_textures();

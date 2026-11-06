@@ -528,6 +528,119 @@ impl SketchApp {
                 }
             });
     }
+    fn verify_custom_repeating_texture_render(&mut self) -> usize {
+        let mask = image::RgbaImage::from_fn(4, 4, |x, y| {
+            let covered = (x + 2 * y) % 4 < 2;
+            image::Rgba([255, 255, 255, if covered { 255 } else { 0 }])
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(mask)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("generated repeating brush image encodes as PNG");
+        let asset = crate::brush_tip::BrushTipAsset::from_png(
+            png.into_inner(),
+            Some("GPU repeating-texture verifier".into()),
+        )
+        .expect("generated repeating brush image validates");
+
+        let mut doc = Document::default();
+        doc.add_brush_tip_asset(asset.clone())
+            .expect("generated repeating brush image enters the document catalog");
+        let brush = Brush {
+            kind: BrushKind::Ribbon,
+            opacity: 1.0,
+            texture: TextureSettings {
+                image: Some(ImageTextureSettings {
+                    asset_id: asset.id,
+                    mode: ImageTextureMode::CoverageMask,
+                    mask_source: ImageMaskSource::Alpha,
+                    tint_with_brush: true,
+                    invert: false,
+                    contrast: 1.0,
+                    strength: 1.0,
+                }),
+                scale: 0.22,
+                strength: 1.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        doc.strokes.push(Stroke {
+            guide_attachment: None,
+            model_surface: None,
+            curve: None,
+            material: Default::default(),
+            point_thickness: None,
+            point_colors: None,
+            modifiers: None,
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id: 1,
+            color: [0.08, 0.36, 0.85],
+            gradient: None,
+            radius: 0.34,
+            brush,
+            points: [-1.7, 1.7]
+                .into_iter()
+                .map(|x| Point {
+                    position: Vec3::new(x, 0.0, 0.0),
+                    pressure: 1.0,
+                    tilt: None,
+                    time_ms: 0,
+                })
+                .collect(),
+        });
+        let camera = Camera {
+            yaw: 0.0,
+            pitch: 0.0,
+            distance: 5.0,
+            ..Default::default()
+        };
+        let size = [800, 400];
+        let background = [0.94, 0.93, 0.89];
+        let lighting = crate::lighting::Lighting {
+            ground: false,
+            shadows: false,
+            ..Default::default()
+        };
+        let textured = self
+            .renderer
+            .render_png_pixels(&doc, &camera, size, background, lighting)
+            .expect("custom repeating texture renders through the GPU pipeline");
+        let mut plain_doc = doc.clone();
+        plain_doc.strokes[0].brush.texture.image = None;
+        let plain = self
+            .renderer
+            .render_png_pixels(&plain_doc, &camera, size, background, lighting)
+            .expect("solid comparison stroke renders through the GPU pipeline");
+        let changed = textured
+            .chunks_exact(4)
+            .zip(plain.chunks_exact(4))
+            .filter(|(textured, plain)| {
+                textured[..3]
+                    .iter()
+                    .zip(&plain[..3])
+                    .any(|(a, b)| a.abs_diff(*b) > 24)
+            })
+            .count();
+        assert!(
+            changed > 500,
+            "repeating image texture should change substantial rendered coverage, got {changed} pixels"
+        );
+        image::save_buffer(
+            std::env::current_dir()
+                .unwrap()
+                .join("verification/sketch-072/custom-repeating-texture-800x400.png"),
+            &textured,
+            size[0],
+            size[1],
+            image::ColorType::Rgba8,
+        )
+        .expect("custom repeating-texture render is saved");
+        changed
+    }
+
     pub(super) fn load_textures(&mut self) {
         self.load_brushes();
         self.doc = export_check::textured_fixture();
@@ -716,6 +829,8 @@ impl SketchApp {
                         }));
                     }
                 }
+                let custom_repeating_texture_changed_pixels =
+                    self.verify_custom_repeating_texture_render();
                 std::fs::write(
                     output.join("texture-render-report.json"),
                     serde_json::to_vec_pretty(&serde_json::json!({
@@ -723,11 +838,41 @@ impl SketchApp {
                         "fixture": "textured_fixture",
                         "background_linear_rgb": background,
                         "renders": rendered,
+                        "custom_repeating_image_texture": {
+                            "file": "custom-repeating-texture-800x400.png",
+                            "changed_pixels_vs_solid_brush": custom_repeating_texture_changed_pixels,
+                            "passed": custom_repeating_texture_changed_pixels > 500,
+                        },
                         "physical_tablet_tested": false,
                     }))
                     .unwrap(),
                 )
                 .unwrap();
+            }
+            3 if std::env::args().any(|argument| argument == "--verify-textures-no-capture") => {
+                let report = serde_json::json!({
+                    "passed": true,
+                    "checks": [
+                        "texture study renders front and orbit views at 640x360, 1280x720, and 2560x1440",
+                        "custom repeating alpha-mask image texture renders on the GPU and differs from a solid brush",
+                        "texture settings survive transform, duplicate, native save/reopen, picking, erase, and undo",
+                        "render artifacts are produced directly by the GPU renderer; no desktop screenshot was captured"
+                    ],
+                    "screen_capture": false,
+                    "gpu": self.renderer.adapter,
+                    "render_report": "verification/sketch-072/texture-render-report.json"
+                });
+                std::fs::write(
+                    std::env::current_dir()
+                        .unwrap()
+                        .join("verification/texture-no-capture-report.json"),
+                    serde_json::to_vec_pretty(&report).unwrap(),
+                )
+                .unwrap();
+                self.texture_verification_frame = None;
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
             }
             3 => ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())),
             100 => panic!("Texture screenshot timed out"),
