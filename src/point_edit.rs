@@ -1277,6 +1277,132 @@ mod tests {
     }
 
     #[test]
+    fn multi_point_move_preserves_attributes_across_strokes_and_undoes_once() {
+        let mut doc = sample();
+        doc.strokes[0].point_thickness = Some(vec![0.5, 0.75, 1.25]);
+        doc.strokes[0].point_colors = Some(vec![Some([0.1, 0.2, 0.3]), None, None]);
+        let mut second = doc.strokes[0].clone();
+        second.id = 2;
+        for point in &mut second.points {
+            point.position += Vec3::Y * 3.0;
+        }
+        doc.strokes.push(second);
+        let original = doc.strokes.clone();
+        let mut draft = MultiDraft::new(&doc, &HashSet::from([1, 2])).unwrap();
+        draft.select_points(HashSet::from([
+            PointRef {
+                stroke_id: 1,
+                index: 1,
+            },
+            PointRef {
+                stroke_id: 2,
+                index: 2,
+            },
+        ]));
+        draft.transform = PointTransform::Move;
+        draft.constraint = PointConstraint::X;
+        draft.values = Vec3::new(2.0, 8.0, -4.0);
+        draft.rebuild(Vec3::X, Vec3::Y).unwrap();
+        assert_eq!(
+            draft.preview[0].points[1].position,
+            original[0].points[1].position + Vec3::X * 2.0
+        );
+        assert_eq!(
+            draft.preview[1].points[2].position,
+            original[1].points[2].position + Vec3::X * 2.0
+        );
+        assert_eq!(draft.preview[0].points[0], original[0].points[0]);
+        assert_eq!(
+            draft.preview[0].point_thickness,
+            original[0].point_thickness
+        );
+        assert_eq!(draft.preview[0].point_colors, original[0].point_colors);
+
+        let edit = draft.edit(&doc).unwrap();
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes, draft.preview);
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes, original);
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes, draft.preview);
+    }
+
+    #[test]
+    fn proportional_point_edit_supports_along_stroke_and_spatial_falloffs_without_drift() {
+        let mut doc = sample();
+        let mut neighbor = doc.strokes[0].clone();
+        neighbor.id = 2;
+        neighbor.points = vec![Point {
+            position: Vec3::new(1.0, 0.5, 0.0),
+            pressure: 0.9,
+            tilt: Some(Vec3::X),
+            time_ms: 40,
+        }];
+        doc.strokes.push(neighbor);
+        let source = doc.strokes.clone();
+        let selected = HashSet::from([PointRef {
+            stroke_id: 1,
+            index: 1,
+        }]);
+
+        let mut along = MultiDraft::new(&doc, &HashSet::from([1, 2])).unwrap();
+        along.select_points(selected.clone());
+        along.proportional = true;
+        along.radius = 2.0;
+        along.neighborhood = ProportionalNeighborhood::AlongStroke;
+        along.falloff = PointFalloff::Smooth;
+        along.values = Vec3::X * 2.0;
+        along.rebuild(Vec3::X, Vec3::Y).unwrap();
+        assert!(
+            along.preview[0].points[0]
+                .position
+                .distance(source[0].points[0].position + Vec3::X)
+                < 1e-5
+        );
+        assert_eq!(
+            along.preview[0].points[1].position,
+            source[0].points[1].position + Vec3::X * 2.0
+        );
+        assert_eq!(
+            along.preview[1], source[1],
+            "along-stroke falloff does not cross strokes"
+        );
+        along.values = Vec3::X * 4.0;
+        along.rebuild(Vec3::X, Vec3::Y).unwrap();
+        along.values = Vec3::X * 2.0;
+        along.rebuild(Vec3::X, Vec3::Y).unwrap();
+        assert!(
+            along.preview[0].points[0]
+                .position
+                .distance(source[0].points[0].position + Vec3::X)
+                < 1e-5
+        );
+
+        let mut spatial = MultiDraft::new(&doc, &HashSet::from([1, 2])).unwrap();
+        spatial.select_points(selected);
+        spatial.proportional = true;
+        spatial.radius = 1.0;
+        spatial.neighborhood = ProportionalNeighborhood::Spatial;
+        spatial.values = Vec3::X * 2.0;
+        spatial.rebuild(Vec3::X, Vec3::Y).unwrap();
+        assert!(
+            spatial.preview[1].points[0]
+                .position
+                .distance(source[1].points[0].position + Vec3::X)
+                < 1e-5
+        );
+        assert_eq!(
+            spatial.preview[1].points[0].pressure,
+            source[1].points[0].pressure
+        );
+        assert_eq!(spatial.preview[1].points[0].tilt, source[1].points[0].tilt);
+        assert_eq!(
+            spatial.preview[1].points[0].time_ms,
+            source[1].points[0].time_ms
+        );
+    }
+
+    #[test]
     fn split_and_join_roundtrip_preserves_samples_gradient_dabs_and_history() {
         let mut doc = four_point_sample();
         doc.strokes[0].point_thickness = Some(vec![0.5, 0.75, 1.25, 1.5]);
