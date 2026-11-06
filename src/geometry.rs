@@ -3622,6 +3622,72 @@ mod texture_uv_tests {
     }
 
     #[test]
+    fn captured_planar_grain_uvs_follow_the_shared_world_frame_until_reanchored() {
+        use crate::texture::{TextureAnchorMode, TextureFrame};
+
+        let frame = TextureFrame::from_plane(
+            Vec3::new(0.7, -0.3, 1.2),
+            Quat::from_euler(glam::EulerRot::XYZ, 0.35, -0.2, 0.6),
+        );
+        assert!(frame.is_valid());
+
+        let mut first = mark(
+            BrushKind::Ribbon,
+            vec![Vec3::new(0.8, -0.1, 1.2), Vec3::new(1.2, 0.1, 1.2)],
+        );
+        first.brush.texture.anchor_mode = TextureAnchorMode::CapturedPlanar;
+        first.brush.texture.frame = Some(frame);
+        first.brush.texture.mapping = crate::texture::TextureMapping {
+            offset: [0.25, -0.4],
+            rotation_degrees: 31.0,
+            scale: [1.5, 0.75],
+        };
+
+        let mesh = stroke_mesh(&first);
+        assert!(!mesh.is_empty());
+        for vertex in &mesh {
+            let world = Vec3::from_array(vertex.position);
+            let projected = frame.project(world, first.brush.texture.scale);
+            let expected = first.brush.texture.mapping.map(projected);
+            assert!(Vec2::from(vertex.uv).distance(Vec2::from(expected)) < 1e-5);
+        }
+
+        // A second stroke with a different path direction shares the same
+        // captured frame, so overlapping world positions retain the same grain phase.
+        let mut second = mark(
+            BrushKind::Ribbon,
+            vec![Vec3::new(1.2, 0.1, 1.2), Vec3::new(0.8, -0.1, 1.2)],
+        );
+        second.brush.texture.anchor_mode = TextureAnchorMode::CapturedPlanar;
+        second.brush.texture.frame = Some(frame);
+        second.brush.texture.mapping = first.brush.texture.mapping;
+        let a = stroke_mesh(&first);
+        let b = stroke_mesh(&second);
+        for vertex in a.iter().filter(|v| {
+            let p = Vec3::from_array(v.position);
+            (p.z - 1.2).abs() < 1e-5
+        }) {
+            let world = Vec3::from_array(vertex.position);
+            if let Some(overlap) = b
+                .iter()
+                .find(|other| Vec3::from_array(other.position).distance(world) < 1e-5)
+            {
+                assert!(Vec2::from(vertex.uv).distance(Vec2::from(overlap.uv)) < 1e-5);
+            }
+        }
+
+        // Reanchoring clears the shared frame; the next stroke captures the new plane.
+        let reanchored = TextureFrame::from_plane(
+            Vec3::new(-1.0, 0.5, 1.2),
+            Quat::from_euler(glam::EulerRot::XYZ, 0.35, -0.2, 0.6),
+        );
+        let sample = Vec3::new(0.8, -0.1, 1.2);
+        let old_uv = frame.project(sample, first.brush.texture.scale);
+        let new_uv = reanchored.project(sample, first.brush.texture.scale);
+        assert!(Vec2::from(old_uv).distance(Vec2::from(new_uv)) > 1.0);
+    }
+
+    #[test]
     fn cylinder_seam_uvs_have_continuous_distance_without_angular_reset() {
         use crate::surface::{Cylinder, Surface, SurfaceStabilizer};
         let cylinder = Cylinder::default();
