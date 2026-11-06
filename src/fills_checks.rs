@@ -6,6 +6,7 @@ impl SketchApp {
         };
         if frame == 1 {
             self.request(Pending::New);
+            self.verify_enclosed_region_workflow(rect);
             self.fills.enabled = true;
             for delta in [
                 (-130.0, 80.0),
@@ -117,6 +118,7 @@ impl SketchApp {
                         "Cancel restores the exact drawing without an undo entry",
                         "Apply commits the moved-boundary contour as one undoable edit",
                         "one undo and redo restore the source and refreshed fill",
+                        "synthetic canvas click previews and applies an enclosed-region fill, then verifies cancel and undo/redo",
                         "the fill renderer pixel checks passed at three camera angles",
                         "named layer masks retain inside coverage and remove outside coverage in GPU pixels",
                         "encoded GIF frames match still-render mask coverage and preserve the masked/unmasked comparison"
@@ -163,6 +165,139 @@ impl SketchApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.fills.verification_frame = Some(frame + 1);
+    }
+
+    fn verify_enclosed_region_workflow(&mut self, rect: Rect) {
+        let target = self
+            .planar_drawing_target()
+            .expect("blank drawing starts on an active planar target");
+        let origin = target.plane.origin();
+        let (axis_u, axis_v, _) = target.plane.basis();
+        let corners = [
+            origin - axis_u - axis_v,
+            origin + axis_u - axis_v,
+            origin + axis_u + axis_v,
+            origin - axis_u + axis_v,
+        ];
+        let mut boundaries = Vec::new();
+        for index in 0..corners.len() {
+            boundaries.push(Stroke {
+                guide_attachment: None,
+                model_surface: None,
+                curve: None,
+                material: Default::default(),
+                point_thickness: None,
+                point_colors: None,
+                modifiers: None,
+                fill: None,
+                group_id: None,
+                layer_id: 1,
+                id: index as u64 + 1,
+                color: [0.1, 0.12, 0.16],
+                gradient: None,
+                radius: 0.012,
+                brush: Brush::default(),
+                points: [corners[index], corners[(index + 1) % corners.len()]]
+                    .into_iter()
+                    .map(|position| Point {
+                        position,
+                        pressure: 1.0,
+                        tilt: None,
+                        time_ms: 0,
+                    })
+                    .collect(),
+            });
+        }
+        self.doc = Document {
+            strokes: boundaries,
+            ..Default::default()
+        };
+        self.next_id = 5;
+        self.undo.clear();
+        self.redo.clear();
+        self.selected.clear();
+        self.select_mode = false;
+        self.dirty = false;
+        self.fills.draft = None;
+        self.fills.region_anchor = None;
+        self.fills.closing_guides.clear();
+        self.fills.region_mode = true;
+        self.fills.gap_tolerance = 0.0;
+        self.fills.active_layer_boundaries = false;
+
+        let click = crate::gizmo::project(&self.camera, rect, origin)
+            .expect("region seed projects into the canvas")
+            .0;
+        self.fill_corner(click, rect);
+        let preview = self
+            .fills
+            .draft
+            .as_ref()
+            .expect("enclosed-region click opens a preview")
+            .mark
+            .clone();
+        assert!(preview.fill.is_some());
+        assert_eq!(preview.points.len(), 4);
+        assert_eq!(
+            self.doc.strokes.len(),
+            4,
+            "preview leaves boundaries untouched"
+        );
+
+        self.commit_fill();
+        assert_eq!(self.doc.strokes.len(), 5, "Apply adds one editable fill");
+        let applied = self.doc.strokes.last().unwrap().clone();
+        assert!(matches!(
+            applied.fill.as_ref().and_then(|fill| fill.region_source),
+            Some(crate::document::FillRegionSource::Planar(_))
+        ));
+        let pixels = self
+            .renderer
+            .render_png_pixels(
+                &self.doc,
+                &self.camera,
+                [600, 450],
+                [0.12, 0.14, 0.18],
+                crate::lighting::Lighting {
+                    ground: false,
+                    shadows: false,
+                    ..Default::default()
+                },
+            )
+            .expect("applied enclosed fill renders through the production GPU pipeline");
+        image::save_buffer(
+            "verification/enclosed-region-fill-600x450.png",
+            &pixels,
+            600,
+            450,
+            image::ColorType::Rgba8,
+        )
+        .expect("enclosed-region fill GPU preview is saved");
+        self.undo();
+        assert_eq!(self.doc.strokes.len(), 4);
+        self.redo();
+        assert_eq!(self.doc.strokes.last(), Some(&applied));
+        self.undo();
+        let before_cancel = self.doc.strokes.clone();
+        self.fill_corner(click, rect);
+        assert!(self.fills.draft.is_some());
+        self.cancel_fill_tool();
+        assert_eq!(
+            self.doc.strokes, before_cancel,
+            "Escape leaves boundaries untouched"
+        );
+        assert!(self.fills.draft.is_none());
+
+        self.doc = Document::default();
+        self.next_id = 1;
+        self.undo.clear();
+        self.redo.clear();
+        self.selected.clear();
+        self.dirty = false;
+        self.fills.region_mode = false;
+        self.fills.region_anchor = None;
+        self.fills.draft = None;
+        self.fills.closing_guides.clear();
     }
     fn check_fill_pixels(&mut self) {
         use crate::document::PlanarFill;
