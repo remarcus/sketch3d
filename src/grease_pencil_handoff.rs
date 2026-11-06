@@ -350,6 +350,8 @@ def write_drawing(frame, strokes):
             material = bpy.data.materials.new(f"{DATA['name']} · Ink {len(materials) + 1}")
             bpy.data.materials.create_gpencil_data(material)
             material.grease_pencil.color = (*base, 1.0)
+            material.grease_pencil.show_stroke = True
+            material.grease_pencil.show_fill = True
             obj.data.materials.append(material)
             materials[base] = len(obj.data.materials) - 1
         material_indices[stroke_index].value = materials[base]
