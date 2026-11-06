@@ -4,18 +4,7 @@ use crate::{editing, export_check, geometry, gizmo};
 
 impl SketchApp {
     pub(super) fn brush_controls(&mut self, ui: &mut egui::Ui) {
-        let attachable_guide = self.doc.active_guide.is_some_and(|id| {
-            self.doc.guide_resources.iter().any(|guide| {
-                guide.id == id
-                    && guide.visible
-                    && !guide.locked
-                    && matches!(
-                        guide.geometry,
-                        crate::document::guide_resources::GuideGeometry::Plane { .. }
-                            | crate::document::guide_resources::GuideGeometry::Cylinder { .. }
-                    )
-            })
-        });
+        let attachable_guide = self.drawn_guide_attachment().is_some();
         let active_model = self.doc.active_model_reference;
         let attachable_model = active_model.is_some_and(|id| {
             self.obj_reference_models.get(&id).is_some_and(|model| {
@@ -38,10 +27,8 @@ impl SketchApp {
         if !can_attach_drawn_strokes {
             ui.small(if active_model.is_some() {
                 "Model attachment needs an OBJ, static artwork, and a brush without airbrush flow or captured-planar texture."
-            } else if !attachable_guide {
-                "Attachment needs a visible, unlocked saved plane, cylinder, or OBJ."
             } else {
-                "This brush uses a surface or captured-planar texture that cannot attach."
+                "Guide attachment needs a supported saved surface and static artwork. Freeform attachment uses sampled brushes without flow or stamps."
             });
         } else {
             ui.small("New brush strokes follow the active surface when it moves.");

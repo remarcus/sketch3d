@@ -80,6 +80,36 @@ fn default_true() -> bool {
 }
 
 impl GuideGeometry {
+    pub fn supports_drawn_attachment(&self) -> bool {
+        matches!(self, Self::Plane { .. } | Self::Cylinder { .. })
+            || self.supports_parametric_attachment()
+    }
+
+    pub fn supports_parametric_attachment(&self) -> bool {
+        matches!(self, Self::Freeform { .. })
+    }
+
+    pub fn attachment_compatible_with(&self, next: &Self) -> bool {
+        matches!((self, next), (Self::Freeform { .. }, Self::Freeform { .. }))
+    }
+
+    pub fn attachment_coordinates(&self, position: Vec3) -> Option<(f32, f32)> {
+        match self {
+            Self::Freeform { surface } => surface.coordinates(position),
+            _ => None,
+        }
+    }
+
+    pub fn attachment_sample(&self, u: f32, v: f32) -> Option<(Vec3, Vec3, Vec3)> {
+        match self {
+            Self::Freeform { surface } => {
+                let (tangent, normal) = surface.frame(u, v);
+                Some((surface.point(u, v), tangent, normal))
+            }
+            _ => None,
+        }
+    }
+
     pub fn sphere(center: Vec3, radius: f32) -> Self {
         Self::Sphere {
             center,

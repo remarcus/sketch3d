@@ -115,6 +115,91 @@ fn transform_attached_stroke(
     Ok(changed)
 }
 
+fn reshape_attached_stroke(
+    stroke: &Stroke,
+    old: &GuideGeometry,
+    new: &GuideGeometry,
+) -> Result<Stroke, &'static str> {
+    let mut changed = stroke.clone();
+    for (index, point) in changed.points.iter_mut().enumerate() {
+        let (u, v) = old.attachment_coordinates(point.position)
+            .ok_or("An attached sample is off its guide. Detach the ink before reshaping.")?;
+        let (previous, old_tangent, old_normal) = old.attachment_sample(u, v)
+            .ok_or("The previous guide has no attachment frame.")?;
+        let tolerance = 0.00015 + point.position.abs().max_element() * f32::EPSILON * 16.0;
+        if previous.distance(point.position) > tolerance {
+            return Err("An attached sample is off its guide. Detach the ink before reshaping.");
+        }
+        let (position, tangent, normal) = new.attachment_sample(u, v)
+            .ok_or("The revised guide has no attachment frame.")?;
+        let basis = |t: Vec3, n: Vec3| glam::Mat3::from_cols(t, n.cross(t), n);
+        let old_basis = basis(old_tangent, old_normal);
+        let new_basis = basis(tangent, normal);
+        if old_basis.determinant() < 0.99 || new_basis.determinant() < 0.99 {
+            return Err("The revised guide would collapse an attached ink frame.");
+        }
+        let rotation = new_basis * old_basis.transpose();
+        point.position = position;
+        point.tilt = point.tilt.map(|tilt| rotation * tilt);
+        if !point.is_valid() {
+            return Err("The guide edit would move attached ink outside the drawing bounds.");
+        }
+        if index == 0 {
+            changed.brush.normal = (rotation * changed.brush.normal).normalize_or_zero();
+            changed.brush.tangent = (rotation * changed.brush.tangent).normalize_or_zero();
+        }
+    }
+    if !changed.brush.is_valid()
+        || strand_vertex_budget_exceeded(&changed)
+        || profile_tube_vertex_budget_exceeded(&changed)
+    {
+        return Err("The guide edit would exceed attached ink geometry limits.");
+    }
+    Ok(changed)
+}
+
+type GuideInkEdit = Box<(crate::editing::Snapshot, crate::editing::Snapshot)>;
+
+fn attached_guide_changes(
+    doc: &Document,
+    before: &[GuideResource],
+    after: &[GuideResource],
+) -> Result<Option<GuideInkEdit>, &'static str> {
+    let mut ink_before = Vec::new();
+    let mut ink_after = Vec::new();
+    let mut reshape_samples = 0;
+    for (index, stroke) in doc.strokes.iter().enumerate() {
+        let Some(id) = stroke.guide_attachment else { continue };
+        let old = before.iter().find(|guide| guide.id == id).map(|guide| &guide.geometry);
+        let new = after.iter().find(|guide| guide.id == id).map(|guide| &guide.geometry);
+        if old == new {
+            continue;
+        }
+        if !doc.editable(stroke) {
+            return Err("Unlock and show the attached ink before changing its guide.");
+        }
+        let parametric = old.into_iter().chain(new).any(GuideGeometry::supports_parametric_attachment);
+        let changed = match (old, new) {
+            (Some(old), Some(new)) if parametric => {
+                if !old.attachment_compatible_with(new) {
+                    return Err("Detach the ink before changing the guide's parameterization.");
+                }
+                reshape_samples += stroke.points.len();
+                if reshape_samples > 65_536 {
+                    return Err("This edit exceeds the 65,536-sample attached ink reshape limit.");
+                }
+                reshape_attached_stroke(stroke, old, new)?
+            }
+            _ => transform_attached_stroke(
+                index, stroke, attachment_frame(before, id), attachment_frame(after, id),
+            )?,
+        };
+        ink_before.push((index, stroke.clone()));
+        ink_after.push((index, changed));
+    }
+    Ok((!ink_before.is_empty()).then(|| Box::new((ink_before, ink_after))))
+}
+
 pub(super) struct GuideBendDraft {
     pub guide_id: u64,
     pub center: Vec3,
@@ -281,6 +366,20 @@ impl PlanarTarget {
 }
 
 impl SketchApp {
+    pub(super) fn drawn_guide_attachment(&self) -> Option<u64> {
+        let id = self.doc.active_guide?;
+        let geometry = self.saved_guide_geometry()?;
+        let supported_brush = self.doc.active_image_plane.is_none()
+            && self.brush.dabs.surface_target.is_none()
+            && self.brush.texture.anchor_mode != crate::texture::TextureAnchorMode::CapturedPlanar
+            && (!geometry.supports_parametric_attachment()
+                || (!self.brush.flow.enabled && !self.brush.dabs.enabled && self.brush.tip_asset_id == 0));
+        (geometry.supports_drawn_attachment()
+            && supported_brush
+            && self.doc.animation.is_empty()
+            && self.doc.animation.two_bone_rig.is_none()).then_some(id)
+    }
+
     pub(super) fn begin_guide_bend(&mut self, guide_id: u64) {
         let Some(guide) = self
             .doc
@@ -337,8 +436,9 @@ impl SketchApp {
             return;
         };
         guide.geometry = GuideGeometry::Freeform { surface };
-        self.commit_guide_edit(before);
-        self.status = "Guide bent into a bounded freeform ribbon. Existing artwork remains at its original world coordinates.".into();
+        if self.commit_guide_edit(before) {
+            self.status = "Guide bend applied. Attached ink follows the sheet.".into();
+        }
     }
 
     pub(super) fn guide_bend_canvas_input(
@@ -438,7 +538,7 @@ impl SketchApp {
         )
     }
 
-    fn commit_guide_edit(&mut self, before: GuideEditState) {
+    fn commit_guide_edit(&mut self, before: GuideEditState) -> bool {
         let after = (
             self.doc.guide_resources.clone(),
             self.doc.active_guide,
@@ -447,9 +547,14 @@ impl SketchApp {
             self.doc.active_model_reference,
         );
         if before == after {
-            return;
+            return false;
         }
-        if self.doc.active_guide.is_some() {
+        if before.1.is_some() || after.1.is_some() {
+            if self.active.is_some() {
+                Edit::Guides {
+                    before: before.clone(), after: after.clone(), ink: None,
+                }.apply(&mut self.doc, false);
+            }
             self.finish();
             self.cancel_line_tool();
             self.cancel_curve_tool();
@@ -457,38 +562,14 @@ impl SketchApp {
             self.shape_tool.mode = None;
             self.cancel_fill_tool();
         }
-        let mut ink_before = Vec::new();
-        let mut ink_after = Vec::new();
-        let result = (|| {
-            for (index, stroke) in self.doc.strokes.iter().enumerate() {
-                let Some(id) = stroke.guide_attachment else {
-                    continue;
-                };
-                let old = attachment_frame(&before.0, id);
-                let new = attachment_frame(&after.0, id);
-                if old == new {
-                    continue;
-                }
-                if !self.doc.editable(stroke) {
-                    return Err("Unlock and show the attached ink before changing its guide.");
-                }
-                let changed = transform_attached_stroke(index, stroke, old, new)?;
-                ink_before.push((index, stroke.clone()));
-                ink_after.push((index, changed));
+        let ink = match attached_guide_changes(&self.doc, &before.0, &after.0) {
+            Ok(ink) => ink,
+            Err(error) => {
+                Edit::Guides { before, after, ink: None }.apply(&mut self.doc, false);
+                self.status = error.into();
+                return false;
             }
-            Ok(())
-        })();
-        let ink = (!ink_before.is_empty()).then(|| Box::new((ink_before, ink_after)));
-        if let Err(error) = result {
-            Edit::Guides {
-                before,
-                after,
-                ink: None,
-            }
-            .apply(&mut self.doc, false);
-            self.status = error.into();
-            return;
-        }
+        };
         let edit = Edit::Guides { before, after, ink };
         edit.apply(&mut self.doc, true);
         self.undo.push(edit);
@@ -496,6 +577,7 @@ impl SketchApp {
         self.dirty = true;
         self.record_recovery_edit();
         self.renderer.invalidate();
+        true
     }
 
     pub(super) fn saved_guide_geometry(&self) -> Option<&GuideGeometry> {
@@ -700,7 +782,7 @@ impl SketchApp {
             if let Some(draft) = self.guide_bend_draft.as_mut() {
                 ui.separator();
                 ui.strong("Bend guide preview");
-                ui.small("Click four points on the saved guide: start, two cubic handles, and end. Existing strokes remain fixed in world space; the bend changes only this guide surface.");
+                ui.small("Click four points on the guide: start, two cubic handles, and end. Attached ink follows compatible bends.");
                 let mut depth_changed = false;
                 ui.horizontal(|ui| {
                     ui.label("Sweep depth");
@@ -796,7 +878,7 @@ impl SketchApp {
             if let Some(id) = bend {
                 self.begin_guide_bend(id);
             }
-            ui.small("Saved guide transforms live in the drawing. Existing strokes never move.");
+            ui.small("Saved guide edits move attached ink. Free ink stays in place.");
         });
         self.obj_reference_controls(ui);
     }
@@ -2657,6 +2739,56 @@ mod planar_attachment_tests {
             modifiers: None,
             curve: None,
         }
+    }
+
+    #[test]
+    fn freeform_attachment_follows_control_edits_and_roundtrips() {
+        let surface = FreeformSurface {
+            center: Vec3::ZERO,
+            rotation: glam::Quat::IDENTITY,
+            directrix: [glam::vec2(-1.0, 0.0), glam::vec2(-0.3, 0.25),
+                glam::vec2(0.3, -0.25), glam::vec2(1.0, 0.0)],
+            depth: 2.0,
+            bend: 0.15,
+        };
+        let mut old = guide(Vec3::ZERO, glam::Quat::IDENTITY);
+        old.geometry = GuideGeometry::Freeform { surface };
+        let mut next = surface;
+        next.directrix[1].y += 0.65;
+        next.depth = 2.75;
+        next.bend = -0.35;
+        next.rotation = glam::Quat::from_rotation_z(0.3);
+        let mut new = old.clone();
+        new.geometry = GuideGeometry::Freeform { surface: next };
+        let mut stroke = attached_stroke();
+        let parameters = [(0.18, 0.22), (0.83, 0.67)];
+        for (sample, (u, v)) in stroke.points.iter_mut().zip(parameters) {
+            sample.position = surface.point(u, v);
+        }
+        let mut free = stroke.clone();
+        free.id += 1;
+        free.guide_attachment = None;
+        let mut doc = Document::default();
+        doc.guide_resources.push(old.clone());
+        doc.strokes = vec![stroke.clone(), free.clone()];
+        let before = (vec![old.clone()], None, Vec::new(), None, None);
+        let after = (vec![new], None, Vec::new(), None, None);
+        let ink = attached_guide_changes(&doc, &before.0, &after.0).unwrap();
+        let edit = Edit::Guides { before: before.clone(), after: after.clone(), ink };
+        edit.apply(&mut doc, true);
+        for (sample, (u, v)) in doc.strokes[0].points.iter().zip(parameters) {
+            assert!(sample.position.distance(next.point(u, v)) < 1e-5);
+        }
+        assert_eq!(doc.strokes[1], free);
+        let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(reopened.strokes, doc.strokes);
+        let incompatible = vec![guide(Vec3::ZERO, glam::Quat::IDENTITY)];
+        assert!(attached_guide_changes(&doc, &after.0, &incompatible).is_err());
+        let detached = attached_guide_changes(&doc, &after.0, &[]).unwrap().unwrap().1;
+        assert_eq!(detached[0].1.guide_attachment, None);
+        assert_eq!(detached[0].1.points, doc.strokes[0].points);
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes[0], stroke);
     }
 
     fn guide(origin: Vec3, rotation: glam::Quat) -> GuideResource {

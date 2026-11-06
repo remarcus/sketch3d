@@ -3367,7 +3367,13 @@ impl SketchApp {
         });
         let saved_guide_hit = saved_geometry
             .as_ref()
-            .and_then(|geometry| geometry.clone().hit(origin, direction));
+            .and_then(|geometry| {
+                geometry.clone().hit(origin, direction).filter(|&world| {
+                    !self.attach_drawn_strokes
+                        || !geometry.supports_parametric_attachment()
+                        || geometry.attachment_coordinates(world).is_some()
+                })
+            });
         let saved_surface = self.saved_guide_surface();
         let saved_guide_frame = saved_guide_hit.and_then(|world| self.saved_guide_frame(world));
         let unsupported_texture_surface = if self.doc.active_guide.is_some() {
@@ -3469,24 +3475,9 @@ impl SketchApp {
                 pressure_samples_available,
                 ..texture
             };
-            let attachable_brush = self.doc.active_image_plane.is_none()
-                && self.brush.dabs.surface_target.is_none()
-                && self.brush.texture.anchor_mode
-                    != crate::texture::TextureAnchorMode::CapturedPlanar;
             let guide_attachment = self.attach_drawn_strokes
-                .then(|| {
-                    self.doc.active_guide.filter(|_| {
-                        saved_geometry.as_ref().is_some_and(|geometry| {
-                            matches!(
-                                geometry,
-                                crate::document::guide_resources::GuideGeometry::Plane { .. }
-                                    | crate::document::guide_resources::GuideGeometry::Cylinder { .. }
-                            )
-                        })
-                    })
-                })
-                .flatten()
-                .filter(|_| attachable_brush);
+                .then(|| self.drawn_guide_attachment())
+                .flatten();
             if self.attach_drawn_strokes && guide_attachment.is_none() {
                 self.status =
                     "This active guide or brush cannot attach the new stroke. It was drawn freely."
