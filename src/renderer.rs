@@ -2243,6 +2243,7 @@ impl SceneRenderer {
                 });
                 if layer.visible && doc.layer_folder_visible(layer.id) {
                     pass.set_bind_group(0, &self.bind, &[]);
+                    pass.set_bind_group(2, &self.shadow_bind, &[]);
                     pass.set_bind_group(4, parent_mask, &[]);
                     let mut layer_strokes: Vec<_> = doc
                         .strokes

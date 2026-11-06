@@ -117,7 +117,8 @@ impl SketchApp {
                         "Cancel restores the exact drawing without an undo entry",
                         "Apply commits the moved-boundary contour as one undoable edit",
                         "one undo and redo restore the source and refreshed fill",
-                        "the fill renderer pixel checks passed at three camera angles"
+                        "the fill renderer pixel checks passed at three camera angles",
+                        "named layer masks retain inside coverage and remove outside coverage in GPU pixels"
                     ],
                     "screen_capture": false,
                     "gpu": self.renderer.adapter
@@ -279,6 +280,106 @@ impl SketchApp {
             image::ColorType::Rgba8,
         )
         .unwrap();
+        self.check_named_layer_mask_pixels();
+    }
+
+    fn check_named_layer_mask_pixels(&mut self) {
+        use crate::document::{Layer, LayerBlendMode, PlanarFill};
+
+        let mut doc = Document::default();
+        doc.layers[0].name = "Named mask source".into();
+        doc.layers.push(Layer {
+            id: 2,
+            name: "Masked artwork".into(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            blend_mode: LayerBlendMode::Normal,
+            clip_to_below: false,
+            mask_source: Some(1),
+            mask_inverted: false,
+            hide_onion_skin: false,
+        });
+
+        let fill = |min: [f32; 2], max: [f32; 2], z: f32, id, layer_id, color| Stroke {
+            guide_attachment: None,
+            model_surface: None,
+            curve: None,
+            material: Default::default(),
+            point_thickness: None,
+            point_colors: None,
+            modifiers: None,
+            fill: Some(PlanarFill {
+                offset: 0.003,
+                gradient: None,
+                texture: None,
+                holes: Vec::new(),
+                cylinder: None,
+                region_source: None,
+            }),
+            group_id: None,
+            layer_id,
+            id,
+            color,
+            gradient: None,
+            radius: 0.025,
+            brush: Brush::default(),
+            points: [
+                [min[0], min[1]],
+                [max[0], min[1]],
+                [max[0], max[1]],
+                [min[0], max[1]],
+            ]
+            .into_iter()
+            .map(|point| Point {
+                position: Vec3::new(point[0], point[1], z),
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 0,
+            })
+            .collect(),
+        };
+        doc.strokes
+            .push(fill([-0.3, -0.5], [0.3, 0.5], 0.0, 1, 1, [0.08, 0.2, 0.85]));
+        doc.strokes
+            .push(fill([-0.8, -0.7], [0.8, 0.7], 0.1, 2, 2, [0.9, 0.1, 0.06]));
+
+        let camera = Camera {
+            yaw: 0.0,
+            pitch: 0.0,
+            distance: 5.0,
+            ..Default::default()
+        };
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(600.0, 450.0));
+        let sample_red = |pixels: &[u8], world: Vec3| {
+            let (position, _) = crate::gizmo::project(&camera, rect, world).unwrap();
+            let index = (position.y.round() as usize * 600 + position.x.round() as usize) * 4;
+            pixels[index]
+        };
+
+        self.renderer.invalidate();
+        self.renderer
+            .render(&doc, &camera, GuidePreview::Hidden, [600, 450]);
+        let masked = self.renderer.verification_pixels().to_vec();
+        let inside = sample_red(&masked, Vec3::new(0.0, 0.0, 0.1));
+        let outside = sample_red(&masked, Vec3::new(0.55, 0.0, 0.1));
+
+        doc.layers[1].mask_source = None;
+        self.renderer.invalidate();
+        self.renderer
+            .render(&doc, &camera, GuidePreview::Hidden, [600, 450]);
+        let unmasked = self.renderer.verification_pixels().to_vec();
+        let outside_without_mask = sample_red(&unmasked, Vec3::new(0.55, 0.0, 0.1));
+
+        assert!(
+            inside > 150,
+            "named mask did not preserve inside coverage: {inside}"
+        );
+        assert!(
+            outside_without_mask > outside.saturating_add(60),
+            "named mask did not remove outside coverage: masked={outside}, unmasked={outside_without_mask}"
+        );
+        self.renderer.invalidate();
     }
 
     fn verify_fill_refresh_transaction(&mut self) {
