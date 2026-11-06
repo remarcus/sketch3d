@@ -374,6 +374,78 @@ mod boundary_scope_tests {
             * 0.5
     }
 
+    fn plane_area(points: &[Vec3], plane: DrawingPlane) -> f32 {
+        let origin = plane.origin();
+        let (u, v, _) = plane.basis();
+        let local: Vec<_> = points
+            .iter()
+            .map(|point| {
+                let relative = *point - origin;
+                glam::Vec2::new(relative.dot(u), relative.dot(v))
+            })
+            .collect();
+        local
+            .iter()
+            .zip(local.iter().cycle().skip(1))
+            .take(local.len())
+            .map(|(a, b)| a.x * b.y - b.x * a.y)
+            .sum::<f32>()
+            .abs()
+            * 0.5
+    }
+
+    #[test]
+    fn concave_nearly_closed_region_solves_on_a_rotated_offset_plane() {
+        let plane = DrawingPlane {
+            anchor: Vec3::new(1.0, -2.0, 0.5),
+            rotation_degrees: Vec3::new(23.0, 31.0, -17.0),
+            depth: 0.8,
+        };
+        let (u, v, _) = plane.basis();
+        let origin = plane.origin();
+        let point = |x: f32, y: f32| origin + u * x + v * y;
+        let corners = [
+            point(-1.0, -1.0),
+            point(1.0, -1.0),
+            point(1.0, 0.0),
+            point(0.0, 0.0),
+            point(0.0, 1.0),
+            point(-1.0, 1.0),
+        ];
+        let mut doc = crate::document::Document::default();
+        doc.strokes = (0..corners.len())
+            .map(|index| {
+                let start = if index == 0 {
+                    corners[index] - v * 0.01
+                } else {
+                    corners[index]
+                };
+                let end = if index == 5 {
+                    corners[(index + 1) % corners.len()] + v * 0.01
+                } else {
+                    corners[(index + 1) % corners.len()]
+                };
+                line(index as u64 + 1, 1, start, end)
+            })
+            .collect();
+        let before = doc.strokes.clone();
+        let seed = point(-0.5, 0.5);
+        assert!(find_region(&doc, plane, seed, 0.0, None, None, &[]).is_err());
+        let region = find_region(&doc, plane, seed, 0.021, None, None, &[]).unwrap();
+        assert!(
+            (plane_area(&region, plane) - 3.0).abs() < 0.02,
+            "expected concave area 3, got {} from {region:?}",
+            plane_area(&region, plane)
+        );
+        assert!(region
+            .iter()
+            .all(|point| (point - origin).dot(plane.basis().2).abs() < 1e-4));
+        assert_eq!(
+            doc.strokes, before,
+            "region solving leaves boundary art untouched"
+        );
+    }
+
     #[test]
     fn visible_layer_boundaries_split_a_region_but_active_layer_scope_ignores_them() {
         let mut doc = crate::document::Document::default();
