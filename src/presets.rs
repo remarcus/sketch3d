@@ -1686,6 +1686,48 @@ mod tests {
     }
 
     #[test]
+    fn repeating_texture_v3_package_roundtrips_asset_settings_and_library_backup() {
+        let asset = transparent_edge_tip();
+        let mut preset = Library::default().presets[0].clone();
+        preset.name = "Portable Repeating Grain".into();
+        let settings = crate::texture::ImageTextureSettings {
+            asset_id: asset.id,
+            mode: crate::texture::ImageTextureMode::RgbaWithAlpha,
+            mask_source: crate::texture::ImageMaskSource::LuminanceTimesAlpha,
+            tint_with_brush: true,
+            invert: true,
+            contrast: 1.4,
+            strength: 0.8,
+        };
+        preset.brush.texture.image = Some(settings);
+        let package = BrushPackage::from_preset_with_assets(&preset, None, Some(asset.clone()));
+        assert_eq!(package.version, 3);
+
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source = root.path().join("source/Repeating Grain.brush.json");
+        package.save(&source).unwrap();
+        let relocated = root.path().join("relocated/Repeating Grain.brush.json");
+        fs::create_dir_all(relocated.parent().unwrap()).unwrap();
+        fs::rename(&source, &relocated).unwrap();
+        let loaded = BrushPackage::load(&relocated).unwrap();
+        assert_eq!(loaded, package);
+        assert_eq!(
+            loaded.as_preset().unwrap().brush.texture.image,
+            Some(settings)
+        );
+
+        let mut library = Library::default();
+        let id = loaded.import_into(&mut library).unwrap();
+        assert_eq!(library.get(id).unwrap().brush.texture.image, Some(settings));
+        assert_eq!(library.tip_asset(asset.id), Some(&asset));
+        let backup = root.path().join("library/brushes.json");
+        library.save(&backup).unwrap();
+        let reopened = Library::load(&backup).unwrap();
+        assert_eq!(reopened, library);
+        assert_eq!(reopened.tip_asset(asset.id), Some(&asset));
+    }
+
+    #[test]
     fn missing_or_corrupt_tip_packages_do_not_mutate_destination_library() {
         let asset = transparent_edge_tip();
         let package = BrushPackage::from_preset(&preset_for_tip(&asset), Some(asset));

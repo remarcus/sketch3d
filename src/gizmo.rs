@@ -720,6 +720,95 @@ mod tests {
     }
 
     #[test]
+    fn repeating_image_texture_picker_reveals_art_through_transparent_texels() {
+        let mut camera = Camera::default();
+        camera.align(Plane::Front);
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let png_image =
+            image::RgbaImage::from_raw(2, 1, vec![255, 255, 255, 255, 255, 255, 255, 0]).unwrap();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(png_image)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let asset = crate::brush_tip::BrushTipAsset::from_png(png.into_inner(), None).unwrap();
+        let mut mark = Stroke {
+            guide_attachment: None,
+            model_surface: None,
+            gradient: None,
+            curve: None,
+            material: Default::default(),
+            point_thickness: None,
+            point_colors: None,
+            modifiers: None,
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id: 51,
+            color: [0.5; 3],
+            radius: 0.12,
+            brush: Default::default(),
+            points: vec![
+                Point {
+                    position: Vec3::new(-1.0, 0.0, 1.0),
+                    pressure: 1.0,
+                    tilt: None,
+                    time_ms: 0,
+                },
+                Point {
+                    position: Vec3::new(1.0, 0.0, 1.0),
+                    pressure: 1.0,
+                    tilt: None,
+                    time_ms: 0,
+                },
+            ],
+        };
+        mark.brush.texture.image = Some(crate::texture::ImageTextureSettings {
+            asset_id: asset.id,
+            mode: crate::texture::ImageTextureMode::CoverageMask,
+            mask_source: crate::texture::ImageMaskSource::Alpha,
+            ..Default::default()
+        });
+        let mut behind = mark.clone();
+        behind.id = 52;
+        behind.brush.texture.image = None;
+        behind.brush.texture = Default::default();
+        for point in &mut behind.points {
+            point.position.z = 0.0;
+        }
+        let doc = Document {
+            linked_stroke_groups: Default::default(),
+            strokes: vec![mark.clone(), behind.clone()],
+            brush_tip_assets: vec![asset.clone()],
+            ..Default::default()
+        };
+        let mut transparent_pick = false;
+        let mut covered_pick = false;
+        for triangle in crate::geometry::stroke_mesh(&mark).as_chunks::<3>().0 {
+            let position = (Vec3::from(triangle[0].position)
+                + Vec3::from(triangle[1].position)
+                + Vec3::from(triangle[2].position))
+                / 3.0;
+            let screen = project(&camera, rect, position).unwrap().0;
+            let (origin, direction) = ray(&camera, rect, screen);
+            match textured_surface_covered(&mark, None, Some(&asset), origin, direction) {
+                Some(false) => {
+                    transparent_pick |= pick(&doc, &camera, rect, screen) == Some(behind.id)
+                }
+                Some(true) => covered_pick |= pick(&doc, &camera, rect, screen) == Some(mark.id),
+                None => {}
+            }
+            if transparent_pick && covered_pick {
+                break;
+            }
+        }
+        assert!(
+            transparent_pick,
+            "transparent repeating texels reveal the stroke behind"
+        );
+        assert!(covered_pick, "covered repeating texture remains pickable");
+    }
+
+    #[test]
     fn dab_stroke_picker_skips_gaps_between_visible_marks() {
         let mut camera = Camera::default();
         camera.align(Plane::Front);

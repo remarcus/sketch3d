@@ -656,6 +656,16 @@ mod tests {
         document.strokes[0].brush.tip_asset_id = asset.id;
         document.strokes[0].brush.tip_aspect = asset.size[0] as f32 / asset.size[1] as f32;
         document.strokes[0].brush.dabs.enabled = true;
+        let image_texture = crate::texture::ImageTextureSettings {
+            asset_id: asset.id,
+            mode: crate::texture::ImageTextureMode::CoverageMask,
+            mask_source: crate::texture::ImageMaskSource::LuminanceTimesAlpha,
+            tint_with_brush: true,
+            invert: true,
+            contrast: 1.25,
+            strength: 0.7,
+        };
+        document.strokes[0].brush.texture.image = Some(image_texture);
         document.add_brush_tip_asset(asset.clone()).unwrap();
 
         let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
@@ -669,6 +679,7 @@ mod tests {
         let reopened =
             Document::from_json(&std::fs::read_to_string(&relocated_path).unwrap()).unwrap();
         assert_eq!(reopened.strokes[0].brush.tip_asset_id, asset.id);
+        assert_eq!(reopened.strokes[0].brush.texture.image, Some(image_texture));
         assert_eq!(reopened.brush_tip_assets, vec![asset.clone()]);
         let relocated_asset = reopened
             .brush_tip_assets
@@ -701,6 +712,10 @@ mod tests {
         assert_eq!(snapshot.original_path, Some(relocated_path));
         let recovered = &snapshot.document;
         assert_eq!(recovered.strokes[0].brush.tip_asset_id, asset.id);
+        assert_eq!(
+            recovered.strokes[0].brush.texture.image,
+            Some(image_texture)
+        );
         let recovered_asset = recovered
             .brush_tip_assets
             .iter()

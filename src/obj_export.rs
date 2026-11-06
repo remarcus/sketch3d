@@ -969,6 +969,55 @@ mod material_tests {
     use super::*;
 
     #[test]
+    fn repeating_brush_image_is_bundled_as_obj_color_and_alpha_textures() {
+        let source =
+            image::RgbaImage::from_raw(2, 1, vec![255, 255, 255, 255, 255, 255, 255, 0]).unwrap();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(source)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let asset = crate::brush_tip::BrushTipAsset::from_png(png.into_inner(), None).unwrap();
+        let mut mark = material_stroke(41, StrokeMaterial::Shaded);
+        mark.brush.texture.image = Some(crate::texture::ImageTextureSettings {
+            asset_id: asset.id,
+            mode: crate::texture::ImageTextureMode::CoverageMask,
+            mask_source: crate::texture::ImageMaskSource::Alpha,
+            ..Default::default()
+        });
+        let document = Document {
+            strokes: vec![mark],
+            brush_tip_assets: vec![asset],
+            ..Document::default()
+        };
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let destination = root.path().join("repeating-image.obj");
+        assert!(write_obj_bundle(&document, None, &destination, false).unwrap() > 0);
+
+        let obj = std::fs::read_to_string(&destination).unwrap();
+        let mtl_name = obj
+            .lines()
+            .find_map(|line| line.strip_prefix("mtllib "))
+            .unwrap();
+        let mtl = std::fs::read_to_string(root.path().join(mtl_name)).unwrap();
+        let color_map = mtl
+            .lines()
+            .find_map(|line| line.strip_prefix("map_Kd "))
+            .unwrap();
+        let alpha_map = mtl
+            .lines()
+            .find_map(|line| line.strip_prefix("map_d "))
+            .unwrap();
+        let color = image::open(root.path().join(color_map)).unwrap().to_rgba8();
+        let alpha = image::open(root.path().join(alpha_map)).unwrap().to_rgba8();
+        assert_eq!(color.dimensions(), (2, 1));
+        assert_eq!(alpha.dimensions(), (2, 1));
+        assert_eq!(color.get_pixel(0, 0).0, [255, 255, 255, 255]);
+        assert_eq!(alpha.get_pixel(0, 0).0[0], 255);
+        assert_eq!(alpha.get_pixel(1, 0).0[0], 0);
+        assert!(obj.contains("vt "));
+    }
+
+    #[test]
     fn obj_mtl_preserves_material_modes_and_discloses_cutout_fallback() {
         let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let destination = root.path().join("materials.obj");

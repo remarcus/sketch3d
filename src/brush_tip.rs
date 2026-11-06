@@ -449,3 +449,98 @@ mod base64_png {
         }
     }
 }
+
+#[cfg(test)]
+mod repeating_texture_tests {
+    use super::*;
+    use crate::texture::{ImageMaskSource, ImageTextureMode, ImageTextureSettings};
+    use image::ImageEncoder;
+
+    fn fixture_asset() -> BrushTipAsset {
+        let image = image::RgbaImage::from_raw(2, 1, vec![0, 0, 0, 255, 240, 40, 20, 128]).unwrap();
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(
+                image.as_raw(),
+                image.width(),
+                image.height(),
+                image::ExtendedColorType::Rgba8,
+            )
+            .unwrap();
+        BrushTipAsset::from_png(png, Some("repeat fixture".into())).unwrap()
+    }
+
+    fn settings(asset: &BrushTipAsset) -> ImageTextureSettings {
+        ImageTextureSettings {
+            asset_id: asset.id,
+            mode: ImageTextureMode::CoverageMask,
+            mask_source: ImageMaskSource::LuminanceTimesAlpha,
+            tint_with_brush: true,
+            invert: false,
+            contrast: 1.0,
+            strength: 1.0,
+        }
+    }
+
+    #[test]
+    fn repeating_mask_and_rgba_modes_interpret_color_alpha_contrast_and_strength() {
+        let asset = fixture_asset();
+        let mask = asset.repeating_texture_pixels(settings(&asset)).unwrap();
+        assert_eq!(&mask.pixels[..4], &[255, 255, 255, 0]);
+        assert_eq!(&mask.pixels[4..8], &[255, 255, 255, 41]);
+
+        let inverted = asset
+            .repeating_texture_pixels(ImageTextureSettings {
+                invert: true,
+                strength: 0.5,
+                ..settings(&asset)
+            })
+            .unwrap();
+        assert_eq!(inverted.pixels[3], 255);
+        assert!(inverted.pixels[7] > 200);
+
+        let rgba = asset
+            .repeating_texture_pixels(ImageTextureSettings {
+                mode: ImageTextureMode::RgbaWithAlpha,
+                mask_source: ImageMaskSource::Alpha,
+                strength: 0.5,
+                ..settings(&asset)
+            })
+            .unwrap();
+        assert_eq!(&rgba.pixels[4..7], &[240, 40, 20]);
+        assert_eq!(rgba.pixels[7], 192);
+        assert!(asset
+            .repeating_texture_pixels(ImageTextureSettings {
+                asset_id: asset.id.saturating_add(1),
+                ..settings(&asset)
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn repeating_coverage_wraps_and_preview_shows_transparent_gutters() {
+        let asset = fixture_asset();
+        let mut mask = settings(&asset);
+        mask.mask_source = ImageMaskSource::Alpha;
+        mask.strength = 1.0;
+        assert_eq!(
+            asset.repeating_coverage_at_uv(mask, [0.1, 0.5]).unwrap(),
+            1.0
+        );
+        assert_eq!(
+            asset.repeating_coverage_at_uv(mask, [1.1, 0.5]).unwrap(),
+            1.0
+        );
+        assert!(asset.repeating_coverage_at_uv(mask, [0.6, 0.5]).unwrap() < 0.51);
+
+        let preview = asset
+            .repeating_preview_pixels(mask, [0.3, 0.6, 0.9])
+            .unwrap();
+        assert_eq!(preview.size, [14, 11]);
+        assert!(preview.pixels.chunks_exact(4).all(|pixel| pixel[3] == 255));
+        let gutter = (2 * preview.size[0] + 2) as usize * 4;
+        assert!(preview.pixels[gutter..gutter + 3]
+            .iter()
+            .any(|component| *component > 0));
+    }
+}

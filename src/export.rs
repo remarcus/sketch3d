@@ -2105,6 +2105,47 @@ mod tests {
     }
 
     #[test]
+    fn repeating_brush_image_is_embedded_with_repeat_sampling_in_glb() {
+        let source =
+            image::RgbaImage::from_raw(2, 1, vec![255, 255, 255, 255, 255, 255, 255, 0]).unwrap();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(source)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let asset = crate::brush_tip::BrushTipAsset::from_png(png.into_inner(), None).unwrap();
+        let mut mark = stroke(41, [0.3, 0.5, 0.7]);
+        mark.brush.texture.image = Some(crate::texture::ImageTextureSettings {
+            asset_id: asset.id,
+            mode: crate::texture::ImageTextureMode::CoverageMask,
+            mask_source: crate::texture::ImageMaskSource::Alpha,
+            ..Default::default()
+        });
+        let doc = Document {
+            strokes: vec![mark],
+            brush_tip_assets: vec![asset],
+            ..Document::default()
+        };
+        let exported = encode(&doc, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&exported.bytes).unwrap();
+        assert_eq!(gltf.images().count(), 1);
+        assert_eq!(gltf.textures().count(), 1);
+        let image = gltf.images().next().unwrap();
+        let gltf::image::Source::View { view, mime_type } = image.source() else {
+            panic!("repeating brush image must be embedded in the GLB")
+        };
+        assert_eq!(mime_type, "image/png");
+        let bytes = &gltf.blob.as_ref().unwrap()[view.offset()..view.offset() + view.length()];
+        let pixels = image::load_from_memory(bytes).unwrap().to_rgba8();
+        assert_eq!(pixels.dimensions(), (2, 1));
+        assert_eq!(pixels.get_pixel(0, 0).0, [255, 255, 255, 255]);
+        assert_eq!(pixels.get_pixel(1, 0).0, [255, 255, 255, 0]);
+        assert_eq!(
+            gltf.textures().next().unwrap().sampler().wrap_s(),
+            gltf::texture::WrappingMode::Repeat
+        );
+    }
+
+    #[test]
     fn gradient_stops_survive_native_recovery_merge_and_export_fallbacks() {
         let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let mut gradient_stroke = stroke(701, [0.4, 0.3, 0.2]);

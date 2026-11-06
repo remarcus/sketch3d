@@ -795,9 +795,17 @@ mod tests {
         let destination_assets = root.path().join("destination-assets");
         fs::create_dir_all(&destination_assets).unwrap();
         let asset = transparent_tip();
+        let mut stroke = image_tip_stroke(1, &asset);
+        let repeating_settings = crate::texture::ImageTextureSettings {
+            asset_id: asset.id,
+            mode: crate::texture::ImageTextureMode::CoverageMask,
+            mask_source: crate::texture::ImageMaskSource::Alpha,
+            ..Default::default()
+        };
+        stroke.brush.texture.image = Some(repeating_settings);
         let source = Document {
             brush_tip_assets: vec![asset.clone()],
-            strokes: vec![image_tip_stroke(1, &asset)],
+            strokes: vec![stroke],
             ..Document::default()
         };
         fs::write(&source_path, serde_json::to_vec(&source).unwrap()).unwrap();
@@ -834,7 +842,15 @@ mod tests {
             std::slice::from_ref(&asset)
         );
         assert_eq!(merged.strokes[0].brush.tip_asset_id, asset.id);
+        assert_eq!(
+            merged.strokes[0].brush.texture.image,
+            Some(repeating_settings)
+        );
         let reloaded = Document::from_json(&serde_json::to_string(&merged).unwrap()).unwrap();
+        assert_eq!(
+            reloaded.strokes[0].brush.texture.image,
+            Some(repeating_settings)
+        );
         assert_eq!(
             reloaded.brush_tip_assets.as_slice(),
             std::slice::from_ref(&asset)
