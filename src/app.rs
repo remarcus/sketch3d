@@ -5188,7 +5188,9 @@ impl SketchApp {
                 }
                 let refreshable_fill = editable_fill && self.doc.strokes.iter().any(|stroke| {
                     self.selected.contains(&stroke.id) && stroke.fill.as_ref().is_some_and(|fill| {
-                        fill.region_source.is_some() && fill.holes.is_empty()
+                        (fill.region_source.is_some()
+                            || fill.mesh.as_ref().is_some_and(|mesh| mesh.source.is_some()))
+                            && fill.holes.is_empty()
                     })
                 });
                 if ui.add_enabled(refreshable_fill, egui::Button::new("Refresh enclosed fill…"))

@@ -346,6 +346,12 @@ pub fn solve(
     index: &ObjMeshIndex,
     source: MeshFillSource,
 ) -> Result<(MeshFill, Vec<Vec3>), String> {
+    if source
+        .boundary_layer
+        .is_some_and(|id| !doc.layers.iter().any(|layer| layer.id == id))
+    {
+        return Err("The original boundary layer is unavailable".into());
+    }
     let anchors = contour(doc, model, index, resource, source)?;
     let first = anchors[0].triangle;
     let [a, b, c] = Face::new(model, first)?.positions;
@@ -506,13 +512,41 @@ pub fn solve(
     ))
 }
 
+pub fn replace_geometry(
+    doc: &Document,
+    original: &Stroke,
+    mesh: MeshFill,
+    points: Vec<crate::document::Point>,
+) -> Result<Stroke, String> {
+    let other_strokes = doc.strokes.iter().filter(|stroke| stroke.id != original.id);
+    let triangles = other_strokes
+        .clone()
+        .filter_map(|stroke| stroke.fill.as_ref()?.mesh.as_ref())
+        .map(|mesh| mesh.triangles.len())
+        .sum::<usize>();
+    let samples = other_strokes
+        .map(|stroke| stroke.points.len())
+        .sum::<usize>();
+    if triangles + mesh.triangles.len() > MAX_DOCUMENT_TRIANGLES
+        || samples + points.len() > 2_000_000
+    {
+        return Err("The refreshed mesh fill would exceed the document geometry limit".into());
+    }
+    let mut mark = original.clone();
+    let fill = mark.fill.as_mut().ok_or("Missing original mesh fill")?;
+    fill.mesh = Some(mesh);
+    mark.points = points;
+    polygon::validate(&mark)?;
+    Ok(mark)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::document::{ModelSurfacePatch, Point, model_references::ModelInkAttachment};
 
     #[test]
-    fn fills_a_crease_and_rejects_an_open_boundary() {
+    fn fills_and_refreshes_a_crease_and_rejects_an_open_boundary() {
         let model = crate::obj_reference::parse(
             b"v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 -1\nf 1 2 3\nf 2 1 4\n",
             std::path::Path::new("crease.obj"),
@@ -589,18 +623,60 @@ mod tests {
             boundary_layer: Some(1),
             gap_tolerance: 0.0,
         };
-        let (fill, _) = solve(&doc, &resource, &model, &index, source).unwrap();
+        let (fill, points) = solve(&doc, &resource, &model, &index, source).unwrap();
         assert!(fill.triangles.iter().all(|triangle| {
             triangle.iter().all(|point| point.y.abs() < 1e-6)
                 || triangle.iter().all(|point| point.z.abs() < 1e-6)
         }));
         assert!(fill.triangles.iter().flatten().any(|point| point.z < -0.1));
         assert!(fill.triangles.iter().flatten().any(|point| point.y > 0.1));
+        let as_points = |positions: Vec<Vec3>| {
+            positions
+                .into_iter()
+                .map(|position| Point {
+                    position,
+                    pressure: 1.0,
+                    tilt: None,
+                    time_ms: 0,
+                })
+                .collect()
+        };
+        let mut original = doc.strokes[0].clone();
+        original.id = 7;
+        original.color = [0.2, 0.4, 0.6];
+        original.model_surface = None;
+        original.fill = Some(crate::document::PlanarFill {
+            offset: 0.0,
+            mesh: Some(fill),
+            ..Default::default()
+        });
+        original.points = as_points(points);
+        doc.strokes.push(original.clone());
+        for point in &mut doc.strokes[0].points[2..4] {
+            point.position.z = -0.2;
+        }
+        let (fill, points) = solve(&doc, &resource, &model, &index, source).unwrap();
+        let refreshed = replace_geometry(&doc, &original, fill, as_points(points)).unwrap();
+        assert_eq!(
+            (refreshed.id, refreshed.layer_id, refreshed.color),
+            (original.id, original.layer_id, original.color)
+        );
+        assert_ne!(refreshed.points, original.points);
+        let edit = crate::editing::Edit::Change {
+            before: vec![(1, original.clone())],
+            after: vec![(1, refreshed.clone())],
+        };
+        edit.apply(&mut doc, true);
+        let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(reopened.strokes[1], refreshed);
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes[1], original);
         doc.strokes[0].points.pop();
         assert!(
             solve(&doc, &resource, &model, &index, source)
                 .unwrap_err()
                 .contains("open")
         );
+        assert_eq!(doc.strokes[1], original);
     }
 }

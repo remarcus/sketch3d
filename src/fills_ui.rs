@@ -489,7 +489,7 @@ impl SketchApp {
             self.status = "Direct contour editing is available for planar fills.".into();
             return;
         }
-        if let Err(error) = polygon::triangulate(&source) {
+        if let Err(error) = polygon::validate(&source) {
             self.status = error;
             return;
         }
@@ -503,7 +503,7 @@ impl SketchApp {
             return;
         };
         let mark = if refresh {
-            match refreshed_fill(&self.doc, &source) {
+            match self.refresh_fill_geometry(&source) {
                 Ok(mark) => mark,
                 Err(error) => {
                     self.status = error;
@@ -538,6 +538,16 @@ impl SketchApp {
         } else {
             "Drag fill contour handles or use numeric coordinates. Apply commits one edit. Escape cancels."
         }.into();
+    }
+
+    fn refresh_fill_geometry(&mut self, original: &Stroke) -> Result<Stroke, String> {
+        let Some(mesh) = original.fill.as_ref().and_then(|fill| fill.mesh.as_ref()) else {
+            return refreshed_fill(&self.doc, original);
+        };
+        let source = mesh.source.ok_or("This mesh fill is detached from its original OBJ")?;
+        self.mesh_fill_resource(source.model_id)?;
+        let (updated, points) = self.solve_mesh_fill(source)?;
+        mesh_fill::replace_geometry(&self.doc, original, updated, contour_points(points))
     }
 
     fn fill_contour_controls(&mut self, ui: &mut egui::Ui) {
@@ -1094,7 +1104,7 @@ impl SketchApp {
             return;
         }
         if draft.refreshing {
-            match refreshed_fill(&self.doc, &original) {
+            match self.refresh_fill_geometry(&original) {
                 Ok(mark) if mark != draft.mark => {
                     draft.mark = mark;
                     self.fills.draft = Some(draft);
@@ -1116,7 +1126,7 @@ impl SketchApp {
             self.status = "No contour changes to apply.".into();
             return;
         }
-        if let Err(error) = polygon::triangulate(&draft.mark) {
+        if let Err(error) = polygon::validate(&draft.mark) {
             self.fills.draft = Some(draft);
             self.status = error;
             return;
