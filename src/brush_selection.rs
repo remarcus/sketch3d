@@ -246,8 +246,13 @@ pub fn region_hit_ids(
                     }
                 }
             }
-            let mut visible_hit = through_selection;
-            if !visible_hit {
+            if witnesses.is_empty() {
+                continue;
+            }
+            let mut visible_hit = false;
+            if through_selection {
+                visible_hit = true;
+            } else {
                 for point in witnesses {
                     work = work.saturating_add(1);
                     if work > MAX_WORK {
@@ -572,6 +577,114 @@ mod tests {
         crate::gizmo::project(camera, canvas, position)
             .expect("test points should be in the camera frustum")
             .0
+    }
+
+    #[test]
+    fn box_lasso_region_queries_distinguish_intersection_containment_and_protection() {
+        let camera = Camera {
+            yaw: 0.0,
+            pitch: 0.0,
+            ..Camera::default()
+        };
+        let canvas = canvas();
+        let center = screen_point(&camera, canvas, Vec3::ZERO);
+        let region = [
+            Pos2::new(center.x - 40.0, center.y - 40.0),
+            Pos2::new(center.x + 40.0, center.y - 40.0),
+            Pos2::new(center.x + 40.0, center.y + 40.0),
+            Pos2::new(center.x - 40.0, center.y + 40.0),
+        ];
+        let scale = camera.world_per_pixel(Vec3::ZERO, canvas.height());
+        let make_line = |id, layer_id, start, end| {
+            let mut result = stroke(id, layer_id, None, start);
+            result.points.push(Point {
+                position: end,
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 1,
+            });
+            result
+        };
+        let outside_start =
+            screen_point(&camera, canvas, Vec3::new(-5.0 * scale, 200.0 * scale, 0.0));
+        assert!(
+            !point_in_polygon(outside_start, &region),
+            "test stroke starts outside at {outside_start:?}"
+        );
+        let outside_end = screen_point(&camera, canvas, Vec3::new(5.0 * scale, 200.0 * scale, 0.0));
+        assert!(region.iter().enumerate().all(|(index, edge_start)| {
+            closest_segments(
+                outside_start,
+                outside_end,
+                *edge_start,
+                region[(index + 1) % region.len()],
+            )
+            .0 > 1.0
+        }));
+        let mut doc = Document::default();
+        doc.layers.push(Layer {
+            id: 2,
+            name: "Locked".into(),
+            visible: true,
+            locked: true,
+            opacity: 1.0,
+            blend_mode: Default::default(),
+            hide_onion_skin: false,
+            mask_inverted: false,
+            mask_source: None,
+            clip_to_below: false,
+        });
+        doc.strokes = vec![
+            make_line(
+                1,
+                1,
+                Vec3::new(-5.0 * scale, 0.0, 0.0),
+                Vec3::new(5.0 * scale, 0.0, 0.0),
+            ),
+            make_line(
+                2,
+                1,
+                Vec3::new(-60.0 * scale, 0.0, 0.0),
+                Vec3::new(60.0 * scale, 0.0, 0.0),
+            ),
+            make_line(
+                3,
+                1,
+                Vec3::new(-5.0 * scale, 200.0 * scale, 0.0),
+                Vec3::new(5.0 * scale, 200.0 * scale, 0.0),
+            ),
+            make_line(
+                4,
+                2,
+                Vec3::new(-5.0 * scale, 0.0, 0.0),
+                Vec3::new(5.0 * scale, 0.0, 0.0),
+            ),
+        ];
+
+        let intersecting =
+            region_hit_ids(&doc, &camera, canvas, &region, false, true, true).unwrap();
+        assert_eq!(
+            intersecting,
+            HashSet::from([1, 2]),
+            "region={region:?}, outside={outside_start:?}"
+        );
+        let contained = region_hit_ids(&doc, &camera, canvas, &region, true, true, true).unwrap();
+        assert_eq!(contained, HashSet::from([1]));
+
+        let starting = HashSet::from([9, 2]);
+        assert_eq!(
+            apply_region_selection(&starting, &intersecting, RegionSelectionOperation::Replace),
+            intersecting
+        );
+        assert_eq!(
+            apply_region_selection(&starting, &intersecting, RegionSelectionOperation::Add),
+            HashSet::from([1, 2, 9])
+        );
+        assert_eq!(
+            apply_region_selection(&starting, &intersecting, RegionSelectionOperation::Subtract),
+            HashSet::from([9])
+        );
+        assert!(region_hit_ids(&doc, &camera, canvas, &region[..2], false, true, true).is_err());
     }
 
     #[test]
