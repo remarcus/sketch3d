@@ -711,6 +711,64 @@ mod tests {
     }
 
     #[test]
+    fn partial_erase_fragments_preserve_image_tip_and_independent_grain_settings() {
+        let camera = front_camera();
+        let canvas = canvas();
+        let mut source = line([Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)]);
+        source.brush.kind = crate::document::BrushKind::Round;
+        source.brush.normal = Vec3::Z;
+        source.brush.tangent = Vec3::X;
+        source.brush.tip_asset_id = 741;
+        source.brush.dabs.enabled = true;
+        source.brush.dabs.spacing = 0.75;
+        source.brush.texture.anchor_mode = crate::texture::TextureAnchorMode::CapturedPlanar;
+        source.brush.texture.frame = Some(crate::texture::TextureFrame::from_plane(
+            Vec3::new(0.0, 0.0, 0.0),
+            glam::Quat::IDENTITY,
+        ));
+        source.brush.texture.mapping = crate::texture::TextureMapping {
+            offset: [0.2, -0.35],
+            rotation_degrees: 18.0,
+            scale: [0.8, 1.2],
+        };
+        source.brush.texture.image = Some(crate::texture::ImageTextureSettings {
+            asset_id: 742,
+            mode: crate::texture::ImageTextureMode::CoverageMask,
+            mask_source: crate::texture::ImageMaskSource::LuminanceTimesAlpha,
+            tint_with_brush: true,
+            invert: true,
+            contrast: 1.6,
+            strength: 0.72,
+        });
+        let original_texture = source.brush.texture;
+        let document = Document {
+            linked_stroke_groups: Default::default(),
+            strokes: vec![source.clone()],
+            ..Default::default()
+        };
+        let center = point(&camera, canvas, Vec3::ZERO);
+        let path = [
+            center + Vec2::new(0.0, -30.0),
+            center + Vec2::new(0.0, 30.0),
+        ];
+        let plan = plan_partial_erase(&document, &camera, canvas, &path, 2.0, 20)
+            .unwrap()
+            .expect("crossing the textured image-tip stroke creates retained fragments");
+        assert_eq!(plan.split, 1);
+
+        let mut edited = document.clone();
+        plan.edit.apply(&mut edited, true);
+        assert!(edited.strokes.len() >= 2);
+        assert!(edited.strokes.iter().all(|fragment| {
+            fragment.brush.tip_asset_id == source.brush.tip_asset_id
+                && fragment.brush.texture == original_texture
+                && fragment.brush.dabs.spacing == source.brush.dabs.spacing
+        }));
+        plan.edit.apply(&mut edited, false);
+        assert_eq!(edited.strokes, document.strokes);
+    }
+
+    #[test]
     fn scattered_model_surface_dabs_pick_erase_and_stay_on_the_mesh() {
         let camera = front_camera();
         let canvas = canvas();
