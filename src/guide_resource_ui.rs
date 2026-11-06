@@ -2852,9 +2852,31 @@ mod planar_attachment_tests {
     fn cylinder_radius_edit_preserves_seam_ink_and_detach_is_reversible_in_place() {
         let old_guide = cylinder_guide(1.0, 4.0);
         let new_guide = cylinder_guide(1.2, 4.0);
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            1,
+            image::Rgba([80, 170, 210, 160]),
+        ))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+        let grain = crate::brush_tip::BrushTipAsset::from_png(png.into_inner(), None).unwrap();
         let mut source = attached_stroke();
         source.points[0].position = Vec3::new(-1.05, -0.2, -0.02);
         source.points[1].position = Vec3::new(-1.05, 0.2, 0.02);
+        source.brush.texture.mapping = crate::texture::TextureMapping {
+            offset: [-0.1, 0.3],
+            rotation_degrees: -16.0,
+            scale: [1.2, 0.7],
+        };
+        source.brush.texture.image = Some(crate::texture::ImageTextureSettings {
+            asset_id: grain.id,
+            mode: crate::texture::ImageTextureMode::CoverageMask,
+            mask_source: crate::texture::ImageMaskSource::LuminanceTimesAlpha,
+            contrast: 1.4,
+            strength: 0.8,
+            ..Default::default()
+        });
         let before_snapshot = vec![(0, source.clone())];
         let old_frame = attachment_frame(std::slice::from_ref(&old_guide), 7).unwrap();
         let new_frame = attachment_frame(std::slice::from_ref(&new_guide), 7).unwrap();
@@ -2866,6 +2888,7 @@ mod planar_attachment_tests {
             guide_resources: vec![old_guide.clone()],
             active_guide: Some(7),
             strokes: vec![source.clone()],
+            brush_tip_assets: vec![grain],
             ..Document::default()
         };
         let original = serde_json::to_value(&doc).unwrap();
@@ -2898,6 +2921,7 @@ mod planar_attachment_tests {
         );
         assert_eq!(moved.brush.normal, source.brush.normal);
         assert_eq!(moved.brush.tangent, source.brush.tangent);
+        assert_eq!(moved.brush.texture, source.brush.texture);
 
         guide_edit.apply(&mut doc, false);
         assert_eq!(serde_json::to_value(&doc).unwrap(), original);
