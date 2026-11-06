@@ -5,6 +5,22 @@ pub(super) struct JunctionDraft {
     action: Action,
     target: guide_resource_ui::PlanarTarget,
     picked: Option<Picked>,
+    redraw: RedrawState,
+}
+
+#[derive(Default)]
+struct RedrawState {
+    first: Option<(Stroke, f64)>,
+    second: Option<f64>,
+    contact: Option<Vec<Point>>,
+    completed: Vec<Point>,
+}
+
+impl RedrawState {
+    fn joins(&self) -> Option<(&Stroke, [f64; 2])> {
+        let (stroke, first) = self.first.as_ref()?;
+        Some((stroke, [*first, self.second?]))
+    }
 }
 
 struct Picked {
@@ -15,7 +31,7 @@ struct Picked {
 
 impl SketchApp {
     pub(super) fn junction_buttons(&mut self, ui: &mut egui::Ui) {
-        for action in [Action::Trim, Action::Extend] {
+        for action in [Action::Trim, Action::Extend, Action::Redraw] {
             if ui.button(action.label()).clicked() {
                 self.begin_junction_edit(action);
             }
@@ -40,11 +56,19 @@ impl SketchApp {
             action,
             target,
             picked: None,
+            redraw: RedrawState::default(),
         });
         self.status = action_prompt(action).into();
     }
 
-    pub(super) fn junction_pointer(&mut self, pos: Pos2, rect: Rect) {
+    pub(super) fn junction_pointer(
+        &mut self,
+        pos: Pos2,
+        pressure: Option<f32>,
+        tilt: Option<Vec3>,
+        rect: Rect,
+        phase: Phase,
+    ) {
         let Some(draft) = &self.junction_edit else {
             return;
         };
@@ -55,6 +79,13 @@ impl SketchApp {
         }
         let target = core_target(draft.target);
         let action = draft.action;
+        if action == Action::Redraw {
+            self.redraw_pointer(pos, pressure, tilt, rect, phase);
+            return;
+        }
+        if phase != Phase::Down {
+            return;
+        }
         let result = pick_stroke(&self.doc, action, target, &self.camera, rect, pos).and_then(
             |(index, at)| {
                 let preview =
@@ -79,12 +110,163 @@ impl SketchApp {
         }
     }
 
+    pub(super) fn redraw_contact_active(&self) -> bool {
+        self.junction_edit
+            .as_ref()
+            .is_some_and(|draft| draft.redraw.contact.is_some())
+    }
+
+    pub(super) fn cancel_redraw_contact(&mut self) {
+        if let Some(draft) = &mut self.junction_edit {
+            draft.redraw.contact = None;
+        }
+    }
+
+    fn redraw_pointer(
+        &mut self,
+        pos: Pos2,
+        pressure: Option<f32>,
+        tilt: Option<Vec3>,
+        rect: Rect,
+        phase: Phase,
+    ) {
+        let draft = self.junction_edit.as_mut().unwrap();
+        let (Some((source, first)), Some(second)) = (&draft.redraw.first, draft.redraw.second)
+        else {
+            if phase != Phase::Down {
+                return;
+            }
+            let candidate = pick_stroke(
+                &self.doc,
+                Action::Redraw,
+                core_target(draft.target),
+                &self.camera,
+                rect,
+                pos,
+            );
+            match candidate {
+                Ok((index, at)) => {
+                    let stroke = &self.doc.strokes[index];
+                    if let Some((first, start)) = &draft.redraw.first {
+                        if stroke != first || (at - *start).abs() < 1e-5 {
+                            self.status = "Pick a different point on the same stroke.".into();
+                            return;
+                        }
+                        draft.redraw.second = Some(at);
+                        self.status =
+                            "Draw from the first join to the second, then release.".into();
+                    } else {
+                        draft.redraw.first = Some((stroke.clone(), at));
+                        self.status = "Pick the second join on the same stroke.".into();
+                    }
+                }
+                Err(error) => self.status = error,
+            }
+            return;
+        };
+        let joins = [*first, second];
+        let [start, end] = joins.map(|at| junction_edit::point_at(source, at));
+        let near = |point: Point| {
+            crate::gizmo::project(&self.camera, rect, point.position)
+                .is_some_and(|(screen, _)| screen.distance(pos) <= 12.0)
+        };
+        match phase {
+            Phase::Down => {
+                draft.picked = None;
+                draft.redraw.completed.clear();
+                if near(start) {
+                    draft.redraw.contact = Some(vec![start]);
+                    self.status = "Draw to the second join and release.".into();
+                } else {
+                    draft.redraw.contact = None;
+                    self.status = "Start the gesture at the first join.".into();
+                }
+            }
+            Phase::Move => {
+                let Some(samples) = &mut draft.redraw.contact else {
+                    return;
+                };
+                let (origin, direction) = crate::gizmo::ray(&self.camera, rect, pos);
+                let Some(position) = draft.target.hit(origin, direction) else {
+                    draft.redraw.contact = None;
+                    self.status =
+                        "The gesture left the drawing plane. Start again at the first join.".into();
+                    return;
+                };
+                if samples.len() >= junction_edit::MAX_REDRAW_SAMPLES - 1 {
+                    draft.redraw.contact = None;
+                    self.status =
+                        "The redraw exceeded its sample limit. Try a shorter gesture.".into();
+                    return;
+                }
+                if samples
+                    .last()
+                    .is_none_or(|point| point.position.distance_squared(position) > 1e-8)
+                {
+                    samples.push(Point {
+                        position,
+                        pressure: pressure.unwrap_or(1.0).clamp(0.0, 1.0),
+                        tilt,
+                        time_ms: 0,
+                    });
+                }
+            }
+            Phase::Up => {
+                let Some(mut gesture) = draft.redraw.contact.take() else {
+                    return;
+                };
+                if !near(end) {
+                    self.status =
+                        "Release at the second join. The original stroke is intact.".into();
+                    return;
+                }
+                gesture.push(end);
+                let result = self
+                    .doc
+                    .strokes
+                    .iter()
+                    .position(|stroke| stroke == source)
+                    .ok_or_else(|| "The source stroke changed. Pick the joins again.".to_owned())
+                    .and_then(|index| {
+                        junction_edit::redraw(
+                            &self.doc,
+                            core_target(draft.target),
+                            index,
+                            joins,
+                            gesture.clone(),
+                            self.next_id,
+                        )
+                    });
+                match result {
+                    Ok(preview) => {
+                        draft.picked = Some(Picked {
+                            source: source.clone(),
+                            at: 0.0,
+                            preview,
+                        });
+                        draft.redraw.completed = gesture;
+                        self.status =
+                            "Redraw preview ready. Enter applies and Escape cancels.".into();
+                    }
+                    Err(error) => self.status = error,
+                }
+            }
+            Phase::Cancel => draft.redraw.contact = None,
+        }
+    }
+
     pub(super) fn junction_controls(&mut self, ui: &mut egui::Ui) {
         let Some(draft) = &self.junction_edit else {
             return;
         };
         ui.heading(draft.action.label());
         ui.label(action_prompt(draft.action));
+        if draft.action == Action::Redraw && ui.button("Pick new joins").clicked() {
+            let draft = self.junction_edit.as_mut().unwrap();
+            draft.redraw = RedrawState::default();
+            draft.picked = None;
+            return;
+        }
         let ready = draft.picked.is_some();
         let (apply, cancel) = ui
             .horizontal(|ui| {
@@ -134,6 +316,21 @@ impl SketchApp {
             .filter(|_| self.planar_drawing_target() == Some(target))
             .ok_or_else(|| "The stroke or active plane changed. Pick the stroke again.".to_owned())
             .and_then(|index| {
+                if action == Action::Redraw {
+                    let (_, joins) = draft
+                        .redraw
+                        .joins()
+                        .ok_or("The redraw joins are unavailable")?;
+                    return junction_edit::redraw(
+                        &self.doc,
+                        core_target(target),
+                        index,
+                        joins,
+                        draft.redraw.completed.clone(),
+                        self.next_id,
+                    )
+                    .map(|preview| (index, preview));
+                }
                 junction_edit::preview(
                     &self.doc,
                     draft.action,
@@ -178,6 +375,46 @@ impl SketchApp {
     }
 
     pub(super) fn junction_overlay(&self, ui: &egui::Ui, rect: Rect) {
+        if let Some(draft) = self
+            .junction_edit
+            .as_ref()
+            .filter(|draft| draft.action == Action::Redraw)
+        {
+            let painter = ui.painter().with_clip_rect(rect);
+            let color = ui.visuals().selection.stroke.color;
+            let project =
+                |point| crate::gizmo::project(&self.camera, rect, point).map(|(pos, _)| pos);
+            if let Some((stroke, first)) = &draft.redraw.first {
+                for (i, at) in [Some(*first), draft.redraw.second].into_iter().enumerate() {
+                    if let Some(screen) =
+                        at.and_then(|at| project(junction_edit::point_at(stroke, at).position))
+                    {
+                        painter.circle_stroke(screen, 6.0, egui::Stroke::new(2.0_f32, color));
+                        painter.text(
+                            screen + egui::vec2(8.0, -8.0),
+                            egui::Align2::LEFT_BOTTOM,
+                            i + 1,
+                            egui::FontId::proportional(12.0),
+                            color,
+                        );
+                    }
+                }
+            }
+            let mut previous = None;
+            let path = draft
+                .redraw
+                .contact
+                .as_deref()
+                .unwrap_or(&draft.redraw.completed);
+            for sample in path {
+                let current = project(sample.position);
+                if let (Some(a), Some(b)) = (previous, current) {
+                    painter.line_segment([a, b], egui::Stroke::new(3.0_f32, color));
+                }
+                previous = current;
+            }
+            return;
+        }
         let Some(picked) = self
             .junction_edit
             .as_ref()
@@ -223,6 +460,7 @@ fn action_prompt(action: Action) -> &'static str {
             "Click the stroke section to remove. The preview highlights the removed span."
         }
         Action::Extend => "Click an endpoint to extend along its tangent, up to 1 world unit.",
+        Action::Redraw => "Pick two joins on one stroke, then draw from join 1 to join 2.",
     }
 }
 
@@ -245,7 +483,9 @@ fn pick_stroke(
     let mut segment_count = 0;
     let matrix = camera.matrix(rect.aspect_ratio());
     for (index, stroke) in doc.strokes.iter().enumerate() {
-        if !junction_edit::editable_source(doc, stroke, target) {
+        if !junction_edit::editable_source(doc, stroke, target)
+            || (action == Action::Redraw && !junction_edit::redraw_source(stroke))
+        {
             continue;
         }
         if action == Action::Extend {

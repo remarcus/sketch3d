@@ -16,6 +16,7 @@ pub const MAX_EXTENSION: f32 = 1.0;
 pub enum Action {
     Trim,
     Extend,
+    Redraw,
 }
 
 impl Action {
@@ -23,6 +24,7 @@ impl Action {
         match self {
             Self::Trim => "Trim to intersection",
             Self::Extend => "Extend to intersection",
+            Self::Redraw => "Redraw stroke segment",
         }
     }
 }
@@ -105,6 +107,7 @@ pub fn preview(
     match action {
         Action::Trim => trim(doc, stroke, target, index, at, next_id),
         Action::Extend => extend(doc, stroke, target, index, at, next_id),
+        Action::Redraw => Err("Pick two joins and draw a replacement gesture".into()),
     }
 }
 
@@ -409,13 +412,143 @@ fn overlapping(a: DVec2, ab: DVec2, c: DVec2, d: DVec2, length: f64) -> bool {
     first.max(second).min(length) - first.min(second).max(0.0) > EPS
 }
 
-fn point_at(stroke: &Stroke, at: f64) -> Point {
+pub fn point_at(stroke: &Stroke, at: f64) -> Point {
     let i = (at.floor() as usize).min(stroke.points.len() - 2);
     interpolate_point(
         &stroke.points[i],
         &stroke.points[i + 1],
         (at - i as f64) as f32,
     )
+}
+
+pub const MAX_REDRAW_SAMPLES: usize = 8_192;
+
+pub fn redraw_source(stroke: &Stroke) -> bool {
+    !stroke.brush.flow.enabled
+        && !stroke.brush.dabs.enabled
+        && stroke.brush.tip_asset_id == 0
+        && stroke.points.iter().all(|point| point.time_ms == 0)
+}
+
+pub fn redraw(
+    doc: &Document,
+    target: Target,
+    index: usize,
+    [first, second]: [f64; 2],
+    mut gesture: Vec<Point>,
+    next_id: u64,
+) -> Result<Preview, String> {
+    let stroke = doc
+        .strokes
+        .get(index)
+        .filter(|stroke| editable_source(doc, stroke, target) && redraw_source(stroke))
+        .ok_or("Redraw requires an editable, untimed sampled stroke on the active plane")?;
+    let end = (stroke.points.len() - 1) as f64;
+    if !available(doc)
+        || !(0.0..=end).contains(&first)
+        || !(0.0..=end).contains(&second)
+        || (first - second).abs() <= EPS
+        || !(3..=MAX_REDRAW_SAMPLES).contains(&gesture.len())
+        || gesture.iter().any(|point| {
+            !point.is_valid() || point.time_ms != 0 || !target.contains(point.position)
+        })
+    {
+        return Err(
+            "Pick distinct joins and draw a complete replacement on the active plane".into(),
+        );
+    }
+    let low = first.min(second);
+    let high = first.max(second);
+    if first > second {
+        gesture.reverse();
+    }
+    let start = point_at(stroke, low);
+    let end = point_at(stroke, high);
+    if gesture[0].position.distance(start.position) > PLANE_TOLERANCE
+        || gesture.last().unwrap().position.distance(end.position) > PLANE_TOLERANCE
+    {
+        return Err("The redraw must start and finish at the two picked joins".into());
+    }
+    gesture[0] = start;
+    *gesture.last_mut().unwrap() = end;
+    gesture.dedup_by(|a, b| a.position.distance_squared(b.position) <= 1e-12);
+    if gesture.len() < 3 {
+        return Err("Draw a replacement path between the two joins".into());
+    }
+    *gesture.last_mut().unwrap() = end;
+    let distances = crate::dynamics::arc_lengths(&gesture);
+    let total = *distances.last().unwrap();
+    if total <= 1e-5 {
+        return Err("The replacement path is too short".into());
+    }
+    let fractions: Vec<_> = distances.iter().map(|distance| distance / total).collect();
+    for (point, &t) in gesture.iter_mut().zip(&fractions) {
+        // Fade the captured pressure into the source pressure near either join.
+        if t < 0.2 {
+            point.pressure = start.pressure + (point.pressure - start.pressure) * (t / 0.2);
+        } else if t > 0.8 {
+            point.pressure = end.pressure + (point.pressure - end.pressure) * ((1.0 - t) / 0.2);
+        }
+    }
+    let prefix = low.ceil() as usize;
+    let suffix = high.floor() as usize + 1;
+    let mut updated = stroke.clone();
+    updated.points = stroke.points[..prefix]
+        .iter()
+        .chain(&gesture)
+        .chain(&stroke.points[suffix..])
+        .copied()
+        .collect();
+    if let Some(values) = &stroke.point_thickness {
+        let start = value_at(values, low, |a, b, t| a + (b - a) * t);
+        let end = value_at(values, high, |a, b, t| a + (b - a) * t);
+        updated.point_thickness = Some(
+            values[..prefix]
+                .iter()
+                .copied()
+                .chain(fractions.iter().map(|&t| start + (end - start) * t))
+                .chain(values[suffix..].iter().copied())
+                .collect(),
+        );
+    }
+    if stroke.point_colors.is_some() || stroke.gradient.is_some() {
+        let distances = crate::dynamics::arc_lengths(&stroke.points);
+        let length = distances
+            .last()
+            .copied()
+            .unwrap_or_default()
+            .max(f32::EPSILON);
+        let colors: Vec<_> = distances
+            .iter()
+            .enumerate()
+            .map(|(i, distance)| stroke.point_color_at(i, distance / length))
+            .collect();
+        let blend = |a: [f32; 3], b: [f32; 3], t| std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t);
+        let start = value_at(&colors, low, blend);
+        let end = value_at(&colors, high, blend);
+        updated.point_colors = Some(
+            colors[..prefix]
+                .iter()
+                .copied()
+                .chain(fractions.iter().map(|&t| blend(start, end, t)))
+                .chain(colors[suffix..].iter().copied())
+                .map(Some)
+                .collect(),
+        );
+    }
+    validate_replacement(doc, stroke, &updated)?;
+    Ok(Preview {
+        after: vec![(index, updated)],
+        next_id,
+        path: gesture.iter().map(|point| point.position).collect(),
+        joins: vec![start.position, end.position],
+        snap_to: None,
+    })
+}
+
+fn value_at<T: Copy>(values: &[T], at: f64, mix: impl Fn(T, T, f32) -> T) -> T {
+    let i = (at.floor() as usize).min(values.len() - 2);
+    mix(values[i], values[i + 1], (at - i as f64) as f32)
 }
 
 #[cfg(test)]
@@ -534,5 +667,64 @@ mod tests {
             .iter_mut()
             .for_each(|point| point.position += u * 2.0);
         assert!(preview(&doc, Action::Extend, target, 0, 1.0, 6).is_err());
+    }
+
+    #[test]
+    fn redraw_blends_pressure_and_preserves_the_rest_of_the_stroke() {
+        let target = Target {
+            plane: DrawingPlane::from_preset(crate::geometry::Plane::Front),
+            half_extent: None,
+        };
+        let mut source = line(1, target, Vec3::ZERO, Vec3::X * 4.0);
+        let a = source.points[0];
+        let b = source.points[1];
+        source.points = (0..=4)
+            .map(|i| interpolate_point(&a, &b, i as f32 / 4.0))
+            .collect();
+        source.point_thickness = Some(vec![1.0, 1.1, 1.2, 1.3, 1.4]);
+        let mut doc = Document::default();
+        doc.strokes.push(source.clone());
+        let (_, v, _) = target.plane.basis();
+        let start = point_at(&source, 1.0);
+        let end = point_at(&source, 3.0);
+        let gesture = vec![
+            start,
+            Point {
+                position: start.position.lerp(end.position, 0.05) + v * 0.1,
+                pressure: 1.0,
+                ..start
+            },
+            Point {
+                position: start.position.lerp(end.position, 0.5) + v * 0.5,
+                pressure: 0.9,
+                ..start
+            },
+            end,
+        ];
+        let mut missed = gesture.clone();
+        missed.last_mut().unwrap().position += v * 0.1;
+        assert!(redraw(&doc, target, 0, [1.0, 3.0], missed, 2).is_err());
+        let preview = redraw(&doc, target, 0, [1.0, 3.0], gesture, 2).unwrap();
+        let changed = preview.after[0].1.clone();
+        assert_eq!(changed.id, source.id);
+        assert_eq!(changed.brush, source.brush);
+        assert_eq!(changed.points[0], source.points[0]);
+        assert_eq!(changed.points.last(), source.points.last());
+        assert_eq!(changed.points[1], start);
+        assert_eq!(changed.points[4], end);
+        assert!(changed.points[2].pressure > start.pressure && changed.points[2].pressure < 1.0);
+        let edit = crate::editing::Edit::Change {
+            before: vec![(0, source.clone())],
+            after: preview.after,
+        };
+        edit.apply(&mut doc, true);
+        assert_eq!(
+            Document::from_json(&serde_json::to_string(&doc).unwrap())
+                .unwrap()
+                .strokes[0],
+            changed
+        );
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes[0], source);
     }
 }

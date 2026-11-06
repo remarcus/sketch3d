@@ -6715,9 +6715,9 @@ impl SketchApp {
         tilt: Option<Vec3>,
     ) {
         if self.junction_edit.is_some() {
-            if begin {
-                self.junction_pointer(pos, rect);
-            }
+            self.junction_pointer(
+                pos, pressure, tilt, rect, if begin { Phase::Down } else { Phase::Move },
+            );
             return;
         }
         if self.selection_cleanup_draft.is_some() {
@@ -6887,7 +6887,7 @@ impl SketchApp {
             || self.camera_playback.is_some()
             || self.mixed_resource_preview_active()
             || (self.liquify_active() && !self.liquify_brush_active());
-        let continue_active_contact = self.active.is_some();
+        let continue_active_contact = self.active.is_some() || self.redraw_contact_active();
         let inside_canvas = |p| canvas_contact_allowed(ctx, rect, p, continue_active_contact);
         self.update_plane_picker_hover(
             pointer
@@ -6930,6 +6930,12 @@ impl SketchApp {
             }
             let inside = inside_canvas(sample.position);
             let previous = self.pen_previous.replace(sample.position);
+            if self.redraw_contact_active() && (blocked || space || sample.barrel || sample.eraser) {
+                self.cancel_redraw_contact();
+            }
+            if self.junction_edit.is_some() && sample.eraser {
+                continue;
+            }
             if self.measure.enabled && inside && sample.phase == Phase::Move {
                 self.measure_input(sample.position, rect, false);
             }
@@ -6966,6 +6972,9 @@ impl SketchApp {
                 } else {
                     self.pen_barrel_contact
                 };
+                if contact == Some(true) && self.junction_edit.is_some() {
+                    continue;
+                }
                 if contact == Some(true) {
                     if sample.phase == Phase::Up {
                         if inside {
@@ -7005,6 +7014,10 @@ impl SketchApp {
                         sample.phase,
                     );
                 }
+                continue;
+            }
+            if sample.phase == Phase::Up && self.redraw_contact_active() {
+                self.junction_pointer(sample.position, sample.pressure, None, rect, Phase::Up);
                 continue;
             }
             if sample.phase == Phase::Up {
@@ -7083,6 +7096,7 @@ impl SketchApp {
                 continue;
             }
             if !inside
+                && !self.redraw_contact_active()
                 && self.drag.is_none()
                 && self.point_drag.is_none()
                 && self.point_multi_drag.is_none()
@@ -7139,6 +7153,7 @@ impl SketchApp {
             }
         }
         if blocked {
+            self.cancel_redraw_contact();
             self.cancel_brush_selection();
             self.cancel_partial_erase();
             self.cancel_local_color();
@@ -7158,6 +7173,9 @@ impl SketchApp {
             let nav = pointer.button_down(PointerButton::Secondary)
                 || pointer.button_down(PointerButton::Middle)
                 || (space && pointer.primary_down());
+            if nav || space {
+                self.cancel_redraw_contact();
+            }
             if nav && pointer.interact_pos().is_some_and(inside_canvas) {
                 self.cancel_liquify_for_navigation();
                 if self
@@ -7197,6 +7215,7 @@ impl SketchApp {
                                 self.liquify_brush_input(pos, 1.0, rect, Phase::Move);
                             } else if inside_canvas(pos)
                                 || ((self.drag.is_some()
+                                    || self.redraw_contact_active()
                                     || self.point_drag.is_some()
                                     || self.point_multi_drag.is_some()
                                     || self
@@ -7214,6 +7233,7 @@ impl SketchApp {
                                 self.pointer_action(pos, 1.0, rect, false, shift);
                             } else {
                                 self.mouse_down = false;
+                                self.cancel_redraw_contact();
                                 self.cancel_brush_selection();
                                 self.cancel_partial_erase();
                                 self.cancel_local_color();
@@ -7232,6 +7252,11 @@ impl SketchApp {
                             // canvas; otherwise this can cancel staged edits
                             // such as the selected-stroke appearance editor.
                             if !self.mouse_down {
+                                continue;
+                            }
+                            if self.redraw_contact_active() {
+                                self.junction_pointer(pos, None, None, rect, Phase::Up);
+                                self.mouse_down = false;
                                 continue;
                             }
                             if self.point_multi_drag.is_some() {
@@ -7650,6 +7675,7 @@ impl SketchApp {
             || self.point_draft.is_some()
             || self.point_multi_draft.is_some()
             || self.selection_cleanup_draft.is_some()
+            || self.junction_edit.is_some()
             || self.reprojection_draft.is_some()
             || self.fills.draft.is_some()
             || self.curve_draft_active()
