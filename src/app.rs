@@ -24,7 +24,11 @@ fn tool_icon_button(
     detail: &str,
     selected: bool,
 ) -> egui::Response {
-    let response = ui.add_sized([44.0, 44.0], egui::Button::new("").selected(selected));
+    let response = ui.add(
+        egui::Button::new("")
+            .selected(selected)
+            .min_size(Vec2::splat(44.0)),
+    );
     let accessible_name = if icon == "shape" {
         "Shape tool, choose Circle, Ellipse, Rectangle, or Rounded rectangle".to_owned()
     } else if detail.starts_with("Shortcut:") {
@@ -11079,5 +11083,112 @@ mod inspector_accessibility_tests {
             .nodes
             .iter()
             .any(|(_, node)| node.label() == Some("Show inspector")));
+    }
+}
+
+#[cfg(test)]
+mod tool_rail_accessibility_tests {
+    use super::*;
+
+    #[test]
+    fn compact_tool_icons_fit_narrow_dark_light_themes_and_keep_contextual_names() {
+        let tools = [
+            ("Brush", "B", "brush", false),
+            ("Line", "L", "line", false),
+            ("Measure", "M", "measure", false),
+            ("Curve", "C", "curve", false),
+            ("Shape", "", "shape", true),
+            ("Fill", "P", "fill", false),
+            ("Erase", "E", "erase", false),
+            ("Tint", "T", "tint", false),
+            ("Select", "V", "select", false),
+        ];
+        for visuals in [egui::Visuals::dark(), egui::Visuals::light()] {
+            for zoom in [1.0, 2.0] {
+                let context = egui::Context::default();
+                context.set_visuals(visuals.clone());
+                context.set_zoom_factor(zoom);
+                context.enable_accesskit();
+                let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(116.0, 520.0));
+                let mut rects = Vec::new();
+                let mut seen_ids = HashSet::new();
+                let output = context.run(
+                    egui::RawInput {
+                        screen_rect: Some(screen),
+                        focused: true,
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE)
+                            .show(context, |ui| {
+                                egui::Grid::new("tool rail accessibility matrix")
+                                    .num_columns(2)
+                                    .spacing(Vec2::new(6.0, 6.0))
+                                    .show(ui, |ui| {
+                                        for (index, (name, shortcut, icon, shape)) in
+                                            tools.into_iter().enumerate()
+                                        {
+                                            let detail = if shape {
+                                                "Choose Circle, Ellipse, Rectangle, or Rounded rectangle from the contextual options"
+                                                    .to_owned()
+                                            } else {
+                                                format!("Shortcut: {shortcut}")
+                                            };
+                                            let rect = tool_icon_button(
+                                                ui,
+                                                icon,
+                                                name,
+                                                &detail,
+                                                index == 0,
+                                            )
+                                            .rect;
+                                            let response_id = ui.id().with(index);
+                                            if seen_ids.insert(response_id) {
+                                                rects.push(rect);
+                                            }
+                                            if index % 2 == 1 {
+                                                ui.end_row();
+                                            }
+                                        }
+                                    });
+                            });
+                    },
+                );
+                assert_eq!(rects.len(), tools.len());
+                assert!(
+                    rects.iter().all(|rect| {
+                        rect.width() >= 44.0
+                            && rect.height() >= 44.0
+                            && screen.contains(rect.min)
+                            && screen.contains(rect.max)
+                    }),
+                    "zoom {zoom}, rects {rects:?}"
+                );
+                assert!(output.shapes.len() > tools.len() * 2);
+                let update = output
+                    .platform_output
+                    .accesskit_update
+                    .expect("the tool rail provides an AccessKit update");
+                let labels = update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| node.label().map(str::to_owned))
+                    .collect::<Vec<_>>();
+                for expected in [
+                    "Brush, B",
+                    "Line, L",
+                    "Measure, M",
+                    "Curve, C",
+                    "Shape tool, choose Circle, Ellipse, Rectangle, or Rounded rectangle",
+                    "Fill, P",
+                    "Erase, E",
+                    "Tint, T",
+                    "Select, V",
+                ] {
+                    assert!(labels.iter().any(|label| label == expected), "{labels:?}");
+                }
+            }
+        }
     }
 }
