@@ -3688,6 +3688,42 @@ mod texture_uv_tests {
     }
 
     #[test]
+    fn image_tip_keeps_stamp_uvs_independent_from_captured_planar_grain() {
+        use crate::texture::{TextureAnchorMode, TextureFrame};
+
+        let frame = TextureFrame::from_plane(
+            Vec3::new(0.4, -0.7, 0.2),
+            Quat::from_euler(glam::EulerRot::XYZ, 0.2, 0.45, -0.3),
+        );
+        let mut stroke = mark(BrushKind::Round, vec![Vec3::ZERO, Vec3::Y]);
+        stroke.brush.tip_asset_id = 99;
+        stroke.brush.dabs.enabled = true;
+        stroke.brush.texture.anchor_mode = TextureAnchorMode::CapturedPlanar;
+        stroke.brush.texture.frame = Some(frame);
+        stroke.brush.texture.mapping = crate::texture::TextureMapping {
+            offset: [0.3, -0.2],
+            rotation_degrees: -22.0,
+            scale: [0.8, 1.4],
+        };
+
+        let mesh = stroke_mesh(&stroke);
+        assert!(!mesh.is_empty());
+        assert!(mesh.iter().all(|vertex| {
+            let tip_uv = Vec2::from(vertex.uv);
+            (0.0..=1.0).contains(&tip_uv.x) && (0.0..=1.0).contains(&tip_uv.y)
+        }));
+        for vertex in &mesh {
+            let world = Vec3::from_array(vertex.position);
+            let expected = stroke
+                .brush
+                .texture
+                .mapping
+                .map(frame.project(world, stroke.brush.texture.scale));
+            assert!(Vec2::from(vertex.grain_uv).distance(Vec2::from(expected)) < 1e-5);
+        }
+    }
+
+    #[test]
     fn cylinder_seam_uvs_have_continuous_distance_without_angular_reset() {
         use crate::surface::{Cylinder, Surface, SurfaceStabilizer};
         let cylinder = Cylinder::default();

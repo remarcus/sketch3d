@@ -2146,6 +2146,75 @@ mod tests {
     }
 
     #[test]
+    fn image_tip_and_repeating_grain_compose_coverage_for_glb_export() {
+        use image::{ImageFormat, Rgba, RgbaImage};
+        use std::io::Cursor;
+
+        let to_asset = |image: RgbaImage| {
+            let mut png = Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(image)
+                .write_to(&mut png, ImageFormat::Png)
+                .unwrap();
+            crate::brush_tip::BrushTipAsset::from_png(png.into_inner(), None).unwrap()
+        };
+        let tip = to_asset(RgbaImage::from_pixel(4, 4, Rgba([220, 70, 35, 192])));
+        let grain = to_asset(RgbaImage::from_fn(8, 1, |x, _| {
+            if x % 2 == 0 {
+                Rgba([255, 255, 255, 255])
+            } else {
+                Rgba([255, 255, 255, 0])
+            }
+        }));
+        let mut mark = stroke(114, [0.4, 0.3, 0.2]);
+        mark.brush.tip_asset_id = tip.id;
+        mark.brush.dabs.enabled = true;
+        mark.brush.texture.scale = 0.025;
+        mark.brush.texture.image = Some(crate::texture::ImageTextureSettings {
+            asset_id: grain.id,
+            mode: crate::texture::ImageTextureMode::CoverageMask,
+            mask_source: crate::texture::ImageMaskSource::Alpha,
+            ..Default::default()
+        });
+
+        let (mesh, composite, _) = stroke_mesh_with_grain(&mark, &[&tip], Some(&grain)).unwrap();
+        assert!(!mesh.vertices.is_empty());
+        let composite = composite.expect("tip and grain must bake into one texture");
+        let alpha: Vec<_> = composite
+            .pixels
+            .chunks_exact(4)
+            .map(|pixel| pixel[3])
+            .collect();
+        assert!(alpha.iter().any(|value| *value == 0));
+        assert!(alpha.iter().any(|value| (1..192).contains(value)));
+        assert!(alpha.iter().any(|value| *value == 192));
+
+        let document = Document {
+            strokes: vec![mark],
+            brush_tip_assets: vec![tip, grain],
+            ..Document::default()
+        };
+        let encoded = encode(&document, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
+        assert_eq!(gltf.images().count(), 1);
+        assert_eq!(gltf.textures().count(), 1);
+        let primitive = gltf.meshes().next().unwrap().primitives().next().unwrap();
+        let base_color_texture = primitive
+            .material()
+            .pbr_metallic_roughness()
+            .base_color_texture();
+        assert!(base_color_texture.is_some());
+        let image = gltf.images().next().unwrap();
+        let gltf::image::Source::View { view, mime_type } = image.source() else {
+            panic!("composed tip/grain texture must be embedded")
+        };
+        assert_eq!(mime_type, "image/png");
+        let bytes = &gltf.blob.as_ref().unwrap()[view.offset()..view.offset() + view.length()];
+        let pixels = image::load_from_memory(bytes).unwrap().to_rgba8();
+        assert!(pixels.pixels().any(|pixel| pixel[3] == 0));
+        assert!(pixels.pixels().any(|pixel| pixel[3] > 0));
+    }
+
+    #[test]
     fn gradient_stops_survive_native_recovery_merge_and_export_fallbacks() {
         let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let mut gradient_stroke = stroke(701, [0.4, 0.3, 0.2]);

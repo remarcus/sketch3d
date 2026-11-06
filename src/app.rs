@@ -3303,14 +3303,6 @@ impl SketchApp {
             return;
         }
         if self.brush.texture.anchor_mode == crate::texture::TextureAnchorMode::CapturedPlanar
-            && self.brush.tip_asset_id != 0
-        {
-            self.finish();
-            self.resume_ink = false;
-            self.status = "Captured planar texture anchoring is unavailable for image-tip brushes; use stroke-following mapping.".into();
-            return;
-        }
-        if self.brush.texture.anchor_mode == crate::texture::TextureAnchorMode::CapturedPlanar
             && self.doc.active_model_reference.is_some()
         {
             self.finish();
