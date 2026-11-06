@@ -62,6 +62,49 @@ impl Artist {
     fn line(&mut self, a: Vec3, b: Vec3, color: Color, radius: f32) {
         self.path(vec![a, b], color, radius);
     }
+    fn filled_face(
+        &mut self,
+        positions: Vec<Vec3>,
+        color: Color,
+        layer_id: u64,
+        normal: Vec3,
+        tangent: Vec3,
+    ) {
+        if positions.len() < 3 {
+            return;
+        }
+        let points = positions
+            .into_iter()
+            .map(|position| Point {
+                position,
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 0,
+            })
+            .collect();
+        self.doc.strokes.push(Stroke {
+            guide_attachment: None,
+            model_surface: None,
+            curve: None,
+            material: Default::default(),
+            brush: crate::document::Brush {
+                normal,
+                tangent,
+                ..Default::default()
+            },
+            id: self.doc.strokes.len() as u64 + 1,
+            point_thickness: None,
+            point_colors: None,
+            modifiers: None,
+            fill: Some(crate::document::PlanarFill::default()),
+            group_id: None,
+            layer_id,
+            color,
+            gradient: None,
+            radius: 0.015,
+            points,
+        });
+    }
     fn loop_xz(&mut self, center: Vec3, rx: f32, rz: f32, color: Color, radius: f32) {
         self.path(
             (0..=48)
@@ -129,171 +172,265 @@ pub fn pencil_house() -> Document {
     use glam::Quat;
 
     let mut a = Artist::new();
-    a.doc.layers[0].name = "Pastel color".into();
+    a.doc.layers[0].name = "House color".into();
     let mut linework = a.doc.layers[0].clone();
     linework.id = 2;
-    linework.name = "Graphite linework".into();
+    linework.name = "Graphite details".into();
     a.doc.layers.push(linework);
+    let mut windows = a.doc.layers[0].clone();
+    windows.id = 3;
+    windows.name = "Window light".into();
+    a.doc.layers.push(windows);
+    let mut ground = a.doc.layers[0].clone();
+    ground.id = 4;
+    ground.name = "Ground and shadow".into();
+    a.doc.layers.push(ground);
     a.doc.active_layer = 2;
-    let palette = crate::presets::Library::default();
-    let pastel = palette.get(4).expect("built-in Chalk").brush;
-    let graphite = crate::presets::startup_pencil();
-    let ink = graphite.color;
-    let wall = [0.85, 0.48, 0.29];
-    let roof = [0.29, 0.48, 0.61];
-    let glass = [0.50, 0.72, 0.73];
-    let roof_height = |z: f32| 4.65 - z.abs() * 0.6;
 
-    for i in 0..49 {
-        let y = 0.06 + i as f32 * 0.074;
-        let wobble = (i as f32 * 1.73).sin() * 0.11;
-        a.line(
-            Vec3::new(-2.2 + wobble, y, 1.57),
-            Vec3::new(2.18, y + wobble, 1.57),
-            wall,
-            0.063,
-        );
-        a.line(
-            Vec3::new(2.23, y, 1.52),
-            Vec3::new(2.23, y + wobble, -1.52),
-            [0.64, 0.31, 0.21],
-            0.064,
-        );
-    }
-    for i in 0..44 {
-        let z = -1.8 + i as f32 * 0.084;
-        let y = roof_height(z);
-        let offset = (i as f32 * 2.11).cos() * 0.14;
-        a.line(
-            Vec3::new(-2.47 + offset, y, z),
-            Vec3::new(2.49 + offset, y + 0.02, z),
-            roof,
-            0.071,
-        );
-    }
-    for floor in [0.78, 2.44] {
-        for x in [-1.35, 0.0, 1.35] {
-            for i in 0..10 {
-                let y = floor + i as f32 * 0.071;
-                a.line(
-                    Vec3::new(x - 0.37, y, 1.61),
-                    Vec3::new(x + 0.36, y + 0.04, 1.61),
-                    glass,
-                    0.052,
-                );
-            }
-        }
-    }
-    for (x, z, height) in [(-2.8, 1.2, 1.5), (2.8, -0.9, 1.8), (1.8, 2.1, 0.45)] {
-        for i in 0..17 {
-            let t = i as f32 / 16.0;
-            let spread = (t * PI).sin() * 0.66;
-            let center = Vec3::new(x, 0.12 + t * height, z + t * 0.13);
-            a.line(
-                center - Vec3::new(spread, 0.07, 0.0),
-                center + Vec3::new(spread, 0.05, 0.0),
-                [0.32, 0.53, 0.22],
-                0.075,
+    let graphite = crate::presets::startup_pencil();
+    let ink = [0.12, 0.16, 0.24];
+    let wall = [0.82, 0.69, 0.52];
+    let side_wall = [0.31, 0.42, 0.61];
+    let roof = [0.16, 0.24, 0.39];
+    let window_light = [1.0, 0.55, 0.18];
+    let shadow = [0.12, 0.19, 0.32];
+    let front = 1.58;
+    let eave = 3.5;
+    let ridge = 4.55;
+
+    // One clean, editable ground shadow and four broad house planes establish
+    // the silhouette before the small pencil details are added.
+    a.filled_face(
+        vec![
+            Vec3::new(-4.5, 0.035, 2.6),
+            Vec3::new(3.7, 0.035, 2.1),
+            Vec3::new(4.5, 0.035, -1.8),
+            Vec3::new(-1.7, 0.035, -2.8),
+        ],
+        shadow,
+        4,
+        Vec3::Y,
+        Vec3::X,
+    );
+    a.filled_face(
+        vec![
+            Vec3::new(-2.0, 0.04, front),
+            Vec3::new(2.0, 0.04, front),
+            Vec3::new(2.0, eave, front),
+            Vec3::new(-2.0, eave, front),
+        ],
+        wall,
+        1,
+        Vec3::Z,
+        Vec3::X,
+    );
+    a.filled_face(
+        vec![
+            Vec3::new(2.0, 0.04, -1.55),
+            Vec3::new(2.0, 0.04, front),
+            Vec3::new(2.0, eave, front),
+            Vec3::new(2.0, eave, -1.55),
+        ],
+        side_wall,
+        1,
+        Vec3::X,
+        Vec3::Z,
+    );
+    a.filled_face(
+        vec![
+            Vec3::new(-2.35, eave, front + 0.12),
+            Vec3::new(0.0, ridge, front + 0.12),
+            Vec3::new(0.0, ridge, -1.78),
+            Vec3::new(-2.35, eave, -1.78),
+        ],
+        roof,
+        1,
+        Vec3::new(1.05, -2.35, 0.0).normalize(),
+        Vec3::Z,
+    );
+    a.filled_face(
+        vec![
+            Vec3::new(0.0, ridge, front + 0.12),
+            Vec3::new(2.35, eave, front + 0.12),
+            Vec3::new(2.35, eave, -1.78),
+            Vec3::new(0.0, ridge, -1.78),
+        ],
+        [0.12, 0.19, 0.32],
+        1,
+        Vec3::new(1.05, 2.35, 0.0).normalize(),
+        Vec3::Z,
+    );
+    a.filled_face(
+        vec![
+            Vec3::new(-2.0, eave, front + 0.035),
+            Vec3::new(2.0, eave, front + 0.035),
+            Vec3::new(0.0, ridge, front + 0.035),
+        ],
+        wall,
+        1,
+        Vec3::Z,
+        Vec3::X,
+    );
+
+    // Warm windows are separate selectable fills, with dark mullions drawn
+    // above them on the graphite layer.
+    let mut window_shapes = Vec::new();
+    for floor in [0.76, 2.25] {
+        for x in [-1.0, 1.0] {
+            let x0 = x - 0.37;
+            let x1 = x + 0.37;
+            let y0 = floor;
+            let y1 = floor + 0.83;
+            a.filled_face(
+                vec![
+                    Vec3::new(x0, y0, front + 0.035),
+                    Vec3::new(x1, y0, front + 0.035),
+                    Vec3::new(x1, y1, front + 0.035),
+                    Vec3::new(x0, y1, front + 0.035),
+                ],
+                window_light,
+                3,
+                Vec3::Z,
+                Vec3::X,
             );
+            window_shapes.push((x0, x1, y0, y1));
         }
     }
+    a.filled_face(
+        vec![
+            Vec3::new(-0.31, 0.045, front + 0.04),
+            Vec3::new(0.31, 0.045, front + 0.04),
+            Vec3::new(0.31, 1.12, front + 0.04),
+            Vec3::new(-0.31, 1.12, front + 0.04),
+        ],
+        [0.18, 0.25, 0.38],
+        1,
+        Vec3::Z,
+        Vec3::X,
+    );
+
+    let chimney = Vec3::new(1.37, 4.59, -0.53);
+    a.filled_face(
+        vec![
+            Vec3::new(1.1, 4.02, -0.42),
+            Vec3::new(1.64, 4.02, -0.42),
+            Vec3::new(1.64, 5.13, -0.42),
+            Vec3::new(1.1, 5.13, -0.42),
+        ],
+        [0.63, 0.49, 0.43],
+        1,
+        Vec3::Z,
+        Vec3::X,
+    );
+
     for stroke in &mut a.doc.strokes {
-        stroke.brush = pastel;
+        if stroke.fill.is_none() {
+            stroke.brush = Default::default();
+        }
     }
     let first_ink = a.doc.strokes.len();
-    a.box_outline(
-        Vec3::new(-2.22, 0.0, -1.55),
-        Vec3::new(2.22, 3.72, 1.55),
+    // House silhouette, eaves, story band, door, and restrained window frames.
+    let front_outline = [
+        Vec3::new(-2.0, 0.04, front + 0.025),
+        Vec3::new(2.0, 0.04, front + 0.025),
+        Vec3::new(2.0, eave, front + 0.025),
+        Vec3::new(-2.0, eave, front + 0.025),
+        Vec3::new(-2.0, 0.04, front + 0.025),
+    ];
+    a.path(front_outline.to_vec(), ink, 0.025);
+    a.path(
+        vec![
+            Vec3::new(-2.0, eave, front + 0.025),
+            Vec3::new(0.0, ridge, front + 0.025),
+            Vec3::new(2.0, eave, front + 0.025),
+        ],
         ink,
-        0.033,
+        0.027,
     );
-    for x in [-2.48, 2.48] {
-        a.path(
-            vec![
-                Vec3::new(x, 3.56, -1.82),
-                Vec3::new(x, 4.65, 0.0),
-                Vec3::new(x, 3.56, 1.82),
-            ],
-            ink,
-            0.038,
-        );
-    }
-    for z in [-1.82, 0.0, 1.82] {
-        let y = roof_height(z);
-        a.line(Vec3::new(-2.48, y, z), Vec3::new(2.48, y, z), ink, 0.038);
-    }
-    for i in 0..21 {
-        let x = -2.44 + i as f32 * 0.244;
+    a.path(
+        vec![
+            Vec3::new(2.03, 0.04, -1.55),
+            Vec3::new(2.03, 0.04, front),
+            Vec3::new(2.03, eave, front),
+            Vec3::new(2.03, eave, -1.55),
+        ],
+        ink,
+        0.022,
+    );
+    a.path(
+        vec![
+            Vec3::new(-2.38, eave, front + 0.14),
+            Vec3::new(0.0, ridge + 0.025, front + 0.14),
+            Vec3::new(2.38, eave, front + 0.14),
+        ],
+        ink,
+        0.034,
+    );
+    a.path(
+        vec![
+            Vec3::new(-2.38, eave, front + 0.14),
+            Vec3::new(-2.38, eave, -1.78),
+            Vec3::new(0.0, ridge + 0.025, -1.78),
+            Vec3::new(0.0, ridge + 0.025, front + 0.14),
+            Vec3::new(2.38, eave, front + 0.14),
+            Vec3::new(2.38, eave, -1.78),
+            Vec3::new(0.0, ridge + 0.025, -1.78),
+        ],
+        ink,
+        0.023,
+    );
+    for y in [1.95, 2.04] {
         a.line(
-            Vec3::new(x, 4.67, 0.0),
-            Vec3::new(x + 0.07, 3.57, 1.8),
+            Vec3::new(-1.98, y, front + 0.03),
+            Vec3::new(1.98, y, front + 0.03),
             ink,
-            0.017,
+            0.013,
         );
     }
-    for y in [1.89, 2.04, 3.68] {
+    for (x0, x1, y0, y1) in window_shapes {
+        let z = front + 0.06;
         a.path(
             vec![
-                Vec3::new(-2.24, y, 1.60),
-                Vec3::new(2.26, y, 1.60),
-                Vec3::new(2.26, y, -1.57),
+                Vec3::new(x0, y0, z),
+                Vec3::new(x1, y0, z),
+                Vec3::new(x1, y1, z),
+                Vec3::new(x0, y1, z),
+                Vec3::new(x0, y0, z),
             ],
             ink,
-            0.026,
+            0.018,
+        );
+        a.line(
+            Vec3::new((x0 + x1) * 0.5, y0, z),
+            Vec3::new((x0 + x1) * 0.5, y1, z),
+            ink,
+            0.012,
+        );
+        a.line(
+            Vec3::new(x0, (y0 + y1) * 0.5, z),
+            Vec3::new(x1, (y0 + y1) * 0.5, z),
+            ink,
+            0.012,
         );
     }
-    for floor in [0.76, 2.42] {
-        for x in [-1.35, 0.0, 1.35] {
-            let z = 1.65;
-            let lo = floor;
-            let hi = floor + 0.74;
-            a.path(
-                vec![
-                    Vec3::new(x - 0.4, lo, z),
-                    Vec3::new(x + 0.4, lo, z),
-                    Vec3::new(x + 0.39, hi, z),
-                    Vec3::new(x - 0.41, hi, z),
-                    Vec3::new(x - 0.4, lo, z),
-                ],
-                ink,
-                0.027,
-            );
-            a.line(Vec3::new(x, lo, z), Vec3::new(x, hi, z), ink, 0.019);
-            a.line(
-                Vec3::new(x - 0.42, lo + 0.35, z),
-                Vec3::new(x + 0.43, lo + 0.35, z),
-                ink,
-                0.018,
-            );
-        }
-    }
-    let chimney = Vec3::new(1.37, 4.59, -0.53);
-    for y in [4.38, 4.96, 5.03] {
-        a.loop_xz(chimney.with_y(y), 0.25, 0.25, ink, 0.029);
+    for y in [4.04, 5.1, 5.17] {
+        a.loop_xz(chimney.with_y(y), 0.28, 0.24, ink, 0.019);
     }
     for i in 0..12 {
         let angle = i as f32 * TAU / 12.0;
-        let offset = Vec3::new(angle.cos(), 0.0, angle.sin()) * 0.25;
+        let offset = Vec3::new(angle.cos(), 0.0, angle.sin()) * 0.26;
         a.line(
-            chimney.with_y(4.38) + offset,
-            chimney.with_y(5.03) + offset,
+            chimney.with_y(4.04) + offset,
+            chimney.with_y(5.17) + offset,
             ink,
-            0.019,
-        );
-    }
-    for i in 0..23 {
-        let z = 1.49 - i as f32 * 0.135;
-        a.line(
-            Vec3::new(2.26, 0.06, z),
-            Vec3::new(2.26, 0.40 + (i as f32).sin() * 0.14, z - 0.18),
-            ink,
-            0.017,
+            0.013,
         );
     }
     for stroke in &mut a.doc.strokes[first_ink..] {
         stroke.layer_id = 2;
         stroke.brush = graphite.brush;
     }
+    a.doc.active_layer = 2;
     a.doc.guide_resources = [
         (
             "Front wall",

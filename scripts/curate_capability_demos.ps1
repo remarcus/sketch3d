@@ -1,5 +1,6 @@
 param(
-    [switch]$Refresh
+    [switch]$Refresh,
+    [string[]]$Clip = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -8,7 +9,7 @@ $draftRoot = Join-Path $repoRoot 'verification/capability-demos/drafts'
 $mediaRoot = Join-Path $repoRoot 'docs/capability-demos/media'
 $clipNames = @(
     'draw-orbit', 'curved-guides', 'mirror-shapes', 'edit-erase', 'reference-export',
-    'overview', 'house-tutorial', 'curved-tutorial'
+    'overview', 'house-tutorial', 'dusk-house', 'curved-tutorial'
 )
 $posterFrames = @{
     'draw-orbit' = 28
@@ -18,6 +19,7 @@ $posterFrames = @{
     'reference-export' = 35
     'overview' = 30
     'house-tutorial' = 30
+    'dusk-house' = 57
     'curved-tutorial' = 56
 }
 $posterDescriptions = @{
@@ -28,7 +30,16 @@ $posterDescriptions = @{
     'reference-export' = 'Garden-house scene with inserted lantern, reference image, OBJ model, and completed GLB export.'
     'overview' = 'Selected cyan detail stroke and move gizmo in open canvas above the garden-house.'
     'house-tutorial' = 'Selected cyan detail stroke and move gizmo in clear canvas above the garden-house.'
+    'dusk-house' = 'A clear two-story dusk house with amber windows, a cool shaded side, a ground shadow, and a graphite detail.'
     'curved-tutorial' = 'Saved cylinder with selected editable curved source and reflected strokes after reopening.'
+}
+
+if ($Clip.Count -gt 0) {
+    $unknown = @($Clip | Where-Object { $_ -notin $clipNames })
+    if ($unknown.Count -gt 0) {
+        throw "Unknown capability demo clip: $($unknown -join ', ')"
+    }
+    $clipNames = @($clipNames | Where-Object { $_ -in $Clip })
 }
 
 if (-not (Test-Path -LiteralPath $draftRoot -PathType Container)) {
@@ -38,8 +49,11 @@ New-Item -ItemType Directory -Path $mediaRoot -Force | Out-Null
 
 foreach ($name in $clipNames) {
     $extensions = @('mp4', 'gif', 'png', 'en.vtt', 'recording.json')
-    if ($name -in @('house-tutorial', 'curved-tutorial')) {
+    if ($name -in @('house-tutorial', 'dusk-house', 'curved-tutorial')) {
         $extensions += 'saved.sketch.json'
+    }
+    if ($name -eq 'dusk-house') {
+        $extensions += 'still.png'
     }
     if ($name -eq 'reference-export') {
         $extensions += 'scene.glb'
@@ -48,6 +62,8 @@ foreach ($name in $clipNames) {
     foreach ($extension in $extensions) {
         $fileName = if ($extension -eq 'saved.sketch.json') {
             "$name-saved.sketch.json"
+        } elseif ($extension -eq 'still.png') {
+            "$name-still.png"
         } elseif ($extension -eq 'scene.glb') {
             'reference-export/captured-reference-export.glb'
         } else {
@@ -84,6 +100,8 @@ foreach ($name in $clipNames) {
         $hashes[$extension] = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
         $destinationName = if ($extension -eq 'saved.sketch.json') {
             "$name-saved.sketch.json"
+        } elseif ($extension -eq 'still.png') {
+            "$name-still.png"
         } elseif ($extension -eq 'scene.glb') {
             'reference-export-scene.glb'
         } else {
@@ -96,7 +114,7 @@ foreach ($name in $clipNames) {
         Copy-Item -LiteralPath $source -Destination $destination -Force:$Refresh
     }
     $manifest.outputs.sha256 = $hashes
-    $manifest.outputs.gif_preview = if ($name -in @('overview', 'house-tutorial', 'curved-tutorial')) {
+    $manifest.outputs.gif_preview = if ($name -in @('overview', 'house-tutorial', 'dusk-house', 'curved-tutorial')) {
         'Accelerated 6-second preview; use the MP4 and timed VTT for normal-speed playback.'
     } else {
         '6-second single-play preview.'

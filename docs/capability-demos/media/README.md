@@ -14,6 +14,7 @@ Click any poster or GIF to open its MP4. Short clips have six-second single-play
 | Reference import and export | [![Reference/export](reference-export.png)](reference-export.mp4) | [VTT](reference-export.en.vtt) | [GLB scene](reference-export-scene.glb) | [JSON](reference-export.recording.json) |
 | Curved drawing tutorial | [![Curved tutorial](curved-tutorial.png)](curved-tutorial.mp4) | [VTT](curved-tutorial.en.vtt) | [Saved native sample](curved-tutorial-saved.sketch.json) | [JSON](curved-tutorial.recording.json) |
 | House editing tutorial | [![House tutorial](house-tutorial.png)](house-tutorial.mp4) | [VTT](house-tutorial.en.vtt) | [Saved native sample](house-tutorial-saved.sketch.json) | [JSON](house-tutorial.recording.json) |
+| Dusk house | [![Dusk house](dusk-house.png)](dusk-house.mp4) | [VTT](dusk-house.en.vtt) | [Native sample](dusk-house-saved.sketch.json) · [1920×1080 still](dusk-house-still.png) | [JSON](dusk-house.recording.json) |
 
 Each JSON manifest records output byte sizes and SHA-256 hashes, the app commit, capture dimensions/theme, fixture provenance, and limitations. Hashes identify the captured files; they do not mark a clip reviewed. The curation command verifies required files, size bounds, and a clean replay source tree before copying the local draft set:
 

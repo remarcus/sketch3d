@@ -406,11 +406,12 @@ fn main() -> eframe::Result {
                 | "reference-export"
                 | "overview"
                 | "house-tutorial"
+                | "dusk-house"
                 | "curved-tutorial"
         ) || args.len() != index + 2
         {
             eprintln!(
-                "Usage: sketch3d --record-capability-demo <draw-orbit|curved-guides|mirror-shapes|edit-erase|reference-export|overview|house-tutorial|curved-tutorial>"
+                "Usage: sketch3d --record-capability-demo <draw-orbit|curved-guides|mirror-shapes|edit-erase|reference-export|overview|house-tutorial|dusk-house|curved-tutorial>"
             );
             std::process::exit(2);
         }

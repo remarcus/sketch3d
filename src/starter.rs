@@ -8,9 +8,15 @@ impl SketchApp {
 
     pub(super) fn load_pencil_house(&mut self) {
         self.load_house_example(scenes::pencil_house(), "Pencil and pastel house");
-        self.camera.target.y = 2.25;
-        self.camera.target.z = 0.0;
-        self.camera.distance = 12.8;
+        self.camera.yaw = 0.66;
+        self.camera.pitch = 0.31;
+        self.camera.target = Vec3::new(0.0, 2.35, 0.12);
+        self.camera.distance = 14.1;
+        self.guide_visible = false;
+        self.doc.active_guide = None;
+        for guide in &mut self.doc.guide_resources {
+            guide.visible = false;
+        }
     }
 
     fn load_house_example(&mut self, document: Document, title: &'static str) {
@@ -47,10 +53,19 @@ impl SketchApp {
         match frame {
             1 => {
                 let original = self.doc.strokes.clone();
-                assert!(original.len() > 300);
+                assert!(original.len() >= 30);
+                assert!(
+                    original
+                        .iter()
+                        .filter(|stroke| stroke.fill.is_some())
+                        .count()
+                        >= 9
+                );
+                assert!(original.iter().any(|stroke| stroke.layer_id == 3));
+                assert!(original.iter().any(|stroke| stroke.layer_id == 4));
                 self.verify_house_guides(ctx, rect);
                 assert_eq!(self.doc.strokes, original);
-                let id = original[60].id;
+                let id = original[original.len() / 2].id;
                 self.selected = HashSet::from([id]);
                 self.duplicate_selected();
                 assert_eq!(self.doc.strokes.len(), original.len() + 1);
@@ -195,6 +210,14 @@ impl SketchApp {
             eraser: false,
         };
         for id in 1..=3 {
+            let index = self
+                .doc
+                .guide_resources
+                .iter()
+                .position(|guide| guide.id == id)
+                .unwrap();
+            let was_visible = self.doc.guide_resources[index].visible;
+            self.doc.guide_resources[index].visible = true;
             self.camera.yaw += 0.1;
             self.begin_plane_picker();
             assert!(self.plane_picker.active);
@@ -215,12 +238,6 @@ impl SketchApp {
                 }
             }
             let (start, end) = positions.unwrap_or_else(|| panic!("Guide {id} is not pickable"));
-            let index = self
-                .doc
-                .guide_resources
-                .iter()
-                .position(|guide| guide.id == id)
-                .unwrap();
             self.doc.guide_resources[index].locked = true;
             self.update_plane_picker_hover(Some(start), rect);
             assert_ne!(self.plane_picker.hovered_guide.map(|(id, _)| id), Some(id));
@@ -254,10 +271,25 @@ impl SketchApp {
                 self.doc.strokes.last().unwrap().brush.texture.kind,
                 self.brush.texture.kind
             );
+            self.doc.guide_resources[index].visible = was_visible;
+        }
+        self.doc.active_guide = initial_guide;
+        if let Some(active_id) = initial_guide {
+            if let Some(guide) = self
+                .doc
+                .guide_resources
+                .iter_mut()
+                .find(|guide| guide.id == active_id)
+            {
+                guide.visible = true;
+            }
         }
         let reopened = Document::from_json(&serde_json::to_string(&self.doc).unwrap()).unwrap();
         assert_eq!(reopened.strokes, self.doc.strokes);
-        assert_eq!(self.undo.len(), initial_undo_count + 5);
+        assert_eq!(
+            self.undo.len(),
+            initial_undo_count + 5 + usize::from(initial_guide.is_none())
+        );
         while self.undo.len() > initial_undo_count {
             self.undo();
         }

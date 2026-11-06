@@ -743,6 +743,7 @@ enum CapabilityClip {
     ReferenceExport,
     Overview,
     HouseTutorial,
+    DuskHouse,
     CurvedTutorial,
 }
 
@@ -756,6 +757,7 @@ impl CapabilityClip {
             "reference-export" => Some(Self::ReferenceExport),
             "overview" => Some(Self::Overview),
             "house-tutorial" => Some(Self::HouseTutorial),
+            "dusk-house" => Some(Self::DuskHouse),
             "curved-tutorial" => Some(Self::CurvedTutorial),
             _ => None,
         }
@@ -770,6 +772,7 @@ impl CapabilityClip {
             Self::ReferenceExport => "reference-export",
             Self::Overview => "overview",
             Self::HouseTutorial => "house-tutorial",
+            Self::DuskHouse => "dusk-house",
             Self::CurvedTutorial => "curved-tutorial",
         }
     }
@@ -783,7 +786,11 @@ impl CapabilityClip {
     }
 
     fn is_house_tutorial(self) -> bool {
-        self == Self::HouseTutorial
+        self == Self::HouseTutorial || self == Self::DuskHouse
+    }
+
+    fn is_dusk_house(self) -> bool {
+        self == Self::DuskHouse
     }
 
     fn is_overview(self) -> bool {
@@ -803,7 +810,9 @@ impl CapabilityClip {
     }
 
     fn mp4_hold_frames(self) -> usize {
-        if self.is_long_form() {
+        if self.is_dusk_house() {
+            2
+        } else if self.is_long_form() {
             10
         } else if self.is_overview() {
             3
@@ -1194,7 +1203,17 @@ impl CapabilityReplay {
                 ),
             }
         } else {
-            let (start, end) = if self.clip.is_house_tutorial() || self.clip.is_overview() {
+            let (start, end) = if self.clip.is_dusk_house() {
+                let project = |position| {
+                    crate::gizmo::project(&self.initial_camera, rect, position)
+                        .map(|(screen, _)| screen)
+                };
+                let start = project(Vec3::new(-0.42, 1.55, 1.68))
+                    .unwrap_or(rect.center() + egui::vec2(-45.0, 18.0));
+                let end = project(Vec3::new(0.42, 1.55, 1.68))
+                    .unwrap_or(rect.center() + egui::vec2(45.0, 18.0));
+                (start, end)
+            } else if self.clip.is_house_tutorial() || self.clip.is_overview() {
                 (
                     rect.center() + egui::vec2(170.0, -190.0),
                     rect.center() + egui::vec2(260.0, -170.0),
@@ -1215,7 +1234,8 @@ impl CapabilityReplay {
                             start.x + (end.x - start.x) * t,
                             start.y
                                 + (end.y - start.y) * t
-                                + (t * std::f32::consts::TAU).sin() * 28.0,
+                                + (t * std::f32::consts::TAU).sin()
+                                    * if self.clip.is_dusk_house() { 5.0 } else { 28.0 },
                         ),
                         Phase::Move,
                         true,
@@ -1390,7 +1410,23 @@ impl CapabilityReplay {
         }
         let manifest_path = self.path("recording.json");
         let captions_path = self.path("en.vtt");
-        let captions = if self.clip.is_house_tutorial() {
+        let captions = if self.clip.is_dusk_house() {
+            concat!(
+                "WEBVTT\n\n",
+                "00:00:00.000 --> 00:00:00.600\n",
+                "A pencil house at dusk: pale walls, cool shadows, and warm windows.\n\n",
+                "00:00:00.600 --> 00:00:05.400\n",
+                "Draw a graphite detail on the saved front-wall guide.\n\n",
+                "00:00:05.400 --> 00:00:06.400\n",
+                "Select the new detail, move it, then undo and redo.\n\n",
+                "00:00:06.400 --> 00:00:10.200\n",
+                "Orbit to reveal the shaded side and roof depth.\n\n",
+                "00:00:10.200 --> 00:00:11.400\n",
+                "Export the artwork still, save, and reopen the editable drawing.\n\n",
+                "00:00:11.400 --> 00:00:12.000\n",
+                "Finish with the artwork-only view. Input is synthetic and has no pressure data.\n"
+            )
+        } else if self.clip.is_house_tutorial() {
             concat!(
                 "WEBVTT\n\n",
                 "00:00:00.000 --> 00:00:03.000\n",
@@ -1573,8 +1609,18 @@ impl CapabilityReplay {
             .frame_size
             .ok_or_else(|| "Capability demo did not capture any frames".to_owned())?;
         let clip_name = self.clip.name();
-        let (fixture, fixture_provenance, shot_steps, poster_alt) = if self.clip.is_house_tutorial()
-        {
+        let (fixture, fixture_provenance, shot_steps, poster_alt) = if self.clip.is_dusk_house() {
+            (
+                "Editable dusk house starter scene",
+                "Original procedural Sketch3D scene with editable planar fills, graphite linework, window-light fills, a ground shadow, and saved wall, roof, and chimney guides.",
+                vec![
+                    "Draw a graphite accent on the saved front-wall guide through production canvas input.",
+                    "Save and reopen the edited native scene through production document handlers, then orbit to reveal its depth.",
+                    "Export a full-resolution still through the artwork image exporter and finish in artwork-only view.",
+                ],
+                "Editable dusk house with warm windows, a cool blue side and roof, ground shadow, and a graphite accent.",
+            )
+        } else if self.clip.is_house_tutorial() {
             (
                 "Japanese house scene",
                 "Original Japanese garden-house scene built into Sketch3D; the stroke and transforms are created during capture by production editing handlers.",
@@ -1694,6 +1740,17 @@ impl CapabilityReplay {
             "outputs": {
                 "mp4": { "file": format!("{clip_name}.mp4"), "bytes": mp4_metadata.len() },
                 "gif": { "file": format!("{clip_name}.gif"), "bytes": gif_metadata.len() },
+                "artwork_still": if self.clip.is_dusk_house() {
+                    let path = self.output_dir.join("dusk-house-still.png");
+                    let metadata = std::fs::metadata(&path)
+                        .map_err(|error| format!("Dusk-house still export is missing: {error}"))?;
+                    if metadata.len() == 0 {
+                        return Err("Dusk-house still export is empty".into());
+                    }
+                    Some(serde_json::json!({"file":"dusk-house-still.png","bytes":metadata.len(),"dimensions":[1920,1080],"exported_by":"production artwork image export"}))
+                } else {
+                    None
+                },
                 "poster": {
                     "file": format!("{clip_name}.png"),
                     "bytes": poster_metadata.len(),
@@ -1718,7 +1775,7 @@ impl CapabilityReplay {
                 "private_content_checked": false,
                 "captions_timing_checked": captions_timing_checked,
                 "reviewer": null,
-                "notes": if self.clip.is_reference_export() { "Synthetic reference-export draft. During capture the production OBJ import control uses an injected generated file result, the native-merge handler inserts the lantern, and the export worker writes the combined GLB. The native file picker and insert preview are not shown. Full playback, caption-timing, privacy, and intended-surface review are still pending." } else if self.clip.is_house_tutorial() || self.clip.is_curved_tutorial() { "Synthetic 60-second tutorial draft with captured draw/select/move/undo/redo and production native save/reopen steps. The GIF is an accelerated six-second preview; use the MP4 and VTT for instruction. Verify actions, caption timing, playback, privacy, and intended README size before use." } else if self.clip.is_overview() { "Synthetic 18-second overview draft. Review playback, caption timing, privacy, action coverage, and intended README size before use." } else if self.clip.is_edit_erase() { "Synthetic edit-erase draft. Selection and appearance editing run through production handlers during capture, followed by a partial erase, undo and orbit." } else if self.clip.is_mirror_shapes() { "Synthetic mirror-shapes draft. The mirrored line and ellipse are created through production handlers during capture, then reviewed during camera orbit." } else if self.clip.is_curved_guides() { "Synthetic curved-guide draft. The cylinder stroke and reflected copy are created through production canvas input during capture; review playback and visual readability before use." } else { "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use." }
+                "notes": if self.clip.is_dusk_house() { "Synthetic 12-second dusk-house walkthrough. The production canvas handler draws on the saved wall guide; production native save/reopen and artwork image export are included. Review playback and caption timing before public release. No tablet pressure was measured." } else if self.clip.is_reference_export() { "Synthetic reference-export draft. During capture the production OBJ import control uses an injected generated file result, the native-merge handler inserts the lantern, and the export worker writes the combined GLB. The native file picker and insert preview are not shown. Full playback, caption-timing, privacy, and intended-surface review are still pending." } else if self.clip.is_house_tutorial() || self.clip.is_curved_tutorial() { "Synthetic 60-second tutorial draft with captured draw/select/move/undo/redo and production native save/reopen steps. The GIF is an accelerated six-second preview; use the MP4 and VTT for instruction. Verify actions, caption timing, playback, privacy, and intended README size before use." } else if self.clip.is_overview() { "Synthetic 18-second overview draft. Review playback, caption timing, privacy, action coverage, and intended README size before use." } else if self.clip.is_edit_erase() { "Synthetic edit-erase draft. Selection and appearance editing run through production handlers during capture, followed by a partial erase, undo and orbit." } else if self.clip.is_mirror_shapes() { "Synthetic mirror-shapes draft. The mirrored line and ellipse are created through production handlers during capture, then reviewed during camera orbit." } else if self.clip.is_curved_guides() { "Synthetic curved-guide draft. The cylinder stroke and reflected copy are created through production canvas input during capture; review playback and visual readability before use." } else { "Synthetic replay draft. The GIF plays once to avoid a false loop seam; review MP4 playback and visual readability before use." }
             }
         });
         let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
@@ -2374,9 +2431,26 @@ impl SketchApp {
                 && !clip.is_mirror_shapes()
                 && !clip.is_reference_export()
             {
-                app.load_house();
-                app.guide = DrawingPlane::from_preset(Plane::Front);
-                app.guide.depth = app.camera.target.z;
+                if clip.is_dusk_house() {
+                    app.load_pencil_house();
+                    app.doc.active_guide = Some(1);
+                    if let Some(guide) = app
+                        .doc
+                        .guide_resources
+                        .iter_mut()
+                        .find(|guide| guide.id == 1)
+                    {
+                        guide.visible = true;
+                    }
+                    app.attach_drawn_strokes = true;
+                    app.brush = crate::presets::startup_pencil().brush;
+                    app.color = crate::presets::startup_pencil().color;
+                    app.radius = 0.025;
+                } else {
+                    app.load_house();
+                    app.guide = DrawingPlane::from_preset(Plane::Front);
+                    app.guide.depth = app.camera.target.z;
+                }
                 if let Some(replay) = app.capability_replay.as_mut() {
                     replay.initial_stroke_count = app.doc.strokes.len();
                     replay.initial_camera = app.camera;
@@ -7540,6 +7614,9 @@ impl eframe::App for SketchApp {
         self.presentation.apply_theme(ctx);
         self.presentation.poll_layout_save();
         self.poll_recovery(ctx);
+        if self.house_verification_frame.is_some() {
+            self.recovery_prompt = false;
+        }
         if self
             .appearance_layout_verification
             .as_ref()
@@ -8403,10 +8480,46 @@ impl eframe::App for SketchApp {
                         }
                         29 => self.undo(),
                         30 => self.redo(),
+                        51 if self
+                            .capability_replay
+                            .as_ref()
+                            .is_some_and(|replay| replay.clip.is_dusk_house()) => {
+                            let orbit_camera = self.camera;
+                            self.camera = self
+                                .capability_replay
+                                .as_ref()
+                                .unwrap()
+                                .initial_camera;
+                            let path = self
+                                .capability_replay
+                                .as_ref()
+                                .unwrap()
+                                .output_dir
+                                .join("dusk-house-still.png");
+                            self.start_png_export(
+                                path,
+                                [1920, 1080],
+                                false,
+                                png_export_ui::StillFormat::Png,
+                                png_export_ui::JpegBackground::Canvas,
+                                false,
+                                ctx,
+                            );
+                            self.camera = orbit_camera;
+                        }
                         52 if self
                             .capability_replay
                             .as_ref()
                             .is_some_and(|replay| replay.clip.is_long_form()) => {
+                            if self
+                                .capability_replay
+                                .as_ref()
+                                .is_some_and(|replay| replay.clip.is_dusk_house())
+                            {
+                                for guide in &mut self.doc.guide_resources {
+                                    guide.visible = false;
+                                }
+                            }
                             let saved = self.save(true);
                             self.capability_replay.as_mut().unwrap().long_saved = saved;
                             if !saved {
@@ -8426,6 +8539,20 @@ impl eframe::App for SketchApp {
                             self.execute_pending();
                             self.capability_replay.as_mut().unwrap().long_reopened = true;
                             self.status = "Saved native tutorial copy reopened.".into();
+                        }
+                        57 if self
+                            .capability_replay
+                            .as_ref()
+                            .is_some_and(|replay| replay.clip.is_dusk_house()) => {
+                            self.select_mode = false;
+                            self.camera = self
+                                .capability_replay
+                                .as_ref()
+                                .unwrap()
+                                .initial_camera;
+                            if !self.presentation.artwork {
+                                self.toggle_artwork();
+                            }
                         }
                         _ => {}
                     }
@@ -9828,7 +9955,7 @@ impl SketchApp {
             } else if self.cylinder_verification_frame.is_some() {
                 serde_json::json!({"passed":true,"checks":["cylinder side drawing","surface-constrained stabilization and release tail","miss and silhouette segmentation","angular seam continuity","rotated guide and captured surface","hide and switch guides preserve ink","selection duplicate/delete undo","cylinder stroke save/reload","seam-crossing cylinder curves preview across camera orbit and cancel cleanly","committed cylinder curves remain on their captured surface after native reload","cylinder curve edit remains on the captured surface and applies as one undo/redo step","cylinder ellipse preview, cancel, commit, semantic reopen, and undo/redo","editable lantern example","GPU screenshot"],"strokes":self.doc.strokes.len(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else if self.house_verification_frame.is_some() {
-                serde_json::json!({"passed":true,"checks":["editable pencil and pastel house","duplicate and undo","New clears starter and retains graphite","quick palette keyboard selection, Escape and focus dismissal","both house examples remain available","orbit, pick and draw on wall, roof and chimney with hidden and locked filtering, cancel, undo and native reopen","synthetic pen barrel erases on lift, cancels on button change, and restores drawing on next contact","unsaved-change guard","sample save/reload","GPU screenshot"],"strokes":self.doc.strokes.len(),"points":self.doc.strokes.iter().map(|s|s.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
+                serde_json::json!({"passed":true,"checks":["editable dusk house with broad color faces and independent shadow, linework, and warm window layers","duplicate and undo","New clears starter and retains graphite","quick palette keyboard selection, Escape and focus dismissal","both house examples remain available","three-quarter opening view","orbit, pick and draw on wall, roof and chimney with hidden and locked filtering, cancel, undo and native reopen","synthetic pen barrel erases on lift, cancels on button change, and restores drawing on next contact","unsaved-change guard","sample save/reload","GPU screenshot"],"strokes":self.doc.strokes.len(),"points":self.doc.strokes.iter().map(|s|s.points.len()).sum::<usize>(),"gpu":self.renderer.adapter,"physical_tablet_tested":false})
             } else {
                 report
             };
@@ -9975,6 +10102,8 @@ impl SketchApp {
             28
         } else if replay.clip.is_edit_erase() {
             39
+        } else if replay.clip.is_dusk_house() {
+            57
         } else if replay.clip.is_house_tutorial() || replay.clip.is_curved_tutorial() {
             if replay.clip.is_house_tutorial() {
                 30
@@ -10133,6 +10262,17 @@ impl SketchApp {
             {
                 self.capability_replay.take().unwrap().abort();
                 eprintln!("Capability tutorial did not complete its verified edit, production save, and reopen steps");
+                std::process::exit(1);
+            }
+            if replay.clip.is_dusk_house()
+                && (!self.presentation.artwork
+                    || self.png_export.is_running()
+                    || !replay.output_dir.join("dusk-house-still.png").is_file())
+            {
+                self.capability_replay.take().unwrap().abort();
+                eprintln!(
+                    "Dusk-house replay did not finish the still export and artwork-only view"
+                );
                 std::process::exit(1);
             }
             if replay.clip.is_reference_export() && replay.reference_export_action.is_none() {

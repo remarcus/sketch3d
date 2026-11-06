@@ -4,9 +4,9 @@ Sketch3D is an open-source, tablet-first 3D sketching app written in Rust. Draw 
 
 Sketch3D is independently developed and inspired by Feather 3D and Blender's Grease Pencil.
 
-![Sketch3D's dark workspace showing an editable Japanese garden house, drawing tools, and brush properties](docs/capability-demos/media/draw-orbit.png)
+![Sketch3D's dark workspace showing the editable dusk house starter with pale walls, warm windows, a cool shaded side, and graphite tools](docs/capability-demos/media/dusk-house-ui.png)
 
-*The Japanese garden house example, shown in an earlier demo capture.*
+*The editable two-story dusk house starter, framed in its opening three-quarter view.*
 
 ## Features
 
@@ -84,7 +84,7 @@ In layer properties, choose a **Named mask source** and click **Apply**. The sou
 
 ## Capability gallery
 
-Click a preview to open its captioned MP4. These deterministic current-build replays use synthetic input without pressure data; they do not measure tablet pressure or latency. GIF previews play once, and the longer ones are accelerated six-second summaries. Key-frame, caption-timing, hash, size, and privacy checks are complete; full-motion readability at native video size and rendered README-surface review remain pending.
+Click a preview to open its captioned MP4. These deterministic current-build replays use synthetic input without pressure data; they do not measure tablet pressure or latency. GIF previews play once, and the longer ones are accelerated six-second summaries. The dusk-house clip shows a saved-guide edit, orbit, native reopen, still export, and artwork-only ending.
 
 | Overview | Draw and orbit | Partial erase and undo |
 | --- | --- | --- |
@@ -95,6 +95,11 @@ Click a preview to open its captioned MP4. These deterministic current-build rep
 | --- | --- | --- |
 | [![Orbit a saved cylinder with curved mirrored strokes](docs/capability-demos/media/curved-guides.gif)](docs/capability-demos/media/curved-guides.mp4) | [![Orbit a mirrored line pair and editable ellipse](docs/capability-demos/media/mirror-shapes.gif)](docs/capability-demos/media/mirror-shapes.mp4) | [![Orbit a garden-house scene with an inserted lantern, image plane and OBJ reference](docs/capability-demos/media/reference-export.gif)](docs/capability-demos/media/reference-export.mp4) |
 | Draw a mirrored stroke across a saved cylinder, then orbit. | Draw the mirrored line and ellipse through production handlers. | Run the production OBJ Import control with a generated picker result, insert through native merge, then export the scene. The native picker and preview dialog are not shown. |
+
+| Dusk house |
+| --- |
+| [![Draw a graphite detail on the editable dusk house, orbit to reveal depth, and finish in artwork-only view](docs/capability-demos/media/dusk-house.gif)](docs/capability-demos/media/dusk-house.mp4) |
+| A 12-second saved-guide walkthrough with a native reopen and exported still. [Open the 1920×1080 artwork PNG](docs/capability-demos/media/dusk-house-still.png). |
 
 Posters, captions, file hashes, source commits and capture manifests accompany the clips in the [media index](docs/capability-demos/media/README.md). Written tutorials and native sample documents are below.
 
