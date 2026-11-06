@@ -721,7 +721,12 @@ struct LiveMcpPreview {
     base_revision: String,
     preview_revision: String,
     selected_ids: HashSet<u64>,
-    edit: Edit,
+    action: LiveMcpPreviewAction,
+}
+
+enum LiveMcpPreviewAction {
+    Artwork(Box<Edit>),
+    Selection,
 }
 
 const CAPABILITY_REPLAY_FPS: u32 = 10;
@@ -7003,6 +7008,13 @@ impl SketchApp {
                     let result = self.preview_live_mcp_move(revision, translation);
                     let _ = request.reply.send(result);
                 }
+                crate::live_mcp::LiveUiCommand::PreviewSelection {
+                    revision,
+                    stroke_ids,
+                } => {
+                    let result = self.preview_live_mcp_selection(revision, stroke_ids);
+                    let _ = request.reply.send(result);
+                }
                 crate::live_mcp::LiveUiCommand::ApplyEdit {
                     preview_id,
                     revision,
@@ -7319,25 +7331,80 @@ impl SketchApp {
                 return Err(error);
             }
         };
+        Ok(self.register_live_mcp_preview(
+            description,
+            revision,
+            preview_revision,
+            selected_ids,
+            LiveMcpPreviewAction::Artwork(Box::new(edit)),
+        ))
+    }
+
+    fn preview_live_mcp_selection(
+        &mut self,
+        revision: String,
+        stroke_ids: Vec<u64>,
+    ) -> Result<serde_json::Value, String> {
+        self.check_live_mcp_preview(&revision)?;
+        let selected_ids: HashSet<_> = stroke_ids.iter().copied().collect();
+        if selected_ids.len() != stroke_ids.len() {
+            return Err("Stroke IDs must be unique".into());
+        }
+        let generated = self.doc.linked_generated_ids();
+        let editable_count = self
+            .doc
+            .strokes
+            .iter()
+            .filter(|stroke| {
+                selected_ids.contains(&stroke.id)
+                    && self.doc.editable(stroke)
+                    && !generated.contains(&stroke.id)
+            })
+            .count();
+        if editable_count != selected_ids.len() {
+            return Err(
+                "Missing, hidden, protected, or linked instance strokes cannot be selected".into(),
+            );
+        }
+        let mut result = self.register_live_mcp_preview(
+            "a replacement selection",
+            revision.clone(),
+            revision,
+            selected_ids,
+            LiveMcpPreviewAction::Selection,
+        );
+        result["stroke_ids"] = serde_json::json!(stroke_ids);
+        Ok(result)
+    }
+
+    fn register_live_mcp_preview(
+        &mut self,
+        description: &'static str,
+        revision: String,
+        preview_revision: String,
+        selected_ids: HashSet<u64>,
+        action: LiveMcpPreviewAction,
+    ) -> serde_json::Value {
         let preview_id = crate::live_mcp::preview_id();
+        let selected_count = selected_ids.len();
         self.live_mcp_preview = Some(LiveMcpPreview {
             description,
             preview_id: preview_id.clone(),
             base_revision: revision.clone(),
             preview_revision: preview_revision.clone(),
-            selected_ids: selected_ids.clone(),
-            edit,
+            selected_ids,
+            action,
         });
         self.status =
             "MCP edit preview active. Apply or cancel it from the MCP client or preview panel."
                 .into();
-        Ok(serde_json::json!({
+        serde_json::json!({
             "preview_id": preview_id,
             "revision": revision,
             "preview_revision": preview_revision,
-            "selected_count": selected_ids.len(),
+            "selected_count": selected_count,
             "preview_active": true
-        }))
+        })
     }
 
     fn apply_live_mcp_edit(
@@ -7357,7 +7424,14 @@ impl SketchApp {
         }
         let preview = self.live_mcp_preview.take().expect("preview checked above");
         let count = preview.selected_ids.len();
-        self.undo.push(preview.edit);
+        let LiveMcpPreviewAction::Artwork(edit) = preview.action else {
+            self.selected = preview.selected_ids;
+            self.status = format!("MCP selected {count} strokes.");
+            return Ok(serde_json::json!({
+                "applied":true,"selected_count":count,"undo_steps":0,"revision":self.live_mcp_revision()?
+            }));
+        };
+        self.undo.push(*edit);
         self.redo.clear();
         self.dirty = true;
         self.record_recovery_edit();
@@ -7382,9 +7456,11 @@ impl SketchApp {
             );
         }
         let preview = self.live_mcp_preview.take().expect("preview checked above");
-        preview.edit.apply(&mut self.doc, false);
-        self.renderer
-            .invalidate_ids(&self.doc.linked_affected_stroke_ids(&preview.selected_ids));
+        if let LiveMcpPreviewAction::Artwork(edit) = preview.action {
+            edit.apply(&mut self.doc, false);
+            self.renderer
+                .invalidate_ids(&self.doc.linked_affected_stroke_ids(&preview.selected_ids));
+        }
         self.status = "MCP edit cancelled. Source values restored.".into();
         Ok(serde_json::json!({"cancelled":true,"document_unchanged":true}))
     }
@@ -8381,7 +8457,11 @@ impl eframe::App for SketchApp {
                 self.refresh_live_line_art(rect, ctx, false);
                 self.verify_canvas_point_workflow(ctx, rect);
                 let scale = ctx.pixels_per_point();
-                if self.select_mode && !self.presentation.artwork {
+                let selection_preview = self.live_mcp_preview.as_ref()
+                    .filter(|preview| matches!(preview.action, LiveMcpPreviewAction::Selection));
+                if let Some(preview) = selection_preview {
+                    self.renderer.set_selection(&preview.selected_ids);
+                } else if self.select_mode && !self.presentation.artwork {
                     self.renderer.set_selection(&self.selected);
                 } else {
                     self.renderer.set_selection(&HashSet::new());

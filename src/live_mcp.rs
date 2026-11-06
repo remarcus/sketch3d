@@ -19,6 +19,7 @@ const MAX_PNG_BYTES: usize = 1_000_000;
 const MAX_PNG_DIMENSION: usize = 4096;
 const UI_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 static NEXT_PREVIEW_ID: AtomicU64 = AtomicU64::new(0);
+const MAX_SELECTION_IDS: usize = 100;
 
 pub enum LiveUiCommand {
     Snapshot,
@@ -39,6 +40,10 @@ pub enum LiveUiCommand {
     PreviewMove {
         revision: String,
         translation: [f32; 3],
+    },
+    PreviewSelection {
+        revision: String,
+        stroke_ids: Vec<u64>,
     },
     ApplyEdit {
         preview_id: String,
@@ -191,7 +196,7 @@ fn handle_message(ui_requests: &Sender<LiveUiRequest>, message: Value) -> Option
                     "protocolVersion":version,
                     "capabilities":{"tools":{"listChanged":false}},
                     "serverInfo":{"name":"sketch3d-live-session","version":env!("CARGO_PKG_VERSION")},
-                "instructions":"Access the active Sketch3D session. Inspect the document or preview a selected-stroke color change or world-space move. Apply or cancel the active preview explicitly. Local file paths are omitted. Unsaved state is identified explicitly."
+                "instructions":"Access the active Sketch3D session. Inspect layers and strokes, preview a selection, or preview a selected-stroke color change or world-space move. Apply or cancel the active preview explicitly. Local file paths are omitted."
                 }),
             ))
         }
@@ -310,6 +315,26 @@ fn handle_message(ui_requests: &Sender<LiveUiRequest>, message: Value) -> Option
                         translation: [x, y, z],
                     }
                 }
+                "live_preview_selection" => {
+                    let Some(revision) = bounded_string(&arguments, "revision", 80) else {
+                        return Some(rpc_result(id, tool_error("A valid revision is required")));
+                    };
+                    let Some(stroke_ids) = arguments
+                        .get("stroke_ids")
+                        .and_then(Value::as_array)
+                        .filter(|ids| !ids.is_empty() && ids.len() <= MAX_SELECTION_IDS)
+                        .and_then(|ids| ids.iter().map(Value::as_u64).collect::<Option<Vec<_>>>())
+                    else {
+                        return Some(rpc_result(
+                            id,
+                            tool_error("Provide 1 to 100 integer stroke IDs"),
+                        ));
+                    };
+                    LiveUiCommand::PreviewSelection {
+                        revision,
+                        stroke_ids,
+                    }
+                }
                 "live_apply_selected_color" | "live_apply_edit" => {
                     let Some(preview_id) = bounded_string(&arguments, "preview_id", 96) else {
                         return Some(rpc_result(id, tool_error("A valid preview_id is required")));
@@ -373,6 +398,12 @@ fn tools() -> Value {
             "name":"live_preview_selected_move",
             "description":"Preview a world-space XYZ translation of the selected independent editable strokes, bound to the snapshot revision.",
             "inputSchema":{"type":"object","properties":{"revision":{"type":"string","maxLength":80},"translation":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3}},"required":["revision","translation"],"additionalProperties":false},
+            "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}
+        },
+        {
+            "name":"live_preview_selection",
+            "description":"Highlight a proposed replacement selection of editable strokes. Pass the revision from live_stroke_index or live_document_snapshot. Use live_apply_edit to select them or live_cancel_edit to keep the previous selection.",
+            "inputSchema":{"type":"object","properties":{"revision":{"type":"string","maxLength":80},"stroke_ids":{"type":"array","items":{"type":"integer","minimum":0},"minItems":1,"maxItems":MAX_SELECTION_IDS,"uniqueItems":true}},"required":["revision","stroke_ids"],"additionalProperties":false},
             "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}
         },
         {
