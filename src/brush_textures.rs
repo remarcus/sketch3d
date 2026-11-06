@@ -528,7 +528,7 @@ impl SketchApp {
                 }
             });
     }
-    fn verify_custom_repeating_texture_render(&mut self) -> (usize, usize) {
+    fn verify_custom_repeating_texture_render(&mut self) -> (usize, usize, usize) {
         let mask = image::RgbaImage::from_fn(4, 4, |x, y| {
             let covered = (x + 2 * y) % 4 < 2;
             image::Rgba([255, 255, 255, if covered { 255 } else { 0 }])
@@ -579,7 +579,7 @@ impl SketchApp {
             guide_attachment: None,
             model_surface: None,
             curve: None,
-            material: Default::default(),
+            material: crate::document::StrokeMaterial::Unlit,
             point_thickness: None,
             point_colors: None,
             modifiers: None,
@@ -679,7 +679,71 @@ impl SketchApp {
             image::ColorType::Rgba8,
         )
         .expect("stroke-following comparison render is saved");
-        (changed, mapping_changed)
+
+        let tip_image = image::RgbaImage::from_fn(12, 12, |x, y| {
+            let dx = x as f32 - 5.5;
+            let dy = y as f32 - 5.5;
+            let alpha = if dx * dx + dy * dy < 28.0 { 255 } else { 0 };
+            image::Rgba([255, 255, 255, alpha])
+        });
+        let mut tip_png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(tip_image)
+            .write_to(&mut tip_png, image::ImageFormat::Png)
+            .expect("generated image tip encodes as PNG");
+        let tip_asset = crate::brush_tip::BrushTipAsset::from_png(
+            tip_png.into_inner(),
+            Some("GPU combined-tip-grain verifier".into()),
+        )
+        .expect("generated image tip validates");
+        let mut combined_doc = doc.clone();
+        combined_doc
+            .add_brush_tip_asset(tip_asset.clone())
+            .expect("generated image tip enters the document catalog");
+        combined_doc.strokes[0].brush.tip_asset_id = tip_asset.id;
+        combined_doc.strokes[0].brush.tip_aspect = 1.0;
+        combined_doc.strokes[0].brush.dabs.enabled = true;
+        combined_doc.strokes[0].brush.dabs.spacing = 0.75;
+        let combined = self
+            .renderer
+            .render_png_pixels(&combined_doc, &camera, size, background, lighting)
+            .expect("image tip with repeating grain renders through the GPU pipeline");
+        let mut tip_only_doc = combined_doc.clone();
+        tip_only_doc.strokes[0].brush.texture.image = None;
+        let tip_only = self
+            .renderer
+            .render_png_pixels(&tip_only_doc, &camera, size, background, lighting)
+            .expect("image tip without repeating grain renders through the GPU pipeline");
+        let combined_changed = combined
+            .chunks_exact(4)
+            .zip(tip_only.chunks_exact(4))
+            .filter(|(combined, tip_only)| {
+                combined[..3]
+                    .iter()
+                    .zip(&tip_only[..3])
+                    .any(|(a, b)| a.abs_diff(*b) > 24)
+            })
+            .count();
+        assert!(
+            combined_changed > 500,
+            "repeating grain should affect substantial image-tip coverage, got {combined_changed} pixels"
+        );
+        image::save_buffer(
+            output.join("combined-image-tip-grain-800x400.png"),
+            &combined,
+            size[0],
+            size[1],
+            image::ColorType::Rgba8,
+        )
+        .expect("combined image-tip and grain render is saved");
+        image::save_buffer(
+            output.join("image-tip-without-grain-800x400.png"),
+            &tip_only,
+            size[0],
+            size[1],
+            image::ColorType::Rgba8,
+        )
+        .expect("image-tip-only comparison render is saved");
+        (changed, mapping_changed, combined_changed)
     }
 
     pub(super) fn load_textures(&mut self) {
@@ -870,8 +934,11 @@ impl SketchApp {
                         }));
                     }
                 }
-                let (custom_repeating_texture_changed_pixels, captured_mapping_changed_pixels) =
-                    self.verify_custom_repeating_texture_render();
+                let (
+                    custom_repeating_texture_changed_pixels,
+                    captured_mapping_changed_pixels,
+                    combined_grain_changed_pixels,
+                ) = self.verify_custom_repeating_texture_render();
                 std::fs::write(
                     output.join("texture-render-report.json"),
                     serde_json::to_vec_pretty(&serde_json::json!({
@@ -892,6 +959,12 @@ impl SketchApp {
                             "offset": [0.23, -0.12],
                             "passed": captured_mapping_changed_pixels > 500,
                         },
+                        "combined_tip_grain": {
+                            "file": "combined-image-tip-grain-800x400.png",
+                            "comparison_file": "image-tip-without-grain-800x400.png",
+                            "changed_pixels_vs_tip_only": combined_grain_changed_pixels,
+                            "passed": combined_grain_changed_pixels > 500,
+                        },
                         "physical_tablet_tested": false,
                     }))
                     .unwrap(),
@@ -905,6 +978,7 @@ impl SketchApp {
                         "texture study renders front and orbit views at 640x360, 1280x720, and 2560x1440",
                         "custom repeating alpha-mask image texture renders on the GPU and differs from a solid brush",
                         "captured planar mapping with non-default rotation, independent scale, and offset differs from stroke-following placement",
+                        "repeating image grain changes rendered image-tip coverage compared with the same tip alone",
                         "texture settings survive transform, duplicate, native save/reopen, picking, erase, and undo",
                         "render artifacts are produced directly by the GPU renderer; no desktop screenshot was captured"
                     ],
