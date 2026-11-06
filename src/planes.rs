@@ -553,6 +553,21 @@ mod guide_picker_tests {
         }
     }
 
+    fn cylinder(id: u64, visible: bool, locked: bool) -> GuideResource {
+        GuideResource {
+            id,
+            name: format!("Cylinder {id}"),
+            visible,
+            locked,
+            geometry: GuideGeometry::Cylinder {
+                center: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                radius: 1.0,
+                height: 4.0,
+            },
+        }
+    }
+
     #[test]
     fn overlapping_guides_choose_the_lowest_id_independent_of_resource_order() {
         let camera = Camera::default();
@@ -602,6 +617,38 @@ mod guide_picker_tests {
     }
 
     #[test]
+    fn overlapping_plane_and_cylinder_ties_choose_the_lowest_id_in_either_order() {
+        let camera = Camera::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let cursor = rect.center();
+        let cylinder = cylinder(3, true, false);
+        let (ray_origin, ray_direction) = gizmo::ray(&camera, rect, cursor);
+        let shared_hit = cylinder
+            .geometry
+            .clone()
+            .hit(ray_origin, ray_direction)
+            .expect("center ray hits the cylinder");
+        let plane = GuideResource {
+            id: 8,
+            name: "Plane at cylinder side".into(),
+            visible: true,
+            locked: false,
+            geometry: GuideGeometry::Plane {
+                origin: shared_hit,
+                rotation: Quat::from_rotation_arc(Vec3::Z, ray_direction),
+            },
+        };
+        for guides in [vec![plane.clone(), cylinder.clone()], vec![cylinder, plane]] {
+            assert_eq!(
+                pick_saved_guide(&camera, rect, cursor, &guides)
+                    .expect("both targets share the center ray hit")
+                    .0,
+                3
+            );
+        }
+    }
+
+    #[test]
     fn hidden_locked_and_missing_guides_are_misses() {
         let camera = Camera::default();
         let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
@@ -609,6 +656,15 @@ mod guide_picker_tests {
         let unavailable = vec![plane(1, false, false), plane(2, true, true)];
         assert!(pick_saved_guide(&camera, rect, cursor, &unavailable).is_none());
         assert!(pick_saved_guide(&camera, rect, cursor, &[]).is_none());
+    }
+
+    #[test]
+    fn hidden_and_locked_curved_guides_are_misses() {
+        let camera = Camera::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let cursor = rect.center();
+        let unavailable = vec![cylinder(10, false, false), cylinder(11, true, true)];
+        assert!(pick_saved_guide(&camera, rect, cursor, &unavailable).is_none());
     }
 }
 
