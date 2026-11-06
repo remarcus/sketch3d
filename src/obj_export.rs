@@ -1018,6 +1018,69 @@ mod material_tests {
     }
 
     #[test]
+    fn image_tip_and_repeating_grain_are_bundled_as_composed_obj_textures() {
+        use image::{ImageFormat, Rgba, RgbaImage};
+        use std::io::Cursor;
+
+        let to_asset = |image: RgbaImage| {
+            let mut png = Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(image)
+                .write_to(&mut png, ImageFormat::Png)
+                .unwrap();
+            crate::brush_tip::BrushTipAsset::from_png(png.into_inner(), None).unwrap()
+        };
+        let tip = to_asset(RgbaImage::from_pixel(4, 4, Rgba([200, 90, 40, 192])));
+        let grain = to_asset(RgbaImage::from_fn(8, 1, |x, _| {
+            if x % 2 == 0 {
+                Rgba([255, 255, 255, 255])
+            } else {
+                Rgba([255, 255, 255, 0])
+            }
+        }));
+        let mut mark = material_stroke(114, StrokeMaterial::Shaded);
+        mark.brush.tip_asset_id = tip.id;
+        mark.brush.dabs.enabled = true;
+        mark.brush.texture.scale = 0.025;
+        mark.brush.texture.image = Some(crate::texture::ImageTextureSettings {
+            asset_id: grain.id,
+            mode: crate::texture::ImageTextureMode::CoverageMask,
+            mask_source: crate::texture::ImageMaskSource::Alpha,
+            ..Default::default()
+        });
+        let document = Document {
+            strokes: vec![mark],
+            brush_tip_assets: vec![tip, grain],
+            ..Document::default()
+        };
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let destination = root.path().join("tip-grain.obj");
+        assert!(write_obj_bundle(&document, None, &destination, false).unwrap() > 0);
+
+        let obj = std::fs::read_to_string(&destination).unwrap();
+        let mtl_name = obj
+            .lines()
+            .find_map(|line| line.strip_prefix("mtllib "))
+            .unwrap();
+        let mtl = std::fs::read_to_string(root.path().join(mtl_name)).unwrap();
+        assert!(mtl.contains("Image-tip and independent grain alpha are multiplied"));
+        let color_map = mtl
+            .lines()
+            .find_map(|line| line.strip_prefix("map_Kd "))
+            .unwrap();
+        let alpha_map = mtl
+            .lines()
+            .find_map(|line| line.strip_prefix("map_d "))
+            .unwrap();
+        let color = image::open(root.path().join(color_map)).unwrap().to_rgba8();
+        let alpha = image::open(root.path().join(alpha_map)).unwrap().to_rgba8();
+        assert_eq!(color.dimensions(), alpha.dimensions());
+        assert!(alpha.pixels().any(|pixel| pixel[0] == 0));
+        assert!(alpha.pixels().any(|pixel| pixel[0] > 0));
+        assert!(color.pixels().any(|pixel| pixel[0] > pixel[1]));
+        assert!(obj.contains("vt "));
+    }
+
+    #[test]
     fn obj_mtl_preserves_material_modes_and_discloses_cutout_fallback() {
         let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let destination = root.path().join("materials.obj");
