@@ -701,6 +701,10 @@ mod tests {
             .unwrap();
         document.strokes = animated.resolve(animated.current_frame).unwrap();
         document.animation = animated;
+        if let Some(path) = std::env::var_os("SKETCH3D_HANDOFF_SCRIPT_OUT") {
+            let (script, _) = build_script(&document, "Sketch3D Solid Fill Fixture").unwrap();
+            std::fs::write(path, script).expect("write generated Blender solid-fill fixture");
+        }
         let animated_payload = payload(&document);
         let layer = animated_payload["layers"]
             .as_array()
