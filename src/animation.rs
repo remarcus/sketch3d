@@ -1404,6 +1404,107 @@ mod tests {
         assert_eq!(reopened.animation.fps, 24);
     }
 
+    #[test]
+    fn batch_layer_key_move_and_duplicate_preserve_spacing_holds_and_rollback() {
+        let base = vec![stroke(1, 0.0, 2)];
+        let mut animation = ArtworkAnimation {
+            range_end: 30,
+            ..ArtworkAnimation::default()
+        };
+        for (frame, x) in [(0, 0.0), (5, 5.0), (10, 10.0)] {
+            let mut animated = stroke(2, x, 2);
+            animated.layer_id = 2;
+            animation = animation
+                .set_layer_keyframe(frame, 2, &[animated], &base)
+                .unwrap();
+            animation = animation.set_layer_exposure(2, frame, 2).unwrap();
+        }
+
+        let moved = animation.place_layer_keys(2, &[0, 5], 3, false).unwrap();
+        let moved_track = &moved.layer_tracks[0].keyframes;
+        assert_eq!(
+            moved_track.iter().map(|key| key.frame).collect::<Vec<_>>(),
+            vec![3, 8, 10]
+        );
+        assert_eq!(
+            moved_track
+                .iter()
+                .map(|key| key.exposure)
+                .collect::<Vec<_>>(),
+            vec![2, 2, 2]
+        );
+        assert_eq!(moved.resolve(4).unwrap().len(), 2);
+        assert_eq!(moved.resolve(5).unwrap().len(), 1);
+        assert_eq!(moved.resolve(8).unwrap().len(), 2);
+        assert_eq!(
+            moved
+                .edit_layer_keys(2, &[3, 8], Vec3::Y, 1.0, 1.0, [1.0; 3])
+                .unwrap()
+                .layer_tracks[0]
+                .keyframes[0]
+                .frame,
+            3
+        );
+
+        let duplicated = animation.place_layer_keys(2, &[0, 5], 15, true).unwrap();
+        assert_eq!(
+            duplicated.layer_tracks[0]
+                .keyframes
+                .iter()
+                .map(|key| key.frame)
+                .collect::<Vec<_>>(),
+            vec![0, 5, 10, 15, 20]
+        );
+        assert_eq!(
+            duplicated.layer_tracks[0].keyframes[0].strokes,
+            duplicated.layer_tracks[0].keyframes[3].strokes
+        );
+        assert_eq!(
+            duplicated.layer_tracks[0].keyframes[1].exposure,
+            duplicated.layer_tracks[0].keyframes[4].exposure
+        );
+
+        assert!(animation.place_layer_keys(2, &[0, 5], 1, true).is_err());
+        assert!(animation.place_layer_keys(2, &[0, 5], 25, true).is_err());
+        assert_eq!(
+            animation.layer_tracks[0]
+                .keyframes
+                .iter()
+                .map(|key| key.frame)
+                .collect::<Vec<_>>(),
+            vec![0, 5, 10]
+        );
+
+        let mut doc = Document::default();
+        doc.layers.push(crate::document::Layer {
+            id: 2,
+            name: "Animated".into(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            blend_mode: Default::default(),
+            hide_onion_skin: false,
+            mask_inverted: false,
+            mask_source: None,
+            clip_to_below: false,
+        });
+        doc.animation = animation.clone();
+        doc.strokes = animation.resolve(animation.current_frame).unwrap();
+        let before = crate::editing::ArtworkAnimationState {
+            animation: doc.animation.clone(),
+            strokes: doc.strokes.clone(),
+        };
+        let after = crate::editing::ArtworkAnimationState {
+            animation: moved.clone(),
+            strokes: moved.resolve(moved.current_frame).unwrap(),
+        };
+        let edit = crate::editing::Edit::ArtworkAnimation { before, after };
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.animation, moved);
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.animation, animation);
+    }
+
     fn stroke(id: u64, x: f32, points: usize) -> Stroke {
         Stroke {
             guide_attachment: None,
