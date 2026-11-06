@@ -809,6 +809,120 @@ mod tests {
     }
 
     #[test]
+    fn image_tip_grain_picker_combines_tip_and_repeating_coverage() {
+        use image::{ImageFormat, Rgba, RgbaImage};
+        use std::io::Cursor;
+
+        let to_asset = |image: RgbaImage| {
+            let mut png = Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(image)
+                .write_to(&mut png, ImageFormat::Png)
+                .unwrap();
+            crate::brush_tip::BrushTipAsset::from_png(png.into_inner(), None).unwrap()
+        };
+        let tip = to_asset(RgbaImage::from_pixel(8, 8, Rgba([255, 255, 255, 255])));
+        let grain = to_asset(RgbaImage::from_fn(16, 1, |x, _| {
+            if x % 2 == 0 {
+                Rgba([255, 255, 255, 255])
+            } else {
+                Rgba([255, 255, 255, 0])
+            }
+        }));
+        let mut camera = Camera::default();
+        camera.align(Plane::Front);
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let mut mark = Stroke {
+            guide_attachment: None,
+            model_surface: None,
+            gradient: None,
+            curve: None,
+            material: Default::default(),
+            point_thickness: None,
+            point_colors: None,
+            modifiers: None,
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id: 61,
+            color: [0.5; 3],
+            radius: 0.12,
+            brush: Default::default(),
+            points: vec![
+                Point {
+                    position: Vec3::new(-1.0, 0.0, 1.0),
+                    pressure: 1.0,
+                    tilt: None,
+                    time_ms: 0,
+                },
+                Point {
+                    position: Vec3::new(1.0, 0.0, 1.0),
+                    pressure: 1.0,
+                    tilt: None,
+                    time_ms: 0,
+                },
+            ],
+        };
+        mark.brush.tip_asset_id = tip.id;
+        mark.brush.dabs.enabled = true;
+        mark.brush.texture.anchor_mode = crate::texture::TextureAnchorMode::CapturedPlanar;
+        mark.brush.texture.frame = Some(crate::texture::TextureFrame::from_plane(
+            Vec3::new(0.0, 0.0, 1.0),
+            glam::Quat::IDENTITY,
+        ));
+        mark.brush.texture.scale = 0.04;
+        mark.brush.texture.image = Some(crate::texture::ImageTextureSettings {
+            asset_id: grain.id,
+            mode: crate::texture::ImageTextureMode::CoverageMask,
+            mask_source: crate::texture::ImageMaskSource::Alpha,
+            ..Default::default()
+        });
+        let mut behind = mark.clone();
+        behind.id = 62;
+        behind.brush = Default::default();
+        behind.brush.texture = Default::default();
+        for point in &mut behind.points {
+            point.position.z = 0.0;
+        }
+        let doc = Document {
+            linked_stroke_groups: Default::default(),
+            strokes: vec![mark.clone(), behind.clone()],
+            brush_tip_assets: vec![tip.clone(), grain.clone()],
+            ..Document::default()
+        };
+
+        let mut transparent_pick = false;
+        let mut covered_pick = false;
+        for triangle in crate::geometry::stroke_mesh(&mark).as_chunks::<3>().0 {
+            let position = (Vec3::from(triangle[0].position)
+                + Vec3::from(triangle[1].position)
+                + Vec3::from(triangle[2].position))
+                / 3.0;
+            let Some((screen, _)) = project(&camera, rect, position) else {
+                continue;
+            };
+            let (origin, direction) = ray(&camera, rect, screen);
+            match textured_surface_covered(&mark, Some(&tip), Some(&grain), origin, direction) {
+                Some(false) => {
+                    transparent_pick |= pick(&doc, &camera, rect, screen) == Some(behind.id)
+                }
+                Some(true) => covered_pick |= pick(&doc, &camera, rect, screen) == Some(mark.id),
+                None => {}
+            }
+            if transparent_pick && covered_pick {
+                break;
+            }
+        }
+        assert!(
+            transparent_pick,
+            "grain gaps reveal the stroke behind the image tip"
+        );
+        assert!(
+            covered_pick,
+            "tip and grain coverage together remain pickable"
+        );
+    }
+
+    #[test]
     fn dab_stroke_picker_skips_gaps_between_visible_marks() {
         let mut camera = Camera::default();
         camera.align(Plane::Front);
