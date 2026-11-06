@@ -726,6 +726,8 @@ pub struct SketchApp {
     procedural_texture_preview: Option<(crate::texture::TextureCacheKey, egui::TextureHandle)>,
     preset_verification_frame: Option<u32>,
     house_verification_frame: Option<u32>,
+    house_graphite_changed_pixels: usize,
+    house_graphite_max_contrast: u8,
     starter_scene: Option<&'static str>,
     cylinder_example: bool,
     cylinder_verification_frame: Option<u32>,
@@ -2370,6 +2372,8 @@ impl SketchApp {
             procedural_texture_preview: None,
             preset_verification_frame: None,
             house_verification_frame: None,
+            house_graphite_changed_pixels: 0,
+            house_graphite_max_contrast: 0,
             starter_scene: None,
             cylinder_example: false,
             cylinder_verification_frame: None,
@@ -2909,7 +2913,9 @@ impl SketchApp {
             app.verification_frame = None;
             app.cylinder_verification_frame = Some(0);
             app.load_lantern();
-        } else if std::env::args().any(|a| a == "--verify-house") {
+        } else if std::env::args()
+            .any(|a| a == "--verify-house" || a == "--verify-house-no-capture")
+        {
             app.verification_frame = None;
             app.house_verification_frame = Some(0);
             app.load_pencil_house();

@@ -84,6 +84,100 @@ impl SketchApp {
                 assert!(self.starter_scene.is_none());
                 assert_eq!(self.next_id, 1);
                 assert_eq!(self.brush, crate::presets::startup_pencil().brush);
+                let startup_brush = self.brush;
+                let scale = ctx.pixels_per_point();
+                let sample = |position: Pos2, phase| PenSample {
+                    position: Pos2::new(position.x * scale, position.y * scale),
+                    pressure: None,
+                    tilt: [None; 2],
+                    contact: phase != Phase::Up && phase != Phase::Cancel,
+                    phase,
+                    barrel: false,
+                    eraser: false,
+                };
+                self.canvas_input(
+                    ctx,
+                    rect,
+                    vec![
+                        sample(rect.center() - Vec2::new(28.0, 0.0), Phase::Down),
+                        sample(rect.center() + Vec2::new(28.0, 0.0), Phase::Move),
+                        sample(rect.center() + Vec2::new(28.0, 0.0), Phase::Up),
+                    ],
+                );
+                assert_eq!(
+                    self.doc.strokes.len(),
+                    1,
+                    "the first blank-canvas stroke commits"
+                );
+                let first_stroke = &self.doc.strokes[0];
+                assert_eq!(first_stroke.brush.kind, startup_brush.kind);
+                assert_eq!(first_stroke.brush.texture.kind, startup_brush.texture.kind);
+                assert_eq!(first_stroke.color, crate::presets::startup_pencil().color);
+                assert_eq!(first_stroke.radius, crate::presets::startup_pencil().radius);
+                assert_eq!(
+                    self.preset_ui.selected,
+                    crate::presets::startup_pencil().id,
+                    "inspector and preset browser select the startup Graphite preset"
+                );
+                let stroke_document = self.doc.clone();
+                let mut blank_document = stroke_document.clone();
+                blank_document.strokes.clear();
+                self.renderer.invalidate();
+                self.renderer.render(
+                    &blank_document,
+                    &self.camera,
+                    GuidePreview::Hidden,
+                    [640, 360],
+                );
+                let blank_pixels = self.renderer.verification_pixels().to_vec();
+                self.renderer.invalidate();
+                self.renderer.render(
+                    &stroke_document,
+                    &self.camera,
+                    GuidePreview::Hidden,
+                    [640, 360],
+                );
+                let stroke_pixels = self.renderer.verification_pixels();
+                let (changed_pixels, strongest_contrast) = blank_pixels
+                    .chunks_exact(4)
+                    .zip(stroke_pixels.chunks_exact(4))
+                    .filter_map(|(blank, stroke)| {
+                        let delta = blank[..3]
+                            .iter()
+                            .zip(&stroke[..3])
+                            .map(|(before, after)| before.abs_diff(*after))
+                            .max()
+                            .unwrap_or(0);
+                        (delta > 8).then_some(delta)
+                    })
+                    .fold((0usize, 0u8), |(count, max_delta), delta| {
+                        (count + 1, max_delta.max(delta))
+                    });
+                self.house_graphite_changed_pixels = changed_pixels;
+                self.house_graphite_max_contrast = strongest_contrast;
+                assert!(changed_pixels > 2 && strongest_contrast > 8);
+                self.undo();
+                assert!(self.doc.strokes.is_empty(), "the first stroke is undoable");
+                assert_eq!(
+                    self.brush.texture.kind, startup_brush.texture.kind,
+                    "undo keeps the selected Graphite brush"
+                );
+                self.dirty = true;
+                self.request(Pending::New);
+                assert!(
+                    self.confirm,
+                    "New protects the first stroke behind confirmation"
+                );
+                assert!(self.doc.strokes.is_empty());
+                self.pending = None;
+                self.confirm = false;
+                self.dirty = false;
+                self.request(Pending::New);
+                assert!(self.doc.strokes.is_empty());
+                assert_eq!(
+                    self.brush.texture.kind, startup_brush.texture.kind,
+                    "reset retains the Graphite brush"
+                );
                 self.verify_quick_palette();
                 self.verify_pen_barrel_erase(ctx, rect);
                 self.dirty = false;
@@ -104,6 +198,64 @@ impl SketchApp {
                 .unwrap();
                 assert_eq!(loaded.strokes, original);
                 self.file = None;
+            }
+            2 => {
+                let initial_camera = self.camera;
+                self.renderer.invalidate();
+                self.renderer
+                    .render(&self.doc, &self.camera, GuidePreview::Hidden, [640, 360]);
+                let opening = self.renderer.verification_pixels().to_vec();
+                assert!(opening.chunks_exact(4).any(|pixel| pixel[3] > 0));
+                self.camera.yaw += 0.4;
+                self.camera.pitch -= 0.08;
+                self.renderer.invalidate();
+                self.renderer
+                    .render(&self.doc, &self.camera, GuidePreview::Hidden, [640, 360]);
+                let orbited = self.renderer.verification_pixels();
+                let changed_pixels = opening
+                    .chunks_exact(4)
+                    .zip(orbited.chunks_exact(4))
+                    .filter(|(before, after)| {
+                        before[..3]
+                            .iter()
+                            .zip(&after[..3])
+                            .any(|(before, after)| before.abs_diff(*after) > 8)
+                    })
+                    .count();
+                assert!(
+                    changed_pixels > 500,
+                    "orbit must change the rendered house view"
+                );
+                self.camera = initial_camera;
+                self.renderer.invalidate();
+            }
+            3 if std::env::args().any(|argument| argument == "--verify-house-no-capture") => {
+                let path = std::env::current_dir()
+                    .unwrap()
+                    .join("verification/house-no-capture-report.json");
+                let report = serde_json::json!({
+                    "passed": true,
+                    "checks": [
+                        "first blank-canvas stroke uses the startup Graphite brush, color, and radius",
+                        "the Graphite stroke changes the production GPU render against a blank canvas",
+                        "preset selection matches the startup Graphite brush",
+                        "undo removes the first stroke and keeps the brush selection",
+                        "New confirmation and reset preserve the Graphite brush",
+                        "three-quarter opening and orbited house renders differ at 640x360",
+                        "saved guide orbit/pick/draw and native round-trip checks passed"
+                    ],
+                    "openingRender": [640, 360],
+                    "graphiteStrokeChangedPixels": self.house_graphite_changed_pixels,
+                    "graphiteStrokeMaxRgbDelta": self.house_graphite_max_contrast,
+                    "screen_capture": false,
+                    "physical_tablet_tested": false,
+                    "gpu": self.renderer.adapter
+                });
+                std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+                self.house_verification_frame = None;
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
             }
             3 => ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())),
             100 => panic!("House screenshot timed out"),
