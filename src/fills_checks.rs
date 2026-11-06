@@ -118,7 +118,7 @@ impl SketchApp {
                         "Cancel restores the exact drawing without an undo entry",
                         "Apply commits the moved-boundary contour as one undoable edit",
                         "one undo and redo restore the source and refreshed fill",
-                        "synthetic canvas click previews and applies an enclosed-region fill, then verifies cancel and undo/redo",
+                        "synthetic canvas click previews and applies an enclosed-region fill, verifies cancel and undo/redo, and preserves region detection after camera orbit/zoom",
                         "the fill renderer pixel checks passed at three camera angles",
                         "named layer masks retain inside coverage and remove outside coverage in GPU pixels",
                         "encoded GIF frames match still-render mask coverage and preserve the masked/unmasked comparison"
@@ -168,6 +168,7 @@ impl SketchApp {
     }
 
     fn verify_enclosed_region_workflow(&mut self, rect: Rect) {
+        let original_camera = self.camera;
         let target = self
             .planar_drawing_target()
             .expect("blank drawing starts on an active planar target");
@@ -287,6 +288,50 @@ impl SketchApp {
             "Escape leaves boundaries untouched"
         );
         assert!(self.fills.draft.is_none());
+
+        self.camera = Camera {
+            projection: crate::geometry::Projection::Orthographic,
+            yaw: original_camera.yaw + 0.35,
+            pitch: original_camera.pitch + 0.2,
+            distance: original_camera.distance * 1.6,
+            ..original_camera
+        };
+        let orbited_click = crate::gizmo::project(&self.camera, rect, origin)
+            .expect("the region seed remains visible after orbit and zoom")
+            .0;
+        self.fill_corner(orbited_click, rect);
+        let orbited_preview = &self
+            .fills
+            .draft
+            .as_ref()
+            .expect("region click works after orbit and zoom")
+            .mark;
+        let (axis_u, axis_v, _) = target.plane.basis();
+        let local: Vec<_> = orbited_preview
+            .points
+            .iter()
+            .map(|point| {
+                let offset = point.position - origin;
+                glam::Vec2::new(offset.dot(axis_u), offset.dot(axis_v))
+            })
+            .collect();
+        let area = local
+            .iter()
+            .enumerate()
+            .map(|(index, point)| {
+                let next = local[(index + 1) % local.len()];
+                point.x * next.y - next.x * point.y
+            })
+            .sum::<f32>()
+            .abs()
+            * 0.5;
+        assert!(
+            (area - 4.0).abs() < 1e-3,
+            "orbit/zoom preserves region area: {area}"
+        );
+        self.cancel_fill_tool();
+        assert_eq!(self.doc.strokes.len(), 4);
+        self.camera = original_camera;
 
         self.doc = Document::default();
         self.next_id = 1;
