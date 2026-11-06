@@ -547,8 +547,9 @@ pub(crate) fn startup_pencil() -> Preset {
         .into_iter()
         .find(|preset| preset.name == "Graphite")
         .expect("Graphite is a built-in preset");
-    pencil.color = [crate::presentation::srgb_to_linear(53.0 / 255.0); 3];
-    pencil.radius = 0.018;
+    pencil.color = [crate::presentation::srgb_to_linear(68.0 / 255.0); 3];
+    pencil.brush.opacity = 1.0;
+    pencil.radius = 0.024;
     pencil
 }
 
@@ -1323,17 +1324,20 @@ mod tests {
 
         assert_eq!(startup.id, graphite.id);
         assert_eq!(startup.name, "Graphite");
-        assert_eq!(startup.brush, graphite.brush);
+        let mut startup_brush = startup.brush;
+        startup_brush.opacity = graphite.brush.opacity;
+        assert_eq!(startup_brush, graphite.brush);
         assert_eq!(
             startup.brush.texture.kind,
             crate::texture::TextureKind::Graphite
         );
-        assert!((startup.radius - 0.018).abs() < f32::EPSILON);
-        let graphite_gray = crate::presentation::srgb_to_linear(53.0 / 255.0);
+        assert!((startup.radius - 0.024).abs() < f32::EPSILON);
+        let graphite_gray = crate::presentation::srgb_to_linear(68.0 / 255.0);
         assert_eq!(startup.color, [graphite_gray; 3]);
+        assert!((startup.brush.opacity - 1.0).abs() < f32::EPSILON);
         assert!(
-            startup.color[0] < 0.05,
-            "startup graphite remains dark against the default light canvas"
+            startup.color[0] < 0.07,
+            "startup graphite remains dark gray"
         );
     }
 
