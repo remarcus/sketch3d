@@ -1295,6 +1295,115 @@ mod tests {
         assert_eq!(copied.current_frame, 9);
     }
 
+    #[test]
+    fn timeline_retime_preserves_static_layers_holds_blank_gaps_and_undo_state() {
+        let static_stroke = stroke(1, 0.0, 2);
+        let mut animated_stroke = stroke(2, 0.0, 2);
+        animated_stroke.layer_id = 2;
+        let mut animation = ArtworkAnimation {
+            range_end: 20,
+            fps: 24,
+            ..ArtworkAnimation::default()
+        };
+        animation = animation
+            .set_layer_keyframe(0, 2, &[animated_stroke.clone()], &[static_stroke.clone()])
+            .unwrap();
+        animation = animation.set_layer_exposure(2, 0, 3).unwrap();
+        let mut later_stroke = animated_stroke.clone();
+        later_stroke.points[0].position.x = 5.0;
+        animation = animation
+            .set_layer_keyframe(5, 2, &[later_stroke], &[static_stroke.clone()])
+            .unwrap()
+            .set_layer_exposure(2, 5, 4)
+            .unwrap();
+        assert_eq!(animation.resolve(2).unwrap().len(), 2);
+        assert_eq!(
+            animation.resolve(3).unwrap().len(),
+            1,
+            "expired exposure leaves a blank interval"
+        );
+        assert_eq!(animation.resolve(4).unwrap().len(), 1);
+        assert_eq!(animation.resolve(5).unwrap().len(), 2);
+
+        let before = animation.clone();
+        animation = animation.place_layer_key(2, 5, 7, false).unwrap();
+        assert_eq!(animation.current_frame, 7);
+        assert_eq!(animation.resolve(6).unwrap().len(), 1);
+        assert_eq!(animation.resolve(7).unwrap().len(), 2);
+        assert_eq!(
+            animation.resolve(10).unwrap().len(),
+            2,
+            "retimed key keeps its hold"
+        );
+        assert_eq!(
+            animation.resolve(11).unwrap().len(),
+            1,
+            "held span ends at the same relative offset"
+        );
+        assert!(animation.place_layer_key(2, 7, 1, false).is_err());
+
+        let selected_key_edit = animation
+            .edit_layer_keys(2, &[0, 7], Vec3::X, 1.0, 1.0, [1.0; 3])
+            .unwrap();
+        assert_eq!(
+            selected_key_edit.layer_tracks[0]
+                .keyframes
+                .iter()
+                .map(|key| key.frame)
+                .collect::<Vec<_>>(),
+            vec![0, 7]
+        );
+        assert!(selected_key_edit.resolve(7).unwrap().iter().any(|stroke| {
+            stroke.layer_id == 2 && (stroke.points[0].position.x - 6.0).abs() < 1e-6
+        }));
+
+        let mut original_doc = Document::default();
+        original_doc.layers.push(crate::document::Layer {
+            id: 2,
+            name: "Animated".into(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            blend_mode: Default::default(),
+            hide_onion_skin: false,
+            mask_inverted: false,
+            mask_source: None,
+            clip_to_below: false,
+        });
+        original_doc.strokes = before.resolve(before.current_frame).unwrap();
+        original_doc.animation = before.clone();
+        let mut changed_doc = original_doc.clone();
+        changed_doc.strokes = selected_key_edit
+            .resolve(selected_key_edit.current_frame)
+            .unwrap();
+        changed_doc.animation = selected_key_edit.clone();
+        let edit = crate::editing::Edit::ArtworkAnimation {
+            before: crate::editing::ArtworkAnimationState {
+                animation: original_doc.animation.clone(),
+                strokes: original_doc.strokes.clone(),
+            },
+            after: crate::editing::ArtworkAnimationState {
+                animation: changed_doc.animation.clone(),
+                strokes: changed_doc.strokes.clone(),
+            },
+        };
+        let mut doc = original_doc.clone();
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.animation, changed_doc.animation);
+        assert_eq!(doc.strokes, changed_doc.strokes);
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.animation, original_doc.animation);
+        assert_eq!(doc.strokes, original_doc.strokes);
+        edit.apply(&mut doc, true);
+        let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(reopened.animation, doc.animation);
+        assert_eq!(
+            reopened.animation.resolve(7).unwrap(),
+            doc.animation.resolve(7).unwrap()
+        );
+        assert_eq!(reopened.animation.fps, 24);
+    }
+
     fn stroke(id: u64, x: f32, points: usize) -> Stroke {
         Stroke {
             guide_attachment: None,
