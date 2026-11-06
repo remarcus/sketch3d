@@ -97,6 +97,12 @@ pub struct LayoutPreferences {
     pub inspector_width: f32,
     #[serde(default)]
     pub inspector_tab: InspectorTab,
+    #[serde(default = "default_canvas_strip_visible")]
+    pub canvas_strip_visible: bool,
+}
+
+fn default_canvas_strip_visible() -> bool {
+    true
 }
 
 impl Default for LayoutPreferences {
@@ -106,6 +112,7 @@ impl Default for LayoutPreferences {
             inspector_collapsed: false,
             inspector_width: 320.0,
             inspector_tab: InspectorTab::Properties,
+            canvas_strip_visible: true,
         }
     }
 }
@@ -283,11 +290,29 @@ mod tests {
                 inspector_collapsed: true,
                 inspector_width: 410.0,
                 inspector_tab: InspectorTab::Layers,
+                canvas_strip_visible: false,
             },
             ..Default::default()
         };
         prefs.save(&path).unwrap();
         assert_eq!(Preferences::load(&path).unwrap(), prefs);
+    }
+
+    #[test]
+    fn older_workspace_layout_defaults_canvas_strip_to_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presentation.json");
+        std::fs::write(
+            &path,
+            br#"{"version":7,"background":[0.1,0.2,0.3],"layout":{"inspector_open":true,"inspector_collapsed":false,"inspector_width":320.0,"inspector_tab":"properties"}}"#,
+        )
+        .unwrap();
+        assert!(
+            Preferences::load(&path)
+                .unwrap()
+                .layout
+                .canvas_strip_visible
+        );
     }
 
     #[test]

@@ -461,6 +461,29 @@ fn canvas_pointer_allowed(ctx: &egui::Context, canvas: Rect, position: Pos2) -> 
             .is_none_or(|layer| layer.order == egui::Order::Background)
 }
 
+fn canvas_contact_allowed(
+    ctx: &egui::Context,
+    canvas: Rect,
+    position: Pos2,
+    continue_active_contact: bool,
+) -> bool {
+    canvas_pointer_allowed(ctx, canvas, position)
+        || (continue_active_contact && canvas.contains(position))
+}
+
+fn filter_quick_palette_items(items: Vec<QuickPaletteItem>, query: &str) -> Vec<QuickPaletteItem> {
+    let query = query.trim().to_lowercase();
+    items
+        .into_iter()
+        .filter(|item| {
+            query.is_empty()
+                || item.label.to_lowercase().contains(&query)
+                || item.group.to_lowercase().contains(&query)
+                || item.shortcut.to_lowercase().contains(&query)
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy)]
 enum QuickPaletteCommand {
     Tool(&'static str),
@@ -471,6 +494,7 @@ enum QuickPaletteCommand {
     Deselect,
 }
 
+#[derive(Clone)]
 struct QuickPaletteItem {
     group: &'static str,
     label: &'static str,
@@ -4675,6 +4699,243 @@ impl SketchApp {
         }
     }
 
+    fn selection_canvas_controls(&mut self, ctx: &egui::Context, rect: Rect) {
+        if self.presentation.artwork || self.quick_palette.is_some() {
+            return;
+        }
+        let has_selection = self.select_mode && !self.selected.is_empty();
+        if !has_selection
+            || self.drag.is_some()
+            || self.brush_select_drag.is_some()
+            || self.point_drag.is_some()
+            || self.point_multi_drag.is_some()
+            || self.active.is_some()
+        {
+            return;
+        }
+        let position = egui::pos2(rect.center().x, rect.top() + 10.0);
+        let compact = rect.width() < 430.0;
+        let mut chosen_mode = None;
+        let mut duplicate = false;
+        let mut deselect = false;
+        egui::Area::new(egui::Id::new("selection-canvas-strip"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(position)
+            .pivot(egui::Align2::CENTER_TOP)
+            .constrain(true)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .inner_margin(egui::Margin::symmetric(8, 5))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if compact {
+                                ui.menu_button("Selection", |ui| {
+                                    for (mode, label) in [
+                                        (Mode::Move, "Move"),
+                                        (Mode::Rotate, "Rotate"),
+                                        (Mode::Scale, "Scale"),
+                                    ] {
+                                        if ui
+                                            .selectable_label(self.transform_mode == mode, label)
+                                            .clicked()
+                                        {
+                                            chosen_mode = Some(mode);
+                                            ui.close_menu();
+                                        }
+                                    }
+                                    ui.separator();
+                                    if ui.button("Duplicate").clicked() {
+                                        duplicate = true;
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Deselect").clicked() {
+                                        deselect = true;
+                                        ui.close_menu();
+                                    }
+                                });
+                            } else {
+                                for (mode, label) in [
+                                    (Mode::Move, "Move"),
+                                    (Mode::Rotate, "Rotate"),
+                                    (Mode::Scale, "Scale"),
+                                ] {
+                                    if ui
+                                        .selectable_label(self.transform_mode == mode, label)
+                                        .clicked()
+                                    {
+                                        chosen_mode = Some(mode);
+                                    }
+                                }
+                                ui.separator();
+                                if ui.button("Duplicate").on_hover_text("Ctrl/Cmd+D").clicked() {
+                                    duplicate = true;
+                                }
+                                if ui.button("Deselect").clicked() {
+                                    deselect = true;
+                                }
+                            }
+                        });
+                    });
+            });
+        if let Some(mode) = chosen_mode {
+            self.finish();
+            self.transform_mode = mode;
+        }
+        if duplicate {
+            self.duplicate_selected();
+        }
+        if deselect {
+            self.selected.clear();
+            self.sync_selection();
+        }
+    }
+
+    fn canvas_controls(&mut self, ctx: &egui::Context, rect: Rect) {
+        if self.presentation.artwork || self.quick_palette.is_some() {
+            return;
+        }
+        let drawing_brush = !self.eraser
+            && !self.select_mode
+            && !self.local_color_brush.enabled
+            && !self.fills.enabled
+            && !self.measure.enabled
+            && self.shape_tool.mode.is_none()
+            && !self.curve_tool.enabled;
+        if !drawing_brush {
+            return;
+        }
+        if !self.presentation.preferences.layout.canvas_strip_visible {
+            return;
+        }
+        let position = egui::pos2(rect.center().x, rect.top() + 10.0);
+        let mut hide = false;
+        let saved_guides: Vec<_> = self
+            .doc
+            .guide_resources
+            .iter()
+            .map(|guide| (guide.id, guide.name.clone(), guide.visible && !guide.locked))
+            .collect();
+        egui::Area::new(egui::Id::new("canvas-controls-strip"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(position)
+            .pivot(egui::Align2::CENTER_TOP)
+            .constrain(true)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .inner_margin(egui::Margin::symmetric(8, 5))
+                    .show(ui, |ui| {
+                        let available = ui.ctx().screen_rect().width().min(rect.width()) - 24.0;
+                        let compact = available < 680.0;
+                        ui.set_max_width(available.max(180.0));
+                        ui.horizontal(|ui| {
+                            if !compact {
+                                ui.label(RichText::new("Brush").strong());
+                            }
+                            let radius_width = if compact {
+                                (available * 0.40).clamp(72.0, 170.0)
+                            } else {
+                                (available * 0.34).clamp(115.0, 190.0)
+                            };
+                            ui.add_sized(
+                                [radius_width, ui.spacing().interact_size.y],
+                                egui::Slider::new(&mut self.radius, 0.001..=1.0)
+                                    .logarithmic(true)
+                                    .show_value(true)
+                                    .custom_formatter(|value, _| format!("{value:.3}")),
+                            )
+                            .on_hover_text("Brush radius in world units");
+                            self.palette_ui
+                                .color_button(ui, ColorTarget::Brush, &self.color);
+                            let guide_label = if compact {
+                                "Guide".to_owned()
+                            } else {
+                                format!("Guide · {}", self.active_guide_label())
+                            };
+                            ui.menu_button(guide_label, |ui| {
+                                if ui.button("Pick on canvas  K").clicked() {
+                                    self.begin_plane_picker();
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                ui.checkbox(&mut self.guide_visible, "Show guide");
+                                ui.separator();
+                                for (plane, label) in [
+                                    (Plane::Front, "Front"),
+                                    (Plane::Side, "Side"),
+                                    (Plane::Ground, "Ground"),
+                                ] {
+                                    if ui.button(label).clicked() {
+                                        self.finish();
+                                        self.doc.active_guide = None;
+                                        self.doc.active_image_plane = None;
+                                        self.doc.active_model_reference = None;
+                                        for image in &mut self.doc.image_planes {
+                                            image.drawable = false;
+                                        }
+                                        self.use_cylinder = false;
+                                        self.use_revolved = false;
+                                        self.guide = DrawingPlane::from_preset(plane);
+                                        self.guide_visible = true;
+                                        ui.close_menu();
+                                    }
+                                }
+                                if !saved_guides.is_empty() {
+                                    ui.separator();
+                                    for (id, name, enabled) in &saved_guides {
+                                        if ui
+                                            .add_enabled(*enabled, egui::Button::new(name))
+                                            .clicked()
+                                        {
+                                            self.finish();
+                                            self.doc.active_guide = Some(*id);
+                                            self.doc.active_image_plane = None;
+                                            self.doc.active_model_reference = None;
+                                            for image in &mut self.doc.image_planes {
+                                                image.drawable = false;
+                                            }
+                                            self.use_cylinder = false;
+                                            self.use_revolved = false;
+                                            self.guide_visible = true;
+                                            ui.close_menu();
+                                        }
+                                    }
+                                }
+                            });
+                            if !compact {
+                                ui.add_sized(
+                                    [150.0, ui.spacing().interact_size.y],
+                                    egui::Slider::new(&mut self.stabilization, 0.0..=1.0)
+                                        .text("Stabilize")
+                                        .custom_formatter(|value, _| {
+                                            format!("{:.0}%", value * 100.0)
+                                        }),
+                                );
+                            }
+                            ui.menu_button(if compact { "More" } else { "⋯" }, |ui| {
+                                if compact {
+                                    ui.add(
+                                        egui::Slider::new(&mut self.stabilization, 0.0..=1.0)
+                                            .text("Stabilize")
+                                            .custom_formatter(|value, _| {
+                                                format!("{:.0}%", value * 100.0)
+                                            }),
+                                    );
+                                    ui.separator();
+                                }
+                                if ui.button("Hide canvas strip").clicked() {
+                                    hide = true;
+                                    ui.close_menu();
+                                }
+                            });
+                        });
+                    });
+            });
+        if hide {
+            self.presentation.preferences.layout.canvas_strip_visible = false;
+            self.presentation.schedule_workspace_save();
+        }
+    }
+
     fn tool_rail(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
             .id_salt("tool-rail-scroll")
@@ -5869,6 +6130,15 @@ impl SketchApp {
                 self.finish();
                 self.show_view = !self.show_view;
             }
+            if ui
+                .checkbox(
+                    &mut self.presentation.preferences.layout.canvas_strip_visible,
+                    "Canvas controls strip",
+                )
+                .changed()
+            {
+                self.presentation.schedule_workspace_save();
+            }
             if ui.button("Artwork-only view   Tab").clicked() {
                 ui.close_menu();
                 self.toggle_artwork();
@@ -6528,7 +6798,8 @@ impl SketchApp {
             || self.camera_playback.is_some()
             || self.mixed_resource_preview_active()
             || (self.liquify_active() && !self.liquify_brush_active());
-        let inside_canvas = |p| canvas_pointer_allowed(ctx, rect, p);
+        let continue_active_contact = self.active.is_some();
+        let inside_canvas = |p| canvas_contact_allowed(ctx, rect, p, continue_active_contact);
         self.update_plane_picker_hover(
             pointer
                 .hover_pos()
@@ -8061,6 +8332,8 @@ impl eframe::App for SketchApp {
                 let rect = ui.available_rect_before_wrap();
                 self.last_canvas_rect = rect;
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                self.canvas_controls(ctx, rect);
+                self.selection_canvas_controls(ctx, rect);
                 let appearance_state = self
                     .appearance_layout_verification
                     .as_ref()
@@ -10342,6 +10615,71 @@ mod native_merge_apply_tests {
         document::{Layer, Point},
         editing::MergeEdit,
     };
+
+    #[test]
+    fn quick_palette_search_matches_names_groups_and_shortcuts() {
+        let items = vec![
+            QuickPaletteItem {
+                group: "Tools",
+                label: "Brush",
+                shortcut: "B",
+                command: QuickPaletteCommand::Tool("Brush"),
+                enabled: true,
+            },
+            QuickPaletteItem {
+                group: "History",
+                label: "Undo",
+                shortcut: "Ctrl/Cmd+Z",
+                command: QuickPaletteCommand::Undo,
+                enabled: false,
+            },
+        ];
+        assert_eq!(filter_quick_palette_items(items.clone(), "  bru").len(), 1);
+        assert_eq!(
+            filter_quick_palette_items(items.clone(), "history").len(),
+            1
+        );
+        assert_eq!(filter_quick_palette_items(items.clone(), "cmd+z").len(), 1);
+        assert!(filter_quick_palette_items(items, "no match").is_empty());
+    }
+
+    #[test]
+    fn canvas_controls_block_new_contact_but_continue_active_stroke() {
+        let context = egui::Context::default();
+        let canvas = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0));
+        let strip_point = Pos2::new(200.0, 40.0);
+        for _ in 0..2 {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(canvas),
+                    focused: true,
+                    events: vec![egui::Event::PointerMoved(strip_point)],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::Area::new(egui::Id::new("test-canvas-strip"))
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(egui::pos2(160.0, 25.0))
+                        .show(ctx, |ui| {
+                            ui.allocate_exact_size(Vec2::new(80.0, 30.0), egui::Sense::click());
+                        });
+                },
+            );
+        }
+        assert!(!canvas_contact_allowed(
+            &context,
+            canvas,
+            strip_point,
+            false
+        ));
+        assert!(canvas_contact_allowed(&context, canvas, strip_point, true));
+        assert!(!canvas_contact_allowed(
+            &context,
+            canvas,
+            Pos2::new(410.0, 40.0),
+            true
+        ));
+    }
 
     fn stroke(id: u64, layer_id: u64, x: f32) -> Stroke {
         Stroke {
