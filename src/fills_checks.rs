@@ -118,6 +118,7 @@ impl SketchApp {
                         "Cancel restores the exact drawing without an undo entry",
                         "Apply commits the moved-boundary contour as one undoable edit",
                         "one undo and redo restore the source and refreshed fill",
+                        "refreshed planar fill is saved as an isolated production GPU render",
                         "synthetic canvas click previews and applies an enclosed-region fill, verifies cancel and undo/redo, and preserves region detection after camera orbit/zoom",
                         "synthetic contour-handle drag keeps the source unchanged through Cancel and applies one reversible edit",
                         "edited planar fill contour is saved as an isolated production GPU render",
@@ -797,6 +798,28 @@ impl SketchApp {
         );
         self.redo();
         assert_eq!(self.doc.strokes.last(), Some(&preview));
+        let rendered = self
+            .renderer
+            .render_png_pixels(
+                &self.doc,
+                &self.camera,
+                [600, 450],
+                [0.12, 0.14, 0.18],
+                crate::lighting::Lighting {
+                    ground: false,
+                    shadows: false,
+                    ..Default::default()
+                },
+            )
+            .expect("refreshed fill renders through the production GPU pipeline");
+        image::save_buffer(
+            "verification/refreshed-fill-600x450.png",
+            &rendered,
+            600,
+            450,
+            image::ColorType::Rgba8,
+        )
+        .expect("refreshed fill GPU render is saved");
 
         self.doc = saved_doc;
         self.selected = saved_selected;
