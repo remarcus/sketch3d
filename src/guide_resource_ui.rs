@@ -72,6 +72,49 @@ impl AttachmentFrame {
     }
 }
 
+fn transform_attached_stroke(
+    index: usize,
+    stroke: &crate::document::Stroke,
+    old: Option<AttachmentFrame>,
+    new: Option<AttachmentFrame>,
+) -> Result<crate::document::Stroke, &'static str> {
+    let mut changed = stroke.clone();
+    if let Some((old, new)) = old
+        .zip(new)
+        .filter(|(old, new)| old.cylinder.is_some() == new.cylinder.is_some())
+    {
+        let rotation = if old.rotation == new.rotation {
+            glam::Quat::IDENTITY
+        } else {
+            new.rotation * old.rotation.inverse()
+        };
+        let mut transformed = crate::editing::transformed(
+            &vec![(index, changed)],
+            old.origin,
+            new.origin - old.origin,
+            rotation,
+            1.0,
+        )?;
+        changed = transformed.pop().expect("one transformed stroke").1;
+        if let (Some((radius, _)), Some((next_radius, next_height))) = (old.cylinder, new.cylinder)
+        {
+            for (point, source) in changed.points.iter_mut().zip(&stroke.points) {
+                let position =
+                    old.cylinder_point(source.position, new, next_radius - radius, next_height)?;
+                if next_radius != radius {
+                    point.position = position;
+                }
+                if !point.is_valid() {
+                    return Err("Cylinder edit moves attached ink outside the drawing bounds.");
+                }
+            }
+        }
+    } else {
+        changed.guide_attachment = None;
+    }
+    Ok(changed)
+}
+
 pub(super) struct GuideBendDraft {
     pub guide_id: u64,
     pub center: Vec3,
@@ -429,47 +472,7 @@ impl SketchApp {
                 if !self.doc.editable(stroke) {
                     return Err("Unlock and show the attached ink before changing its guide.");
                 }
-                let mut changed = stroke.clone();
-                if let Some((old, new)) = old
-                    .zip(new)
-                    .filter(|(old, new)| old.cylinder.is_some() == new.cylinder.is_some())
-                {
-                    let rotation = if old.rotation == new.rotation {
-                        glam::Quat::IDENTITY
-                    } else {
-                        new.rotation * old.rotation.inverse()
-                    };
-                    let mut transformed = crate::editing::transformed(
-                        &vec![(index, changed)],
-                        old.origin,
-                        new.origin - old.origin,
-                        rotation,
-                        1.0,
-                    )?;
-                    changed = transformed.pop().expect("one transformed stroke").1;
-                    if let (Some((radius, _)), Some((next_radius, next_height))) =
-                        (old.cylinder, new.cylinder)
-                    {
-                        for (point, source) in changed.points.iter_mut().zip(&stroke.points) {
-                            let position = old.cylinder_point(
-                                source.position,
-                                new,
-                                next_radius - radius,
-                                next_height,
-                            )?;
-                            if next_radius != radius {
-                                point.position = position;
-                            }
-                            if !point.is_valid() {
-                                return Err(
-                                    "Cylinder edit moves attached ink outside the drawing bounds.",
-                                );
-                            }
-                        }
-                    }
-                } else {
-                    changed.guide_attachment = None;
-                }
+                let changed = transform_attached_stroke(index, stroke, old, new)?;
                 ink_before.push((index, stroke.clone()));
                 ink_after.push((index, changed));
             }
@@ -2606,5 +2609,204 @@ mod planar_target_tests {
                 .count()
                 >= strokes.len()
         );
+    }
+}
+
+#[cfg(test)]
+mod planar_attachment_tests {
+    use super::*;
+    use crate::document::{guide_resources::GuideResource, Brush, Document, Point, Stroke};
+
+    fn attached_stroke() -> Stroke {
+        Stroke {
+            guide_attachment: Some(7),
+            model_surface: None,
+            fill: None,
+            material: crate::document::StrokeMaterial::Unlit,
+            group_id: None,
+            layer_id: 1,
+            id: 31,
+            color: [0.2, 0.4, 0.8],
+            gradient: None,
+            radius: 0.04,
+            brush: Brush {
+                normal: Vec3::Z,
+                tangent: Vec3::X,
+                ..Brush::default()
+            },
+            points: vec![
+                Point {
+                    position: Vec3::ZERO,
+                    pressure: 0.35,
+                    tilt: Some(Vec3::Y),
+                    time_ms: 4,
+                },
+                Point {
+                    position: Vec3::X,
+                    pressure: 0.9,
+                    tilt: Some(Vec3::Z),
+                    time_ms: 19,
+                },
+            ],
+            point_thickness: Some(vec![0.6, 1.2]),
+            point_colors: Some(vec![None, Some([0.8, 0.3, 0.1])]),
+            modifiers: None,
+            curve: None,
+        }
+    }
+
+    fn guide(origin: Vec3, rotation: glam::Quat) -> GuideResource {
+        GuideResource {
+            id: 7,
+            name: "Attached plane".into(),
+            visible: true,
+            locked: false,
+            geometry: GuideGeometry::Plane { origin, rotation },
+        }
+    }
+
+    #[test]
+    fn planar_guide_motion_is_one_undoable_edit_and_survives_reopen_recovery_and_glb() {
+        let old_guide = guide(Vec3::ZERO, glam::Quat::IDENTITY);
+        let new_origin = Vec3::new(1.5, -0.25, 0.75);
+        let new_rotation = glam::Quat::from_rotation_y(0.4);
+        let new_guide = guide(new_origin, new_rotation);
+        let source = attached_stroke();
+        let before_snapshot = vec![(0, source.clone())];
+        let rotation = new_rotation * glam::Quat::IDENTITY.inverse();
+        let old_frame = attachment_frame(std::slice::from_ref(&old_guide), 7).unwrap();
+        let new_frame = attachment_frame(std::slice::from_ref(&new_guide), 7).unwrap();
+        let after_snapshot = vec![(
+            0,
+            transform_attached_stroke(0, &source, Some(old_frame), Some(new_frame)).unwrap(),
+        )];
+        let mut doc = Document {
+            guide_resources: vec![old_guide.clone()],
+            active_guide: Some(7),
+            strokes: vec![source.clone()],
+            ..Document::default()
+        };
+        let original_json = serde_json::to_value(&doc).unwrap();
+        let edit = crate::editing::Edit::Guides {
+            before: (vec![old_guide], Some(7), Vec::new(), None, None),
+            after: (vec![new_guide], Some(7), Vec::new(), None, None),
+            ink: Some(Box::new((before_snapshot, after_snapshot.clone()))),
+        };
+
+        edit.apply(&mut doc, true);
+        let moved = doc.strokes[0].clone();
+        assert_eq!(moved.guide_attachment, Some(7));
+        assert_eq!(moved.points[0].position, new_origin);
+        assert!((moved.points[1].position - (new_origin + rotation * Vec3::X)).length() < 1e-5);
+        assert!((moved.brush.normal - rotation * source.brush.normal).length() < 1e-6);
+        assert!((moved.brush.tangent - rotation * source.brush.tangent).length() < 1e-6);
+        assert_eq!(moved.color, source.color);
+        assert_eq!(moved.radius, source.radius);
+        assert_eq!(moved.material, source.material);
+        assert_eq!(moved.point_thickness, source.point_thickness);
+        assert_eq!(moved.point_colors, source.point_colors);
+        for (moved_point, source_point) in moved.points.iter().zip(&source.points) {
+            assert_eq!(moved_point.pressure, source_point.pressure);
+            assert_eq!(moved_point.time_ms, source_point.time_ms);
+            match (moved_point.tilt, source_point.tilt) {
+                (Some(moved_tilt), Some(source_tilt)) => {
+                    assert!((moved_tilt - rotation * source_tilt).length() < 1e-6);
+                }
+                (None, None) => {}
+                _ => panic!("guide rotation preserves optional tilt samples"),
+            }
+        }
+
+        edit.apply(&mut doc, false);
+        assert_eq!(serde_json::to_value(&doc).unwrap(), original_json);
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes[0], after_snapshot[0].1);
+
+        let native = serde_json::to_string(&doc).unwrap();
+        let reopened = Document::from_json(&native).unwrap();
+        assert_eq!(reopened.guide_resources, doc.guide_resources);
+        assert_eq!(reopened.strokes, doc.strokes);
+        let camera = crate::geometry::Camera::default();
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let pick_position = (moved.points[0].position + moved.points[1].position) * 0.5;
+        let cursor = crate::gizmo::project(&camera, rect, pick_position)
+            .unwrap()
+            .0;
+        assert_eq!(
+            crate::gizmo::pick(&reopened, &camera, rect, cursor),
+            Some(31)
+        );
+
+        let recovery_root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let snapshot = crate::recovery_store::RecoverySnapshot::new(
+            "planar-guide-attachment".into(),
+            None,
+            reopened.clone(),
+        );
+        crate::recovery_store::write(recovery_root.path(), &snapshot).unwrap();
+        let recovered =
+            crate::recovery_store::scan(recovery_root.path(), "attachment-reader").unwrap();
+        assert_eq!(recovered.candidates.len(), 1);
+        assert_eq!(
+            recovered.candidates[0].snapshot.document.strokes,
+            doc.strokes
+        );
+
+        let encoded = crate::export::encode(&reopened, None).unwrap();
+        let gltf = gltf::Gltf::from_slice(&encoded.bytes).unwrap();
+        let exported_positions = gltf
+            .meshes()
+            .next()
+            .unwrap()
+            .primitives()
+            .next()
+            .unwrap()
+            .reader(|_| gltf.blob.as_deref())
+            .read_positions()
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert!(!exported_positions.is_empty());
+        assert!(exported_positions
+            .iter()
+            .all(|position| position.iter().all(|value| value.is_finite())));
+    }
+
+    #[test]
+    fn native_merge_remaps_planar_attachment_and_undo_removes_inserted_ink() {
+        let source = Document {
+            guide_resources: vec![guide(Vec3::ZERO, glam::Quat::IDENTITY)],
+            active_guide: Some(7),
+            strokes: vec![attached_stroke()],
+            ..Document::default()
+        };
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source_path = root.path().join("attached-source.sketch.json");
+        std::fs::write(&source_path, serde_json::to_vec(&source).unwrap()).unwrap();
+        let assets = root.path().join("insert-assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        let mut destination = Document::default();
+        let inserted = crate::app::native_merge::prepare_insert(
+            &destination,
+            &source_path,
+            &assets,
+            100,
+            10,
+            1_000,
+            Vec3::new(2.0, 0.0, 0.0),
+            false,
+            &HashMap::new(),
+        )
+        .unwrap();
+        let edit = crate::editing::Edit::Merge(inserted.edit);
+        edit.apply(&mut destination, true);
+        let inserted_guide = destination.guide_resources.last().unwrap().id;
+        let inserted_stroke = destination.strokes.last().unwrap();
+        assert_ne!(inserted_guide, 7);
+        assert_eq!(inserted_stroke.guide_attachment, Some(inserted_guide));
+        assert_eq!(inserted_stroke.points[0].position, Vec3::new(2.0, 0.0, 0.0));
+
+        edit.apply(&mut destination, false);
+        assert!(destination.guide_resources.is_empty());
+        assert!(destination.strokes.is_empty());
     }
 }
