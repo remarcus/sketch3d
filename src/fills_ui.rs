@@ -605,36 +605,12 @@ impl SketchApp {
         let Some(draft) = self.fills.draft.as_mut() else {
             return;
         };
-        if draft.original.is_none() {
+        if draft.original.is_none() || draft.refreshing {
             return;
         }
-        let previous = if contour == 0 {
-            let Some(point) = draft.mark.points.get_mut(index) else {
-                return;
-            };
-            let previous = point.position;
-            point.position = position;
-            previous
-        } else {
-            let Some(point) = draft
-                .mark
-                .fill
-                .as_mut()
-                .and_then(|fill| fill.holes.get_mut(contour - 1))
-                .and_then(|hole| hole.get_mut(index))
-            else {
-                return;
-            };
-            let previous = *point;
-            *point = position;
-            previous
-        };
-        if let Err(error) = polygon::triangulate(&draft.mark) {
-            if contour == 0 {
-                draft.mark.points[index].position = previous;
-            } else {
-                draft.mark.fill.as_mut().unwrap().holes[contour - 1][index] = previous;
-            }
+        if let Err(error) =
+            update_contour_vertex(&mut draft.mark, draft.target, contour, index, position)
+        {
             self.status = error;
         }
     }
@@ -643,42 +619,12 @@ impl SketchApp {
         let Some(draft) = self.fills.draft.as_mut() else {
             return;
         };
-        if draft.original.is_none() {
+        if draft.original.is_none() || draft.refreshing {
             return;
         }
-        if contour == 0 {
-            if draft.mark.points.len() >= polygon::MAX_CORNERS {
-                return;
-            }
-            let next = (index + 1) % draft.mark.points.len();
-            let mut point = draft.mark.points[index];
-            point.position = (point.position + draft.mark.points[next].position) * 0.5;
-            point.time_ms = 0;
-            draft.mark.points.insert(index + 1, point);
-        } else {
-            let Some(hole) = draft
-                .mark
-                .fill
-                .as_mut()
-                .and_then(|fill| fill.holes.get_mut(contour - 1))
-            else {
-                return;
-            };
-            if hole.len() >= polygon::MAX_CORNERS {
-                return;
-            }
-            let next = (index + 1) % hole.len();
-            hole.insert(index + 1, (hole[index] + hole[next]) * 0.5);
-        }
-        if let Err(error) = polygon::triangulate(&draft.mark) {
-            if contour == 0 {
-                draft.mark.points.remove(index + 1);
-            } else {
-                draft.mark.fill.as_mut().unwrap().holes[contour - 1].remove(index + 1);
-            }
-            self.status = error;
-        } else {
-            draft.selected = index + 1;
+        match insert_contour_vertex(&mut draft.mark, contour, index) {
+            Ok(inserted) => draft.selected = inserted,
+            Err(error) => self.status = error,
         }
     }
 
@@ -686,36 +632,12 @@ impl SketchApp {
         let Some(draft) = self.fills.draft.as_mut() else {
             return;
         };
-        if draft.original.is_none() {
+        if draft.original.is_none() || draft.refreshing {
             return;
         }
-        let (previous_point, previous_hole) = if contour == 0 {
-            if draft.mark.points.len() <= 3 {
-                return;
-            }
-            (Some(draft.mark.points.remove(index)), None)
-        } else {
-            let hole = &mut draft.mark.fill.as_mut().unwrap().holes[contour - 1];
-            if hole.len() <= 3 {
-                return;
-            }
-            (None, Some(hole.remove(index)))
-        };
-        if let Err(error) = polygon::triangulate(&draft.mark) {
-            if contour == 0 {
-                draft.mark.points.insert(index, previous_point.unwrap());
-            } else {
-                draft.mark.fill.as_mut().unwrap().holes[contour - 1]
-                    .insert(index, previous_hole.unwrap());
-            }
-            self.status = error;
-        } else {
-            let count = if contour == 0 {
-                draft.mark.points.len()
-            } else {
-                draft.mark.fill.as_ref().unwrap().holes[contour - 1].len()
-            };
-            draft.selected = draft.selected.min(count - 1);
+        match remove_contour_vertex(&mut draft.mark, contour, index) {
+            Ok(count) => draft.selected = draft.selected.min(count - 1),
+            Err(error) => self.status = error,
         }
     }
 
@@ -2069,6 +1991,126 @@ fn refreshed_fill(doc: &Document, source: &Stroke) -> Result<Stroke, String> {
     Ok(mark)
 }
 
+fn update_contour_vertex(
+    mark: &mut Stroke,
+    target: PlanarTarget,
+    contour: usize,
+    index: usize,
+    position: Vec3,
+) -> Result<(), String> {
+    let normal = target.plane.basis().2;
+    let distance_from_plane = (position - target.plane.origin()).dot(normal);
+    if !position.is_finite()
+        || !distance_from_plane.is_finite()
+        || distance_from_plane.abs() > 1e-4
+        || !target.contains(position)
+    {
+        return Err("Contour coordinates must stay on the captured fill surface.".into());
+    }
+    let previous = if contour == 0 {
+        let point = mark
+            .points
+            .get_mut(index)
+            .ok_or("Selected contour vertex is unavailable.")?;
+        std::mem::replace(&mut point.position, position)
+    } else {
+        let point = mark
+            .fill
+            .as_mut()
+            .and_then(|fill| fill.holes.get_mut(contour - 1))
+            .and_then(|hole| hole.get_mut(index))
+            .ok_or("Selected contour vertex is unavailable.")?;
+        std::mem::replace(point, position)
+    };
+    if let Err(error) = polygon::triangulate(mark) {
+        if contour == 0 {
+            mark.points[index].position = previous;
+        } else {
+            mark.fill.as_mut().unwrap().holes[contour - 1][index] = previous;
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn insert_contour_vertex(mark: &mut Stroke, contour: usize, index: usize) -> Result<usize, String> {
+    let inserted = index.saturating_add(1);
+    if contour == 0 {
+        if mark.points.len() >= polygon::MAX_CORNERS {
+            return Err("This contour already has the maximum number of vertices.".into());
+        }
+        let point = *mark
+            .points
+            .get(index)
+            .ok_or("Selected contour vertex is unavailable.")?;
+        let next = mark.points[(index + 1) % mark.points.len()];
+        let mut midpoint = point;
+        midpoint.position = (point.position + next.position) * 0.5;
+        midpoint.time_ms = 0;
+        mark.points.insert(inserted, midpoint);
+    } else {
+        let hole = mark
+            .fill
+            .as_mut()
+            .and_then(|fill| fill.holes.get_mut(contour - 1))
+            .ok_or("Selected contour is unavailable.")?;
+        if hole.len() >= polygon::MAX_CORNERS {
+            return Err("This contour already has the maximum number of vertices.".into());
+        }
+        let point = *hole
+            .get(index)
+            .ok_or("Selected contour vertex is unavailable.")?;
+        let next = hole[(index + 1) % hole.len()];
+        hole.insert(inserted, (point + next) * 0.5);
+    }
+    if let Err(error) = polygon::triangulate(mark) {
+        if contour == 0 {
+            mark.points.remove(inserted);
+        } else {
+            mark.fill.as_mut().unwrap().holes[contour - 1].remove(inserted);
+        }
+        return Err(error);
+    }
+    Ok(inserted)
+}
+
+fn remove_contour_vertex(mark: &mut Stroke, contour: usize, index: usize) -> Result<usize, String> {
+    if contour == 0 {
+        if mark.points.len() <= 3 {
+            return Err("A fill contour must keep at least three vertices.".into());
+        }
+        let removed = mark
+            .points
+            .get(index)
+            .copied()
+            .ok_or("Selected contour vertex is unavailable.")?;
+        mark.points.remove(index);
+        if let Err(error) = polygon::triangulate(mark) {
+            mark.points.insert(index, removed);
+            return Err(error);
+        }
+        Ok(mark.points.len())
+    } else {
+        let hole = mark
+            .fill
+            .as_ref()
+            .and_then(|fill| fill.holes.get(contour - 1))
+            .ok_or("Selected contour is unavailable.")?;
+        if hole.len() <= 3 {
+            return Err("A fill contour must keep at least three vertices.".into());
+        }
+        let removed = *hole
+            .get(index)
+            .ok_or("Selected contour vertex is unavailable.")?;
+        mark.fill.as_mut().unwrap().holes[contour - 1].remove(index);
+        if let Err(error) = polygon::triangulate(mark) {
+            mark.fill.as_mut().unwrap().holes[contour - 1].insert(index, removed);
+            return Err(error);
+        }
+        Ok(mark.fill.as_ref().unwrap().holes[contour - 1].len())
+    }
+}
+
 fn contour_points(points: Vec<Vec3>) -> Vec<Point> {
     points
         .into_iter()
@@ -2344,5 +2386,81 @@ mod refresh_tests {
         assert!(refreshed_fill(&doc, &original).is_err());
         assert_eq!(original, previous_fill);
         assert_eq!(doc.strokes.last(), Some(&previous_fill));
+    }
+}
+
+#[cfg(test)]
+mod contour_edit_tests {
+    use super::*;
+
+    #[test]
+    fn contour_vertex_insert_move_remove_and_rejection_preserve_fill_data() {
+        let mut mark = polygon::study().strokes.remove(0);
+        let original = mark.clone();
+        let original_count = mark.points.len();
+        let target = PlanarTarget::from_curve_frame(
+            mark.points[0].position,
+            mark.brush.normal,
+            mark.brush.tangent,
+            None,
+        )
+        .unwrap();
+        let inserted = insert_contour_vertex(&mut mark, 0, 0).unwrap();
+        assert_eq!(inserted, 1);
+        assert_eq!(mark.points.len(), original_count + 1);
+        assert_eq!(mark.points[inserted].time_ms, 0);
+        let moved_to = (mark.points[0].position * 0.75 + mark.points[2].position * 0.25)
+            + Vec3::new(0.0, -0.1, 0.0);
+        update_contour_vertex(&mut mark, target, 0, inserted, moved_to).unwrap();
+        assert_eq!(mark.points[inserted].position, moved_to);
+        assert_eq!(
+            (mark.id, mark.layer_id, mark.color),
+            (original.id, original.layer_id, original.color)
+        );
+        assert_eq!(mark.material, original.material);
+        assert_eq!(
+            mark.fill.as_ref().unwrap().offset,
+            original.fill.as_ref().unwrap().offset
+        );
+
+        let valid_before_rejection = mark.clone();
+        let duplicate_position = mark.points[0].position;
+        assert!(update_contour_vertex(&mut mark, target, 0, inserted, duplicate_position).is_err());
+        assert!(
+            update_contour_vertex(&mut mark, target, 0, inserted, moved_to + Vec3::Z * 0.01)
+                .is_err()
+        );
+        assert_eq!(
+            mark, valid_before_rejection,
+            "invalid moves roll back the detached preview"
+        );
+        assert_eq!(
+            remove_contour_vertex(&mut mark, 0, inserted).unwrap(),
+            original_count
+        );
+        assert_eq!(mark.points.len(), original_count);
+
+        let invalid_index = mark.points.len();
+        assert!(insert_contour_vertex(&mut mark, 0, invalid_index).is_err());
+        assert!(remove_contour_vertex(&mut mark, 0, invalid_index).is_err());
+        assert_eq!(mark.points.len(), original_count);
+
+        let mut doc = Document::default();
+        doc.strokes.push(original.clone());
+        let selected = HashSet::from([original.id]);
+        let before = crate::editing::snapshot(&doc, &selected);
+        let mut after = before.clone();
+        after[0].1 = valid_before_rejection.clone();
+        let edit = Edit::Change { before, after };
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes[0], valid_before_rejection);
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes[0], original);
+        edit.apply(&mut doc, true);
+        let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(reopened.strokes[0], valid_before_rejection);
+        let glb = crate::export::encode(&reopened, Some(&selected)).unwrap();
+        assert_eq!(glb.summary.strokes, 1);
+        assert!(glb.summary.triangles > 0);
     }
 }
