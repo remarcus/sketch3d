@@ -119,6 +119,7 @@ impl SketchApp {
                         "Apply commits the moved-boundary contour as one undoable edit",
                         "one undo and redo restore the source and refreshed fill",
                         "synthetic canvas click previews and applies an enclosed-region fill, verifies cancel and undo/redo, and preserves region detection after camera orbit/zoom",
+                        "synthetic contour-handle drag keeps the source unchanged through Cancel and applies one reversible edit",
                         "the fill renderer pixel checks passed at three camera angles",
                         "named layer masks retain inside coverage and remove outside coverage in GPU pixels",
                         "encoded GIF frames match still-render mask coverage and preserve the masked/unmasked comparison"
@@ -333,12 +334,55 @@ impl SketchApp {
         assert_eq!(self.doc.strokes.len(), 4);
         self.camera = original_camera;
 
+        self.redo();
+        let original_fill = self.doc.strokes.last().unwrap().clone();
+        self.selected = HashSet::from([original_fill.id]);
+        self.begin_fill_contour_edit(false);
+        let first_vertex = original_fill.points[0].position;
+        let moved_vertex = first_vertex + axis_u * 0.15 + axis_v * 0.1;
+        let start_screen = crate::gizmo::project(&self.camera, rect, first_vertex)
+            .expect("fill vertex projects into the canvas")
+            .0;
+        let end_screen = crate::gizmo::project(&self.camera, rect, moved_vertex)
+            .expect("moved fill vertex projects into the canvas")
+            .0;
+        self.fill_contour_pointer(start_screen, rect, true);
+        self.fill_contour_pointer(end_screen, rect, false);
+        assert_ne!(
+            self.fills.draft.as_ref().unwrap().mark.points[0].position,
+            first_vertex,
+            "contour drag updates only the detached preview"
+        );
+        self.finish_fill_contour_edit(false);
+        assert_eq!(
+            self.doc.strokes.last(),
+            Some(&original_fill),
+            "cancel restores the committed fill exactly"
+        );
+
+        self.begin_fill_contour_edit(false);
+        self.fill_contour_pointer(start_screen, rect, true);
+        self.fill_contour_pointer(end_screen, rect, false);
+        let preview_fill = self.fills.draft.as_ref().unwrap().mark.clone();
+        self.finish_fill_contour_edit(true);
+        let edited_fill = self.doc.strokes.last().unwrap().clone();
+        assert_eq!(edited_fill.id, original_fill.id);
+        assert_eq!(edited_fill.color, original_fill.color);
+        assert_eq!(edited_fill.fill, original_fill.fill);
+        assert_eq!(edited_fill, preview_fill);
+        self.undo();
+        assert_eq!(self.doc.strokes.last(), Some(&original_fill));
+        self.redo();
+        assert_eq!(self.doc.strokes.last(), Some(&edited_fill));
+
         self.doc = Document::default();
         self.next_id = 1;
         self.undo.clear();
         self.redo.clear();
         self.selected.clear();
         self.dirty = false;
+        self.select_mode = false;
+        self.brush_select_enabled = false;
         self.fills.region_mode = false;
         self.fills.region_anchor = None;
         self.fills.draft = None;
