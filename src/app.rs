@@ -506,6 +506,8 @@ struct QuickPaletteItem {
 struct QuickPaletteState {
     position: Pos2,
     selected: usize,
+    query: String,
+    search_focus_pending: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -4475,6 +4477,15 @@ impl SketchApp {
         items
     }
 
+    fn filtered_quick_palette_items(&self) -> Vec<QuickPaletteItem> {
+        let query = self
+            .quick_palette
+            .as_ref()
+            .map(|state| state.query.trim().to_lowercase())
+            .unwrap_or_default();
+        filter_quick_palette_items(self.quick_palette_items(), &query)
+    }
+
     fn quick_palette_active_tool(&self) -> &'static str {
         if self.select_mode {
             "Select"
@@ -4540,15 +4551,13 @@ impl SketchApp {
             )
         });
         if self.quick_palette.is_some() {
-            if !focused || escape || (q && !modifiers.any()) {
+            if !focused || escape {
                 self.quick_palette = None;
                 self.suppress_canvas_input_once = true;
                 return;
             }
-            let items = self.quick_palette_items();
+            let items = self.filtered_quick_palette_items();
             if items.is_empty() {
-                self.quick_palette = None;
-                self.suppress_canvas_input_once = true;
                 return;
             }
             if let Some(state) = self.quick_palette.as_mut() {
@@ -4587,7 +4596,7 @@ impl SketchApp {
         } else if q && !modifiers.any() && self.can_open_quick_palette(ctx) {
             let screen = ctx.screen_rect();
             let position = pointer.unwrap_or_else(|| screen.center());
-            let menu_size = egui::vec2(238.0, 370.0);
+            let menu_size = egui::vec2(300.0, 410.0);
             let position = egui::pos2(
                 position.x.clamp(
                     screen.left() + 8.0,
@@ -4604,7 +4613,12 @@ impl SketchApp {
                 .iter()
                 .position(|item| item.group == "Tools" && item.label == active_tool)
                 .unwrap_or(0);
-            self.quick_palette = Some(QuickPaletteState { position, selected });
+            self.quick_palette = Some(QuickPaletteState {
+                position,
+                selected,
+                query: String::new(),
+                search_focus_pending: true,
+            });
         }
     }
 
@@ -4634,7 +4648,9 @@ impl SketchApp {
         };
         let position = state.position;
         let selected = state.selected;
-        let items = self.quick_palette_items();
+        let mut query = state.query.clone();
+        let focus_search = state.search_focus_pending;
+        let items = self.filtered_quick_palette_items();
         let mut chosen = None;
         let area = egui::Area::new(egui::Id::new("quick-tool-palette"))
             .order(egui::Order::Foreground)
@@ -4644,39 +4660,50 @@ impl SketchApp {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_min_width(220.0);
                     ui.label(RichText::new("Quick palette").strong());
-                    ui.small("↑/↓ move   Enter choose   Esc close");
+                    ui.small("Search tools and actions · ↑/↓ choose · Enter run · Esc close");
+                    let search = ui.add(
+                        egui::TextEdit::singleline(&mut query)
+                            .hint_text("Search by name or shortcut")
+                            .desired_width(ui.available_width()),
+                    );
+                    if focus_search {
+                        search.request_focus();
+                    }
                     ui.separator();
                     egui::ScrollArea::vertical()
                         .max_height((ui.ctx().screen_rect().height() - 140.0).max(140.0))
                         .show(ui, |ui| {
-                            let mut group = "";
-                            for (index, item) in items.iter().enumerate() {
-                                if item.group != group {
-                                    ui.add_space(3.0);
-                                    ui.label(
-                                        RichText::new(item.group.to_uppercase())
-                                            .small()
-                                            .color(ui_style::colors(ui.ctx()).muted_text),
-                                    );
-                                    group = item.group;
-                                }
-                                let text = if item.shortcut.is_empty() {
-                                    item.label.to_owned()
-                                } else {
-                                    format!("{}    {}", item.label, item.shortcut)
-                                };
-                                let response = ui
-                                    .add_enabled(
-                                        item.enabled,
-                                        egui::Button::new(text).selected(index == selected),
-                                    )
-                                    .on_hover_text(item.label);
-                                if index == selected {
-                                    ui.memory_mut(|memory| memory.request_focus(response.id));
-                                    ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
-                                }
-                                if response.clicked() {
-                                    chosen = Some(item.command);
+                            if items.is_empty() {
+                                ui.weak("No matching commands.");
+                            } else {
+                                let mut group = "";
+                                for (index, item) in items.iter().enumerate() {
+                                    if item.group != group {
+                                        ui.add_space(3.0);
+                                        ui.label(
+                                            RichText::new(item.group.to_uppercase())
+                                                .small()
+                                                .color(ui_style::colors(ui.ctx()).muted_text),
+                                        );
+                                        group = item.group;
+                                    }
+                                    let text = if item.shortcut.is_empty() {
+                                        item.label.to_owned()
+                                    } else {
+                                        format!("{}    {}", item.label, item.shortcut)
+                                    };
+                                    let response = ui
+                                        .add_enabled(
+                                            item.enabled,
+                                            egui::Button::new(text).selected(index == selected),
+                                        )
+                                        .on_hover_text(item.label);
+                                    if index == selected {
+                                        ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
+                                    }
+                                    if response.clicked() {
+                                        chosen = Some(item.command);
+                                    }
                                 }
                             }
                         });
@@ -4691,6 +4718,16 @@ impl SketchApp {
         });
         let clicked_outside =
             pointer.is_some_and(|position| !area.response.rect.contains(position));
+        if let Some(state) = self.quick_palette.as_mut() {
+            state.search_focus_pending = false;
+            if state.query != query {
+                state.query = query;
+                state.selected = items.iter().position(|item| item.enabled).unwrap_or(0);
+            }
+            if !items.is_empty() {
+                state.selected = state.selected.min(items.len() - 1);
+            }
+        }
         if chosen.is_some() || clicked_outside {
             self.quick_palette = None;
         }
@@ -7983,17 +8020,22 @@ impl eframe::App for SketchApp {
             if self.palette_ui.sampling && ctx.input(|input| input.key_pressed(Key::Escape)) {
                 self.cancel_color_sampling();
             }
-            self.plane_picker_shortcuts(ctx);
-            if self.loft_preview.is_some() && ctx.input(|input| input.key_pressed(Key::Escape)) {
-                self.loft_preview = None;
-                self.renderer.invalidate();
-                self.status = "Loft preview cancelled.".into();
+            if self.quick_palette.is_some() {
+                self.quick_palette_shortcuts(ctx);
+            } else {
+                self.plane_picker_shortcuts(ctx);
+                if self.loft_preview.is_some() && ctx.input(|input| input.key_pressed(Key::Escape))
+                {
+                    self.loft_preview = None;
+                    self.renderer.invalidate();
+                    self.status = "Loft preview cancelled.".into();
+                }
+                self.partial_eraser_shortcuts(ctx);
+                self.stamp_shortcuts(ctx);
+                self.local_color_shortcuts(ctx);
+                self.shape_shortcuts(ctx);
+                self.quick_palette_shortcuts(ctx);
             }
-            self.partial_eraser_shortcuts(ctx);
-            self.stamp_shortcuts(ctx);
-            self.local_color_shortcuts(ctx);
-            self.shape_shortcuts(ctx);
-            self.quick_palette_shortcuts(ctx);
             self.tick_camera_sequence(ctx);
             if self.liquify_active() && ctx.input(|input| input.key_pressed(Key::Escape)) {
                 self.finish_liquify(false);
