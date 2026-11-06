@@ -26,6 +26,11 @@ pub enum LiveUiCommand {
         cursor: Option<String>,
         page_size: usize,
     },
+    StrokeIndex {
+        layer_id: u64,
+        cursor: Option<String>,
+        page_size: usize,
+    },
     CaptureViewport,
     PreviewColor {
         revision: String,
@@ -205,7 +210,7 @@ fn handle_message(ui_requests: &Sender<LiveUiRequest>, message: Value) -> Option
                 .unwrap_or_else(|| json!({}));
             let command = match name {
                 "live_document_snapshot" => LiveUiCommand::Snapshot,
-                "live_scene_outline" => {
+                "live_scene_outline" | "live_stroke_index" => {
                     let cursor = match arguments.get("cursor") {
                         None | Some(Value::Null) => None,
                         Some(Value::String(value)) if !value.is_empty() && value.len() <= 128 => {
@@ -227,7 +232,22 @@ fn handle_message(ui_requests: &Sender<LiveUiRequest>, message: Value) -> Option
                             tool_error("page_size must be from 1 to 100"),
                         ));
                     }
-                    LiveUiCommand::SceneOutline { cursor, page_size }
+                    if name == "live_stroke_index" {
+                        let Some(layer_id) = arguments.get("layer_id").and_then(Value::as_u64)
+                        else {
+                            return Some(rpc_result(
+                                id,
+                                tool_error("A valid layer_id is required"),
+                            ));
+                        };
+                        LiveUiCommand::StrokeIndex {
+                            layer_id,
+                            cursor,
+                            page_size,
+                        }
+                    } else {
+                        LiveUiCommand::SceneOutline { cursor, page_size }
+                    }
                 }
                 "live_viewport_capture" => LiveUiCommand::CaptureViewport,
                 "live_preview_selected_color" => {
@@ -329,6 +349,12 @@ fn tools() -> Value {
             "name":"live_scene_outline",
             "description":"Read a bounded page of layer and saved-guide names, stable IDs, effective visibility and lock state, plus active layer and guide IDs. Use next_cursor for further pages; cursors are tied to the returned document revision and become invalid after a scene change. No geometry or file paths are returned.",
             "inputSchema":{"type":"object","properties":{"cursor":{"type":"string","maxLength":128},"page_size":{"type":"integer","minimum":1,"maximum":100,"default":50}},"additionalProperties":false},
+            "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}
+        },
+        {
+            "name":"live_stroke_index",
+            "description":"List stroke summaries for one layer in ascending ID order. Bounds are in world space. Use next_cursor with the same layer and revision. No stroke samples or paths are returned.",
+            "inputSchema":{"type":"object","properties":{"layer_id":{"type":"integer","minimum":0},"cursor":{"type":"string","maxLength":128},"page_size":{"type":"integer","minimum":1,"maximum":100,"default":50}},"required":["layer_id"],"additionalProperties":false},
             "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}
         },
         {

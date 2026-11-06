@@ -6971,6 +6971,14 @@ impl SketchApp {
                     let result = self.live_mcp_scene_outline(cursor.as_deref(), page_size);
                     let _ = request.reply.send(result);
                 }
+                crate::live_mcp::LiveUiCommand::StrokeIndex {
+                    layer_id,
+                    cursor,
+                    page_size,
+                } => {
+                    let result = self.live_mcp_stroke_index(layer_id, cursor.as_deref(), page_size);
+                    let _ = request.reply.send(result);
+                }
                 crate::live_mcp::LiveUiCommand::CaptureViewport => {
                     if self.live_mcp_capture_reply.is_some() {
                         let _ = request
@@ -7117,6 +7125,70 @@ impl SketchApp {
         }))
     }
 
+    fn live_mcp_stroke_index(
+        &self,
+        layer_id: u64,
+        cursor: Option<&str>,
+        page_size: usize,
+    ) -> Result<serde_json::Value, String> {
+        let revision = self.live_mcp_revision()?;
+        if !self.doc.layers.iter().any(|layer| layer.id == layer_id) {
+            return Err("The requested layer does not exist".into());
+        }
+        let prefix = format!("{revision}/{layer_id}/");
+        let after = cursor
+            .map(|cursor| {
+                cursor
+                    .strip_prefix(&prefix)
+                    .and_then(|id| id.parse::<u64>().ok())
+                    .ok_or("Invalid or stale stroke cursor. Request the first page for this layer.")
+            })
+            .transpose()?;
+        let mut strokes: Vec<_> = self
+            .doc
+            .strokes
+            .iter()
+            .filter(|stroke| stroke.layer_id == layer_id)
+            .collect();
+        strokes.sort_unstable_by_key(|stroke| stroke.id);
+        let start = after.map_or(0, |id| strokes.partition_point(|stroke| stroke.id <= id));
+        let end = (start + page_size).min(strokes.len());
+        let generated = self.doc.linked_generated_ids();
+        let items: Vec<_> = strokes[start..end]
+            .iter()
+            .map(|stroke| {
+                let kind = if stroke.fill.is_some() {
+                    "fill"
+                } else if stroke.curve.is_some() {
+                    "curve"
+                } else if stroke.model_surface.is_some() {
+                    "model_surface"
+                } else {
+                    "sampled"
+                };
+                let can_color = self.doc.editable(stroke) && !generated.contains(&stroke.id);
+                let bounds = crate::editing::stroke_bounds(stroke).map(
+                    |(min, max)| serde_json::json!({"min":min.to_array(),"max":max.to_array()}),
+                );
+                serde_json::json!({
+                    "id":stroke.id, "kind":kind, "world_bounds":bounds,
+                    "can_edit_color":can_color,
+                    "can_move":can_color && self.live_mcp_stroke_move_supported(stroke)
+                })
+            })
+            .collect();
+        let next_cursor = (end < strokes.len()).then(|| format!("{prefix}{}", strokes[end - 1].id));
+        Ok(serde_json::json!({
+            "revision": revision, "layer_id": layer_id, "items": items, "next_cursor": next_cursor
+        }))
+    }
+
+    fn live_mcp_stroke_move_supported(&self, stroke: &Stroke) -> bool {
+        stroke.fill.is_none()
+            && stroke.guide_attachment.is_none()
+            && !self.doc.has_linked_source(stroke.id)
+    }
+
     fn live_mcp_gesture_active(&self) -> bool {
         self.active.is_some()
             || self.animation_ui.playing
@@ -7204,11 +7276,9 @@ impl SketchApp {
         let before = crate::editing::snapshot(&self.doc, &self.selected);
         if before.is_empty()
             || before.len() != self.selected.len()
-            || before.iter().any(|(_, stroke)| {
-                stroke.fill.is_some()
-                    || stroke.guide_attachment.is_some()
-                    || self.doc.has_linked_source(stroke.id)
-            })
+            || before
+                .iter()
+                .any(|(_, stroke)| !self.live_mcp_stroke_move_supported(stroke))
         {
             return Err("Select editable, independent strokes to move".into());
         }
