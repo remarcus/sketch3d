@@ -27,7 +27,7 @@ impl SketchApp {
             })
             .cloned()
         else {
-            self.status = "Select one visible, unlocked planar fill to hatch.".into();
+            self.status = "Select one visible, unlocked planar or cylinder fill to hatch.".into();
             return;
         };
         self.finish();

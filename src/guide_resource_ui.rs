@@ -98,6 +98,17 @@ fn transform_attached_stroke(
         changed = transformed.pop().expect("one transformed stroke").1;
         if let (Some((radius, _)), Some((next_radius, next_height))) = (old.cylinder, new.cylinder)
         {
+            if matches!(
+                changed.brush.dabs.surface_target,
+                Some(crate::dynamics::DabSurfaceTarget::Cylinder { .. })
+            ) {
+                changed.brush.dabs.surface_target = Some(crate::dynamics::DabSurfaceTarget::Cylinder {
+                    center: new.origin,
+                    rotation: new.rotation,
+                    radius: next_radius,
+                    height: next_height,
+                });
+            }
             for (point, source) in changed.points.iter_mut().zip(&stroke.points) {
                 let position =
                     old.cylinder_point(source.position, new, next_radius - radius, next_height)?;
@@ -107,6 +118,13 @@ fn transform_attached_stroke(
                 if !point.is_valid() {
                     return Err("Cylinder edit moves attached ink outside the drawing bounds.");
                 }
+            }
+            if !changed.brush.is_valid()
+                || strand_vertex_budget_exceeded(&changed)
+                || airbrush_vertex_budget_exceeded(&changed)
+                || profile_tube_vertex_budget_exceeded(&changed)
+            {
+                return Err("Cylinder edit would exceed attached ink geometry limits.");
             }
         }
     } else {
@@ -168,6 +186,7 @@ fn attached_guide_changes(
     let mut ink_before = Vec::new();
     let mut ink_after = Vec::new();
     let mut reshape_samples = 0;
+    let mut dab_delta = 0_i64;
     for (index, stroke) in doc.strokes.iter().enumerate() {
         let Some(id) = stroke.guide_attachment else { continue };
         let old = before.iter().find(|guide| guide.id == id).map(|guide| &guide.geometry);
@@ -194,8 +213,21 @@ fn attached_guide_changes(
                 index, stroke, attachment_frame(before, id), attachment_frame(after, id),
             )?,
         };
+        if changed.brush.dabs.enabled {
+            let before = crate::dab_placement::point_count(stroke)
+                .map_err(|_| "Attached ink exceeds the dab geometry limit.")?;
+            let after = crate::dab_placement::point_count(&changed)
+                .map_err(|_| "Guide edit would exceed the dab geometry limit.")?;
+            dab_delta += after as i64 - before as i64;
+        }
         ink_before.push((index, stroke.clone()));
         ink_after.push((index, changed));
+    }
+    if dab_delta > 0 && crate::dab_placement::document_count(doc)
+        .map_err(|_| "Attached ink exceeds the document dab limit.")? + dab_delta as usize
+        > crate::dab_placement::MAX_DOCUMENT_DABS
+    {
+        return Err("Guide edit would exceed the document dab limit.");
     }
     Ok((!ink_before.is_empty()).then(|| Box::new((ink_before, ink_after))))
 }
@@ -2873,6 +2905,77 @@ mod planar_attachment_tests {
         assert!(attached_guide_changes(&doc, &[new], &[incompatible]).is_err());
         edit.apply(&mut doc, false);
         assert_eq!(doc.strokes[0], stroke);
+    }
+
+    #[test]
+    fn cylinder_hatch_crosses_the_seam_and_follows_a_radius_edit() {
+        use crate::document::{CylinderFillRegionSource, CylinderFillSurface, FillRegionSource, PlanarFill};
+
+        let chart = CylinderFillSurface {
+            center: Vec3::ZERO,
+            rotation: glam::Quat::IDENTITY,
+            radius: 1.0,
+            height: 4.0,
+            angle_origin: std::f32::consts::PI,
+        };
+        let mut source = attached_stroke();
+        source.guide_attachment = None;
+        source.point_colors = None;
+        source.point_thickness = None;
+        source.points = [(-0.45, -0.3), (0.45, -0.3), (0.45, 0.3), (-0.45, 0.3)]
+            .map(|(x, y)| Point {
+                position: chart.world_point(glam::vec2(x, y), 0.0).unwrap(),
+                pressure: 1.0,
+                tilt: None,
+                time_ms: 0,
+            }).to_vec();
+        source.fill = Some(PlanarFill {
+            cylinder: Some(chart),
+            region_source: Some(FillRegionSource::Cylinder(CylinderFillRegionSource {
+                guide_id: 7, seed_angle: chart.angle_origin, seed_height: 0.0,
+                boundary_layer: None, gap_tolerance: 0.0,
+            })),
+            ..Default::default()
+        });
+        let mut doc = Document::default();
+        doc.guide_resources.push(cylinder_guide(1.0, 4.0));
+        doc.strokes.push(source.clone());
+        let settings = crate::hatch::Settings { angle: 0.0, spacing: 0.2 };
+        let ink = crate::hatch::Ink {
+            brush: Brush::default(), color: [0.3; 3], radius: 0.02, layer: 1,
+        };
+        let hatches = crate::hatch::build(&doc, &source, settings, ink, 50).unwrap();
+        assert!(hatches.len() >= 3);
+        for stroke in &hatches {
+            assert_eq!(stroke.guide_attachment, Some(7));
+            assert!(stroke.points.first().unwrap().position.x > 0.0);
+            assert!(stroke.points.last().unwrap().position.x < 0.0);
+            assert!(stroke.points.windows(2).all(|pair| pair[0].position.distance(pair[1].position) <= 0.036));
+            assert!(stroke.points.iter().all(|point| chart.chart_point(point.position).is_some()));
+        }
+        let add = Edit::AddBatch(hatches.clone());
+        add.apply(&mut doc, true);
+        let before = (doc.guide_resources.clone(), None, Vec::new(), None, None);
+        let after = (vec![cylinder_guide(1.6, 4.0)], None, Vec::new(), None, None);
+        let ink = attached_guide_changes(&doc, &before.0, &after.0).unwrap();
+        let edit = Edit::Guides { before, after, ink };
+        edit.apply(&mut doc, true);
+        for stroke in &doc.strokes[1..] {
+            assert!(stroke.points.iter().all(|point| {
+                let radial = glam::vec2(point.position.x, point.position.z).length();
+                (radial - 1.6).abs() < 1e-5
+            }));
+            assert!(matches!(stroke.brush.dabs.surface_target,
+                Some(crate::dynamics::DabSurfaceTarget::Cylinder { radius, .. }) if radius == 1.6));
+        }
+        assert_eq!(doc.strokes[0], source);
+        let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(reopened.strokes, doc.strokes);
+        assert_eq!(crate::export::encode(&reopened, None).unwrap().summary.strokes, 1 + hatches.len());
+        edit.apply(&mut doc, false);
+        assert_eq!(&doc.strokes[1..], hatches.as_slice());
+        add.apply(&mut doc, false);
+        assert_eq!(doc.strokes, vec![source]);
     }
 
     fn guide(origin: Vec3, rotation: glam::Quat) -> GuideResource {

@@ -1,10 +1,14 @@
 //! Clip parallel centerlines against the same even-odd contours as a fill.
 use crate::{
-    document::{Brush, Document, Point, Stroke},
+    document::{
+        Brush, CylinderFillSurface, Document, FillRegionSource, Point, Stroke,
+        guide_resources::GuideGeometry,
+    },
+    dynamics::DabSurfaceTarget,
     polygon,
     texture::{TextureAnchorMode, TextureFrame},
 };
-use glam::DVec2;
+use glam::{DVec2, Vec3};
 
 pub const MIN_SPACING: f32 = 0.005;
 pub const MAX_SPACING: f32 = 10.0;
@@ -37,10 +41,122 @@ pub struct Ink {
 }
 
 pub fn supported(source: &Stroke) -> bool {
-    source
-        .fill
-        .as_ref()
-        .is_some_and(|fill| fill.cylinder.is_none() && fill.mesh.is_none())
+    source.fill.as_ref().is_some_and(|fill| fill.mesh.is_none())
+}
+
+enum Surface {
+    Plane {
+        origin: Vec3,
+        normal: Vec3,
+        tangent: Vec3,
+    },
+    Cylinder {
+        guide_id: u64,
+        chart: CylinderFillSurface,
+    },
+}
+
+impl Surface {
+    fn from_fill(doc: &Document, source: &Stroke) -> Result<Self, String> {
+        let fill = source.fill.as_ref().ok_or("Select a fill to hatch")?;
+        let Some(chart) = fill.cylinder else {
+            return Ok(Self::Plane {
+                origin: source.points[0].position,
+                normal: source.brush.normal,
+                tangent: source.brush.tangent,
+            });
+        };
+        if !doc.animation.is_empty() || doc.animation.two_bone_rig.is_some() {
+            return Err("Cylinder hatching requires static artwork".into());
+        }
+        let saved_id = match fill.region_source {
+            Some(FillRegionSource::Cylinder(source)) => Some(source.guide_id),
+            _ => None,
+        };
+        let mut candidates = doc.guide_resources.iter().filter(|guide| {
+            saved_id.is_none_or(|id| guide.id == id)
+                && matches!(guide.geometry, GuideGeometry::Cylinder { center, rotation, radius, height }
+                    if center == chart.center && rotation == chart.rotation
+                        && radius == chart.radius && height == chart.height)
+        });
+        let guide = candidates.next().ok_or(
+            "The saved cylinder is missing or has changed. Refresh the fill before hatching.",
+        )?;
+        if candidates.next().is_some() {
+            return Err("More than one saved cylinder matches this fill".into());
+        }
+        if !guide.visible || guide.locked {
+            return Err("Show and unlock the fill's saved cylinder before hatching".into());
+        }
+        Ok(Self::Cylinder {
+            guide_id: guide.id,
+            chart,
+        })
+    }
+
+    fn stroke_points(
+        &self,
+        [start, end]: [DVec2; 2],
+        brush: &mut Brush,
+    ) -> Result<(Vec<Point>, Option<u64>), String> {
+        let sample = |position| Point {
+            position,
+            pressure: 1.0,
+            tilt: None,
+            time_ms: 0,
+        };
+        match *self {
+            Self::Plane {
+                origin,
+                normal,
+                tangent,
+            } => {
+                let across = normal.cross(tangent);
+                brush.normal = normal;
+                brush.tangent = tangent;
+                if brush.texture.anchor_mode == TextureAnchorMode::CapturedPlanar {
+                    brush.texture.frame = Some(TextureFrame {
+                        origin: origin.to_array(),
+                        axis_u: tangent.to_array(),
+                        axis_v: across.to_array(),
+                    });
+                }
+                let points = [start, end]
+                    .map(|p| sample(origin + tangent * p.x as f32 + across * p.y as f32));
+                Ok((points.to_vec(), None))
+            }
+            Self::Cylinder { guide_id, chart } => {
+                if brush.texture.anchor_mode == TextureAnchorMode::CapturedPlanar {
+                    return Err(
+                        "Use stroke-following texture anchoring for cylinder hatching".into(),
+                    );
+                }
+                let angle = chart.angle_origin + start.x as f32 / chart.radius;
+                let (sin, cos) = angle.sin_cos();
+                brush.normal = chart.rotation * Vec3::new(sin, 0.0, cos);
+                brush.tangent = chart.rotation * Vec3::new(cos, 0.0, -sin);
+                brush.dabs.surface_target = Some(DabSurfaceTarget::Cylinder {
+                    center: chart.center,
+                    rotation: chart.rotation,
+                    radius: chart.radius,
+                    height: chart.height,
+                });
+                let steps = ((end.x - start.x).abs() / f64::from(chart.radius) / 0.035)
+                    .ceil()
+                    .max(1.0) as usize;
+                let points = (0..=steps)
+                    .map(|i| {
+                        let coordinate = start.lerp(end, i as f64 / steps as f64);
+                        chart
+                            .world_point(coordinate.as_vec2(), 0.0)
+                            .map(sample)
+                            .ok_or("Hatch sample is outside the finite cylinder")
+                    })
+                    .collect::<Result<_, _>>()?;
+                Ok((points, Some(guide_id)))
+            }
+        }
+    }
 }
 
 pub fn build(
@@ -51,7 +167,7 @@ pub fn build(
     next_id: u64,
 ) -> Result<Vec<Stroke>, String> {
     if !supported(source) || !doc.editable(source) {
-        return Err("Select one editable planar fill to hatch".into());
+        return Err("Select one editable planar or cylinder fill to hatch".into());
     }
     if !doc.layer_is_editable(ink.layer) {
         return Err("Choose a visible, unlocked layer for the hatch strokes".into());
@@ -69,6 +185,7 @@ pub fn build(
         return Err("Invalid hatch angle or spacing".into());
     }
     polygon::triangulate(source)?;
+    let surface = Surface::from_fill(doc, source)?;
     let mut rings = vec![polygon::projected(source)];
     rings.extend(polygon::projected_holes(source));
     let segments = clipped_segments(rings, settings)?;
@@ -77,37 +194,17 @@ pub fn build(
     {
         return Err("The drawing has no room for this hatch pass".into());
     }
-    let origin = source.points[0].position;
-    let normal = source.brush.normal;
-    let tangent = source.brush.tangent;
-    let across = normal.cross(tangent);
     let mut brush = ink.brush;
-    brush.normal = normal;
-    brush.tangent = tangent;
     brush.dabs.surface_target = None;
     brush.dab_distance_origin = 0.0;
     brush.dab_total_length = 0.0;
     brush.texture.pressure_samples_available = false;
-    if brush.texture.anchor_mode == TextureAnchorMode::CapturedPlanar {
-        brush.texture.frame = Some(TextureFrame {
-            origin: origin.to_array(),
-            axis_u: tangent.to_array(),
-            axis_v: across.to_array(),
-        });
-    }
     let mut strokes = Vec::with_capacity(segments.len());
     let mut point_count = 0;
     let mut dab_count = 0;
     let mut vertex_count = 0;
     for (i, segment) in segments.into_iter().enumerate() {
-        let points = segment
-            .map(|p| Point {
-                position: origin + tangent * p.x as f32 + across * p.y as f32,
-                pressure: 1.0,
-                tilt: None,
-                time_ms: 0,
-            })
-            .to_vec();
+        let (points, guide_attachment) = surface.stroke_points(segment, &mut brush)?;
         let id = next_id + i as u64;
         brush.dab_seed = crate::dab_placement::seed_for_stroke(id);
         let stroke = Stroke {
@@ -117,7 +214,7 @@ pub fn build(
             radius: ink.radius,
             brush,
             points,
-            guide_attachment: None,
+            guide_attachment,
             model_surface: None,
             fill: None,
             material: Default::default(),
