@@ -14,6 +14,7 @@ pub(super) struct AnimationUi {
     pub(super) playing: bool,
     playback_origin_seconds: f64,
     playback_origin_frame: u32,
+    selected_key_layer: Option<u64>,
     selected_key_frames: BTreeSet<u32>,
     batch_key_offset: i32,
     batch_key_preview: Option<crate::animation::ArtworkAnimation>,
@@ -37,6 +38,7 @@ impl Default for AnimationUi {
             playing: false,
             playback_origin_seconds: 0.0,
             playback_origin_frame: 0,
+            selected_key_layer: None,
             selected_key_frames: BTreeSet::new(),
             batch_key_offset: 1,
             batch_key_preview: None,
@@ -53,6 +55,23 @@ impl Default for AnimationUi {
             rig_root_degrees: 0.0,
             rig_child_degrees: 0.0,
         }
+    }
+}
+
+impl AnimationUi {
+    fn sync_selected_layer(&mut self, layer_id: u64) {
+        if self.selected_key_layer == Some(layer_id) {
+            return;
+        }
+        self.selected_key_layer = Some(layer_id);
+        self.selected_key_frames.clear();
+        self.batch_key_preview = None;
+        self.batch_key_destinations.clear();
+        self.preview_animation = None;
+        self.preview_source = None;
+        self.retime_preview = None;
+        self.retime_entry = None;
+        self.rig_pose_frame = None;
     }
 }
 
@@ -494,6 +513,7 @@ impl SketchApp {
     }
 
     pub(super) fn artwork_animation_timeline(&mut self, ctx: &egui::Context) {
+        self.animation_ui.sync_selected_layer(self.doc.active_layer);
         egui::TopBottomPanel::bottom("artwork-animation-timeline")
             .resizable(false)
             .show(ctx, |ui| {
@@ -1272,7 +1292,7 @@ impl SketchApp {
 #[cfg(test)]
 mod timeline_handle_tests {
     use super::egui::{pos2, vec2, Rect};
-    use super::timeline_key_handle;
+    use super::{timeline_key_handle, AnimationUi};
 
     #[test]
     fn key_drag_handles_stay_inside_their_frame_cells() {
@@ -1295,5 +1315,34 @@ mod timeline_handle_tests {
             assert!((handles[0].left() - rect.left()).abs() < 0.001);
             assert!(handles.last().unwrap().right() <= rect.right());
         }
+    }
+
+    #[test]
+    fn changing_active_layer_clears_key_selection_and_stale_previews() {
+        let mut ui = AnimationUi::default();
+        ui.sync_selected_layer(3);
+        ui.selected_key_frames.extend([4, 12]);
+        ui.batch_key_preview = Some(Default::default());
+        ui.batch_key_destinations = vec![5, 13];
+        ui.preview_animation = Some(Default::default());
+        ui.preview_source = Some((Default::default(), Vec::new()));
+        ui.retime_preview = Some((3, 4, 8));
+        ui.retime_entry = Some((3, 4, 8));
+        ui.rig_pose_frame = Some(4);
+
+        ui.sync_selected_layer(3);
+        assert_eq!(ui.selected_key_frames.len(), 2);
+        assert!(ui.batch_key_preview.is_some());
+
+        ui.sync_selected_layer(9);
+        assert_eq!(ui.selected_key_layer, Some(9));
+        assert!(ui.selected_key_frames.is_empty());
+        assert!(ui.batch_key_preview.is_none());
+        assert!(ui.batch_key_destinations.is_empty());
+        assert!(ui.preview_animation.is_none());
+        assert!(ui.preview_source.is_none());
+        assert!(ui.retime_preview.is_none());
+        assert!(ui.retime_entry.is_none());
+        assert!(ui.rig_pose_frame.is_none());
     }
 }
