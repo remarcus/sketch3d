@@ -759,3 +759,168 @@ fn resample_stroke(stroke: &mut Stroke, spacing: f32) -> Result<(), String> {
     stroke.point_colors = colors;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{guide_resources::GuideResource, Brush, Point};
+    use glam::Quat;
+
+    fn sampled_stroke(id: u64) -> Stroke {
+        Stroke {
+            guide_attachment: None,
+            model_surface: None,
+            curve: None,
+            material: Default::default(),
+            point_thickness: None,
+            point_colors: None,
+            modifiers: None,
+            fill: None,
+            group_id: None,
+            layer_id: 1,
+            id,
+            color: [0.31, 0.52, 0.77],
+            gradient: None,
+            radius: 0.04,
+            brush: Brush::default(),
+            points: [
+                (Vec3::new(-1.0, 0.4, 0.7), 0.2, 11),
+                (Vec3::new(0.0, 1.2, -0.3), 0.8, 22),
+                (Vec3::new(1.0, 0.7, 0.5), 0.6, 33),
+            ]
+            .into_iter()
+            .map(|(position, pressure, time_ms)| Point {
+                position,
+                pressure,
+                tilt: Some(Vec3::new(0.1, -0.2, 0.0)),
+                time_ms,
+            })
+            .collect(),
+        }
+    }
+
+    #[test]
+    fn rotated_saved_plane_projection_preserves_samples_and_is_one_undoable_edit() {
+        let mut doc = Document::default();
+        let source = sampled_stroke(7);
+        doc.strokes.push(source.clone());
+        let rotation = Quat::from_rotation_y(0.42) * Quat::from_rotation_x(-0.2);
+        doc.guide_resources.push(GuideResource {
+            id: 19,
+            name: "Offset target".into(),
+            visible: true,
+            locked: false,
+            geometry: GuideGeometry::Plane {
+                origin: Vec3::new(0.4, -0.3, 0.8),
+                rotation,
+            },
+        });
+        let original = doc.strokes[0].clone();
+        let mut draft = Draft::new(&doc, &HashSet::from([source.id]), Camera::default()).unwrap();
+        draft.target = TargetChoice::SavedPlane(19);
+        draft.offset = 0.12;
+        let plane = draft.target_plane(&doc, None).unwrap();
+        let rect = Rect::from_min_size(eframe::egui::Pos2::ZERO, eframe::egui::vec2(900.0, 700.0));
+        draft.rebuild(plane, rect).unwrap();
+        let (tangent, _, normal) = plane.basis();
+        let origin = plane.origin();
+        let projected = draft.preview[0].clone();
+        for (before, after) in original.points.iter().zip(&projected.points) {
+            let expected = before.position - normal * (before.position - origin).dot(normal)
+                + normal * draft.offset;
+            assert!(after.position.distance(expected) < 1e-5);
+            assert_eq!(after.pressure, before.pressure);
+            assert_eq!(after.tilt, before.tilt);
+            assert_eq!(after.time_ms, before.time_ms);
+        }
+        assert_eq!(projected.color, original.color);
+        assert_eq!(projected.radius, original.radius);
+        assert_eq!(projected.brush.normal, normal);
+        assert_eq!(projected.brush.tangent, tangent);
+
+        let edit = draft.edit(&doc).unwrap();
+        edit.apply(&mut doc, true);
+        assert_eq!(doc.strokes[0], projected);
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes[0], original);
+        edit.apply(&mut doc, true);
+        let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(reopened.strokes[0], doc.strokes[0]);
+        let glb = crate::export::encode(&reopened, Some(&HashSet::from([source.id]))).unwrap();
+        assert_eq!(glb.summary.strokes, 1);
+    }
+
+    #[test]
+    fn captured_view_rays_project_in_perspective_and_orthographic_modes() {
+        let rect = Rect::from_min_size(eframe::egui::Pos2::ZERO, eframe::egui::vec2(900.0, 700.0));
+        for projection in [
+            crate::geometry::Projection::Perspective,
+            crate::geometry::Projection::Orthographic,
+        ] {
+            let camera = Camera {
+                projection,
+                yaw: 0.42,
+                pitch: 0.24,
+                distance: 5.0,
+                target: Vec3::ZERO,
+                ..Camera::default()
+            };
+            let mut doc = Document::default();
+            let source = sampled_stroke(8);
+            doc.strokes.push(source.clone());
+            let mut draft = Draft::new(&doc, &HashSet::from([source.id]), camera).unwrap();
+            draft.target = TargetChoice::CapturedView;
+            draft.mode = ProjectionMode::CapturedViewRay;
+            let plane = draft.target_plane(&doc, None).unwrap();
+            draft.rebuild(plane, rect).unwrap();
+            let normal = plane.basis().2;
+            let origin = plane.origin();
+            assert!(draft.preview[0]
+                .points
+                .iter()
+                .all(|point| { (point.position - origin).dot(normal).abs() < 1e-4 }));
+            assert_eq!(draft.preview[0].points.len(), source.points.len());
+        }
+    }
+
+    #[test]
+    fn captured_view_rays_reject_parallel_and_backward_plane_hits() {
+        let camera = Camera {
+            yaw: 0.0,
+            pitch: 0.0,
+            distance: 5.0,
+            target: Vec3::ZERO,
+            ..Camera::default()
+        };
+        let rect = Rect::from_min_size(eframe::egui::Pos2::ZERO, eframe::egui::vec2(900.0, 700.0));
+        let source = sampled_stroke(9);
+        let mut doc = Document::default();
+        doc.strokes.push(source.clone());
+        let mut draft = Draft::new(&doc, &HashSet::from([source.id]), camera).unwrap();
+        draft.mode = ProjectionMode::CapturedViewRay;
+        let mut tests = 0;
+        let side = DrawingPlane::from_preset(Plane::Side);
+        assert!(draft
+            .project_sample(
+                ProjectionTarget::Plane(side),
+                Vec3::new(0.0, 0.0, 1.0),
+                rect,
+                &mut tests
+            )
+            .is_err());
+
+        let behind = DrawingPlane {
+            anchor: Vec3::new(0.0, 0.0, 10.0),
+            rotation_degrees: Vec3::ZERO,
+            depth: 0.0,
+        };
+        assert!(draft
+            .project_sample(
+                ProjectionTarget::Plane(behind),
+                Vec3::new(0.0, 0.0, 1.0),
+                rect,
+                &mut tests
+            )
+            .is_err());
+    }
+}
