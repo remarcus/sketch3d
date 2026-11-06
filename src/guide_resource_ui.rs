@@ -2686,7 +2686,28 @@ mod planar_attachment_tests {
         let new_origin = Vec3::new(1.5, -0.25, 0.75);
         let new_rotation = glam::Quat::from_rotation_y(0.4);
         let new_guide = guide(new_origin, new_rotation);
-        let source = attached_stroke();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            1,
+            image::Rgba([180, 110, 40, 200]),
+        ))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+        let grain = crate::brush_tip::BrushTipAsset::from_png(png.into_inner(), None).unwrap();
+        let mut source = attached_stroke();
+        source.brush.texture.mapping = crate::texture::TextureMapping {
+            offset: [0.15, -0.25],
+            rotation_degrees: 23.0,
+            scale: [0.8, 1.3],
+        };
+        source.brush.texture.image = Some(crate::texture::ImageTextureSettings {
+            asset_id: grain.id,
+            mode: crate::texture::ImageTextureMode::CoverageMask,
+            mask_source: crate::texture::ImageMaskSource::Alpha,
+            tint_with_brush: true,
+            ..Default::default()
+        });
         let before_snapshot = vec![(0, source.clone())];
         let rotation = new_rotation * glam::Quat::IDENTITY.inverse();
         let old_frame = attachment_frame(std::slice::from_ref(&old_guide), 7).unwrap();
@@ -2699,6 +2720,7 @@ mod planar_attachment_tests {
             guide_resources: vec![old_guide.clone()],
             active_guide: Some(7),
             strokes: vec![source.clone()],
+            brush_tip_assets: vec![grain],
             ..Document::default()
         };
         let original_json = serde_json::to_value(&doc).unwrap();
@@ -2720,6 +2742,7 @@ mod planar_attachment_tests {
         assert_eq!(moved.material, source.material);
         assert_eq!(moved.point_thickness, source.point_thickness);
         assert_eq!(moved.point_colors, source.point_colors);
+        assert_eq!(moved.brush.texture, source.brush.texture);
         for (moved_point, source_point) in moved.points.iter().zip(&source.points) {
             assert_eq!(moved_point.pressure, source_point.pressure);
             assert_eq!(moved_point.time_ms, source_point.time_ms);
