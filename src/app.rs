@@ -8,7 +8,7 @@ use crate::{
 use crate::{editing::Edit, gizmo::Mode};
 use color_editor::{ColorAction, ColorTarget};
 use eframe::egui::{self, Color32, Key, PointerButton, Pos2, Rect, RichText, Vec2};
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 
 type LoadedDrawing = (
@@ -716,6 +716,7 @@ pub struct SketchApp {
 }
 
 struct LiveMcpPreview {
+    description: &'static str,
     preview_id: String,
     base_revision: String,
     preview_revision: String,
@@ -6976,6 +6977,13 @@ impl SketchApp {
                     let result = self.preview_live_mcp_color(revision, color);
                     let _ = request.reply.send(result);
                 }
+                crate::live_mcp::LiveUiCommand::PreviewMove {
+                    revision,
+                    translation,
+                } => {
+                    let result = self.preview_live_mcp_move(revision, translation);
+                    let _ = request.reply.send(result);
+                }
                 crate::live_mcp::LiveUiCommand::ApplyEdit {
                     preview_id,
                     revision,
@@ -7100,6 +7108,7 @@ impl SketchApp {
 
     fn live_mcp_gesture_active(&self) -> bool {
         self.active.is_some()
+            || self.animation_ui.playing
             || self.mouse_down
             || self.drag.is_some()
             || self.brush_select_drag.is_some()
@@ -7134,11 +7143,7 @@ impl SketchApp {
             || self.show_help
     }
 
-    fn preview_live_mcp_color(
-        &mut self,
-        revision: String,
-        color: [f32; 3],
-    ) -> Result<serde_json::Value, String> {
+    fn check_live_mcp_preview(&self, revision: &str) -> Result<(), String> {
         if self.live_mcp_preview.is_some() {
             return Err("A live MCP edit preview is already active".into());
         }
@@ -7152,6 +7157,15 @@ impl SketchApp {
                 "The document or selection changed; request a fresh live_document_snapshot".into(),
             );
         }
+        Ok(())
+    }
+
+    fn preview_live_mcp_color(
+        &mut self,
+        revision: String,
+        color: [f32; 3],
+    ) -> Result<serde_json::Value, String> {
+        self.check_live_mcp_preview(&revision)?;
         let edit = crate::editing::appearance_edit(
             &self.doc,
             &self.selected,
@@ -7165,6 +7179,52 @@ impl SketchApp {
                 return Err("The selected strokes already have that color".into());
             }
         }
+        let mut result = self.stage_live_mcp_edit(revision, edit, "a color change")?;
+        result["color"] = serde_json::json!(color);
+        Ok(result)
+    }
+
+    fn preview_live_mcp_move(
+        &mut self,
+        revision: String,
+        translation: [f32; 3],
+    ) -> Result<serde_json::Value, String> {
+        self.check_live_mcp_preview(&revision)?;
+        let before = crate::editing::snapshot(&self.doc, &self.selected);
+        if before.is_empty()
+            || before.len() != self.selected.len()
+            || before.iter().any(|(_, stroke)| {
+                stroke.fill.is_some()
+                    || stroke.guide_attachment.is_some()
+                    || self.doc.has_linked_source(stroke.id)
+            })
+        {
+            return Err("Select editable, independent strokes to move".into());
+        }
+        let after = crate::editing::transformed_with_scale(
+            &before,
+            Vec3::ZERO,
+            Vec3::from_array(translation),
+            Quat::IDENTITY,
+            Vec3::ONE,
+            Quat::IDENTITY,
+            false,
+        )?;
+        if before == after {
+            return Err("The translation does not change the selected strokes".into());
+        }
+        let mut result =
+            self.stage_live_mcp_edit(revision, Edit::Change { before, after }, "a move")?;
+        result["translation"] = serde_json::json!(translation);
+        Ok(result)
+    }
+
+    fn stage_live_mcp_edit(
+        &mut self,
+        revision: String,
+        edit: Edit,
+        description: &'static str,
+    ) -> Result<serde_json::Value, String> {
         let selected_ids = self.selected.clone();
         edit.apply(&mut self.doc, true);
         self.renderer
@@ -7180,6 +7240,7 @@ impl SketchApp {
         };
         let preview_id = crate::live_mcp::preview_id();
         self.live_mcp_preview = Some(LiveMcpPreview {
+            description,
             preview_id: preview_id.clone(),
             base_revision: revision.clone(),
             preview_revision: preview_revision.clone(),
@@ -7187,14 +7248,13 @@ impl SketchApp {
             edit,
         });
         self.status =
-            "MCP color preview active. Apply or cancel it from the MCP client or preview panel."
+            "MCP edit preview active. Apply or cancel it from the MCP client or preview panel."
                 .into();
         Ok(serde_json::json!({
             "preview_id": preview_id,
             "revision": revision,
             "preview_revision": preview_revision,
             "selected_count": selected_ids.len(),
-            "color": color,
             "preview_active": true
         }))
     }
@@ -7222,7 +7282,7 @@ impl SketchApp {
         self.record_recovery_edit();
         self.renderer
             .invalidate_ids(&self.doc.linked_affected_stroke_ids(&preview.selected_ids));
-        self.status = "MCP color edit applied as one undoable change.".into();
+        self.status = "MCP edit applied as one undoable change.".into();
         Ok(serde_json::json!({"applied":true,"selected_count":count,"undo_steps":1}))
     }
 
@@ -7244,7 +7304,7 @@ impl SketchApp {
         preview.edit.apply(&mut self.doc, false);
         self.renderer
             .invalidate_ids(&self.doc.linked_affected_stroke_ids(&preview.selected_ids));
-        self.status = "MCP color preview cancelled; source values restored.".into();
+        self.status = "MCP edit cancelled. Source values restored.".into();
         Ok(serde_json::json!({"cancelled":true,"document_unchanged":true}))
     }
 
@@ -7255,10 +7315,11 @@ impl SketchApp {
         let preview_id = preview.preview_id.clone();
         let base_revision = preview.base_revision.clone();
         let selected_count = preview.selected_ids.len();
+        let description = preview.description;
         let response = egui::Modal::new(egui::Id::new("live-mcp-edit-preview")).show(ctx, |ui| {
             ui.heading("MCP edit preview");
             ui.label(format!(
-                "Previewing a color change on {selected_count} selected strokes."
+                "Previewing {description} on {selected_count} selected strokes."
             ));
             ui.label(
                 "The drawing is temporarily locked until this preview is applied or cancelled.",

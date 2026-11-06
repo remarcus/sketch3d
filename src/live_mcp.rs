@@ -1,4 +1,4 @@
-//! Opt-in read-only MCP bridge to a running Sketch3D UI session.
+//! Opt-in MCP bridge to a running Sketch3D UI session.
 //!
 //! The JSON-RPC stdio loop runs off the UI thread. Requests that need live
 //! application state are handed to the egui thread through a bounded channel.
@@ -30,6 +30,10 @@ pub enum LiveUiCommand {
     PreviewColor {
         revision: String,
         color: [f32; 3],
+    },
+    PreviewMove {
+        revision: String,
+        translation: [f32; 3],
     },
     ApplyEdit {
         preview_id: String,
@@ -182,7 +186,7 @@ fn handle_message(ui_requests: &Sender<LiveUiRequest>, message: Value) -> Option
                     "protocolVersion":version,
                     "capabilities":{"tools":{"listChanged":false}},
                     "serverInfo":{"name":"sketch3d-live-session","version":env!("CARGO_PKG_VERSION")},
-                "instructions":"Access the active Sketch3D session. Snapshot and viewport tools are read-only; one selected-stroke solid color edit is available through explicit preview, apply, or cancel calls. Local file paths are not returned. Unsaved state is identified explicitly."
+                "instructions":"Access the active Sketch3D session. Inspect the document or preview a selected-stroke color change or world-space move. Apply or cancel the active preview explicitly. Local file paths are omitted. Unsaved state is identified explicitly."
                 }),
             ))
         }
@@ -259,7 +263,34 @@ fn handle_message(ui_requests: &Sender<LiveUiRequest>, message: Value) -> Option
                         color: [values[0], values[1], values[2]],
                     }
                 }
-                "live_apply_selected_color" => {
+                "live_preview_selected_move" => {
+                    let Some(revision) = bounded_string(&arguments, "revision", 80) else {
+                        return Some(rpc_result(id, tool_error("A valid revision is required")));
+                    };
+                    let translation = arguments
+                        .get("translation")
+                        .and_then(Value::as_array)
+                        .and_then(|values| <&[Value; 3]>::try_from(values.as_slice()).ok())
+                        .map(|values| {
+                            values.each_ref().map(|value| {
+                                value
+                                    .as_f64()
+                                    .map(|number| number as f32)
+                                    .filter(|number| number.is_finite())
+                            })
+                        });
+                    let Some([Some(x), Some(y), Some(z)]) = translation else {
+                        return Some(rpc_result(
+                            id,
+                            tool_error("Translation requires three finite world-space components"),
+                        ));
+                    };
+                    LiveUiCommand::PreviewMove {
+                        revision,
+                        translation: [x, y, z],
+                    }
+                }
+                "live_apply_selected_color" | "live_apply_edit" => {
                     let Some(preview_id) = bounded_string(&arguments, "preview_id", 96) else {
                         return Some(rpc_result(id, tool_error("A valid preview_id is required")));
                     };
@@ -271,7 +302,7 @@ fn handle_message(ui_requests: &Sender<LiveUiRequest>, message: Value) -> Option
                         revision,
                     }
                 }
-                "live_cancel_selected_color" => {
+                "live_cancel_selected_color" | "live_cancel_edit" => {
                     let Some(preview_id) = bounded_string(&arguments, "preview_id", 96) else {
                         return Some(rpc_result(id, tool_error("A valid preview_id is required")));
                     };
@@ -310,6 +341,24 @@ fn tools() -> Value {
             "name":"live_preview_selected_color",
             "description":"Preview a solid color edit on the current selected strokes, bound to the revision returned by live_document_snapshot.",
             "inputSchema":{"type":"object","properties":{"revision":{"type":"string","maxLength":80},"color":{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":3,"maxItems":3}},"required":["revision","color"],"additionalProperties":false},
+            "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}
+        },
+        {
+            "name":"live_preview_selected_move",
+            "description":"Preview a world-space XYZ translation of the selected independent editable strokes, bound to the snapshot revision.",
+            "inputSchema":{"type":"object","properties":{"revision":{"type":"string","maxLength":80},"translation":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3}},"required":["revision","translation"],"additionalProperties":false},
+            "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}
+        },
+        {
+            "name":"live_apply_edit",
+            "description":"Apply the matching active preview as one undoable edit if its revision is still current.",
+            "inputSchema":{"type":"object","properties":{"preview_id":{"type":"string","maxLength":96},"revision":{"type":"string","maxLength":80}},"required":["preview_id","revision"],"additionalProperties":false},
+            "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}
+        },
+        {
+            "name":"live_cancel_edit",
+            "description":"Cancel the matching active preview and restore its exact source values.",
+            "inputSchema":{"type":"object","properties":{"preview_id":{"type":"string","maxLength":96}},"required":["preview_id"],"additionalProperties":false},
             "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}
         },
         {

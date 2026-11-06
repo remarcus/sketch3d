@@ -2,7 +2,7 @@ use super::*;
 use std::collections::BTreeSet;
 
 pub(super) struct AnimationUi {
-    playing: bool,
+    pub(super) playing: bool,
     playback_origin_seconds: f64,
     playback_origin_frame: u32,
     selected_key_frames: BTreeSet<u32>,
