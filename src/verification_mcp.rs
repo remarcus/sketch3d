@@ -338,8 +338,8 @@ fn tool_definitions(config: &ServerConfig) -> Value {
     let drawings = json!([
         {
             "name": "drawing_inspect_native",
-            "description": "Return a bounded summary of one native drawing beneath the configured input directory, including layers, guides, world bounds, and managed external-asset requirements.",
-            "inputSchema": {"type":"object","properties":{"path":{"type":"string","maxLength":512}},"required":["path"],"additionalProperties":false},
+            "description": "Return a bounded native drawing summary. Set include_animation to page through animated layers. Follow animation.next_layer_offset and use the same unchanged drawing for each page. Playback intervals are half-open and omit artwork samples.",
+            "inputSchema": {"type":"object","properties":{"path":{"type":"string","maxLength":512},"include_animation":{"type":"boolean","default":false},"animation_layer_offset":{"type":"integer","minimum":0,"maximum":128,"default":0}},"required":["path"],"additionalProperties":false},
             "annotations": {"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}
         },
         {
@@ -493,7 +493,7 @@ fn call_drawing_tool(input: &Path, output: &Path, name: &str, arguments: &Value)
         "drawing_create_native_copy" => create_native_drawing(output, arguments),
         "drawing_inspect_native" | "drawing_export_glb" => required_string(arguments, "path")
             .and_then(|relative| match name {
-                "drawing_inspect_native" => inspect_native_drawing(input, relative),
+                "drawing_inspect_native" => inspect_native_drawing(input, relative, arguments),
                 _ => export_native_drawing(input, output, relative),
             }),
         _ => Err("Unknown drawing tool".into()),
@@ -572,7 +572,27 @@ fn load_native_document(
     Ok((path, document))
 }
 
-fn inspect_native_drawing(input: &Path, relative: &str) -> Result<Value, String> {
+fn inspect_native_drawing(
+    input: &Path,
+    relative: &str,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let include_animation = arguments
+        .get("include_animation")
+        .map_or(Ok(false), |value| {
+            value.as_bool().ok_or("include_animation must be a boolean")
+        })?;
+    let layer_offset = arguments
+        .get("animation_layer_offset")
+        .map_or(Ok(0), |value| {
+            value
+                .as_u64()
+                .filter(|offset| *offset <= 128)
+                .ok_or("animation_layer_offset must be an integer from 0 to 128")
+        })? as usize;
+    if layer_offset != 0 && !include_animation {
+        return Err("Set include_animation to use animation_layer_offset".into());
+    }
     let (path, document) = load_native_document(input, relative)?;
     let asset_root = crate::image_plane_storage::asset_root(&path)?;
     let asset_root_metadata = fs::symlink_metadata(&asset_root).ok();
@@ -630,7 +650,7 @@ fn inspect_native_drawing(input: &Path, relative: &str) -> Result<Value, String>
         let size_bytes = if available { directory_size_bounded(&bundle, crate::obj_reference_storage::MAX_MODEL_BUNDLE_BYTES).ok() } else { None };
         json!({"id":resource.id,"name":resource.name,"bundle":resource.asset.bundle_dir,"available":available,"size_bytes":size_bytes,"issue":if available { Value::Null } else { json!("managed model bundle is missing or unsafe") }})
     }).collect();
-    let summary = json!({
+    let mut summary = json!({
         "path":relative,
         "document_version":document.version,
         "counts":{"strokes":document.strokes.len(),"layers":document.layers.len(),"guides":document.guide_resources.len(),"image_planes":document.image_planes.len(),"model_references":document.model_references.len()},
@@ -639,11 +659,64 @@ fn inspect_native_drawing(input: &Path, relative: &str) -> Result<Value, String>
         "guides":document.guide_resources.iter().map(|guide| json!({"id":guide.id,"name":guide.name,"visible":guide.visible,"locked":guide.locked,"kind":serde_json::to_value(&guide.geometry).ok().and_then(|value|value.get("kind").and_then(Value::as_str).map(str::to_owned))})).collect::<Vec<_>>(),
         "external_assets":{"image_planes":image_assets,"model_references":model_assets}
     });
+    if include_animation {
+        summary["animation"] = animation_timing_summary(&document.animation, layer_offset)?;
+    }
     let encoded = serde_json::to_vec(&summary).map_err(|error| error.to_string())?;
     if encoded.len() > MAX_DRAWING_SUMMARY_BYTES {
         return Err("Native drawing summary exceeds the 512 KiB response limit".into());
     }
     Ok(summary)
+}
+
+fn animation_timing_summary(
+    animation: &crate::animation::ArtworkAnimation,
+    layer_offset: usize,
+) -> Result<Value, String> {
+    const LAYERS_PER_PAGE: usize = 4;
+    let track_count = animation.layer_tracks.len();
+    if layer_offset > track_count {
+        return Err("animation_layer_offset exceeds the animated layer count".into());
+    }
+    let page_end = (layer_offset + LAYERS_PER_PAGE).min(track_count);
+    let layers: Vec<_> = animation.layer_tracks[layer_offset..page_end]
+        .iter()
+        .map(|track| {
+            let mut keys = Vec::with_capacity(track.keyframes.len());
+            let mut blank_intervals = Vec::new();
+            for (index, key) in track.keyframes.iter().enumerate() {
+                let (start, end) =
+                    track.key_span(index, animation.range_start, animation.range_end);
+                let blank = key.strokes.is_empty();
+                keys.push(json!({
+                    "frame": key.frame, "start": start, "end_exclusive": end,
+                    "effective_hold": end - key.frame, "blank": blank
+                }));
+                if blank {
+                    blank_intervals.push(json!({"start":start,"end_exclusive":end}));
+                }
+                let next = track
+                    .keyframes
+                    .get(index + 1)
+                    .map_or(animation.range_end + 1, |next| next.frame);
+                if end < next {
+                    blank_intervals.push(json!({"start":end,"end_exclusive":next}));
+                }
+            }
+            json!({"layer_id":track.layer_id,"keys":keys,"blank_intervals":blank_intervals})
+        })
+        .collect();
+    let whole_drawing_keys: Vec<_> = animation.keyframes.iter().map(|key| key.frame).collect();
+    Ok(json!({
+        "fps": animation.fps,
+        "range_start": animation.range_start,
+        "range_end": animation.range_end,
+        "animated_layer_count": track_count,
+        "layers": layers,
+        "next_layer_offset": (page_end < track_count).then_some(page_end),
+        "whole_drawing_key_starts": whole_drawing_keys,
+        "whole_drawing_interpolation_enabled": animation.interpolate
+    }))
 }
 
 fn directory_size_bounded(path: &Path, limit: u64) -> Result<u64, String> {

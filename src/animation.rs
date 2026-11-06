@@ -44,6 +44,20 @@ pub struct LayerAnimationTrack {
     pub keyframes: Vec<LayerArtworkKeyframe>,
 }
 
+impl LayerAnimationTrack {
+    /// Half-open playback interval. The first key also supplies the lead-in.
+    pub fn key_span(&self, index: usize, range_start: u32, range_end: u32) -> (u32, u32) {
+        let key = &self.keyframes[index];
+        let start = if index == 0 { range_start } else { key.frame };
+        let end = key.frame.saturating_add(key.exposure).min(
+            self.keyframes
+                .get(index + 1)
+                .map_or(range_end + 1, |next| next.frame),
+        );
+        (start, end)
+    }
+}
+
 /// Small cutout-rig prototype for one layer. Each source stroke has one
 /// normalized child-bone weight per sampled point; the first bone moves the
 /// full layer and the second bone bends the weighted distal portions.
@@ -495,14 +509,10 @@ impl ArtworkAnimation {
             for track in &self.layer_tracks {
                 strokes.retain(|stroke| stroke.layer_id != track.layer_id);
                 let index = track.keyframes.partition_point(|key| key.frame <= frame);
-                let key = index
-                    .checked_sub(1)
-                    .map(|i| &track.keyframes[i])
-                    .unwrap_or(&track.keyframes[0]);
-                let frame_is_exposed =
-                    frame < key.frame || frame.saturating_sub(key.frame) < key.exposure;
-                if frame_is_exposed {
-                    strokes.extend(key.strokes.iter().cloned());
+                let index = index.saturating_sub(1);
+                let (_, end) = track.key_span(index, self.range_start, self.range_end);
+                if frame < end {
+                    strokes.extend(track.keyframes[index].strokes.iter().cloned());
                 }
             }
             Some(strokes)
