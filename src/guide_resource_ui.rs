@@ -1698,10 +1698,25 @@ fn edit_geometry(ui: &mut egui::Ui, geometry: &mut GuideGeometry) -> GeometryEdi
             changed |= ui
                 .add(egui::Slider::new(&mut surface.tension, -1.0..=1.0).text("Loft tension"))
                 .changed();
-            ui.small(format!(
-                "Independent snapshot with {} ordered sections",
-                surface.section_count
-            ));
+            ui.collapsing("Loft section controls", |ui| {
+                ui.small("Edit the cubic controls in loft-local coordinates. Sections retain their order.");
+                for (index, section) in surface.sections.iter_mut()
+                    .take(usize::from(surface.section_count)).enumerate()
+                {
+                    ui.collapsing(loft_section_label(index as u8), |ui| {
+                        for (control, point) in section.controls.iter_mut().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("C{}", control + 1));
+                                for (axis, label) in ["X ", "Y ", "Z "].into_iter().enumerate() {
+                                    changed |= ui.add(egui::DragValue::new(&mut point[axis])
+                                        .speed(0.01).range(-10_000.0..=10_000.0).prefix(label))
+                                        .changed();
+                                }
+                            });
+                        }
+                    });
+                }
+            });
         }
     }
     response.changed = changed;
@@ -2787,6 +2802,75 @@ mod planar_attachment_tests {
         let detached = attached_guide_changes(&doc, &after.0, &[]).unwrap().unwrap().1;
         assert_eq!(detached[0].1.guide_attachment, None);
         assert_eq!(detached[0].1.points, doc.strokes[0].points);
+        edit.apply(&mut doc, false);
+        assert_eq!(doc.strokes[0], stroke);
+    }
+
+    #[test]
+    fn loft_attachment_spans_a_section_seam_and_rejects_topology_changes() {
+        let section = |height: f32, z: f32| LoftSection {
+            controls: [
+                Vec3::new(-1.0, height, z),
+                Vec3::new(-0.3, height + 0.2, z + 0.04),
+                Vec3::new(0.3, height - 0.15, z - 0.04),
+                Vec3::new(1.0, height, z),
+            ],
+        };
+        let mut sections = [section(0.0, 0.0); 8];
+        sections[1] = section(0.5, 1.0);
+        sections[2] = section(-0.3, 2.0);
+        let surface = LoftSurface {
+            center: Vec3::new(0.3, -0.7, 0.5),
+            rotation: glam::Quat::from_rotation_y(0.4),
+            sections,
+            section_count: 3,
+            tension: 0.35,
+        };
+        let mut stabilizer = crate::surface::SurfaceStabilizer::default();
+        stabilizer.start(Surface::Loft(surface));
+        let mut stroke = attached_stroke();
+        stroke.points.clear();
+        stroke.point_thickness = None;
+        stroke.point_colors = None;
+        for v in [0.41, 0.47, 0.53, 0.62] {
+            stroke.points.extend(stabilizer.push(Point {
+                position: surface.point(0.37, v),
+                pressure: 0.4 + v * 0.3,
+                tilt: None,
+                time_ms: 0,
+            }, 0.0));
+        }
+        stroke.points.extend(stabilizer.finish());
+        assert!(stroke.points.iter().any(|point| point.position.distance(surface.point(0.37, 0.5)) < 1e-5));
+        let parameters: Vec<_> = stroke.points.iter()
+            .map(|point| surface.coordinates(point.position).unwrap()).collect();
+        let mut old = guide(Vec3::ZERO, glam::Quat::IDENTITY);
+        old.geometry = GuideGeometry::Loft { surface };
+        let mut next = surface;
+        next.sections[1].controls[1].y += 0.45;
+        next.tension = -0.5;
+        next.center += Vec3::new(0.1, 0.3, -0.25);
+        let mut new = old.clone();
+        new.geometry = GuideGeometry::Loft { surface: next };
+        assert!(new.validate().is_ok());
+        let mut doc = Document::default();
+        doc.guide_resources.push(old.clone());
+        doc.strokes.push(stroke.clone());
+        let before = (vec![old], None, Vec::new(), None, None);
+        let after = (vec![new.clone()], None, Vec::new(), None, None);
+        let ink = attached_guide_changes(&doc, &before.0, &after.0).unwrap();
+        let edit = Edit::Guides { before, after, ink };
+        edit.apply(&mut doc, true);
+        for (sample, &(u, v)) in doc.strokes[0].points.iter().zip(&parameters) {
+            assert!(sample.position.distance(next.point(u, v)) < 1e-5);
+        }
+        let reopened = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(reopened.strokes, doc.strokes);
+        assert_eq!(crate::export::encode(&reopened, None).unwrap().summary.strokes, 1);
+        let mut incompatible = new.clone();
+        next.section_count = 2;
+        incompatible.geometry = GuideGeometry::Loft { surface: next };
+        assert!(attached_guide_changes(&doc, &[new], &[incompatible]).is_err());
         edit.apply(&mut doc, false);
         assert_eq!(doc.strokes[0], stroke);
     }

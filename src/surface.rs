@@ -810,15 +810,23 @@ impl SurfaceStabilizer {
         if let Some(previous) = self.last_filtered {
             let steps = self.surface.steps(previous.position, filtered.position);
             let mut fractions: Vec<f32> = (1..=steps).map(|i| i as f32 / steps as f32).collect();
-            if let Surface::Revolved(r) = self.surface {
-                let delta = filtered.position.y - previous.position.y;
-                if delta.abs() > 1e-8 {
-                    for knot in r.meridian_knots() {
-                        let t = (knot - previous.position.y) / delta;
-                        if t > 1e-6 && t < 1.0 - 1e-6 {
-                            fractions.push(t);
+            let delta = filtered.position.y - previous.position.y;
+            if delta.abs() > 1e-8 {
+                let mut push_knot = |knot| {
+                    let t = (knot - previous.position.y) / delta;
+                    if t > 1e-6 && t < 1.0 - 1e-6 {
+                        fractions.push(t);
+                    }
+                };
+                match self.surface {
+                    Surface::Revolved(r) => r.meridian_knots().into_iter().for_each(push_knot),
+                    Surface::Loft(loft) => {
+                        let spans = loft.section_count.saturating_sub(1);
+                        for index in 1..spans {
+                            push_knot(f32::from(index) / f32::from(spans));
                         }
                     }
+                    _ => {}
                 }
             }
             fractions.sort_by(f32::total_cmp);

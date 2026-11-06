@@ -28,7 +28,7 @@ impl SketchApp {
             ui.small(if active_model.is_some() {
                 "Model attachment needs an OBJ, static artwork, and a brush without airbrush flow or captured-planar texture."
             } else {
-                "Guide attachment needs a supported saved surface and static artwork. Freeform attachment uses sampled brushes without flow or stamps."
+                "Guide attachment needs a supported saved surface and static artwork. Freeform and loft attachment use sampled brushes without flow or stamps."
             });
         } else {
             ui.small("New brush strokes follow the active surface when it moves.");

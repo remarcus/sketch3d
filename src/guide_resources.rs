@@ -86,16 +86,23 @@ impl GuideGeometry {
     }
 
     pub fn supports_parametric_attachment(&self) -> bool {
-        matches!(self, Self::Freeform { .. })
+        matches!(self, Self::Freeform { .. } | Self::Loft { .. })
     }
 
     pub fn attachment_compatible_with(&self, next: &Self) -> bool {
-        matches!((self, next), (Self::Freeform { .. }, Self::Freeform { .. }))
+        match (self, next) {
+            (Self::Freeform { .. }, Self::Freeform { .. }) => true,
+            (Self::Loft { surface: old }, Self::Loft { surface: new }) => {
+                old.section_count == new.section_count
+            }
+            _ => false,
+        }
     }
 
     pub fn attachment_coordinates(&self, position: Vec3) -> Option<(f32, f32)> {
         match self {
             Self::Freeform { surface } => surface.coordinates(position),
+            Self::Loft { surface } => surface.coordinates(position),
             _ => None,
         }
     }
@@ -103,6 +110,10 @@ impl GuideGeometry {
     pub fn attachment_sample(&self, u: f32, v: f32) -> Option<(Vec3, Vec3, Vec3)> {
         match self {
             Self::Freeform { surface } => {
+                let (tangent, normal) = surface.frame(u, v);
+                Some((surface.point(u, v), tangent, normal))
+            }
+            Self::Loft { surface } => {
                 let (tangent, normal) = surface.frame(u, v);
                 Some((surface.point(u, v), tangent, normal))
             }
