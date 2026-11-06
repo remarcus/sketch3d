@@ -63,7 +63,10 @@ pub fn channel() -> (Sender<LiveUiRequest>, Receiver<LiveUiRequest>) {
     mpsc::channel()
 }
 
-pub fn serve(ui_requests: Sender<LiveUiRequest>) -> Result<(), String> {
+pub fn serve(
+    ui_requests: Sender<LiveUiRequest>,
+    egui_context: eframe::egui::Context,
+) -> Result<(), String> {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut input = stdin.lock();
@@ -82,7 +85,7 @@ pub fn serve(ui_requests: Sender<LiveUiRequest>) -> Result<(), String> {
             .map_err(|error| error.to_string())?,
             ReadLine::Line => {
                 let response = match serde_json::from_slice::<Value>(&line) {
-                    Ok(message) => handle_message(&ui_requests, message),
+                    Ok(message) => handle_message(&ui_requests, &egui_context, message),
                     Err(error) => Some(json!({
                         "jsonrpc":"2.0", "id":null,
                         "error":{"code":-32700,"message":format!("Invalid JSON: {error}")}
@@ -170,7 +173,11 @@ fn write_message<W: Write>(writer: &mut W, message: &Value) -> io::Result<()> {
     writer.flush()
 }
 
-fn handle_message(ui_requests: &Sender<LiveUiRequest>, message: Value) -> Option<Value> {
+fn handle_message(
+    ui_requests: &Sender<LiveUiRequest>,
+    egui_context: &eframe::egui::Context,
+    message: Value,
+) -> Option<Value> {
     let id = message.get("id").cloned();
     if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return id.map(|id| rpc_error(id, -32600, "Expected JSON-RPC 2.0"));
@@ -355,7 +362,7 @@ fn handle_message(ui_requests: &Sender<LiveUiRequest>, message: Value) -> Option
                 }
                 _ => return Some(rpc_result(id, tool_error("Unknown tool"))),
             };
-            Some(rpc_result(id, call_ui(ui_requests, command)))
+            Some(rpc_result(id, call_ui(ui_requests, egui_context, command)))
         }
         _ if id.is_none() => None,
         _ => id.map(|id| rpc_error(id, -32601, "Method not found")),
@@ -449,11 +456,16 @@ pub fn preview_id() -> String {
     )
 }
 
-fn call_ui(ui_requests: &Sender<LiveUiRequest>, command: LiveUiCommand) -> Value {
+fn call_ui(
+    ui_requests: &Sender<LiveUiRequest>,
+    egui_context: &eframe::egui::Context,
+    command: LiveUiCommand,
+) -> Value {
     let (reply, response) = mpsc::sync_channel(1);
     if ui_requests.send(LiveUiRequest { command, reply }).is_err() {
         return tool_error("The live UI session has disconnected");
     }
+    egui_context.request_repaint();
     match response.recv_timeout(UI_REQUEST_TIMEOUT) {
         Ok(Ok(value)) if value.get("mimeType").and_then(Value::as_str) == Some("image/png") => {
             json!({"content":[{"type":"image","data":value["data"],"mimeType":"image/png"}],"structuredContent":{"width":value["width"],"height":value["height"],"size_bytes":value["size_bytes"]},"isError":false})
