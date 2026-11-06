@@ -525,6 +525,34 @@ mod tests {
             .unwrap()
             .set_layer_keyframe(7, layer_id, &[], &document.strokes)
             .unwrap();
+        let other_layer_id = document
+            .layers
+            .iter()
+            .find(|layer| layer.id != layer_id)
+            .unwrap()
+            .id;
+        let other_strokes: Vec<_> = document
+            .strokes
+            .iter()
+            .filter(|stroke| stroke.layer_id == other_layer_id)
+            .take(1)
+            .cloned()
+            .collect();
+        let mut changed_other_strokes = other_strokes.clone();
+        for point in changed_other_strokes
+            .iter_mut()
+            .flat_map(|stroke| &mut stroke.points)
+        {
+            point.position.x += 0.25;
+        }
+        let mut animation = animation
+            .set_layer_keyframe(4, other_layer_id, &other_strokes, &document.strokes)
+            .unwrap()
+            .set_layer_exposure(other_layer_id, 4, 3)
+            .unwrap()
+            .set_layer_keyframe(9, other_layer_id, &changed_other_strokes, &document.strokes)
+            .unwrap();
+        animation.current_frame = 7;
         document.strokes = animation.resolve(7).unwrap();
         document.animation = animation;
         let (script, _) = build_script(&document, "Animation fixture").unwrap();
@@ -547,8 +575,57 @@ mod tests {
             })
             .collect();
         assert_eq!(frames, vec![(1, 1), (3, 1), (5, 0), (8, 0)]);
-        assert_eq!(data["layers"][0]["frames"].as_array().unwrap().len(), 1);
+        let static_layer_name = document
+            .layers
+            .iter()
+            .find(|layer| {
+                !document
+                    .animation
+                    .layer_tracks
+                    .iter()
+                    .any(|track| track.layer_id == layer.id)
+            })
+            .unwrap()
+            .name
+            .clone();
+        let static_layer = data["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|layer| layer["name"] == static_layer_name)
+            .unwrap();
+        assert_eq!(static_layer["frames"].as_array().unwrap().len(), 1);
         assert_eq!(data["timing"]["current"], 8);
+        let second_track = data["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|layer| {
+                layer["name"]
+                    == document
+                        .layers
+                        .iter()
+                        .find(|layer| layer.id == other_layer_id)
+                        .unwrap()
+                        .name
+            })
+            .unwrap()["frames"]
+            .as_array()
+            .unwrap();
+        let second_frames: Vec<_> = second_track
+            .iter()
+            .map(|frame| {
+                (
+                    frame["frame"].as_u64().unwrap(),
+                    frame["strokes"].as_array().unwrap().len(),
+                )
+            })
+            .collect();
+        assert_eq!(second_frames, vec![(1, 1), (5, 1), (8, 0), (10, 1)]);
+        // Set by the external Blender smoke command to exercise this exact script.
+        if let Some(path) = std::env::var_os("SKETCH3D_HANDOFF_SCRIPT_OUT") {
+            std::fs::write(path, script).expect("write generated Blender smoke fixture");
+        }
     }
 
     #[test]
