@@ -41,6 +41,8 @@ pub(super) struct FillUi {
     pub region_anchor: Option<Vec3>,
     pub closing_guides: Vec<(Vec3, Vec3)>,
     pub closing_start: Option<Vec3>,
+    session: Option<FillSessionSurface>,
+    draw_closing_guides: bool,
     pub draft: Option<FillDraft>,
     pub verification_frame: Option<u32>,
     texture_preview: Option<(u64, bool, egui::TextureHandle)>,
@@ -56,13 +58,58 @@ impl Default for FillUi {
             region_anchor: None,
             closing_guides: Vec::new(),
             closing_start: None,
+            session: None,
+            draw_closing_guides: false,
             draft: None,
             verification_frame: None,
             texture_preview: None,
         }
     }
 }
+
+#[derive(Clone, Copy, PartialEq)]
+enum FillSessionSurface {
+    Planar {
+        target: PlanarTarget,
+        guide: Option<u64>,
+        image: Option<u64>,
+    },
+    Cylinder(u64, crate::document::CylinderFillSurface),
+}
+
 impl SketchApp {
+    fn fill_session_surface(&self) -> Option<FillSessionSurface> {
+        if let Some((id, surface)) = self.active_fill_cylinder() {
+            return Some(FillSessionSurface::Cylinder(id, surface));
+        }
+        self.planar_drawing_target()
+            .map(|target| FillSessionSurface::Planar {
+                target,
+                guide: self.doc.active_guide,
+                image: self.doc.active_image_plane,
+            })
+    }
+
+    fn clear_fill_region_draft(&mut self) {
+        self.fills.draft = None;
+        self.fills.region_anchor = None;
+        self.fills.closing_guides.clear();
+        self.fills.closing_start = None;
+        self.fills.session = None;
+        self.fills.draw_closing_guides = false;
+    }
+
+    fn end_fill_session_if_surface_changed(&mut self) {
+        if self.fills.session.is_some()
+            && (!self.fills.enabled
+                || !self.fills.region_mode
+                || self.fills.session != self.fill_session_surface())
+        {
+            self.clear_fill_region_draft();
+            self.status = "Fill session ended because the tool or drawing surface changed.".into();
+        }
+    }
+
     pub(super) fn active_fill_cylinder(
         &self,
     ) -> Option<(u64, crate::document::CylinderFillSurface)> {
@@ -184,6 +231,7 @@ impl SketchApp {
             }
         }
         self.finish();
+        self.clear_fill_region_draft();
         self.fills.enabled = false;
         self.fills.draft = Some(FillDraft {
             mark,
@@ -989,6 +1037,7 @@ impl SketchApp {
         if let Some(draft) = self.fills.draft.take() {
             self.cleanup_imported_fill_textures(&draft.imported_texture_ids);
         }
+        self.clear_fill_region_draft();
         self.fills.enabled = false;
     }
 
@@ -1026,11 +1075,37 @@ impl SketchApp {
             ui.selectable_value(&mut self.fills.region_mode, true, "Enclosed region");
             ui.selectable_value(&mut self.fills.region_mode, false, "Trace contour");
         });
+        self.end_fill_session_if_surface_changed();
         ui.horizontal(|ui| {
             ui.label("Fill color");
             ui.color_edit_button_rgb(&mut self.color);
         });
         if self.fills.region_mode {
+            if self.fills.session.is_some() {
+                ui.horizontal(|ui| {
+                    if ui
+                        .checkbox(&mut self.fills.draw_closing_guides, "Draw closing guides")
+                        .changed()
+                    {
+                        self.fills.closing_start = None;
+                    }
+                    if ui.button("End fill session").clicked() {
+                        self.clear_fill_region_draft();
+                        self.status = "Fill session ended. Temporary guides cleared.".into();
+                    }
+                });
+                ui.small("Switch off Draw closing guides to click a region. Apply keeps the guides for the next fill.");
+            } else if ui
+                .add_enabled(
+                    self.fill_session_surface().is_some(),
+                    egui::Button::new("Start fill session"),
+                )
+                .clicked()
+            {
+                self.clear_fill_region_draft();
+                self.fills.session = self.fill_session_surface();
+                self.fills.draw_closing_guides = true;
+            }
             ui.label(if self.active_fill_cylinder().is_some() {
                 "Click inside a closed outline on the saved cylinder. Boundaries must be attached to this guide; the finite height is enforced. Enter commits, Escape cancels."
             } else {
@@ -1079,13 +1154,18 @@ impl SketchApp {
             {
                 self.rebuild_region_preview();
             }
-            if self
-                .fills
-                .draft
-                .as_ref()
-                .is_some_and(|draft| draft.original.is_none())
+            if self.fills.session.is_some()
+                || self
+                    .fills
+                    .draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.original.is_none())
             {
-                ui.small("Click twice on the guide to add a temporary closing segment. It affects this preview only.");
+                if self.fills.session.is_none() || self.fills.draw_closing_guides {
+                    ui.small(
+                        "Click twice on the drawing surface to add a temporary closing segment.",
+                    );
+                }
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
@@ -1131,6 +1211,13 @@ impl SketchApp {
             polygon::MAX_CORNERS
         ));
         ui.horizontal(|ui| {
+            if self.fills.region_mode
+                && ui
+                    .add_enabled(count >= 3, egui::Button::new("Apply fill"))
+                    .clicked()
+            {
+                self.commit_fill();
+            }
             if ui
                 .add_enabled(
                     count >= 3 && !self.fills.region_mode,
@@ -1150,12 +1237,17 @@ impl SketchApp {
                 self.remove_fill_corner();
             }
             if ui
-                .add_enabled(count > 0, egui::Button::new("Cancel contour"))
+                .add_enabled(
+                    self.fills.draft.is_some(),
+                    egui::Button::new("Cancel contour"),
+                )
                 .clicked()
             {
                 self.fills.draft = None;
                 self.fills.region_anchor = None;
-                self.fills.closing_guides.clear();
+                if self.fills.session.is_none() {
+                    self.fills.closing_guides.clear();
+                }
                 self.fills.closing_start = None;
             }
         });
@@ -1167,7 +1259,7 @@ impl SketchApp {
         }
     }
     pub(super) fn remove_fill_corner(&mut self) {
-        if self.fills.region_mode && self.fills.draft.is_some() {
+        if self.fills.region_mode && (self.fills.draft.is_some() || self.fills.session.is_some()) {
             if self.fills.closing_start.take().is_none() {
                 self.fills.closing_guides.pop();
                 self.rebuild_region_preview();
@@ -1239,7 +1331,42 @@ impl SketchApp {
         }
         self.renderer.invalidate();
     }
+
+    fn add_fill_closing_guide(
+        &mut self,
+        pos: Pos2,
+        rect: Rect,
+        target: PlanarTarget,
+        cylinder: Option<(u64, crate::document::CylinderFillSurface)>,
+    ) {
+        let (origin, direction) = crate::gizmo::ray(&self.camera, rect, pos);
+        let world = match cylinder {
+            Some((_, surface)) => cylinder_fill_hit(surface, origin, direction),
+            None => target.hit(origin, direction),
+        };
+        let Some(world) = world else {
+            self.status = "Click on the drawing surface to add a temporary closing segment.".into();
+            return;
+        };
+        if let Some(start) = self.fills.closing_start {
+            if start.distance_squared(world) <= 1e-12 {
+                self.status = "Choose a distinct endpoint for the closing guide.".into();
+                return;
+            }
+            self.fills.closing_start = None;
+            self.fills.closing_guides.push((start, world));
+            self.status = "Temporary closing guide added.".into();
+            self.rebuild_region_preview();
+        } else if self.fills.closing_guides.len() < polygon::MAX_CORNERS {
+            self.fills.closing_start = Some(world);
+            self.status = "Closing guide start set. Click its endpoint.".into();
+        } else {
+            self.status = "Temporary closing guide limit reached.".into();
+        }
+    }
+
     pub(super) fn fill_corner(&mut self, pos: Pos2, rect: Rect) {
+        self.end_fill_session_if_surface_changed();
         let cylinder = self.active_fill_cylinder();
         let chart_target = || PlanarTarget::from_curve_frame(Vec3::ZERO, Vec3::Z, Vec3::X, None);
         let Some(target) = self.planar_drawing_target().or_else(|| {
@@ -1256,7 +1383,11 @@ impl SketchApp {
             self.status = "Choose a visible unlocked layer for a fill.".into();
             return;
         }
-        if self.fills.region_mode && self.fills.draft.is_none() {
+        if self.fills.session.is_some() && self.fills.draw_closing_guides {
+            self.add_fill_closing_guide(pos, rect, target, cylinder);
+            return;
+        }
+        if self.fills.region_mode && (self.fills.draft.is_none() || self.fills.session.is_some()) {
             let (o, d) = crate::gizmo::ray(&self.camera, rect, pos);
             let world = match cylinder {
                 Some((_, surface)) => cylinder_fill_hit(surface, o, d),
@@ -1268,6 +1399,10 @@ impl SketchApp {
                         .into();
                 return;
             };
+            if self.fills.session.is_some() {
+                self.fills.draft = None;
+                self.fills.region_anchor = None;
+            }
             let mut cylinder = cylinder;
             let region = if let Some((guide_id, mut surface)) = cylinder {
                 let local = surface.rotation.inverse() * (world - surface.center);
@@ -1358,7 +1493,9 @@ impl SketchApp {
                         imported_texture_ids: Vec::new(),
                     });
                     self.fills.region_anchor = Some(world);
-                    self.fills.closing_guides.clear();
+                    if self.fills.session.is_none() {
+                        self.fills.closing_guides.clear();
+                    }
                     self.fills.closing_start = None;
                     self.status = "Region preview ready. Enter commits; Escape cancels.".into();
                 }
@@ -1370,26 +1507,7 @@ impl SketchApp {
             let Some(draft) = self.fills.draft.as_ref() else {
                 return;
             };
-            let (o, d) = crate::gizmo::ray(&self.camera, rect, pos);
-            let world = match draft.cylinder {
-                Some((_, surface)) => cylinder_fill_hit(surface, o, d),
-                None => draft.target.hit(o, d),
-            };
-            let Some(world) = world else {
-                self.status =
-                    "Click on the active guide to add a temporary closing segment.".into();
-                return;
-            };
-            if let Some(start) = self.fills.closing_start.take() {
-                self.fills.closing_guides.push((start, world));
-                self.rebuild_region_preview();
-                self.status =
-                    "Temporary closing guide added. Enter commits only the fill; Escape cancels."
-                        .into();
-            } else {
-                self.fills.closing_start = Some(world);
-                self.status = "Closing guide start set. Click its endpoint; Backspace removes the last guide.".into();
-            }
+            self.add_fill_closing_guide(pos, rect, draft.target, draft.cylinder);
             return;
         }
         if let Some(draft) = &self.fills.draft {
@@ -1478,6 +1596,7 @@ impl SketchApp {
             "Fill draft: add corners, then Enter or click the first corner. Escape cancels.".into();
     }
     pub(super) fn commit_fill(&mut self) {
+        self.end_fill_session_if_surface_changed();
         if self
             .fills
             .draft
@@ -1493,6 +1612,9 @@ impl SketchApp {
         let Some(draft) = &self.fills.draft else {
             return;
         };
+        if self.fills.region_anchor.is_some() && draft.mark.points.is_empty() {
+            return;
+        }
         if !self.doc.editable(&draft.mark) {
             self.status = "The captured fill layer is hidden, locked, or missing.".into();
             return;
@@ -1549,7 +1671,9 @@ impl SketchApp {
         self.redo.clear();
         self.fills.draft = None;
         self.fills.region_anchor = None;
-        self.fills.closing_guides.clear();
+        if self.fills.session.is_none() {
+            self.fills.closing_guides.clear();
+        }
         self.fills.closing_start = None;
         self.dirty = true;
         self.record_recovery_edit();
@@ -1559,6 +1683,7 @@ impl SketchApp {
                 .into();
     }
     pub(super) fn fill_shortcuts(&mut self, ctx: &egui::Context) {
+        self.end_fill_session_if_surface_changed();
         let (p, enter, back, escape) = ctx.input(|i| {
             (
                 i.key_pressed(Key::P),
@@ -1605,18 +1730,20 @@ impl SketchApp {
                 self.remove_fill_corner();
             }
             if escape {
-                self.fills.draft = None;
-                self.fills.region_anchor = None;
-                self.fills.closing_guides.clear();
-                self.fills.closing_start = None;
+                self.clear_fill_region_draft();
             }
         }
     }
     pub(super) fn fill_overlay(&self, ui: &egui::Ui, rect: Rect) {
+        let painter = ui.painter().with_clip_rect(rect);
+        if self.fills.session.is_none() || self.fills.session == self.fill_session_surface() {
+            self.fill_closing_guide_overlay(&painter, rect);
+        } else {
+            return;
+        }
         let Some(draft) = &self.fills.draft else {
             return;
         };
-        let painter = ui.painter().with_clip_rect(rect);
         let color = ui_style::canvas_overlay_accent(
             self.presentation.preferences.background,
             self.presentation.preferences.background_image.is_some(),
@@ -1810,6 +1937,9 @@ impl SketchApp {
                 }
             }
         }
+    }
+
+    fn fill_closing_guide_overlay(&self, painter: &egui::Painter, rect: Rect) {
         for &(a, b) in &self.fills.closing_guides {
             if let (Some((a, _)), Some((b, _))) = (
                 crate::gizmo::project(&self.camera, rect, a),

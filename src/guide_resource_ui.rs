@@ -177,7 +177,7 @@ impl GuideBendDraft {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct PlanarTarget {
     pub plane: DrawingPlane,
     half_extent: Option<glam::Vec2>,
