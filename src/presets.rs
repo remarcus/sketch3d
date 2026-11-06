@@ -1310,6 +1310,33 @@ pub fn path() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_pencil_is_the_dark_gray_graphite_preset() {
+        let library = Library::default();
+        let graphite = library
+            .presets
+            .iter()
+            .find(|preset| preset.name == "Graphite")
+            .expect("built-in Graphite preset exists");
+        let startup = startup_pencil();
+
+        assert_eq!(startup.id, graphite.id);
+        assert_eq!(startup.name, "Graphite");
+        assert_eq!(startup.brush, graphite.brush);
+        assert_eq!(
+            startup.brush.texture.kind,
+            crate::texture::TextureKind::Graphite
+        );
+        assert!((startup.radius - 0.018).abs() < f32::EPSILON);
+        let graphite_gray = crate::presentation::srgb_to_linear(53.0 / 255.0);
+        assert_eq!(startup.color, [graphite_gray; 3]);
+        assert!(
+            startup.color[0] < 0.05,
+            "startup graphite remains dark against the default light canvas"
+        );
+    }
+
     #[test]
     fn personal_presets_survive_atomic_save_restart_and_crud() {
         let mut library = Library::default();
