@@ -120,6 +120,7 @@ impl SketchApp {
                         "one undo and redo restore the source and refreshed fill",
                         "synthetic canvas click previews and applies an enclosed-region fill, verifies cancel and undo/redo, and preserves region detection after camera orbit/zoom",
                         "synthetic contour-handle drag keeps the source unchanged through Cancel and applies one reversible edit",
+                        "edited planar fill contour is saved as an isolated production GPU render",
                         "the fill renderer pixel checks passed at three camera angles",
                         "named layer masks retain inside coverage and remove outside coverage in GPU pixels",
                         "encoded GIF frames match still-render mask coverage and preserve the masked/unmasked comparison"
@@ -370,6 +371,28 @@ impl SketchApp {
         assert_eq!(edited_fill.color, original_fill.color);
         assert_eq!(edited_fill.fill, original_fill.fill);
         assert_eq!(edited_fill, preview_fill);
+        let edited_pixels = self
+            .renderer
+            .render_png_pixels(
+                &self.doc,
+                &self.camera,
+                [600, 450],
+                [0.12, 0.14, 0.18],
+                crate::lighting::Lighting {
+                    ground: false,
+                    shadows: false,
+                    ..Default::default()
+                },
+            )
+            .expect("edited contour renders through the production GPU pipeline");
+        image::save_buffer(
+            "verification/edited-fill-contour-600x450.png",
+            &edited_pixels,
+            600,
+            450,
+            image::ColorType::Rgba8,
+        )
+        .expect("edited planar fill GPU render is saved");
         self.undo();
         assert_eq!(self.doc.strokes.last(), Some(&original_fill));
         self.redo();
