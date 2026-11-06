@@ -1833,6 +1833,75 @@ mod layer_tests {
             ..Document::default()
         }
     }
+
+    #[test]
+    fn named_mask_source_survives_folder_reorder_persistence_and_undo() {
+        let mut doc = Document::default();
+        layer_edit(&doc, LayerAction::Add("Consumer".into()))
+            .unwrap()
+            .apply(&mut doc, true);
+        layer_edit(&doc, LayerAction::Add("Extra".into()))
+            .unwrap()
+            .apply(&mut doc, true);
+
+        let mask = layer_edit(&doc, LayerAction::MaskSource(2, Some(1))).unwrap();
+        mask.apply(&mut doc, true);
+        assert_eq!(doc.layer_clip_source(2), Some(1));
+        assert!(!doc.layers[1].clip_to_below);
+        assert!(layer_edit(&doc, LayerAction::MaskSource(1, Some(2))).is_err());
+        assert!(layer_edit(&doc, LayerAction::MaskSource(2, Some(999))).is_err());
+
+        layer_edit(&doc, LayerAction::Activate(1))
+            .unwrap()
+            .apply(&mut doc, true);
+        layer_edit(&doc, LayerAction::CreateFolder("Source group".into()))
+            .unwrap()
+            .apply(&mut doc, true);
+        layer_edit(&doc, LayerAction::Activate(2))
+            .unwrap()
+            .apply(&mut doc, true);
+        layer_edit(&doc, LayerAction::CreateFolder("Consumer group".into()))
+            .unwrap()
+            .apply(&mut doc, true);
+        layer_edit(&doc, LayerAction::MoveLayerToFolder(1, Some(1)))
+            .unwrap()
+            .apply(&mut doc, true);
+        layer_edit(&doc, LayerAction::MoveLayerToFolder(2, Some(2)))
+            .unwrap()
+            .apply(&mut doc, true);
+        let reorder = layer_edit(&doc, LayerAction::MoveFolder(2, -1)).unwrap();
+        reorder.apply(&mut doc, true);
+        assert_eq!(
+            doc.layers.iter().map(|layer| layer.id).collect::<Vec<_>>(),
+            vec![2, 1, 3]
+        );
+        assert_eq!(doc.layer_clip_source(2), Some(1));
+        assert_eq!(
+            crate::document::layer_mask_order(&doc.layers)
+                .unwrap()
+                .first(),
+            Some(&1)
+        );
+
+        layer_edit(&doc, LayerAction::FolderVisible(1, false))
+            .unwrap()
+            .apply(&mut doc, true);
+        assert!(!doc.layer_folder_visible(1));
+        assert!(doc.layer_folder_visible(2));
+        let loaded = Document::from_json(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(loaded.layers, doc.layers);
+        assert_eq!(loaded.layer_folders, doc.layer_folders);
+        assert_eq!(loaded.layer_clip_source(2), Some(1));
+
+        reorder.apply(&mut doc, false);
+        assert_eq!(
+            doc.layers.iter().map(|layer| layer.id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        mask.apply(&mut doc, false);
+        assert_eq!(doc.layer_clip_source(2), None);
+    }
+
     #[test]
     fn layer_metadata_and_reassignment_undo_without_changing_ink() {
         let mut doc = sample();

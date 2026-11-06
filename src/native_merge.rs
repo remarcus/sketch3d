@@ -1256,4 +1256,56 @@ mod tests {
         crate::editing::Edit::Merge(inserted.edit).apply(&mut merged, true);
         assert_eq!(merged.strokes[0].modifiers, source.strokes[0].modifiers);
     }
+
+    #[test]
+    fn named_layer_mask_sources_remap_during_native_merge() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let source_path = root.path().join("named-mask-source.sketch.json");
+        let assets = root.path().join("mask-merge-assets");
+        fs::create_dir_all(&assets).unwrap();
+        let mut source = Document::default();
+        let add = crate::editing::layer_edit(
+            &source,
+            crate::editing::LayerAction::Add("Consumer".into()),
+        )
+        .unwrap();
+        add.apply(&mut source, true);
+        let mask = crate::editing::layer_edit(
+            &source,
+            crate::editing::LayerAction::MaskSource(2, Some(1)),
+        )
+        .unwrap();
+        mask.apply(&mut source, true);
+        fs::write(&source_path, serde_json::to_vec(&source).unwrap()).unwrap();
+
+        let mut destination = Document::default();
+        let inserted = prepare_insert(
+            &destination,
+            &source_path,
+            &assets,
+            100,
+            10,
+            1_000,
+            Vec3::ZERO,
+            false,
+            &HashMap::new(),
+        )
+        .unwrap();
+        let edit = crate::editing::Edit::Merge(inserted.edit);
+        edit.apply(&mut destination, true);
+        let consumer = destination
+            .layers
+            .iter()
+            .find(|layer| layer.name.starts_with("Consumer"))
+            .unwrap();
+        let remapped_source = consumer.mask_source.unwrap();
+        assert_ne!(remapped_source, 1);
+        assert!(destination
+            .layers
+            .iter()
+            .any(|layer| layer.id == remapped_source));
+        assert!(destination.layers.iter().any(|layer| layer.id == 1));
+        edit.apply(&mut destination, false);
+        assert_eq!(destination.layers.len(), 1);
+    }
 }
