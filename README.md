@@ -4,9 +4,9 @@ Sketch3D is an open-source, tablet-first 3D sketching app written in Rust. Draw 
 
 Sketch3D is independently developed and inspired by Feather 3D and Blender's Grease Pencil.
 
-![Sketch3D's dark workspace showing the editable dusk house starter with pale walls, warm windows, a cool shaded side, and graphite tools](docs/capability-demos/media/dusk-house-ui.png)
+![Sketch3D's dark workspace with the editable pencil-and-pastel house, brush controls over the canvas, tool rail, and open Properties inspector](docs/capability-demos/media/readme-dusk-house-workspace.jpg)
 
-*The editable two-story dusk house starter, framed in its opening three-quarter view.*
+*Default workspace on the bundled pencil-and-pastel house, with canvas brush controls and the Properties inspector open. Captured from the Windows debug build at revision `c6e4b7c`.*
 
 ## Features
 
