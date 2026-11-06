@@ -494,6 +494,17 @@ fn unsupported_semantics(stroke: &Stroke) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
+
+    fn payload(document: &Document) -> serde_json::Value {
+        let (script, _) = build_script(document, "Fill fixture").unwrap();
+        let literal = script
+            .lines()
+            .find_map(|line| line.strip_prefix("DATA = json.loads("))
+            .unwrap();
+        let encoded: String = serde_json::from_str(literal.strip_suffix(')').unwrap()).unwrap();
+        serde_json::from_str(&encoded).unwrap()
+    }
 
     #[test]
     fn export_preserves_layer_keys_and_inserts_a_blank_for_an_exposure_gap() {
@@ -538,5 +549,107 @@ mod tests {
         assert_eq!(frames, vec![(1, 1), (3, 1), (5, 0), (8, 0)]);
         assert_eq!(data["layers"][0]["frames"].as_array().unwrap().len(), 1);
         assert_eq!(data["timing"]["current"], 8);
+    }
+
+    #[test]
+    fn solid_fill_color_and_opacity_survive_static_and_animated_handoff_payloads() {
+        let mut document = crate::scenes::pencil_house();
+        let index = document
+            .strokes
+            .iter()
+            .position(|stroke| stroke.fill.is_some())
+            .unwrap();
+        let mut fill = document.strokes[index].clone();
+        fill.color = [0.72, 0.21, 0.13];
+        fill.brush.opacity = 0.65;
+        fill.brush = crate::document::Brush {
+            opacity: 0.65,
+            ..crate::document::Brush::default()
+        };
+        let region = fill.fill.as_mut().unwrap();
+        region.offset = 0.01;
+        region.gradient = None;
+        region.texture = None;
+        region.holes.clear();
+        region.cylinder = None;
+
+        document.strokes[index] = fill.clone();
+        let static_payload = payload(&document);
+        let layer = static_payload["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|layer| {
+                layer["name"]
+                    == document
+                        .layers
+                        .iter()
+                        .find(|layer| layer.id == fill.layer_id)
+                        .unwrap()
+                        .name
+            })
+            .unwrap();
+        let static_fill = &layer["frames"][0]["strokes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|stroke| stroke["id"] == fill.id)
+            .unwrap()["fill"];
+        assert_eq!(static_fill["color"], serde_json::json!([0.72, 0.21, 0.13]));
+        assert_eq!(static_fill["opacity"], serde_json::json!(0.65));
+        assert!(!static_payload["unsupported"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item.as_str().unwrap().contains("fill holes")
+                    || item.as_str().unwrap().contains("fill gradients")
+            }));
+        let mut unsupported_fill = fill.clone();
+        unsupported_fill
+            .fill
+            .as_mut()
+            .unwrap()
+            .holes
+            .push(vec![Vec3::ZERO, Vec3::X, Vec3::Y]);
+        assert!(unsupported_semantics(&unsupported_fill)
+            .unwrap()
+            .contains("fill holes"));
+
+        let animated = document
+            .animation
+            .set_layer_keyframe(0, fill.layer_id, &[fill.clone()], &document.strokes)
+            .unwrap()
+            .set_layer_keyframe(5, fill.layer_id, &[], &document.strokes)
+            .unwrap();
+        document.strokes = animated.resolve(animated.current_frame).unwrap();
+        document.animation = animated;
+        let animated_payload = payload(&document);
+        let layer = animated_payload["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|layer| {
+                layer["name"]
+                    == document
+                        .layers
+                        .iter()
+                        .find(|layer| layer.id == fill.layer_id)
+                        .unwrap()
+                        .name
+            })
+            .unwrap();
+        let frames = layer["frames"].as_array().unwrap();
+        assert_eq!(frames[0]["frame"], 1);
+        assert_eq!(
+            frames[0]["strokes"][0]["fill"]["color"],
+            serde_json::json!([0.72, 0.21, 0.13])
+        );
+        assert_eq!(
+            frames[0]["strokes"][0]["fill"]["opacity"],
+            serde_json::json!(0.65)
+        );
+        assert_eq!(frames[1]["frame"], 6);
+        assert!(frames[1]["strokes"].as_array().unwrap().is_empty());
     }
 }
