@@ -865,6 +865,9 @@ impl SketchApp {
         }
         for (_, stroke) in &mut after {
             stroke.guide_attachment = guide;
+            if !attach {
+                stroke.detach_model();
+            }
         }
         if before == after {
             return;

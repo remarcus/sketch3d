@@ -2439,6 +2439,7 @@ mod tests {
     #[test]
     fn model_surface_dab_and_tip_meshes_stay_on_captured_triangles() {
         let surface = crate::document::ModelSurfacePatch {
+            attachment: None,
             triangles: vec![crate::document::ModelSurfaceTriangle {
                 source_id: 0,
                 positions: [

@@ -543,6 +543,8 @@ pub struct ModelSurfaceTriangle {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModelSurfacePatch {
     pub triangles: Vec<ModelSurfaceTriangle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<model_references::ModelInkAttachment>,
 }
 
 impl ModelSurfacePatch {
@@ -2012,6 +2014,7 @@ impl Document {
         let mut total = 0;
         let mut total_dabs = 0usize;
         let mut total_model_surface_triangles = 0usize;
+        let mut total_model_anchors = 0usize;
         let mut groups = std::collections::HashMap::new();
         for stroke in &doc.strokes {
             if let Some(group) = stroke.group_id {
@@ -2076,10 +2079,21 @@ impl Document {
                 total_model_surface_triangles = total_model_surface_triangles
                     .checked_add(patch.triangles.len())
                     .ok_or("Model surface triangle count overflow")?;
-                if patch.triangles.is_empty()
+                if let Some(attachment) = &patch.attachment {
+                    total_model_anchors += attachment.anchors.len();
+                    if stroke.guide_attachment.is_some()
+                        || !doc.model_references.iter().any(|model| model.id == attachment.model_id)
+                        || !attachment.is_valid()
+                        || total_model_anchors > 2_000_000
+                    {
+                        return Err("Invalid or missing model ink attachment".into());
+                    }
+                }
+                if (patch.triangles.is_empty() && patch.attachment.is_none())
                     || patch.triangles.len() > MAX_MODEL_SURFACE_TRIANGLES_PER_STROKE
                     || total_model_surface_triangles > MAX_MODEL_SURFACE_TRIANGLES_PER_DOCUMENT
-                    || (!stroke.brush.dabs.enabled && stroke.brush.tip_asset_id == 0)
+                    || (!patch.triangles.is_empty()
+                        && !stroke.brush.dabs.enabled && stroke.brush.tip_asset_id == 0)
                     || stroke.brush.dabs.surface_target.is_some()
                     || patch
                         .triangles
@@ -3073,6 +3087,7 @@ mod group_tests {
         let mut stroke = mark(1);
         stroke.brush.dabs.enabled = true;
         stroke.model_surface = Some(ModelSurfacePatch {
+            attachment: None,
             triangles: vec![ModelSurfaceTriangle {
                 source_id: 4,
                 positions: [Vec3::ZERO, Vec3::X, Vec3::Y],

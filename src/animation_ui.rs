@@ -204,9 +204,9 @@ impl SketchApp {
             .doc
             .strokes
             .iter()
-            .any(|stroke| stroke.guide_attachment.is_some())
+            .any(|stroke| stroke.guide_attachment.is_some() || stroke.attached_model().is_some())
         {
-            self.status = "Detach ink from saved guides before keyframing.".into();
+            self.status = "Detach ink from surfaces before keyframing.".into();
             return;
         }
         if !self.doc.active_editable() {

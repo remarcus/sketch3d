@@ -380,6 +380,9 @@ pub fn prepare_insert(
         if let Some(id) = stroke.guide_attachment {
             stroke.guide_attachment = Some(*guide_map.get(&id).ok_or("Missing attached guide")?);
         }
+        if let Some(attachment) = stroke.model_surface.as_mut().and_then(|patch| patch.attachment.as_mut()) {
+            attachment.model_id = *model_map.get(&attachment.model_id).ok_or("Missing attached model")?;
+        }
         if let Some(fill) = stroke.fill.as_mut() {
             if let Some(crate::document::FillRegionSource::Cylinder(region)) =
                 fill.region_source.as_mut()

@@ -216,6 +216,7 @@ pub enum Edit {
     ModelReferences {
         before: ModelReferenceState,
         after: ModelReferenceState,
+        ink: Option<Box<(Snapshot, Snapshot)>>,
     },
     /// Turn a live model overlay into ordinary strokes and detach its source
     /// as one reversible operation.
@@ -319,7 +320,7 @@ impl Edit {
                     replace(doc, &ink.0, &ink.1, forward);
                 }
             }
-            Self::ModelReferences { before, after } => {
+            Self::ModelReferences { before, after, ink } => {
                 let (models, active_model, planes, active_plane, guides, active_guide) =
                     if forward { after } else { before };
                 doc.model_references = models.clone();
@@ -328,6 +329,9 @@ impl Edit {
                 doc.active_image_plane = *active_plane;
                 doc.guide_resources = guides.clone();
                 doc.active_guide = *active_guide;
+                if let Some(ink) = ink {
+                    replace(doc, &ink.0, &ink.1, forward);
+                }
             }
             Self::BakeLiveLineArt {
                 strokes,
@@ -2134,9 +2138,9 @@ pub fn create_linked_group(
     }
     if source
         .iter()
-        .any(|(_, stroke)| stroke.guide_attachment.is_some())
+        .any(|(_, stroke)| stroke.guide_attachment.is_some() || stroke.attached_model().is_some())
     {
-        return Err("Detach ink from saved guides before creating a linked group".into());
+        return Err("Detach ink from surfaces before creating a linked group".into());
     }
     let group_id = source[0]
         .1

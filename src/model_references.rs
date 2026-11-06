@@ -9,6 +9,87 @@ pub const MAX_MODEL_REFERENCES: usize = 64;
 pub const MAX_MODEL_NAME_CHARS: usize = 96;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelInkAttachment {
+    pub model_id: u64,
+    pub anchors: Vec<ModelInkAnchor>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelInkAnchor {
+    pub triangle: u32,
+    pub barycentric: Vec3,
+}
+
+impl From<crate::obj_mesh_index::ObjMeshHit> for ModelInkAnchor {
+    fn from(hit: crate::obj_mesh_index::ObjMeshHit) -> Self {
+        Self { triangle: hit.triangle_index, barycentric: hit.barycentric }
+    }
+}
+
+impl ModelInkAttachment {
+    pub fn is_valid(&self) -> bool {
+        !self.anchors.is_empty()
+            && self.anchors.len() <= 2_000_000
+            && self.anchors.iter().all(|anchor| {
+                anchor.barycentric.is_finite()
+                    && anchor.barycentric.min_element() >= -1e-4
+                    && (anchor.barycentric.element_sum() - 1.0).abs() <= 1e-4
+            })
+    }
+}
+
+impl crate::document::Stroke {
+    pub fn attached_model(&self) -> Option<u64> {
+        Some(self.model_surface.as_ref()?.attachment.as_ref()?.model_id)
+    }
+
+    pub fn detach_model(&mut self) {
+        if let Some(patch) = &mut self.model_surface {
+            patch.attachment = None;
+            if patch.triangles.is_empty() {
+                self.model_surface = None;
+            }
+        }
+    }
+}
+
+pub fn update_attached_ink(
+    document: &crate::document::Document,
+    previous_models: &[ObjReferenceResource],
+) -> Result<Option<Box<(crate::editing::Snapshot, crate::editing::Snapshot)>>, String> {
+    let mut before = Vec::new();
+    let mut after = Vec::new();
+    for (index, stroke) in document.strokes.iter().enumerate() {
+        let Some(id) = stroke.attached_model() else { continue };
+        let Some(old) = previous_models.iter().find(|model| model.id == id) else { continue };
+        let mut updated = stroke.clone();
+        match document.model_references.iter().find(|model| model.id == id) {
+            Some(new) if old.asset == new.asset => {
+                let rotation = (new.rotation * old.rotation.inverse()).normalize();
+                let scale = new.scale / old.scale;
+                if old.center == new.center && old.rotation == new.rotation && scale == 1.0 {
+                    continue;
+                }
+                let transformed = crate::editing::transformed_with_scale(
+                    &vec![(index, updated)],
+                    old.center,
+                    new.center - old.center,
+                    rotation,
+                    Vec3::splat(scale),
+                    Quat::IDENTITY,
+                    true,
+                )?;
+                updated = transformed.into_iter().next().unwrap().1;
+            }
+            _ => updated.detach_model(),
+        }
+        before.push((index, stroke.clone()));
+        after.push((index, updated));
+    }
+    Ok((!before.is_empty()).then(|| Box::new((before, after))))
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ObjReferenceResource {
     pub id: u64,
     pub name: String,

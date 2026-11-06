@@ -3149,6 +3149,11 @@ impl SketchApp {
         else {
             return;
         };
+        if stroke.points.is_empty() {
+            self.doc.strokes.remove(index);
+            self.renderer.invalidate();
+            return;
+        }
         let recorded_stroke = stroke.clone();
         let edit = Edit::Change {
             before: Vec::new(),
@@ -3664,6 +3669,13 @@ impl SketchApp {
             return;
         }
         let capture_model_surface = self.brush.tip_asset_id != 0 || self.brush.dabs.enabled;
+        let attach = self.attach_drawn_strokes
+            && model.source_format == crate::obj_reference::ObjSourceFormat::Obj
+            && self.doc.animation.is_empty()
+            && self.doc.animation.two_bone_rig.is_none()
+            && self.brush.texture.anchor_mode
+                != crate::texture::TextureAnchorMode::CapturedPlanar
+            && !self.brush.flow.enabled;
         let contact_patch = if capture_model_surface {
             match self
                 .obj_surface_indices
@@ -3719,8 +3731,17 @@ impl SketchApp {
             let tangent = (view_right - normal * view_right.dot(normal)).normalize_or_zero();
             self.doc.strokes.push(Stroke {
                 guide_attachment: None,
-                model_surface: capture_model_surface
-                    .then(crate::document::ModelSurfacePatch::default),
+                model_surface: (capture_model_surface || attach).then(|| {
+                    crate::document::ModelSurfacePatch {
+                        triangles: Vec::new(),
+                        attachment: attach.then(|| {
+                            crate::document::model_references::ModelInkAttachment {
+                                model_id: resource.id,
+                                anchors: Vec::new(),
+                            }
+                        }),
+                    }
+                }),
                 curve: None,
                 material: Default::default(),
                 point_thickness: None,
@@ -3834,6 +3855,10 @@ impl SketchApp {
                 {
                     stroke.points.pop();
                     self.status = "Stroke reached its airbrush, dab, strand, or tube-profile geometry limit; further input was ignored.".into();
+                } else if let Some(attachment) = stroke.model_surface.as_mut()
+                    .and_then(|surface| surface.attachment.as_mut())
+                {
+                    attachment.anchors.push(hit.into());
                 }
             }
         }

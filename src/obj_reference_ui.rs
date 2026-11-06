@@ -211,7 +211,7 @@ impl SketchApp {
             return;
         }
         let after = self.model_reference_edit_state();
-        self.undo.push(Edit::ModelReferences { before, after });
+        self.undo.push(Edit::ModelReferences { before, after, ink: None });
         self.redo.clear();
         self.dirty = true;
         self.record_recovery_edit_labeled("Change live model line art");
@@ -913,10 +913,26 @@ impl SketchApp {
                 }
             }
             if changed {
-                self.undo.push(Edit::ModelReferences {
+                let ink = match crate::document::model_references::update_attached_ink(&self.doc, &before.0) {
+                    Ok(ink) => ink,
+                    Err(error) => {
+                        self.doc.model_references = before.0;
+                        self.doc.active_model_reference = before.1;
+                        self.doc.image_planes = before.2;
+                        self.doc.active_image_plane = before.3;
+                        self.doc.guide_resources = before.4;
+                        self.doc.active_guide = before.5;
+                        self.status = error;
+                        return;
+                    }
+                };
+                let edit = Edit::ModelReferences {
                     before,
                     after: self.model_reference_edit_state(),
-                });
+                    ink,
+                };
+                edit.apply(&mut self.doc, true);
+                self.undo.push(edit);
                 self.redo.clear();
                 self.dirty = true;
                 self.record_recovery_edit();
@@ -1042,6 +1058,7 @@ impl SketchApp {
         self.undo.push(Edit::ModelReferences {
             before,
             after: self.model_reference_edit_state(),
+            ink: None,
         });
         self.redo.clear();
         self.dirty = true;

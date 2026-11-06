@@ -497,6 +497,7 @@ fn retained_fragments(stroke: &Stroke, cuts: &[Vec<(f32, f32)>]) -> Vec<Stroke> 
                 fragment.point_colors = crate::stroke_sculpt::remap_point_colors(stroke, &points);
                 fragment.points = points;
                 fragment.curve = None;
+                fragment.detach_model();
                 if fragment.brush.texture.image.is_some()
                     && fragment.brush.texture.anchor_mode
                         == crate::texture::TextureAnchorMode::StrokeFollowing
@@ -784,6 +785,7 @@ mod tests {
         source.brush.dabs.size_variation = 0.0;
         source.brush.dab_seed = 733;
         source.model_surface = Some(crate::document::ModelSurfacePatch {
+            attachment: None,
             triangles: vec![
                 crate::document::ModelSurfaceTriangle {
                     source_id: 0,

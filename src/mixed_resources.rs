@@ -263,6 +263,13 @@ fn transformed_state(
             for point in &mut stroke.points {
                 point.position += transform.translation;
             }
+            if stroke.attached_model().is_some() {
+                for triangle in &mut stroke.model_surface.as_mut().unwrap().triangles {
+                    for point in &mut triangle.positions {
+                        *point += transform.translation;
+                    }
+                }
+            }
         }
         for plane in &mut after.image_planes {
             plane.origin += transform.translation;
@@ -357,6 +364,11 @@ fn capture_state(
                 id: *stroke_id,
             });
         }
+        if stroke.attached_model().is_some_and(|id| !selection.obj_reference_ids.contains(&id)) {
+            return Err(MoveError::InvalidTransformDetail(
+                "Select the model too, or detach its ink before moving it independently.".into(),
+            ));
+        }
         state.strokes.push(stroke.clone());
     }
     for id in &selection.image_plane_ids {
@@ -393,6 +405,10 @@ fn capture_state(
         }
         state.obj_references.push(model.clone());
     }
+    state.strokes.extend(document.strokes.iter().filter(|stroke| {
+        !selection.stroke_ids.contains(&stroke.id)
+            && stroke.attached_model().is_some_and(|id| selection.obj_reference_ids.contains(&id))
+    }).cloned());
     for id in &selection.guide_ids {
         if document
             .strokes

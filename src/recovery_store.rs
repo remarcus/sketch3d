@@ -920,6 +920,7 @@ mod tests {
         let transform_edit = crate::editing::Edit::ModelReferences {
             before: before_model_edit.clone(),
             after: after_model_edit.clone(),
+            ink: None,
         };
         transform_edit.apply(&mut document, true);
         assert_eq!(document.strokes, vec![surface_stroke.clone()]);
