@@ -638,6 +638,40 @@ mod tests {
     }
 
     #[test]
+    fn edited_planar_fill_survives_a_fresh_recovery_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let recovery_dir = dir.path().join("recovery");
+        let mut doc = document();
+        let mut fill = crate::polygon::study().strokes.remove(0);
+        fill.id = 2;
+        fill.layer_id = 1;
+        fill.color = [0.72, 0.38, 0.16];
+        fill.points[0].position += Vec3::new(0.15, 0.1, 0.0);
+        doc.strokes.push(fill.clone());
+
+        let mut recovery = Recovery::new(Ok(recovery_dir.clone()), egui::Context::default());
+        recovery.mark_edit();
+        assert!(recovery.force_snapshot(&doc, None));
+        wait(&mut recovery);
+        assert!(recovery.last_error.is_none());
+        drop(recovery);
+
+        let mut fresh_reader = Recovery::new(Ok(recovery_dir), egui::Context::default());
+        fresh_reader.request_scan();
+        wait(&mut fresh_reader);
+        assert!(fresh_reader.last_error.is_none());
+        let scan = fresh_reader.scan.as_ref().unwrap();
+        assert!(scan.issues.is_empty());
+        assert_eq!(scan.candidates.len(), 1);
+        let recovered = &scan.candidates[0].snapshot.document.strokes;
+        assert_eq!(recovered, &doc.strokes);
+        assert_eq!(
+            recovered[1], fill,
+            "edited contour and appearance survive recovery"
+        );
+    }
+
+    #[test]
     fn brush_tip_survives_native_relocation_and_forced_recovery_scan() {
         let pixels = image::RgbaImage::from_fn(5, 3, |x, _y| {
             image::Rgba([218, 73, 41, [0, 64, 128, 255, 0][x as usize]])
