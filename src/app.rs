@@ -7235,8 +7235,8 @@ impl SketchApp {
                             if self.liquify_brush_active() {
                                 self.liquify_brush_input(pos, 1.0, rect, Phase::Move);
                             } else if inside_canvas(pos)
-                                || ((self.drag.is_some()
-                                    || self.redraw_contact_active()
+                                || self.drag.is_some()
+                                || ((self.redraw_contact_active()
                                     || self.point_drag.is_some()
                                     || self.point_multi_drag.is_some()
                                     || self

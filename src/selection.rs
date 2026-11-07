@@ -3265,15 +3265,26 @@ impl SketchApp {
             .iter()
             .find(|h| h.kind == HandleKind::Rotation(2))
             .unwrap();
-        let index = (0..64)
-            .find(|i| layout.hit(ring.path[*i]) == Some(HandleKind::Rotation(2)))
-            .unwrap();
-        let start = ring.path[index];
-        let end = ring.path[(index + 13) % 64];
+        let sample_count = ring.path.len() - 1;
+        let (start, end) = (0..sample_count)
+            .find_map(|index| {
+                let start = ring.path[index];
+                let end = ring.path[(index + 13) % sample_count];
+                (layout.hit(start) == Some(HandleKind::Rotation(2))
+                    && canvas_pointer_allowed(ctx, rect, start)
+                    && rect.contains(end))
+                .then_some((start, end))
+            })
+            .expect("The Z rotation ring must have an unobstructed canvas segment");
         let pivot = layout.pivot;
+        let steps = self.undo.len();
         replay(self, ctx, rect, start, Some(end), false, true);
+        assert_eq!(
+            self.undo.len(),
+            steps + 1,
+            "Z rotation must commit one edit"
+        );
         let rotated = self.doc.strokes.clone();
-        assert_ne!(rotated, moved);
         assert!(
             (rotated[0].points[0].position.distance(pivot)
                 - moved[0].points[0].position.distance(pivot))
