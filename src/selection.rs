@@ -1077,13 +1077,18 @@ impl SketchApp {
                         else {
                             continue;
                         };
+                        let Some(snapped_translation) =
+                            drag.kind.snap_translation(snapped - *source)
+                        else {
+                            continue;
+                        };
                         let distance = screen.distance(cue.screen);
                         if best.is_none_or(|(old_distance, _, _, old_cue)| {
                             distance < old_distance - 0.001
                                 || ((distance - old_distance).abs() <= 0.001
                                     && cue.kind.priority() < old_cue.kind.priority())
                         }) {
-                            best = Some((distance, snapped, snapped - *source, cue));
+                            best = Some((distance, snapped, snapped_translation, cue));
                         }
                     }
                     if let Some((_, _snapped, snapped_translation, cue)) =
@@ -3191,12 +3196,17 @@ impl SketchApp {
             .find(|h| h.kind == HandleKind::Axis(0))
             .unwrap()
             .path[1];
+        assert!(
+            layout.hit(start) == Some(HandleKind::Axis(0)),
+            "The projected X handle must pick the X axis"
+        );
+        let along_x = (start - layout.origin).normalized();
         replay(
             self,
             ctx,
             rect,
             start,
-            Some(start + egui::vec2(35.0, 0.0)),
+            Some(start + along_x * 35.0),
             false,
             true,
         );
@@ -3210,7 +3220,7 @@ impl SketchApp {
         let delta = moved[0].points[0].position - before[0].points[0].position;
         assert!(
             delta.x.abs() > 0.01 && delta.y.abs() < 0.0001 && delta.z.abs() < 0.0001,
-            "X handle must constrain translation"
+            "X handle must constrain translation, got {delta:?}"
         );
         self.undo();
         assert_eq!(self.doc.strokes, before);

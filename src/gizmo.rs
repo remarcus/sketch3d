@@ -19,6 +19,17 @@ pub enum HandleKind {
     ScaleAxis(usize),
     ScaleView,
 }
+impl HandleKind {
+    pub fn snap_translation(self, translation: Vec3) -> Option<Vec3> {
+        if let Self::Axis(index) = self {
+            let axis = axis(index);
+            let along = axis * translation.dot(axis);
+            (translation.distance_squared(along) <= 1e-8).then_some(along)
+        } else {
+            Some(translation)
+        }
+    }
+}
 pub struct Handle {
     pub kind: HandleKind,
     pub path: Vec<Pos2>,
@@ -1061,4 +1072,15 @@ mod layer_picking_tests {
         assert_eq!(pick(&doc, &camera, rect, rect.center()), None);
         assert_eq!(pick_visible(&doc, &camera, rect, rect.center()), Some(2));
     }
+}
+#[test]
+fn axis_move_snap_rejects_off_axis_targets() {
+    let x = HandleKind::Axis(0);
+    assert_eq!(x.snap_translation(Vec3::new(1.0, 0.02, 0.0)), None);
+    assert_eq!(
+        x.snap_translation(Vec3::new(1.0, 0.00001, 0.0)),
+        Some(Vec3::X)
+    );
+    let free = Vec3::new(1.0, 0.02, 0.0);
+    assert_eq!(HandleKind::Free.snap_translation(free), Some(free));
 }
