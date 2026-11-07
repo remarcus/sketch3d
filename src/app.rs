@@ -10129,7 +10129,20 @@ impl SketchApp {
                 // Clear synthetic events before the regular input handler sees them again.
                 ctx.input_mut(|i| i.events.clear());
             }
-            3 => self.verify_selection(ctx, rect),
+            3 => {
+                // The selection replay exercises canvas input with its own
+                // viewport. Desktop chrome and floating controls vary by runner.
+                let input = egui::Context::default();
+                let canvas = Rect::from_min_size(Pos2::ZERO, egui::vec2(960.0, 720.0));
+                let _ = input.run(
+                    egui::RawInput {
+                        screen_rect: Some(canvas),
+                        focused: true,
+                        ..Default::default()
+                    },
+                    |ctx| self.verify_selection(ctx, canvas),
+                );
+            }
             4 => self.verify_stabilization(rect),
             5 => self.verify_planes(rect),
             6 => self.verify_export_start(ctx),

@@ -3047,7 +3047,11 @@ impl SketchApp {
                 false,
                 true,
             );
-            assert_eq!(app.undo.len(), undo_depth + 1);
+            assert_eq!(
+                app.undo.len(),
+                undo_depth + 1,
+                "Scale axis {axis} with pivot {pivot_mode:?} must commit one edit"
+            );
             let handle_scaled = app.doc.strokes.clone();
             app.undo();
             assert_eq!(app.doc.strokes, original);
